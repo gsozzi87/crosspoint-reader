@@ -1,4 +1,5 @@
 #include "CrossPointWebServer.h"
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <ArduinoJson.h>
 #include <BoardConfig.h>
