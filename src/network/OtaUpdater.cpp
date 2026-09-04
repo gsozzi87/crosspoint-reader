@@ -19,7 +19,15 @@
 #include "FirmwareFlasher.h"
 
 namespace {
-constexpr char latestReleaseUrl[] = "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest";
+// Where "Check for updates" looks. Defaults to the upstream GitHub release; a
+// board env can point it at its own server with -DCROSSPOINT_OTA_RELEASE_URL.
+// The endpoint must answer with the GitHub release JSON shape:
+//   {"tag_name":"1.5.7","assets":[{"name":"firmware-<board>.bin",
+//     "browser_download_url":"https://.../firmware-<board>.bin","size":N}]}
+#ifndef CROSSPOINT_OTA_RELEASE_URL
+#define CROSSPOINT_OTA_RELEASE_URL "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest"
+#endif
+constexpr char latestReleaseUrl[] = CROSSPOINT_OTA_RELEASE_URL;
 }  // namespace
 
 OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
