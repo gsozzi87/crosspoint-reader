@@ -64,5 +64,8 @@ claves de Anthropic; habla con el Hono con un token propio.
 ## Convenciones
 
 - Commits: prefijo `ws397:`. Cambios al SDK en el submódulo, con su propio commit.
+- Los commits ws397 del SDK (perfil, waveform, battery, rtc, wake, halfrefresh) están exportados como `.patch` en
+  `docs/ws397/` (`git format-patch`); si al submódulo le falta alguno, `git am docs/ws397/NNNN-*.patch` dentro de
+  `freeink-sdk/`. Regenerarlos cuando se agregue un commit al SDK.
 - No tocar la lógica upstream fuera de lo necesario para la placa; preferir `case Board::WS397` sobre `#if`.
 - Antes de un release: `pio run -e ws397` limpio y probar en hardware.

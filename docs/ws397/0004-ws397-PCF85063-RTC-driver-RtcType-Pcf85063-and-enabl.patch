@@ -1,0 +1,151 @@
+From 4a1b4ee3fcc9b56337e662b84cdf24a472c4f0b9 Mon Sep 17 00:00:00 2001
+From: ws397-port <port@local>
+Date: Fri, 4 Sep 2026 17:17:54 +0000
+Subject: [PATCH 4/6] ws397: PCF85063 RTC driver (RtcType::Pcf85063) and enable
+ it on the board profile
+
+---
+ .../BoardConfig/include/BoardConfig.h         | 18 +++----
+ libs/hardware/Rtc/src/Rtc.cpp                 | 48 +++++++++++++++++++
+ 2 files changed, 57 insertions(+), 9 deletions(-)
+
+diff --git a/libs/hardware/BoardConfig/include/BoardConfig.h b/libs/hardware/BoardConfig/include/BoardConfig.h
+index 50c1440..72fced4 100644
+--- a/libs/hardware/BoardConfig/include/BoardConfig.h
++++ b/libs/hardware/BoardConfig/include/BoardConfig.h
+@@ -282,7 +282,8 @@
+ #ifndef FREEINK_CAP_RTC
+ #define FREEINK_CAP_RTC                                                                             \
+   (FREEINK_DEVICE_X3 || FREEINK_DEVICE_STICKY || FREEINK_DEVICE_X4PRO || FREEINK_DEVICE_X4CLASSIC || \
+-   FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_EEGO_A4)
++   FREEINK_DEVICE_PAPERMONO || FREEINK_DEVICE_PAPERS3 || FREEINK_DEVICE_LILYGO || FREEINK_DEVICE_EEGO_A4 || \
++   FREEINK_DEVICE_WS397)
+ #endif
+ #ifndef FREEINK_CAP_TEMP_HUMIDITY
+ #define FREEINK_CAP_TEMP_HUMIDITY (FREEINK_DEVICE_STICKY)
+@@ -632,7 +633,7 @@ struct MicConfig {
+   bool enableActiveHigh;
+ };
+ 
+-enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130 };
++enum class RtcType : uint8_t { None, Pcf8563, Ds3231, Rx8130, Pcf85063 };
+ enum class ImuType : uint8_t { None, Lsm6ds3, Qmi8658 };
+ 
+ // On-board I2C sensors sharing one bus (e.g. the Sticky's RTC + temp/humidity +
+@@ -642,7 +643,7 @@ struct SensorsConfig {
+   int8_t i2cSda;
+   int8_t i2cScl;
+   uint32_t i2cHz;
+-  uint8_t rtcAddr;           // PCF8563 = 0x51, DS3231 = 0x68; 0 = none
++  uint8_t rtcAddr;           // PCF8563 / PCF85063 = 0x51, DS3231 = 0x68; 0 = none
+   uint8_t tempHumidityAddr;  // SHT40 = 0x44; 0 = none
+   uint8_t imuAddr;           // LSM6DS3TR-C = 0x6A, QMI8658 = 0x6B/0x6A; 0 = none
+   uint8_t i2cBus = 0;        // 0 = Wire, 1 = Wire1 on multi-bus SoCs
+@@ -1763,9 +1764,8 @@ constexpr uint32_t cmax(uint32_t a, uint32_t b) { return a > b ? a : b; }
+ // 8ohm/1W speaker; PA enable on GPIO39. CAVEATS: GPIO39 doubles as the
+ // QMI8658 INT1 in the vendor schematic (amp-enable wins here; IMU runs
+ // polled). Mic is I2S via the ES8311 (not PDM), handled by the I2sEs8311
+-// capture path — MicConfig stays None. RTC is a PCF85063 (register map is NOT
+-// PCF8563-compatible); until an RtcType::Pcf85063 driver lands, the profile
+-// declares RtcType::None and deep-sleep timing uses the RTC timer.
++// capture path — MicConfig stays None. RTC is a PCF85063 at 0x51 (time block at
++// 0x04, OS flag in seconds bit7; INT on GPIO45 for a future alarm wake).
+ constexpr AudioConfig WS397_AUDIO = {AudioOutput::I2sEs8311,
+                                      14,              // bclk
+                                      47,              // lrclk / WS
+@@ -1809,9 +1809,9 @@ constexpr BoardProfile WS397 = {
+     // state from STATUS2. Vendor firmware drives it through XPowersLib's AXP2101.
+     {41, 42, 400000, 0x34, 0, 0, GaugeType::Axp2101},
+     {MicInput::None, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, true},
+-    // sda, scl, hz, rtcAddr(0: no Pcf85063 driver yet), tempHum(SHTC3@0x70: no
+-    // driver yet — SensorsConfig maps SHT40), imu QMI8658
+-    {41, 42, 400000, 0, 0, 0x6B, 0, RtcType::None, ImuType::Qmi8658},
++    // sda, scl, hz, rtcAddr PCF85063, tempHum(SHTC3@0x70: no driver yet —
++    // SensorsConfig maps SHT40), imu QMI8658
++    {41, 42, 400000, 0x51, 0, 0x6B, 0, RtcType::Pcf85063, ImuType::Qmi8658},
+     1.0f,
+ };
+ 
+diff --git a/libs/hardware/Rtc/src/Rtc.cpp b/libs/hardware/Rtc/src/Rtc.cpp
+index 1be67d3..8a92b32 100644
+--- a/libs/hardware/Rtc/src/Rtc.cpp
++++ b/libs/hardware/Rtc/src/Rtc.cpp
+@@ -19,6 +19,16 @@ constexpr uint8_t PCF8563_REG_CLKOUT = 0x0D;
+ constexpr uint8_t PCF8563_CLKOUT_DISABLED = 0x00;
+ constexpr uint8_t PCF8563_VL_FLAG = 0x80;  // seconds reg bit7: oscillator stopped / voltage-low
+ 
++// PCF85063 register map (Waveshare ePaper-3.97; confirmed against the vendor
++// pcf85063_bsp). Same field order as the PCF8563 but the time block starts at
++// 0x04 and there is no century bit; the OS (oscillator stop) flag is seconds bit7.
++constexpr uint8_t PCF85063_REG_CONTROL1 = 0x00;
++constexpr uint8_t PCF85063_REG_CONTROL2 = 0x01;
++constexpr uint8_t PCF85063_REG_TIME = 0x04;  // seconds, minutes, hours, days, weekdays, months, years
++constexpr uint8_t PCF85063_CONTROL1_STOP = 0x20;
++constexpr uint8_t PCF85063_CONTROL2_COF_OFF = 0x07;  // COF[2:0] = 111 disables CLKOUT
++constexpr uint8_t PCF85063_OS_FLAG = 0x80;
++
+ // DS3231 register map.
+ constexpr uint8_t DS3231_REG_TIME = 0x00;  // seconds, minutes, hours, day, date, month, year
+ constexpr uint8_t DS3231_REG_CONTROL = 0x0E;
+@@ -100,6 +110,19 @@ bool Rtc::begin() {
+     case BoardConfig::RtcType::Rx8130:
+       if (!readRegs(addr, RX8130_REG_CONTROL0, &status, 1)) return false;
+       break;
++    case BoardConfig::RtcType::Pcf85063: {
++      if (!readRegs(addr, PCF85063_REG_CONTROL1, &status, 1)) return false;
++      // Make sure the clock runs (clear STOP) and silence CLKOUT: the pin is
++      // unused here and toggling it at 32 kHz only costs battery.
++      if (status & PCF85063_CONTROL1_STOP) {
++        writeReg(addr, PCF85063_REG_CONTROL1, static_cast<uint8_t>(status & ~PCF85063_CONTROL1_STOP));
++      }
++      uint8_t ctrl2 = 0;
++      if (readRegs(addr, PCF85063_REG_CONTROL2, &ctrl2, 1) && (ctrl2 & 0x07) != PCF85063_CONTROL2_COF_OFF) {
++        writeReg(addr, PCF85063_REG_CONTROL2, static_cast<uint8_t>((ctrl2 & ~0x07) | PCF85063_CONTROL2_COF_OFF));
++      }
++      break;
++    }
+     case BoardConfig::RtcType::None:
+       return false;
+   }
+@@ -163,6 +186,18 @@ bool Rtc::now(DateTime& out) {
+       out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
+       return true;
+     }
++    case BoardConfig::RtcType::Pcf85063: {
++      if (!readRegs(addr, PCF85063_REG_TIME, raw, sizeof(raw))) return false;
++      if (raw[0] & PCF85063_OS_FLAG) return false;  // oscillator stopped -> time not trustworthy
++      out.second = bcdToDec(raw[0] & 0x7FU);
++      out.minute = bcdToDec(raw[1] & 0x7FU);
++      out.hour = bcdToDec(raw[2] & 0x3FU);
++      out.day = bcdToDec(raw[3] & 0x3FU);
++      out.weekday = bcdToDec(raw[4] & 0x07U);
++      out.month = bcdToDec(raw[5] & 0x1FU);
++      out.year = static_cast<uint16_t>(2000 + bcdToDec(raw[6]));
++      return true;
++    }
+     case BoardConfig::RtcType::None:
+       return false;
+   }
+@@ -177,6 +212,19 @@ bool Rtc::set(const DateTime& dt) {
+   ensureWire();
+   auto& wire = sensorWire();
+   if (s.rtcType == BoardConfig::RtcType::None) return false;
++  if (s.rtcType == BoardConfig::RtcType::Pcf85063) {
++    // Writing the seconds register with bit7 clear also clears the OS flag.
++    wire.beginTransmission(addr);
++    wire.write(PCF85063_REG_TIME);
++    wire.write(decToBcd(dt.second));
++    wire.write(decToBcd(dt.minute));
++    wire.write(decToBcd(dt.hour));
++    wire.write(decToBcd(dt.day));
++    wire.write(static_cast<uint8_t>(dt.weekday % 7u));
++    wire.write(decToBcd(dt.month));
++    wire.write(decToBcd(static_cast<uint8_t>(dt.year % 100)));
++    return wire.endTransmission() == 0;
++  }
+   if (s.rtcType == BoardConfig::RtcType::Rx8130) {
+     uint8_t control = 0;
+     if (!readRegs(addr, RX8130_REG_CONTROL0, &control, 1) ||
+-- 
+2.43.0
+
