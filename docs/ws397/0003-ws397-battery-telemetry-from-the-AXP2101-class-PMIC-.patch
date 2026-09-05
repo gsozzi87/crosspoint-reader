@@ -1,7 +1,7 @@
 From 94ed37b5871e75e14c4b03d53683142c02ef2e7b Mon Sep 17 00:00:00 2001
 From: ws397-port <port@local>
 Date: Fri, 4 Sep 2026 17:07:52 +0000
-Subject: [PATCH 3/6] ws397: battery telemetry from the AXP2101-class PMIC
+Subject: [PATCH 3/7] ws397: battery telemetry from the AXP2101-class PMIC
  (SoC, VBAT, charge state)
 
 ---

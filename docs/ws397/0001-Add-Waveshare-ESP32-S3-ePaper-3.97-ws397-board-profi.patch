@@ -1,7 +1,7 @@
 From a604e46097a5d2f6ae7e4fa9fb9185550effc941 Mon Sep 17 00:00:00 2001
 From: ws397-port <port@local>
 Date: Thu, 3 Sep 2026 21:29:15 +0000
-Subject: [PATCH 1/6] Add Waveshare ESP32-S3-ePaper-3.97 (ws397) board profile
+Subject: [PATCH 1/7] Add Waveshare ESP32-S3-ePaper-3.97 (ws397) board profile
 
 ---
  .../BoardConfig/include/BoardConfig.h         | 92 +++++++++++++++++--

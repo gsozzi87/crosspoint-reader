@@ -1,7 +1,7 @@
 From 4a1b4ee3fcc9b56337e662b84cdf24a472c4f0b9 Mon Sep 17 00:00:00 2001
 From: ws397-port <port@local>
 Date: Fri, 4 Sep 2026 17:17:54 +0000
-Subject: [PATCH 4/6] ws397: PCF85063 RTC driver (RtcType::Pcf85063) and enable
+Subject: [PATCH 4/7] ws397: PCF85063 RTC driver (RtcType::Pcf85063) and enable
  it on the board profile
 
 ---

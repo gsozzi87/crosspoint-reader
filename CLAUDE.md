@@ -15,8 +15,11 @@ batería vía PMIC, RTC, OTA desde servidor propio.
 Pendiente de verificar en hardware: refresco periódico de un solo destello (parche `halfrefresh`), porcentaje de
 batería real, hora tras apagado sin WiFi.
 
-Pendiente de implementar (Fase 0): validar audio (ES8311 mic + parlante), trackball + 2 botones vía PCF8574 en I²C
-(SDA 41 / SCL 42, INT GPIO44) cuando llegue el hardware.
+Pendiente de verificar en hardware: audio (Settings → System → Audio test: graba 3 s por el mic del ES8311 y
+los reproduce; captura por `AudioManager::beginCapture`, DIN GPIO21, MCLK-fed init del vendor).
+
+Pendiente de implementar (Fase 0): trackball + 2 botones vía PCF8574 en I²C (SDA 41 / SCL 42, INT GPIO44) cuando
+llegue el hardware.
 
 ## Build y release
 
@@ -45,8 +48,10 @@ Pendiente de implementar (Fase 0): validar audio (ES8311 mic + parlante), trackb
 - PMIC: AXP2101-compatible en 0x34 (IC_TYPE 0x4A). SoC en reg 0xA4, VBAT 0x34/0x35, estado en STATUS2. Solo se tocan
   bits de medición; rieles y corriente de carga se dejan como los configuró el PMIC.
 - RTC: PCF85063 en 0x51, bloque de hora en 0x04, OS flag = seconds bit7. INT en GPIO45 (futuro wake por alarma).
-- Audio: ES8311 en 0x18 (I²S bclk 14, ws 47, dout 48, mclk 13), amp enable GPIO39 (compartido con IMU INT1;
-  IMU va por polling). Mic es I²S vía ES8311, no PDM.
+- Audio: ES8311 en 0x18 (I²S bclk 14, ws 47, dout 48, din 21, mclk 13), amp enable GPIO39 (compartido con IMU
+  INT1; IMU va por polling). Mic es analógico al ES8311 (MIC1), capturado por el ADC del códec sobre el mismo puerto
+  I²S (full duplex, una sola tasa para reproducir y grabar); no PDM. Init del códec = vendor `es8311_init` con MCLK
+  desde el pin (reg01 0x3F), volumen 0xB2.
 - Sensores: SHTC3 en 0x70 (sin driver aún), QMI8658 en 0x6B.
 
 ## Roadmap acordado
