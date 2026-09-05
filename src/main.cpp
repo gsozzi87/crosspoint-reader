@@ -17,6 +17,7 @@
 #include <Logging.h>
 #include <SPI.h>
 #include <WiFi.h>
+#include <ServerCredentialStore.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #if FREEINK_CAP_TOUCH
@@ -427,6 +428,7 @@ void setup() {
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
+  SERVER_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);

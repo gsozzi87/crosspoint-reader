@@ -24,6 +24,7 @@
 #include "OtaUpdateActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
+#include "ServerTestActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
@@ -101,6 +102,10 @@ void SettingsActivity::rebuildSettingsLists() {
   // Speaker/mic diagnostic: only boards with an audio path (ws397: ES8311).
   if (BoardConfig::hasAudio()) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_AUDIO_TEST, SettingAction::AudioTest));
+  }
+  // Own-server diagnostic (ServerClient): reachability, device token, offline queue.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_SERVER_TEST, SettingAction::ServerTest));
   }
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
@@ -351,6 +356,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::AudioTest:
         startActivityForResult(std::make_unique<AudioTestActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::ServerTest:
+        startActivityForResult(std::make_unique<ServerTestActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::CheckForUpdates:
         startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
