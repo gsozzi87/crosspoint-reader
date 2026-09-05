@@ -262,8 +262,10 @@ void AskBookActivity::loop() {
   switch (state) {
     case PICK:
       if (questionPopup.handleInput(mappedInput, [this] { requestUpdate(); })) {
-        // Back dismisses the popup without a selection: leave to the reader.
-        if (!questionPopup.isActive()) returnToReader();
+        // The popup goes inactive both on a selection (which already moved us
+        // to another state through onQuestionPicked) and on Back. Only the
+        // latter, still in PICK, means "leave to the reader".
+        if (state == PICK && !questionPopup.isActive()) returnToReader();
       }
       break;
     case RECORDING:
