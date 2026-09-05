@@ -3,6 +3,8 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
+
+#include <vector>
 #include <Serialization.h>
 
 #include "Epub/css/CssParser.h"
@@ -811,6 +813,42 @@ std::string Section::getTextFromSectionFile() {
     }
   }
   return fullText;
+}
+
+std::string Section::getTextUpToPage(int lastPage, size_t maxBytes) {
+  if (lastPage < 0) return "";
+  if (lastPage >= pageCount) lastPage = pageCount - 1;
+  // Walk backwards so the budget is spent on the most recent pages, then
+  // stitch the kept pages back in reading order.
+  std::vector<std::string> pages;
+  size_t used = 0;
+  for (int p = lastPage; p >= 0; --p) {
+    std::string pageText;
+    auto page = loadPage(p);
+    if (!page) continue;
+    for (const auto& el : page->elements) {
+      if (el->getTag() != TAG_PageLine) continue;
+      const auto& line = static_cast<const PageLine&>(*el);
+      if (!line.getBlock()) continue;
+      const auto& block = *line.getBlock();
+      for (uint16_t i = 0; i < block.wordCount(); i++) {
+        if (!pageText.empty()) pageText += " ";
+        pageText += block.wordText(i);
+      }
+    }
+    if (pageText.empty()) continue;
+    if (used + pageText.size() + 2 > maxBytes && !pages.empty()) break;
+    used += pageText.size() + 2;
+    pages.push_back(std::move(pageText));
+  }
+  std::string text;
+  text.reserve(used);
+  for (auto it = pages.rbegin(); it != pages.rend(); ++it) {
+    if (!text.empty()) text += "\n\n";
+    text += *it;
+  }
+  if (text.size() > maxBytes) text.erase(0, text.size() - maxBytes);
+  return text;
 }
 
 std::optional<uint16_t> Section::getCachedPageCount() const {

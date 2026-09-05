@@ -151,6 +151,9 @@ class EpubReaderActivity final : public ReaderActivity {
   void activateMoreRow(int row);
   void openDictionaryWordSelect();
   bool launchKOReaderSync();
+  // "Ask the book": hands the chapter text read so far to AskBookActivity,
+  // which replaces the reader (network needs the book's heap).
+  void launchAskBook();
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void loadCachedBookmarks();

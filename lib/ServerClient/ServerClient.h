@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 
 // HTTP client for the device's own server (ws397 Hono backend). One place for
@@ -46,7 +47,9 @@ class ServerClient {
   // /firmware/latest, useful to tell "server down" from "token wrong").
   Result get(const std::string& path, Response& out, bool auth = true);
   // POST a JSON body (already serialized) to base+path with the token.
-  Result postJson(const std::string& path, const std::string& json, Response& out);
+  // timeoutMs = 0 keeps the default (20 s); slow endpoints (LLM answers) pass
+  // their own, per socket operation.
+  Result postJson(const std::string& path, const std::string& json, Response& out, uint32_t timeoutMs = 0);
   // postJson, and on NoNetwork/Transport the request is queued instead (Queued).
   Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr);
 
@@ -65,9 +68,10 @@ class ServerClient {
 
  private:
   ServerClient() = default;
-  Result request(const char* method, const std::string& path, const std::string* json, bool auth, Response& out);
+  Result request(const char* method, const std::string& path, const std::string* json, bool auth, Response& out,
+                 uint32_t timeoutMs = 0);
   Result requestOnce(const char* method, const std::string& url, const std::string* json, bool auth,
-                     const std::string& requestId, Response& out);
+                     const std::string& requestId, Response& out, uint32_t timeoutMs = 0);
   static std::string newRequestId();
 };
 

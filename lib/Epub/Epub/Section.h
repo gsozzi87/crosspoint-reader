@@ -119,6 +119,11 @@ class Section {
   std::unique_ptr<Page> loadPage(int page);
 
   std::string getTextFromSectionFile();
+  // Plain text of pages 0..lastPage (inclusive), pages separated by a blank
+  // line, words joined by spaces. Keeps at most maxBytes, dropping the OLDEST
+  // pages first so the text the reader is on always survives. Same per-page
+  // cost as getTextFromSectionFile(); pages are freed as they are consumed.
+  std::string getTextUpToPage(int lastPage, size_t maxBytes);
 
   // Resolve an anchor from the in-progress build first, then the on-disk anchor map
   // (covers finalized sections and partials from a previous session).
