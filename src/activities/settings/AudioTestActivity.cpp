@@ -12,20 +12,11 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/WavHeader.h"
 
 namespace {
 constexpr const char* TAG = "AUDIO_TEST";
 
-void putLE32(uint8_t* p, uint32_t v) {
-  p[0] = v & 0xFF;
-  p[1] = (v >> 8) & 0xFF;
-  p[2] = (v >> 16) & 0xFF;
-  p[3] = (v >> 24) & 0xFF;
-}
-void putLE16(uint8_t* p, uint16_t v) {
-  p[0] = v & 0xFF;
-  p[1] = (v >> 8) & 0xFF;
-}
 }  // namespace
 
 void AudioTestActivity::onEnter() {
@@ -130,23 +121,7 @@ void AudioTestActivity::finishTake() {
   requestUpdate();
 }
 
-void AudioTestActivity::writeWavHeader() {
-  const uint32_t dataBytes = SAMPLES * sizeof(int16_t);
-  uint8_t* h = wav;
-  memcpy(h, "RIFF", 4);
-  putLE32(h + 4, 36 + dataBytes);
-  memcpy(h + 8, "WAVE", 4);
-  memcpy(h + 12, "fmt ", 4);
-  putLE32(h + 16, 16);          // fmt chunk size
-  putLE16(h + 20, 1);           // PCM
-  putLE16(h + 22, 1);           // mono
-  putLE32(h + 24, SAMPLE_RATE);
-  putLE32(h + 28, SAMPLE_RATE * sizeof(int16_t));  // byte rate
-  putLE16(h + 32, sizeof(int16_t));                // block align
-  putLE16(h + 34, 16);                             // bits per sample
-  memcpy(h + 36, "data", 4);
-  putLE32(h + 40, dataBytes);
-}
+void AudioTestActivity::writeWavHeader() { wav::writeHeader(wav, SAMPLE_RATE, SAMPLES * sizeof(int16_t)); }
 
 // 440 Hz at -12 dBFS with a short fade at both ends, so the speaker path can
 // be checked on boards without a codec mic.

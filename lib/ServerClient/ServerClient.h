@@ -50,6 +50,9 @@ class ServerClient {
   // timeoutMs = 0 keeps the default (20 s); slow endpoints (LLM answers) pass
   // their own, per socket operation.
   Result postJson(const std::string& path, const std::string& json, Response& out, uint32_t timeoutMs = 0);
+  // POST a raw body (e.g. audio/wav) with the token. Retries like postJson.
+  Result postBytes(const std::string& path, const char* contentType, const uint8_t* data, size_t len,
+                   Response& out, uint32_t timeoutMs = 0);
   // postJson, and on NoNetwork/Transport the request is queued instead (Queued).
   Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr);
 
@@ -68,9 +71,14 @@ class ServerClient {
 
  private:
   ServerClient() = default;
-  Result request(const char* method, const std::string& path, const std::string* json, bool auth, Response& out,
+  struct Body {
+    const char* contentType = nullptr;
+    const uint8_t* data = nullptr;
+    size_t len = 0;
+  };
+  Result request(const char* method, const std::string& path, const Body* body, bool auth, Response& out,
                  uint32_t timeoutMs = 0);
-  Result requestOnce(const char* method, const std::string& url, const std::string* json, bool auth,
+  Result requestOnce(const char* method, const std::string& url, const Body* body, bool auth,
                      const std::string& requestId, Response& out, uint32_t timeoutMs = 0);
   static std::string newRequestId();
 };
