@@ -22,7 +22,11 @@ Pendiente de implementar (Fase 0): validar audio (ES8311 mic + parlante), trackb
 
 - `pio run -e ws397` — env en `platformio.ini`. Versión = `1.5.<WS397_BUILD>-ws397` desde `include/ws397_version.h`
   (NO ponerla en un -D flag: fuerza rebuild completo).
-- `.\release.ps1` — bump del build, compila, sube el .bin al servidor. `-Usb COMx` flashea por cable.
+- `.\release.ps1` (Windows) o `./release.sh` (Linux / Claude Code web) — bump del build, compila, sube el .bin al
+  servidor. Solo el .ps1 acepta `-Usb COMx` para flashear por cable; en la nube el aparato se actualiza por OTA.
+- Después de cada release, commitear `include/ws397_version.h` y `.ws397-build` para que el siguiente build
+  parta del número correcto.
+- En la nube no hay hardware: pedirle al usuario que pruebe en el aparato y reporte.
 - OTA: el aparato consulta `WS397_OTA_URL` (`https://paper-esp32.up.railway.app/firmware/latest`, JSON con la forma
   de un release de GitHub). Comparación estricta major.minor.patch. Servidor: repo `ws397-server` (Bun + Hono,
   Railway, volumen en `/data`).
