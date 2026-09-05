@@ -28,6 +28,7 @@
 #include "EpubReaderPercentSelectionActivity.h"
 #include "EpubReaderUtils.h"
 #include "KOReaderCredentialStore.h"
+#include "AskBookActivity.h"
 #include "KOReaderSyncActivity.h"
 #include "MappedInputManager.h"
 #include "ProgressMapper.h"
@@ -850,6 +851,10 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
       openDictionaryWordSelect();
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::ASK_BOOK: {
+      launchAskBook();
+      break;
+    }
     case EpubReaderMenuActivity::MenuAction::DISPLAY_QR: {
       if (section && section->currentPage >= 0 && section->currentPage < section->pageCount) {
         std::string fullText = section->getTextFromSectionFile();
@@ -966,6 +971,46 @@ bool EpubReaderActivity::launchKOReaderSync() {
       renderer, mappedInput, savedEpubPath, currentSpineIndex, currentPage, totalPages, std::move(localKoPos),
       std::move(localChapterName), paragraphIndex));
   return true;
+}
+
+void EpubReaderActivity::launchAskBook() {
+  // Everything the question needs is gathered while the book is still open;
+  // then the reader is torn down like launchKOReaderSync() so WiFi + TLS get
+  // the heap.
+  const int currentPage = section ? section->currentPage : nextPageNumber;
+  const int totalPages = section ? section->estimatedTotalPages() : cachedChapterTotalPageCount;
+  const std::string savedEpubPath = epub->getPath();
+  const std::string bookTitle = epub->getTitle();
+  const std::string chapterTitle = currentChapterTitle();
+  std::string contextText;
+  std::string pageText;
+  if (section && currentPage >= 0 && currentPage < section->pageCount) {
+    contextText = section->getTextUpToPage(currentPage, AskBookActivity::MAX_CONTEXT_BYTES);
+    pageText = section->getTextFromSectionFile();
+  }
+
+  if (!saveProgress(currentSpineIndex, currentPage, totalPages)) {
+    LOG_ERR("ASK", "Aborting: current progress could not be saved");
+    pendingSyncSaveError = true;
+    requestUpdate();
+    return;
+  }
+
+  LOG_DBG("ASK", "Releasing epub (heap before: %u, context %u bytes)", (unsigned)ESP.getFreeHeap(),
+          (unsigned)contextText.size());
+  {
+    RenderLock lock;
+    if (section) {
+      nextPageNumber = section->currentPage;
+    }
+    ImageBlock::setExtractor(nullptr, nullptr);
+    section.reset();
+    epub.reset();
+  }
+
+  activityManager.replaceActivity(std::make_unique<AskBookActivity>(renderer, mappedInput, savedEpubPath, bookTitle,
+                                                                    chapterTitle, std::move(contextText),
+                                                                    std::move(pageText)));
 }
 
 void EpubReaderActivity::applyInitialOrientation() {

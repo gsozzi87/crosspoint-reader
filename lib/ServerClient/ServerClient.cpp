@@ -57,12 +57,13 @@ std::string ServerClient::newRequestId() {
 }
 
 ServerClient::Result ServerClient::requestOnce(const char* method, const std::string& url, const std::string* json,
-                                               bool auth, const std::string& requestId, Response& out) {
+                                               bool auth, const std::string& requestId, Response& out,
+                                               uint32_t timeoutMs) {
   out.status = 0;
   out.body.clear();
 #if defined(FREEINK_NET_WOLFSSL)
   freeink::SecureHttpClient http;
-  http.setTimeout(TIMEOUT_MS);
+  http.setTimeout(timeoutMs ? timeoutMs : TIMEOUT_MS);
   // Same trust model as HttpDownloader's wolfSSL path.
   http.setInsecure();
   http.setUserAgent("CrossPoint-ESP32-" CROSSPOINT_VERSION);
@@ -89,6 +90,7 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   (void)json;
   (void)auth;
   (void)requestId;
+  (void)timeoutMs;
   LOG_ERR(TAG, "no TLS client in this build");
   return Result::Transport;
 #endif
@@ -99,7 +101,7 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
 }
 
 ServerClient::Result ServerClient::request(const char* method, const std::string& path, const std::string* json,
-                                           bool auth, Response& out) {
+                                           bool auth, Response& out, uint32_t timeoutMs) {
   if (!networkUp()) return Result::NoNetwork;
   const std::string base = SERVER_STORE.getBaseUrl();
   if (base.empty()) return Result::NoServer;
@@ -116,7 +118,7 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
       delay(BACKOFF_MS[attempt - 1]);
       if (!networkUp()) return Result::NoNetwork;
     }
-    result = requestOnce(method, url, json, auth, requestId, out);
+    result = requestOnce(method, url, json, auth, requestId, out, timeoutMs);
     if (!retryable(out.status)) break;
   }
   if (result != Result::Ok) {
@@ -129,8 +131,9 @@ ServerClient::Result ServerClient::get(const std::string& path, Response& out, b
   return request("GET", path, nullptr, auth, out);
 }
 
-ServerClient::Result ServerClient::postJson(const std::string& path, const std::string& json, Response& out) {
-  return request("POST", path, &json, true, out);
+ServerClient::Result ServerClient::postJson(const std::string& path, const std::string& json, Response& out,
+                                            uint32_t timeoutMs) {
+  return request("POST", path, &json, true, out, timeoutMs);
 }
 
 ServerClient::Result ServerClient::postOrQueue(const std::string& path, const std::string& json, Response* out) {

@@ -70,6 +70,20 @@ llegue el hardware.
   token inválido → 401. Los endpoints de features van bajo `/api/…` con el mismo Bearer y pueden usar
   `X-Request-Id` para deduplicar reintentos.
 
+## Preguntarle al libro (Fase 1)
+
+- Menú del lector → "Preguntarle al libro" (`MenuAction::ASK_BOOK`). `EpubReaderActivity::launchAskBook()` junta el
+  texto leído hasta la página actual (`Section::getTextUpToPage`, últimas páginas, máx. 24 KB) y la página actual,
+  guarda el progreso, suelta el libro y reemplaza el lector por `AskBookActivity` (mismo esquema que KOReader sync:
+  WiFi + TLS necesitan el heap del libro; al salir `silentRestartToReader()`).
+- `AskBookActivity`: popup con preguntas predefinidas + "Escribir una pregunta" (teclado), WiFi, `POST /api/ask`
+  (timeout 90 s) con `{book, chapter, text, page, question, lang}`, y la respuesta en `DictionaryDefinitionActivity`
+  (paginada). Back en el popup vuelve al lector.
+- Servidor: `src/ask.ts` en el Hono (`app.route("/api/ask", ask)` dentro de `api`), `@anthropic-ai/sdk`,
+  `ANTHROPIC_API_KEY` en Railway, modelo `claude-opus-5` (`ASK_MODEL` para cambiarlo), effort medium, texto del
+  capítulo en el system prompt con `cache_control` (las preguntas siguientes sobre el mismo capítulo reusan el
+  caché), sin spoilers, respuestas cortas en texto plano. Devuelve `{ok, answer, model, usage}`.
+
 ## Roadmap acordado
 
 0. Hardware: audio, trackball/botones, deep sleep medido.
