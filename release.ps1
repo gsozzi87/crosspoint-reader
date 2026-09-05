@@ -14,7 +14,10 @@ if (-not $env:WS397_OTA_URL)   { throw "Falta WS397_OTA_URL (ver comentario arri
 $buildFile = ".ws397-build"
 $build = if (Test-Path $buildFile) { [int](Get-Content $buildFile) + 1 } else { 1 }
 $version = "1.5.$build"
-$env:WS397_BUILD = "$build"
+# El número de build vive en include/ws397_version.h (no en un -D flag): así solo
+# recompilan los 8 archivos que lo incluyen y no el árbol entero.
+$hdr = "include\ws397_version.h"
+(Get-Content $hdr -Raw) -replace '#define WS397_BUILD \d+', "#define WS397_BUILD $build" | Set-Content $hdr -NoNewline
 
 Write-Host "Compilando $version-ws397..." -ForegroundColor Cyan
 python -m platformio run -e ws397
