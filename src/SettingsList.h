@@ -14,6 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
+#include "ServerCredentialStore.h"
 #include "ReaderFontSizes.h"
 #include "activities/settings/SettingsActivity.h"
 #include "util/DictionaryRegistry.h"
@@ -365,6 +366,23 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
         SettingInfo::Value(StrId::STR_WARMTH, &CrossPointSettings::frontlightWarmth, {0, 100, 5}, "frontlightWarmth"),
 #endif
         SettingInfo::Toggle(StrId::STR_FRONTLIGHT, &CrossPointSettings::frontlightOn, "frontlightOn"),
+
+        // --- Own server (web-only, uses ServerCredentialStore): the ws397 Hono
+        // backend every server-backed feature talks to through ServerClient ---
+        SettingInfo::DynamicString(
+            StrId::STR_SERVER_URL, [] { return SERVER_STORE.getServerUrl(); },
+            [](const std::string& v) {
+              SERVER_STORE.setServerUrl(v);
+              SERVER_STORE.saveToFile();
+            },
+            "srvUrl", StrId::STR_SERVER),
+        SettingInfo::DynamicString(
+            StrId::STR_SERVER_TOKEN, [] { return SERVER_STORE.getToken(); },
+            [](const std::string& v) {
+              SERVER_STORE.setToken(v);
+              SERVER_STORE.saveToFile();
+            },
+            "srvToken", StrId::STR_SERVER),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(

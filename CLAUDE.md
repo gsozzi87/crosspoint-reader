@@ -15,7 +15,8 @@ batería vía PMIC, RTC, OTA desde servidor propio.
 Pendiente de verificar en hardware: refresco periódico de un solo destello (parche `halfrefresh`), porcentaje de
 batería real, hora tras apagado sin WiFi.
 
-Pendiente de verificar en hardware: audio (Settings → System → Audio test: graba 3 s por el mic del ES8311 y
+Audio verificado en hardware (1.5.9): graba y reproduce bien, se escucha bajo. Pendiente: control de volumen (DAC reg 0x32,
+hoy fijo en 0xB2 = vendor 70 %; PGA del mic reg 0x14). Detalle: Settings → System → Audio test graba 3 s por el mic del ES8311 y
 los reproduce; captura por `AudioManager::beginCapture`, DIN GPIO21, MCLK-fed init del vendor).
 
 Pendiente de implementar (Fase 0): trackball + 2 botones vía PCF8574 en I²C (SDA 41 / SCL 42, INT GPIO44) cuando
@@ -53,6 +54,21 @@ llegue el hardware.
   I²S (full duplex, una sola tasa para reproducir y grabar); no PDM. Init del códec = vendor `es8311_init` con MCLK
   desde el pin (reg01 0x3F), volumen 0xB2.
 - Sensores: SHTC3 en 0x70 (sin driver aún), QMI8658 en 0x6B.
+
+## Servidor propio (Fase 1, cliente HTTP común)
+
+- `lib/ServerClient/`: `ServerCredentialStore` (`/.crosspoint/server.json`: URL del servidor y token del aparato,
+  editables en la web UI → Servidor; URL vacía = origen de `WS397_OTA_URL`) y `ServerClient` (singleton
+  `SERVER_CLIENT`): `get`/`postJson`/`postOrQueue` con `Authorization: Bearer <token>`, JSON, 3 intentos con
+  backoff (500/1500 ms) ante fallo de transporte, 429 y 5xx, header `X-Request-Id` estable entre reintentos.
+- Cola offline: `/.crosspoint/server-queue.json` (máx. 50 POSTs, 4 KB c/u); `flushQueue()` la reproduce en orden
+  con WiFi arriba y descarta lo que el servidor rechaza con 4xx. Las llamadas son síncronas: van desde una
+  Activity de red (WiFi solo está arriba ahí) o desde una tarea propia, nunca desde el render.
+- Diagnóstico: Settings → System → Prueba de servidor (`ServerTestActivity`): `/firmware/latest` sin token,
+  `/api/ping` con token, y vacía la cola.
+- Contrato que el Hono tiene que cumplir: `GET /api/ping` con Bearer válido → 200 `{"ok":true}`; sin token o
+  token inválido → 401. Los endpoints de features van bajo `/api/…` con el mismo Bearer y pueden usar
+  `X-Request-Id` para deduplicar reintentos.
 
 ## Roadmap acordado
 
