@@ -87,7 +87,8 @@ llegue el hardware.
 - Servidor: `src/api.ts` monta `ask` y `transcribe` bajo `/api` (heredan el Bearer). `src/ask.ts`:
   `@anthropic-ai/sdk`, `ANTHROPIC_API_KEY` en Railway, modelo `claude-haiku-4-5` por defecto (`ASK_MODEL` para
   cambiarlo; el código no usa parámetros específicos de modelo), texto del capítulo en el system prompt con
-  `cache_control`, sin spoilers, respuestas cortas en texto plano. Devuelve `{ok, answer, model, usage}`.
+  `cache_control`; responde con lo leído y, si no alcanza, con conocimiento general aclarándolo; nunca adelanta
+  trama (sin spoilers); respuestas cortas en texto plano. Devuelve `{ok, answer, model, usage}`.
   `src/transcribe.ts`: STT por un endpoint compatible con OpenAI (`STT_API_KEY` o `OPENAI_API_KEY`, `STT_BASE_URL`
   default `https://api.openai.com/v1`, `STT_MODEL` default `whisper-1`; Groq sirve con
   `https://api.groq.com/openai/v1` + `whisper-large-v3-turbo`). Devuelve `{ok, text}`.
