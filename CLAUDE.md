@@ -7,6 +7,10 @@ RTC PCF85063, IMU QMI8658, SD 4-bit). El submódulo `freeink-sdk/` apunta al for
 Idioma con el usuario: español rioplatense/mexicano, informal y directo. Respuestas cortas. Él prueba en hardware
 y devuelve correcciones puntuales; no pedir que especifique todo de antemano.
 
+REGLA FIJA: el aparato NUNCA tiene entrada por teclado (ni en pantalla ni físico). Toda pregunta o texto que el
+usuario tenga que ingresar entra por voz (mic → servidor → transcripción). Las respuestas pueden ser texto en
+pantalla. No usar `KeyboardEntryActivity` en nada nuestro.
+
 ## Estado (2026-09-04)
 
 Funciona: boot, pantalla (orientación y polaridad correctas), botones, SD, WiFi, web UI, deep sleep,
@@ -76,13 +80,17 @@ llegue el hardware.
   texto leído hasta la página actual (`Section::getTextUpToPage`, últimas páginas, máx. 24 KB) y la página actual,
   guarda el progreso, suelta el libro y reemplaza el lector por `AskBookActivity` (mismo esquema que KOReader sync:
   WiFi + TLS necesitan el heap del libro; al salir `silentRestartToReader()`).
-- `AskBookActivity`: popup con preguntas predefinidas + "Escribir una pregunta" (teclado), WiFi, `POST /api/ask`
-  (timeout 90 s) con `{book, chapter, text, page, question, lang}`, y la respuesta en `DictionaryDefinitionActivity`
-  (paginada). Back en el popup vuelve al lector.
-- Servidor: `src/ask.ts` en el Hono (`app.route("/api/ask", ask)` dentro de `api`), `@anthropic-ai/sdk`,
-  `ANTHROPIC_API_KEY` en Railway, modelo `claude-opus-5` (`ASK_MODEL` para cambiarlo), effort medium, texto del
-  capítulo en el system prompt con `cache_control` (las preguntas siguientes sobre el mismo capítulo reusan el
-  caché), sin spoilers, respuestas cortas en texto plano. Devuelve `{ok, answer, model, usage}`.
+- `AskBookActivity`: popup con preguntas predefinidas + "Preguntar por voz" (graba por el mic hasta 10 s, OK
+  termina; WAV 16 kHz mono en PSRAM), WiFi, `POST /api/transcribe` (body `audio/wav`, timeout 60 s) → texto de la
+  pregunta, `POST /api/ask` (timeout 90 s) con `{book, chapter, text, page, question, lang}`, y la respuesta en
+  `DictionaryDefinitionActivity` (paginada, la pregunta transcripta como título). Back en el popup vuelve al lector.
+- Servidor: `src/api.ts` monta `ask` y `transcribe` bajo `/api` (heredan el Bearer). `src/ask.ts`:
+  `@anthropic-ai/sdk`, `ANTHROPIC_API_KEY` en Railway, modelo `claude-haiku-4-5` por defecto (`ASK_MODEL` para
+  cambiarlo; el código no usa parámetros específicos de modelo), texto del capítulo en el system prompt con
+  `cache_control`, sin spoilers, respuestas cortas en texto plano. Devuelve `{ok, answer, model, usage}`.
+  `src/transcribe.ts`: STT por un endpoint compatible con OpenAI (`STT_API_KEY` o `OPENAI_API_KEY`, `STT_BASE_URL`
+  default `https://api.openai.com/v1`, `STT_MODEL` default `whisper-1`; Groq sirve con
+  `https://api.groq.com/openai/v1` + `whisper-large-v3-turbo`). Devuelve `{ok, text}`.
 
 ## Roadmap acordado
 

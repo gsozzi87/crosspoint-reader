@@ -56,7 +56,7 @@ std::string ServerClient::newRequestId() {
   return buf;
 }
 
-ServerClient::Result ServerClient::requestOnce(const char* method, const std::string& url, const std::string* json,
+ServerClient::Result ServerClient::requestOnce(const char* method, const std::string& url, const Body* body,
                                                bool auth, const std::string& requestId, Response& out,
                                                uint32_t timeoutMs) {
   out.status = 0;
@@ -75,9 +75,9 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   http.addHeader("X-Request-Id", requestId);
   if (auth) http.addHeader("Authorization", "Bearer " + SERVER_STORE.getToken());
   int status;
-  if (json) {
-    http.addHeader("Content-Type", "application/json");
-    status = http.sendRequest(method, *json);
+  if (body && body->data) {
+    http.addHeader("Content-Type", body->contentType ? body->contentType : "application/octet-stream");
+    status = http.sendRequest(method, body->data, body->len);
   } else {
     status = http.sendRequest(method, nullptr, 0);
   }
@@ -87,7 +87,7 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
 #else
   (void)method;
   (void)url;
-  (void)json;
+  (void)body;
   (void)auth;
   (void)requestId;
   (void)timeoutMs;
@@ -100,7 +100,7 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   return Result::HttpError;
 }
 
-ServerClient::Result ServerClient::request(const char* method, const std::string& path, const std::string* json,
+ServerClient::Result ServerClient::request(const char* method, const std::string& path, const Body* body,
                                            bool auth, Response& out, uint32_t timeoutMs) {
   if (!networkUp()) return Result::NoNetwork;
   const std::string base = SERVER_STORE.getBaseUrl();
@@ -118,7 +118,7 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
       delay(BACKOFF_MS[attempt - 1]);
       if (!networkUp()) return Result::NoNetwork;
     }
-    result = requestOnce(method, url, json, auth, requestId, out, timeoutMs);
+    result = requestOnce(method, url, body, auth, requestId, out, timeoutMs);
     if (!retryable(out.status)) break;
   }
   if (result != Result::Ok) {
@@ -133,7 +133,14 @@ ServerClient::Result ServerClient::get(const std::string& path, Response& out, b
 
 ServerClient::Result ServerClient::postJson(const std::string& path, const std::string& json, Response& out,
                                             uint32_t timeoutMs) {
-  return request("POST", path, &json, true, out, timeoutMs);
+  const Body body{"application/json", reinterpret_cast<const uint8_t*>(json.data()), json.size()};
+  return request("POST", path, &body, true, out, timeoutMs);
+}
+
+ServerClient::Result ServerClient::postBytes(const std::string& path, const char* contentType, const uint8_t* data,
+                                             size_t len, Response& out, uint32_t timeoutMs) {
+  const Body body{contentType, data, len};
+  return request("POST", path, &body, true, out, timeoutMs);
 }
 
 ServerClient::Result ServerClient::postOrQueue(const std::string& path, const std::string& json, Response* out) {
@@ -204,7 +211,8 @@ int ServerClient::flushQueue(size_t maxItems) {
         r = Result::NoNetwork;
         break;
       }
-      r = requestOnce("POST", joinUrl(base, path), &body, true, id.empty() ? newRequestId() : id, resp);
+      const Body payload{"application/json", reinterpret_cast<const uint8_t*>(body.data()), body.size()};
+      r = requestOnce("POST", joinUrl(base, path), &payload, true, id.empty() ? newRequestId() : id, resp);
       if (!retryable(resp.status)) break;
     }
     if (r == Result::Ok || r == Result::HttpError || r == Result::Unauthorized) {
