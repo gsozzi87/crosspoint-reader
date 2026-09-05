@@ -1,7 +1,7 @@
 From 736cc778e7a454d68bf2f860b415f003a7969718 Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 5 Sep 2026 15:42:32 +0000
-Subject: [PATCH 6/6] ws397: single-cycle HALF refresh (vendor Fast: 0x1A=0x6A,
+Subject: [PATCH 6/7] ws397: single-cycle HALF refresh (vendor Fast: 0x1A=0x6A,
  0x22=0xD7) on top of the Sticky sequences
 
 The Sticky config has no halfSeqOverride, so every HALF on the ws397 (periodic

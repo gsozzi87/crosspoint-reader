@@ -1,7 +1,7 @@
 From ca9d97d58ef2b8a62c20a94a409f04dd9ac19840 Mon Sep 17 00:00:00 2001
 From: ws397-port <port@local>
 Date: Fri, 4 Sep 2026 16:34:15 +0000
-Subject: [PATCH 2/6] ws397: use the Sticky/vendor SSD1677 waveform sequences
+Subject: [PATCH 2/7] ws397: use the Sticky/vendor SSD1677 waveform sequences
  (F7/FF, border 01/80)
 
 ---

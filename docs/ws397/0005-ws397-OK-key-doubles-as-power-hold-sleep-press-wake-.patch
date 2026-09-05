@@ -1,7 +1,7 @@
 From 00e69c20991490fa48eb473c3b420adcd29502b4 Mon Sep 17 00:00:00 2001
 From: ws397-port <port@local>
 Date: Fri, 4 Sep 2026 18:28:57 +0000
-Subject: [PATCH 5/6] ws397: OK key doubles as power (hold = sleep, press =
+Subject: [PATCH 5/7] ws397: OK key doubles as power (hold = sleep, press =
  wake on GPIO5); keep BOOT as BACK
 
 ---
