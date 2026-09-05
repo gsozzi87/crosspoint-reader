@@ -27,6 +27,9 @@ Pendiente de implementar (Fase 0): validar audio (ES8311 mic + parlante), trackb
 - Después de cada release, commitear `include/ws397_version.h` y `.ws397-build` para que el siguiente build
   parta del número correcto.
 - En la nube no hay hardware: pedirle al usuario que pruebe en el aparato y reporte.
+- En la nube (Claude Code web): `setup-cloud.sh` trae los workarounds del proxy (registro de PlatformIO y
+  `github.com/*/archive` bloqueados; SCons y las libs se traen de PyPI/GitHub). Sin `WS397_OTA_URL` y
+  `WS397_OTA_TOKEN` en el environment no hay release: el .bin queda con la URL de OTA vacía y no se puede subir.
 - OTA: el aparato consulta `WS397_OTA_URL` (`https://paper-esp32.up.railway.app/firmware/latest`, JSON con la forma
   de un release de GitHub). Comparación estricta major.minor.patch. Servidor: repo `ws397-server` (Bun + Hono,
   Railway, volumen en `/data`).
@@ -64,5 +67,8 @@ claves de Anthropic; habla con el Hono con un token propio.
 ## Convenciones
 
 - Commits: prefijo `ws397:`. Cambios al SDK en el submódulo, con su propio commit.
+- Los commits ws397 del SDK (perfil, waveform, battery, rtc, wake, halfrefresh) están exportados como `.patch` en
+  `docs/ws397/` (`git format-patch`); si al submódulo le falta alguno, `git am docs/ws397/NNNN-*.patch` dentro de
+  `freeink-sdk/`. Regenerarlos cuando se agregue un commit al SDK.
 - No tocar la lógica upstream fuera de lo necesario para la placa; preferir `case Board::WS397` sobre `#if`.
 - Antes de un release: `pio run -e ws397` limpio y probar en hardware.
