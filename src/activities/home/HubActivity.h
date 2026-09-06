@@ -23,7 +23,7 @@ class HubActivity final : public Activity {
   bool isHomeActivity() const override { return true; }
 
  private:
-  enum Tile { TILE_READ = 0, TILE_ASK, TILE_REMINDERS, TILE_BIBLE, TILE_MUSIC, TILE_SETTINGS, TILE_COUNT };
+  enum Tile { TILE_READ = 0, TILE_TALK, TILE_REMINDERS, TILE_TIMER, TILE_NOTES, TILE_BIBLE, TILE_MUSIC, TILE_SETTINGS, TILE_COUNT };
   static constexpr int COLUMNS = 2;
 
   ButtonNavigator buttonNavigator;

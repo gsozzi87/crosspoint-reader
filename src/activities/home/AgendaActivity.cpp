@@ -4,7 +4,10 @@
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <HalClock.h>
 #include <ServerClient.h>
+
+#include <ctime>
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
@@ -15,6 +18,18 @@ namespace {
 constexpr const char* TAG = "AGENDA";
 constexpr int ROW_H = 44;
 constexpr int SIDE = 20;
+constexpr unsigned long MENU_HOLD_MS = 1200;
+
+std::string dateOffset(int days) {
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now)) return "";
+  now += static_cast<time_t>(days) * 86400;
+  struct tm t;
+  gmtime_r(&now, &t);
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%04d-%02d-%02d", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday);
+  return buf;
+}
 }  // namespace
 
 void AgendaActivity::onEnter() {
@@ -77,7 +92,89 @@ void AgendaActivity::tickCurrent() {
   requestUpdate();
 }
 
+void AgendaActivity::sendEdit(const char* action, const char* list, const char* dueDate) {
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["kind"] = "item";
+    doc["id"] = menuItemId;
+    doc["action"] = action;
+    if (list) doc["list"] = list;
+    if (dueDate) doc["dueDate"] = dueDate;
+    serializeJson(doc, body);
+  }
+  LOG_INF(TAG, "edit %s %d: %s", action, menuItemId, ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/edit", body)));
+}
+
+void AgendaActivity::openItemMenu() {
+  if (level != ITEMS || sectionIndex == 0 || itemCount() == 0) return;  // lists only; reminders just tick
+  menuItemId = HUB_STORE.lists[sectionIndex - 1].items[itemIndex].id;
+  menuStep = MAIN;
+  menuOptions = {tr(STR_AGENDA_MOVE), tr(STR_AGENDA_DATE), tr(STR_AGENDA_DELETE)};
+  menu.show(StrId::STR_AGENDA_ITEM_MENU, menuOptions, 0, [this](int idx) { onMenuPick(idx); });
+  requestUpdate();
+}
+
+void AgendaActivity::onMenuPick(const int index) {
+  if (menuStep == MAIN) {
+    if (index == 0) {
+      menuStep = MOVE;
+      menuOptions.clear();
+      for (const HubStore::List& l : HUB_STORE.lists) menuOptions.push_back(l.name);
+      menu.show(StrId::STR_AGENDA_MOVE, menuOptions, 0, [this](int idx) { onMenuPick(idx); });
+    } else if (index == 1) {
+      menuStep = DATE;
+      menuOptions = {tr(STR_AGENDA_DATE_TODAY), tr(STR_AGENDA_DATE_TOMORROW), tr(STR_AGENDA_DATE_NEXT_WEEK),
+                     tr(STR_AGENDA_DATE_NONE)};
+      menu.show(StrId::STR_AGENDA_DATE, menuOptions, 0, [this](int idx) { onMenuPick(idx); });
+    } else if (index == 2) {
+      HUB_STORE.removeItem(menuItemId);
+      HUB_STORE.saveToFile();
+      sendEdit("delete", nullptr, nullptr);
+      menuStep = NONE;
+      if (itemIndex >= itemCount() && itemIndex > 0) itemIndex--;
+    } else {
+      menuStep = NONE;
+    }
+  } else if (menuStep == MOVE) {
+    if (index >= 0 && index < static_cast<int>(menuOptions.size())) {
+      const std::string target = menuOptions[index];
+      HUB_STORE.moveItem(menuItemId, target);
+      HUB_STORE.saveToFile();
+      sendEdit("move", target.c_str(), nullptr);
+      if (itemIndex >= itemCount() && itemIndex > 0) itemIndex--;
+    }
+    menuStep = NONE;
+  } else if (menuStep == DATE) {
+    if (index == 0) sendEdit("date", nullptr, dateOffset(0).c_str());
+    else if (index == 1) sendEdit("date", nullptr, dateOffset(1).c_str());
+    else if (index == 2) sendEdit("date", nullptr, dateOffset(7).c_str());
+    else if (index == 3) sendEdit("date", nullptr, "");
+    menuStep = NONE;
+  }
+  requestUpdate();
+}
+
 void AgendaActivity::loop() {
+  if (menuStep != NONE) {
+    if (menu.handleInput(mappedInput, [this] { requestUpdate(); })) {
+      if (!menu.isActive() && menuStep != NONE) {
+        // Back on a popup: a sub-menu returns to the main one, the main one closes.
+        if (menuStep == MAIN) {
+          menuStep = NONE;
+        } else {
+          menuStep = NONE;
+          openItemMenu();
+        }
+        requestUpdate();
+      }
+    }
+    return;
+  }
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, MENU_HOLD_MS)) {
+    openItemMenu();
+    return;
+  }
   const int count = level == SECTIONS ? sectionCount() : itemCount();
   int& index = level == SECTIONS ? sectionIndex : itemIndex;
 
@@ -158,6 +255,7 @@ void AgendaActivity::render(RenderLock&&) {
     renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom - 16, pages);
   }
 
+  if (menuStep != NONE && menu.processRender(renderer, mappedInput)) return;
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), level == SECTIONS ? tr(STR_SELECT) : tr(STR_AGENDA_DONE),
                                             tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -1,26 +1,19 @@
 #include "ReminderAlertActivity.h"
 
 #include <ArduinoJson.h>
-#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ServerClient.h>
-#include <esp_heap_caps.h>
-
-#include <cmath>
-
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "fontIds.h"
-#include "util/WavHeader.h"
 
 namespace {
 constexpr const char* TAG = "REMIND";
-constexpr uint32_t RATE = 16000;
 
 void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y) {
   const int stride = (icon.w + 7) / 8;
@@ -36,46 +29,13 @@ void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, 
 void ReminderAlertActivity::onEnter() {
   Activity::onEnter();
   startedAt = millis();
-  startBeep();
+  beep.start();
   requestUpdate();
 }
 
 void ReminderAlertActivity::onExit() {
   Activity::onExit();
-  stopBeep();
-}
-
-// Three 880 Hz beeps then a pause, as one looping WAV in PSRAM: ~1.6 s of
-// 16 kHz mono 16-bit = 51 KB.
-void ReminderAlertActivity::startBeep() {
-  if (!BoardConfig::hasAudio()) return;
-  const size_t samples = RATE * 16 / 10;
-  beepBytes = wav::HEADER_BYTES + samples * sizeof(int16_t);
-  beep = static_cast<uint8_t*>(heap_caps_malloc(beepBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!beep) return;
-  int16_t* pcm = reinterpret_cast<int16_t*>(beep + wav::HEADER_BYTES);
-  for (size_t i = 0; i < samples; ++i) {
-    const float t = i / static_cast<float>(RATE);
-    const float slot = std::fmod(t, 0.32f);  // 0.16 s on, 0.16 s off
-    const bool on = t < 0.96f && slot < 0.16f;
-    pcm[i] = on ? static_cast<int16_t>(12000 * std::sin(2 * M_PI * 880 * t)) : 0;
-  }
-  wav::writeHeader(beep, RATE, samples * sizeof(int16_t));
-  if (!audio.begin()) return;
-  audio.setVolume(85);
-  beeping = audio.playBuffer(beep, beepBytes, true);
-}
-
-void ReminderAlertActivity::stopBeep() {
-  if (beeping) {
-    audio.stop();
-    beeping = false;
-  }
-  audio.end();
-  if (beep) {
-    heap_caps_free(beep);
-    beep = nullptr;
-  }
+  beep.stop();
 }
 
 void ReminderAlertActivity::done() {
@@ -110,7 +70,7 @@ void ReminderAlertActivity::snooze() {
 }
 
 void ReminderAlertActivity::leave() {
-  stopBeep();
+  beep.stop();
   if (resultHandler) {
     finish();
   } else {
@@ -119,10 +79,7 @@ void ReminderAlertActivity::leave() {
 }
 
 void ReminderAlertActivity::loop() {
-  if (beeping && millis() - startedAt > BEEP_MS) {
-    audio.stop();
-    beeping = false;
-  }
+  if (beep.isPlaying() && millis() - startedAt > BEEP_MS) beep.stop();
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     done();
     return;

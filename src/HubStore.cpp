@@ -14,6 +14,14 @@ void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) 
   }
 }
 
+void parseNotes(JsonVariantConst doc, std::vector<HubStore::Note>& out) {
+  out.clear();
+  for (JsonVariantConst n : doc["notes"].as<JsonArrayConst>()) {
+    if (out.size() >= HubStore::MAX_NOTES) break;
+    out.push_back({n["id"] | 0, str(n, "text")});
+  }
+}
+
 void parseLists(JsonVariantConst doc, std::vector<HubStore::List>& out) {
   out.clear();
   for (JsonVariantConst l : doc["lists"].as<JsonArrayConst>()) {
@@ -55,6 +63,12 @@ void HubStore::toJson(JsonDocument& doc) const {
       io["text"] = i.text;
     }
   }
+  JsonArray ns = doc["notes"].to<JsonArray>();
+  for (const Note& n : notes) {
+    JsonObject o = ns.add<JsonObject>();
+    o["id"] = n.id;
+    o["text"] = n.text;
+  }
   JsonArray ev = doc["events"].to<JsonArray>();
   for (const Event& e : events) {
     JsonObject o = ev.add<JsonObject>();
@@ -79,6 +93,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   reminderWhen = str(doc, "reminderWhen");
   parseReminders(doc, reminders);
   parseLists(doc, lists);
+  parseNotes(doc, notes);
   events.clear();
   for (JsonVariantConst e : doc["events"].as<JsonArrayConst>()) {
     if (events.size() >= MAX_EVENTS) break;
@@ -101,6 +116,7 @@ void HubStore::applyServer(JsonVariantConst doc) {
   weatherDetail = str(doc["weather"], "detail");
   parseReminders(doc, reminders);
   parseLists(doc, lists);
+  parseNotes(doc, notes);
   reminderTitle = reminders.empty() ? "" : reminders[0].title;
   reminderWhen = reminders.empty() ? "" : reminders[0].when;
   events.clear();
@@ -158,4 +174,37 @@ void HubStore::snoozeReminder(const int id, const time_t until) {
   for (Reminder& r : reminders) {
     if (r.id == id) r.dueAt = until;
   }
+}
+
+void HubStore::removeNote(const int id) {
+  for (auto it = notes.begin(); it != notes.end(); ++it) {
+    if (it->id == id) {
+      notes.erase(it);
+      return;
+    }
+  }
+}
+
+void HubStore::moveItem(const int id, const std::string& listName) {
+  ListItem moved;
+  bool found = false;
+  for (List& l : lists) {
+    for (auto it = l.items.begin(); it != l.items.end(); ++it) {
+      if (it->id == id) {
+        moved = *it;
+        l.items.erase(it);
+        found = true;
+        break;
+      }
+    }
+    if (found) break;
+  }
+  if (!found) return;
+  for (List& l : lists) {
+    if (l.name == listName) {
+      l.items.push_back(moved);
+      return;
+    }
+  }
+  lists.push_back({listName, {moved}});
 }

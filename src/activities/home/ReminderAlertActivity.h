@@ -1,10 +1,9 @@
 #pragma once
 
-#include <AudioManager.h>
-
 #include <string>
 
 #include "activities/Activity.h"
+#include "voice/AlertBeep.h"
 
 // A reminder came due: title and time big on screen, a beep pattern through
 // the speaker (looped, up to a minute), OK = done, Back = snooze 10 minutes.
@@ -32,14 +31,8 @@ class ReminderAlertActivity final : public Activity {
   int reminderId;
   std::string title;
   std::string when;
-  AudioManager audio;
-  uint8_t* beep = nullptr;
-  size_t beepBytes = 0;
+  AlertBeep beep;
   unsigned long startedAt = 0;
-  bool beeping = false;
-
-  void startBeep();
-  void stopBeep();
   void done();
   void snooze();
   void leave();

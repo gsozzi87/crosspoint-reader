@@ -34,6 +34,7 @@ class VoiceActivity final : public Activity {
   std::string failureDetail;
   bool wifiActivated = false;
   bool requestPending = false;
+  int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
 
   void startRecording();
   void stopRecording();

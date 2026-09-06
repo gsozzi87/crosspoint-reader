@@ -17,6 +17,8 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "AgendaActivity.h"
+#include "NotesActivity.h"
+#include "TimerActivity.h"
 #include "ReminderAlertActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
@@ -27,12 +29,12 @@
 
 namespace {
 constexpr int SIDE = 20;        // left/right margin
-constexpr int GAP = 16;         // between tiles
+constexpr int GAP = 12;         // between tiles
 constexpr int STATUS_H = 44;    // status line band
-constexpr int TILE_H = 116;
-constexpr int TILE_RADIUS = 14;
-constexpr int CONTINUE_H = 78;
-constexpr int INFO_H = 150;
+constexpr int TILE_H = 92;
+constexpr int TILE_RADIUS = 12;
+constexpr int CONTINUE_H = 64;
+constexpr int INFO_H = 140;
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
 constexpr time_t SYNC_INTERVAL_S = 6 * 3600;      // cache older than this at entry = sync
 constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
@@ -55,9 +57,10 @@ struct TileSpec {
 };
 
 const TileSpec TILES[] = {
-    {StrId::STR_HUB_READ, &icon_hub_read_48},         {StrId::STR_HUB_TALK, &icon_hub_ask_48},
-    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
-    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},       {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
+    {StrId::STR_HUB_READ, &icon_hub_read_48},           {StrId::STR_HUB_TALK, &icon_hub_ask_48},
+    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
+    {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
+    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
 }  // namespace
 
@@ -105,7 +108,7 @@ void HubActivity::activate(const int tile) {
     case TILE_READ:
       activityManager.goToClassicHome();
       break;
-    case TILE_ASK:
+    case TILE_TALK:
       activityManager.replaceActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
       break;
     case TILE_REMINDERS:
@@ -113,6 +116,13 @@ void HubActivity::activate(const int tile) {
         loadLastBook();
         requestUpdate();
       });
+      break;
+    case TILE_TIMER:
+      activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
+      break;
+    case TILE_NOTES:
+      startActivityForResult(std::make_unique<NotesActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { requestUpdate(); });
       break;
     case TILE_SETTINGS:
       activityManager.goToSettings();
@@ -233,13 +243,13 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   }
   const bool ink = !isSelected;  // white on the selected tile
   const int iconX = x + (w - spec.icon->w) / 2;
-  const int iconY = y + 26;
+  const int iconY = y + (h - spec.icon->h - 30) / 2;
   drawSdkIcon(renderer, *spec.icon, iconX, iconY, ink);
 
   const char* label = I18N.get(spec.label);
   const std::string shortLabel = renderer.truncatedText(UI_12_FONT_ID, label, w - 16, EpdFontFamily::BOLD);
   const int labelW = renderer.getTextWidth(UI_12_FONT_ID, shortLabel.c_str(), EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 16, shortLabel.c_str(), ink,
+  renderer.drawText(UI_12_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 6, shortLabel.c_str(), ink,
                     EpdFontFamily::BOLD);
 }
 
@@ -253,9 +263,9 @@ void HubActivity::drawContinueWidget(const int x, const int y, const int w, cons
     return;
   }
   const std::string title = renderer.truncatedText(UI_12_FONT_ID, lastBookTitle.c_str(), textW, EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, textX, y + 12, title.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, textX, y + 8, title.c_str(), true, EpdFontFamily::BOLD);
   const std::string sub = lastBookAuthor.empty() ? tr(STR_CONTINUE_READING) : lastBookAuthor;
-  renderer.drawText(UI_10_FONT_ID, textX, y + 42, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
+  renderer.drawText(UI_10_FONT_ID, textX, y + 34, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
 }
 
 // Weather + next reminder on the first row, today's events (or the quote) on
@@ -338,17 +348,17 @@ void HubActivity::render(RenderLock&&) {
 
   const int tileW = (pageWidth - 2 * SIDE - GAP * (COLUMNS - 1)) / COLUMNS;
   const int rows = (TILE_COUNT + COLUMNS - 1) / COLUMNS;
-  const int gridTop = metrics.topPadding + STATUS_H + 18;
+  const int gridTop = metrics.topPadding + STATUS_H + 12;
   for (int i = 0; i < TILE_COUNT; ++i) {
     const int col = i % COLUMNS;
     const int row = i / COLUMNS;
     drawTile(i, SIDE + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
   }
 
-  int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 14;
+  int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 10;
   const int hintsTop = pageHeight - metrics.buttonHintsHeight;
   drawContinueWidget(SIDE, widgetTop, pageWidth - 2 * SIDE, CONTINUE_H);
-  widgetTop += CONTINUE_H + 10;
+  widgetTop += CONTINUE_H + 8;
   const int infoH = std::min(INFO_H, hintsTop - 8 - widgetTop);
   if (infoH > 80) drawInfoWidgets(SIDE, widgetTop, pageWidth - 2 * SIDE, infoH);
 
