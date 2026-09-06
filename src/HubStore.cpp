@@ -82,6 +82,7 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["text"] = m.text;
   }
   doc["quote"] = quote;
+  doc["translatorLang"] = translatorLang;
 }
 
 bool HubStore::fromJson(JsonVariantConst doc) {
@@ -105,6 +106,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
     messages.push_back({str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
+  translatorLang = str(doc, "translatorLang");
   return true;
 }
 

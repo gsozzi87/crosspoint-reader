@@ -19,6 +19,7 @@
 #include "AgendaActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
+#include "TranslatorActivity.h"
 #include "ReminderAlertActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
@@ -31,10 +32,10 @@ namespace {
 constexpr int SIDE = 20;        // left/right margin
 constexpr int GAP = 12;         // between tiles
 constexpr int STATUS_H = 44;    // status line band
-constexpr int TILE_H = 92;
+constexpr int TILE_H = 104;
 constexpr int TILE_RADIUS = 12;
-constexpr int CONTINUE_H = 64;
-constexpr int INFO_H = 140;
+constexpr int CONTINUE_H = 70;
+constexpr int INFO_H = 150;
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
 constexpr time_t SYNC_INTERVAL_S = 6 * 3600;      // cache older than this at entry = sync
 constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
@@ -58,6 +59,7 @@ struct TileSpec {
 
 const TileSpec TILES[] = {
     {StrId::STR_HUB_READ, &icon_hub_read_48},           {StrId::STR_HUB_TALK, &icon_hub_ask_48},
+    {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_48},
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
     {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
     {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
@@ -116,6 +118,9 @@ void HubActivity::activate(const int tile) {
         loadLastBook();
         requestUpdate();
       });
+      break;
+    case TILE_TRANSLATOR:
+      activityManager.replaceActivity(std::make_unique<TranslatorActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
@@ -247,9 +252,9 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   drawSdkIcon(renderer, *spec.icon, iconX, iconY, ink);
 
   const char* label = I18N.get(spec.label);
-  const std::string shortLabel = renderer.truncatedText(UI_12_FONT_ID, label, w - 16, EpdFontFamily::BOLD);
-  const int labelW = renderer.getTextWidth(UI_12_FONT_ID, shortLabel.c_str(), EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 6, shortLabel.c_str(), ink,
+  const std::string shortLabel = renderer.truncatedText(UI_10_FONT_ID, label, w - 10, EpdFontFamily::BOLD);
+  const int labelW = renderer.getTextWidth(UI_10_FONT_ID, shortLabel.c_str(), EpdFontFamily::BOLD);
+  renderer.drawText(UI_10_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 6, shortLabel.c_str(), ink,
                     EpdFontFamily::BOLD);
 }
 
