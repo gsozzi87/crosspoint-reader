@@ -67,13 +67,13 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 2.3d | Importación de las listas actuales (texto, Excel o lo que uses) al servidor, y edición desde la página web del Hono | ⬜ | |
 | 2.4 | Lista de compras: es una lista más, de tipo compras: ítems sueltos, se vacía de a uno o entera | ⬜ | Como el Sticky |
 | 2.5 | Notas: se dictan por Hablar, mosaico Notas las lista (dos líneas), OK abre la nota completa, Atrás largo la borra | ✅ | 1.5.20 |
-| 2.6 | TTS: el servidor devuelve audio (MP3 o WAV) y el aparato lo reproduce; respuesta hablada opcional en las preguntas y obligatoria en avisos | ⬜ | `POST /api/tts`, tarea de audio en core 1 |
+| 2.6 | TTS con Piper en el mismo Railway (sin tokens): un proceso por idioma con el modelo cargado (~0,2 s por frase), WAV → 16 kHz → IMA ADPCM (4 s = 32 KB). La respuesta de Hablar viaja en el mismo cuerpo que el JSON y suena al mismo tiempo que aparece el texto; se habla toda confirmación y traducción, y las respuestas a preguntas solo si son cortas. Los avisos ("Recordatorios: título", "¡Tiempo!") se bajan en la sincronización a `/.crosspoint/tts/` y suenan sin WiFi, antes del pitido | ✅ | 1.5.21. Falta el ajuste Nunca/Cortas/Siempre en Settings |
 | 2.7 | Traductor. Hoy: por Hablar ("traducí al inglés …", "cómo se dice …") desde el idioma de la UI, muestra la traducción. Falta: mosaico Traductor en modo conversación (elegís el otro idioma por voz; cada toma se muestra y se lee traducida, alternando idiomas) | 🔧 | La parte por voz está en 1.5.18 |
 | 2.8 | Mosaico Tiempo: temporizador (1 a 60 min), cronómetro y Pomodoro (25/5 con rondas), dígitos grandes de 7 segmentos, OK pausa/sigue, Atrás vuelve, pitido por el parlante al terminar; refresco parcial por segundo con limpieza cada 40. Por voz: "poné 10 minutos" o "alarma a las 7" abre el temporizador con el tiempo ya puesto | ✅ | 1.5.20. El temporizador vive solo mientras la pantalla está abierta (no sigue en deep sleep) |
 | 2.9 | Alarma / despertador que sobreviva al deep sleep (hoy "alarma a las 7" es un temporizador en pantalla): usar el timer wake como los recordatorios | ⬜ | |
 | 2.10 | Agenda del día: eventos que el servidor saca de un calendario (ICS o Google) y muestra en el widget y en su app | ⬜ | Solo lectura |
 | 2.11 | Memoria del asistente: el servidor guarda las últimas preguntas y datos que el usuario le dicte ("acordate que …") | ⬜ | Del Note 4 ("AI memory") |
-| 2.12 | Sonidos del sistema por el parlante: inicio y fin de grabación, confirmación, error | ⬜ | Reemplaza al buzzer del Sticky |
+| 2.12 | Sonidos del sistema por el parlante: pitido de recordatorio y temporizador (`AlertBeep`) | 🔧 | Falta: inicio y fin de grabación, error |
 
 ## Fase 3 · Contenido
 

@@ -142,6 +142,11 @@ llegue el hardware.
   Notas (`NotesActivity`): lista, OK abre, Atrás largo borra. Tiempo (`TimerActivity`): temporizador, cronómetro y
   Pomodoro con dígitos de 7 segmentos; `VoiceActivity` lo abre directo cuando el servidor devuelve `timerSeconds`.
   Pitido común en `src/voice/AlertBeep`.
+- TTS (`server/src/tts.ts`, Piper en el Dockerfile con una voz por idioma): `POST /api/voice` devuelve un cuerpo
+  binario `[u32 LE largo JSON][JSON][ADPCM]` (`application/x-ws397-voice`); `VoiceActivity` lo parte, decodifica
+  (`src/voice/Adpcm`) y reproduce (`src/voice/SpeechOut`) mientras muestra el texto. `GET /api/tts?text=&lang=`
+  da clips para los avisos; `HubSyncActivity::cacheSpokenNotices()` guarda los de los próximos 5 recordatorios y
+  la frase del temporizador en `/.crosspoint/tts/`. El aparato nunca decodifica MP3 para la voz.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
@@ -159,7 +164,7 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;
-   TTS por el parlante; traductor en modo conversación; temporizador, cronómetro y Pomodoro; agenda; memoria.
+   TTS con Piper (hecho); traductor en modo conversación; temporizador, cronómetro y Pomodoro (hecho); agenda; memoria.
 3. Contenido: Biblia con índice en SD, versículo/frase del día, MP3 desde SD, RSS/lectura web, álbum de
    imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria

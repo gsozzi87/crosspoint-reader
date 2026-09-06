@@ -82,7 +82,7 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
     status = http.sendRequest(method, nullptr, 0);
   }
   out.status = status;
-  out.body = http.getString();
+  out.body = http.getString();  // std::string: binary-safe (/api/voice carries JSON + audio)
   http.end();
 #else
   (void)method;

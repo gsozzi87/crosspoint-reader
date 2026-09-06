@@ -35,4 +35,7 @@ class HubSyncActivity final : public Activity {
   void onWifiSelectionComplete(bool connected);
   void runSync();
   static void markAttempt(bool ok);
+  // GET /api/tts for the next reminders ("Reminders: <title>") and the timer
+  // phrase, saved as /.crosspoint/tts/*.bin so the alerts speak without WiFi.
+  static void cacheSpokenNotices();
 };
