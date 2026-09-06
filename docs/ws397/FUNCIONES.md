@@ -48,8 +48,8 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 1.3 | Preguntarle al libro (texto leído → Claude, sin spoilers) | ✅ | |
 | 1.4 | Pregunta por voz general desde el hub | ✅ | 1.5.14, modo general de `AskBookActivity` |
 | 1.5 | Hub con mosaicos, barra de estado (hora, batería, WiFi), "Continuar leyendo" | ✅ | 1.5.14 |
-| 1.6 | Sincronización con el servidor: al despertar, al volver al hub cada N horas y a mano. Trae `GET /api/hub` (clima, agenda, mensajes, recordatorios, frase) y guarda en `/.crosspoint/hub.json`; vacía la cola offline | ⬜ | Timed wake del RTC como el Sticky |
-| 1.7 | Widgets del hub: clima (exterior del servidor + interior del SHTC3), próximo recordatorio, próximos eventos de la agenda, última frase leída | ⬜ | Se pintan desde la caché |
+| 1.6 | Sincronización con el servidor: al entrar al hub con la caché de más de 6 h (reintento a la hora si falló), manteniendo Atrás en el hub, y desde Settings → Sincronizar hub. Trae `GET /api/hub` (clima, agenda, mensajes, recordatorios, frase) a `/.crosspoint/hub.json`, pone en hora el RTC con el reloj del servidor y vacía la cola offline | ✅ | 1.5.15. Falta el timed wake del RTC (0.5) para sincronizar dormido |
+| 1.7 | Widgets del hub: clima exterior, próximo recordatorio, agenda de hoy (o frase del día si no hay eventos), contador de mensajes en la barra | ✅ | 1.5.15. Falta la temperatura interior del SHTC3 (0.6) |
 | 1.8 | Pizarra de mensajes: texto que alguien manda desde el teléfono (página web del Hono con el token, o Telegram) y aparece en el hub; se marca leído con OK | ⬜ | Equivalente al "message board" del Sticky |
 | 1.9 | Mosaico "Hablar" (PTT) que reemplaza a "Preguntar": una grabación, el servidor clasifica | ⬜ | Base de la Fase 2 |
 | 1.10 | Ajustes del hub: orden de mosaicos y widgets, hora de sincronización, unidad °C/°F | ⬜ | Web UI |

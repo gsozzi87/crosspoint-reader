@@ -2,6 +2,7 @@
 
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <ServerCredentialStore.h>
 #include <HalDisplay.h>
 #include <I18n.h>
 #include <Icon.h>
@@ -11,11 +12,14 @@
 #include <cstring>
 
 #include "CrossPointSettings.h"
+#include "HubStore.h"
+#include "HubSyncActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "activities/reader/AskBookActivity.h"
 #include "components/UITheme.h"
 #include "components/icons/hubIcons.h"
+#include "components/icons/hubWidgetIcons.h"
 #include "components/icons/listIcons.h"
 #include "fontIds.h"
 
@@ -23,9 +27,13 @@ namespace {
 constexpr int SIDE = 20;        // left/right margin
 constexpr int GAP = 16;         // between tiles
 constexpr int STATUS_H = 44;    // status line band
-constexpr int TILE_H = 140;
+constexpr int TILE_H = 116;
 constexpr int TILE_RADIUS = 14;
-constexpr int WIDGET_H = 96;
+constexpr int CONTINUE_H = 78;
+constexpr int INFO_H = 150;
+constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
+constexpr time_t SYNC_INTERVAL_S = 6 * 3600;      // cache older than this at entry = sync
+constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
 
 // Draws an SDK (freeink::Icon) bitmap through the renderer's pixel path, so it
 // is orientation-correct and can be inverted for a selected (black) tile.
@@ -54,7 +62,27 @@ const TileSpec TILES[] = {
 void HubActivity::onEnter() {
   Activity::onEnter();
   loadLastBook();
+  autoSyncPending = shouldAutoSync();
   requestUpdate();
+}
+
+// Sync on entry only when the cache is stale and we have not just tried: the
+// hub is re-entered after every silent restart (Ask, Sync itself), and WiFi
+// costs 10-20 s each time.
+bool HubActivity::shouldAutoSync() const {
+  if (!SERVER_STORE.hasToken()) return false;
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now)) {
+    // No clock yet: only the very first run, so a dead server cannot loop us.
+    return HUB_STORE.syncedAt == 0 && HUB_STORE.lastAttemptAt == 0;
+  }
+  if (HUB_STORE.syncedAt > 1 && now - HUB_STORE.syncedAt < SYNC_INTERVAL_S) return false;
+  if (HUB_STORE.lastAttemptAt > 1 && now - HUB_STORE.lastAttemptAt < SYNC_RETRY_S) return false;
+  return true;
+}
+
+void HubActivity::startSync() {
+  activityManager.replaceActivity(std::make_unique<HubSyncActivity>(renderer, mappedInput));
 }
 
 void HubActivity::loadLastBook() {
@@ -89,6 +117,11 @@ void HubActivity::activate(const int tile) {
 }
 
 void HubActivity::loop() {
+  if (autoSyncPending && firstRenderDone) {
+    autoSyncPending = false;
+    startSync();
+    return;
+  }
   if (comingSoon) {
     if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
         mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
@@ -111,6 +144,10 @@ void HubActivity::loop() {
 
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activate(selected);
+    return;
+  }
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, SYNC_HOLD_MS)) {
+    startSync();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !lastBookPath.empty()) {
@@ -149,8 +186,20 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
   const int percentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
   const int batteryX = renderer.getScreenWidth() - SIDE - metrics.batteryWidth - 4 - percentWidth;
   GUI.drawBatteryLeft(renderer, Rect{batteryX, textY, metrics.batteryWidth, metrics.batteryHeight}, true);
+  int rightEdge = batteryX - 12;
   if (WiFi.status() == WL_CONNECTED) {
-    drawSdkIcon(renderer, icon_wifi_24, batteryX - 24 - 12, y + (height - 24) / 2, true);
+    rightEdge -= 24;
+    drawSdkIcon(renderer, icon_wifi_24, rightEdge, y + (height - 24) / 2, true);
+    rightEdge -= 12;
+  }
+  if (!HUB_STORE.messages.empty()) {
+    char count[24];
+    snprintf(count, sizeof(count), tr(STR_HUB_MESSAGES_FORMAT), (int)HUB_STORE.messages.size());
+    const int w = renderer.getTextWidth(UI_10_FONT_ID, count);
+    rightEdge -= w;
+    renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, count);
+    rightEdge -= 24 + 4;
+    drawSdkIcon(renderer, icon_hub_message_24, rightEdge, y + (height - 24) / 2, true);
   }
 
   renderer.drawLine(SIDE, y + height, renderer.getScreenWidth() - SIDE, y + height, true);
@@ -178,18 +227,80 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
 
 void HubActivity::drawContinueWidget(const int x, const int y, const int w, const int h) const {
   renderer.drawRoundedRect(x, y, w, h, 1, TILE_RADIUS, true);
-  drawSdkIcon(renderer, icon_book_24, x + 14, y + 14, true);
-  renderer.drawText(UI_10_FONT_ID, x + 14 + 24 + 10, y + 14, tr(STR_CONTINUE_READING));
-  const int textW = w - 28;
+  drawSdkIcon(renderer, icon_book_24, x + 14, y + (h - 24) / 2, true);
+  const int textX = x + 14 + 24 + 12;
+  const int textW = w - (textX - x) - 14;
   if (lastBookPath.empty()) {
-    renderer.drawText(UI_12_FONT_ID, x + 14, y + 46, tr(STR_HUB_NO_BOOK), true, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, textX, y + (h - 24) / 2, tr(STR_HUB_NO_BOOK), true, EpdFontFamily::BOLD);
     return;
   }
   const std::string title = renderer.truncatedText(UI_12_FONT_ID, lastBookTitle.c_str(), textW, EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, x + 14, y + 42, title.c_str(), true, EpdFontFamily::BOLD);
-  if (!lastBookAuthor.empty()) {
-    const std::string author = renderer.truncatedText(UI_10_FONT_ID, lastBookAuthor.c_str(), textW);
-    renderer.drawText(UI_10_FONT_ID, x + 14, y + 68, author.c_str());
+  renderer.drawText(UI_12_FONT_ID, textX, y + 12, title.c_str(), true, EpdFontFamily::BOLD);
+  const std::string sub = lastBookAuthor.empty() ? tr(STR_CONTINUE_READING) : lastBookAuthor;
+  renderer.drawText(UI_10_FONT_ID, textX, y + 42, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
+}
+
+// Weather + next reminder on the first row, today's events (or the quote) on
+// the second. Everything comes from the SD cache; a never-synced hub says so.
+void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const int h) const {
+  const HubStore& hub = HUB_STORE;
+  renderer.drawRoundedRect(x, y, w, h, 1, TILE_RADIUS, true);
+  const int colW = w / 2;
+  const int pad = 14;
+  const int rowH = 66;
+  renderer.drawLine(x + colW, y + 10, x + colW, y + rowH - 4, true);
+  renderer.drawLine(x + pad, y + rowH, x + w - pad, y + rowH, true);
+
+  // Weather (left)
+  {
+    const int tx = x + pad + 24 + 8;
+    const int tw = colW - pad - 24 - 8 - 8;
+    drawSdkIcon(renderer, icon_hub_weather_24, x + pad, y + 12, true);
+    if (hub.weatherLine.empty()) {
+      renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, hub.hasSynced() ? tr(STR_HUB_NO_WEATHER) : tr(STR_HUB_NEVER_SYNCED), tw).c_str());
+    } else {
+      renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.weatherLine.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
+      renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, hub.weatherDetail.c_str(), tw).c_str());
+    }
+  }
+  // Next reminder (right)
+  {
+    const int ix = x + colW + pad;
+    const int tx = ix + 24 + 8;
+    const int tw = colW - pad - 24 - 8 - pad;
+    drawSdkIcon(renderer, icon_hub_reminder_24, ix, y + 12, true);
+    if (hub.reminderTitle.empty()) {
+      renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, tr(STR_HUB_NO_REMINDERS), tw).c_str());
+    } else {
+      renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.reminderTitle.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
+      renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, hub.reminderWhen.c_str(), tw).c_str());
+    }
+  }
+  // Events, or the quote when the day is empty
+  {
+    const int ty = y + rowH + 10;
+    const int tx = x + pad + 24 + 8;
+    const int tw = w - (tx - x) - pad;
+    drawSdkIcon(renderer, icon_hub_calendar_24, x + pad, ty, true);
+    if (hub.events.empty()) {
+      const std::string line = hub.quote.empty() ? std::string(tr(STR_HUB_NO_EVENTS)) : hub.quote;
+      // Two lines max for the quote.
+      const std::string first = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), tw);
+      renderer.drawText(UI_10_FONT_ID, tx, ty + 2, first.c_str());
+      if (first.size() + 3 < line.size() && line.compare(0, first.size() - 3, first, 0, first.size() - 3) == 0) {
+        const std::string rest = line.substr(first.size() - 3);
+        renderer.drawText(UI_10_FONT_ID, tx, ty + 28, renderer.truncatedText(UI_10_FONT_ID, rest.c_str(), tw).c_str());
+      }
+    } else {
+      int ey = ty + 2;
+      int shown = 0;
+      for (const HubStore::Event& e : hub.events) {
+        if (shown++ >= 3) break;
+        std::string line = e.when.empty() ? e.title : e.when + "  " + e.title;
+        renderer.drawText(UI_10_FONT_ID, tx, ey, renderer.truncatedText(UI_10_FONT_ID, line.c_str(), tw).c_str());
+        ey += 24;
+      }
+    }
   }
 }
 
@@ -216,15 +327,17 @@ void HubActivity::render(RenderLock&&) {
     drawTile(i, SIDE + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
   }
 
-  const int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 18;
+  int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 14;
   const int hintsTop = pageHeight - metrics.buttonHintsHeight;
-  const int widgetH = std::min(WIDGET_H, hintsTop - 12 - widgetTop);
-  if (widgetH > 40) drawContinueWidget(SIDE, widgetTop, pageWidth - 2 * SIDE, widgetH);
+  drawContinueWidget(SIDE, widgetTop, pageWidth - 2 * SIDE, CONTINUE_H);
+  widgetTop += CONTINUE_H + 10;
+  const int infoH = std::min(INFO_H, hintsTop - 8 - widgetTop);
+  if (infoH > 80) drawInfoWidgets(SIDE, widgetTop, pageWidth - 2 * SIDE, infoH);
 
   if (comingSoon) GUI.drawPopup(renderer, tr(STR_HUB_COMING_SOON));
 
-  const auto labels =
-      mappedInput.mapLabels(lastBookPath.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(lastBookPath.empty() ? tr(STR_HUB_SYNC_HINT) : tr(STR_RESUME), tr(STR_SELECT),
+                                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);

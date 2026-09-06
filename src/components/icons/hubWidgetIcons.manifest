@@ -1,0 +1,9 @@
+# Manifest for src/components/icons/hubWidgetIcons.h (ws397 hub widgets, 24 px) — regenerate with:
+#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
+#     --manifest src/components/icons/hubWidgetIcons.manifest \
+#     --svgdir <lucide/icons> --sizes 24 --out src/components/icons/hubWidgetIcons.h
+hub_weather = cloud-sun
+hub_reminder = bell-ring
+hub_calendar = calendar
+hub_message = message-square
+hub_sync = refresh-cw

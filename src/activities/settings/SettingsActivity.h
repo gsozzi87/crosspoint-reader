@@ -27,6 +27,7 @@ enum class SettingAction {
   KeyboardLayouts,
   AudioTest,
   ServerTest,
+  HubSync,
 };
 
 struct SettingInfo {

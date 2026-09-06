@@ -31,6 +31,7 @@ class HubActivity final : public Activity {
   int selected = TILE_READ;
   bool firstRenderDone = false;
   bool comingSoon = false;  // a not-yet-built tile was opened: show the notice
+  bool autoSyncPending = false;  // cache stale at entry: run HubSyncActivity after the first paint
   unsigned long lastClockMinuteTick = 0;
   char lastClock[9] = {0};
 
@@ -40,8 +41,11 @@ class HubActivity final : public Activity {
   std::string lastBookAuthor;
 
   void loadLastBook();
+  bool shouldAutoSync() const;
+  void startSync();
   void activate(int tile);
   void drawStatusLine(int y, int height) const;
   void drawTile(int index, int x, int y, int w, int h) const;
   void drawContinueWidget(int x, int y, int w, int h) const;
+  void drawInfoWidgets(int x, int y, int w, int h) const;
 };
