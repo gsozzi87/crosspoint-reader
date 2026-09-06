@@ -50,7 +50,7 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 1.5 | Hub con mosaicos, barra de estado (hora, batería, WiFi), "Continuar leyendo" | ✅ | 1.5.14 |
 | 1.6 | Sincronización con el servidor: al entrar al hub con la caché de más de 6 h (reintento a la hora si falló), manteniendo Atrás en el hub, y desde Settings → Sincronizar hub. Trae `GET /api/hub` (clima, agenda, mensajes, recordatorios, frase) a `/.crosspoint/hub.json`, pone en hora el RTC con el reloj del servidor y vacía la cola offline | ✅ | 1.5.15. Falta el timed wake del RTC (0.5) para sincronizar dormido |
 | 1.7 | Widgets del hub: clima exterior, próximo recordatorio, agenda de hoy (o frase del día si no hay eventos), contador de mensajes en la barra | ✅ | 1.5.15. Falta la temperatura interior del SHTC3 (0.6) |
-| 1.8 | Pizarra de mensajes: texto que alguien manda desde el teléfono (página web del Hono con el token, o Telegram) y aparece en el hub; se marca leído con OK | ⬜ | Equivalente al "message board" del Sticky |
+| 1.8 | **Telegram** en las dos direcciones. Bot del Hono (`TELEGRAM_BOT_TOKEN`, chats permitidos): lo que le escribís o le mandás como audio pasa por el mismo clasificador que Hablar (recordatorio, tarea, compra, nota, mensaje, pregunta) y lo que es mensaje aparece en la pizarra del hub; el aparato puede mandar al chat una respuesta, una lista o un recordatorio ("mandámelo por Telegram"). Los mensajes se marcan leídos con OK | ⬜ | Reemplaza la página web como forma de hablarle al aparato desde el teléfono |
 | 1.9 | Mosaico "Hablar" (PTT) que reemplaza a "Preguntar": una grabación, `POST /api/voice`, el servidor clasifica y ejecuta; la respuesta o la confirmación se muestra paginada y el hub se resincroniza | ✅ | 1.5.17 (`VoiceActivity`) |
 | 1.10 | Ajustes del hub: orden de mosaicos y widgets, hora de sincronización, unidad °C/°F | ⬜ | Web UI |
 | 1.11 | Lugar del clima por voz: Settings → Lugar del clima, decís la ciudad, el servidor transcribe y geocodifica (Open-Meteo), elegís de la lista y queda guardado en el servidor; el hub se resincroniza | ✅ | 1.5.16 |
@@ -68,8 +68,8 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 2.4 | Lista de compras: es una lista más, de tipo compras: ítems sueltos, se vacía de a uno o entera | ⬜ | Como el Sticky |
 | 2.5 | Notas y memos: texto dictado, lista paginada, borrar | ⬜ | |
 | 2.6 | TTS: el servidor devuelve audio (MP3 o WAV) y el aparato lo reproduce; respuesta hablada opcional en las preguntas y obligatoria en avisos | ⬜ | `POST /api/tts`, tarea de audio en core 1 |
-| 2.7 | Traductor: "traducí al inglés …" o "cómo se dice …"; muestra y lee la traducción | ⬜ | |
-| 2.8 | Temporizador y Pomodoro: "poné 10 minutos", "pomodoro"; cuenta en pantalla con repintado por minuto y avisa por el parlante | ⬜ | Local, sin servidor; del Note 4 |
+| 2.7 | Traductor. Hoy: por Hablar ("traducí al inglés …", "cómo se dice …") desde el idioma de la UI, muestra la traducción. Falta: mosaico Traductor en modo conversación (elegís el otro idioma por voz; cada toma se muestra y se lee traducida, alternando idiomas) | 🔧 | La parte por voz está en 1.5.18 |
+| 2.8 | Temporizador, cronómetro y Pomodoro: "poné 10 minutos", "pomodoro", "cronómetro"; cuentan en pantalla con repintado por segundo en parcial y avisan por el parlante. Mosaico Tiempo con los tres | ⬜ | Local, sin servidor; del Note 4 |
 | 2.9 | Alarma / despertador: hora fija diaria, suena por el parlante, OK apaga, Back pospone | ⬜ | RTC |
 | 2.10 | Agenda del día: eventos que el servidor saca de un calendario (ICS o Google) y muestra en el widget y en su app | ⬜ | Solo lectura |
 | 2.11 | Memoria del asistente: el servidor guarda las últimas preguntas y datos que el usuario le dicte ("acordate que …") | ⬜ | Del Note 4 ("AI memory") |
@@ -85,7 +85,8 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 3.4 | RSS y lectura web: el servidor baja y limpia el artículo, el aparato lo muestra con el paginador del diccionario | ⬜ | Fuentes configuradas en la web UI |
 | 3.5 | Álbum de imágenes: el servidor convierte a 4 grises 800x480, el aparato las guarda en la SD y las muestra como salvapantallas de sueño o en un mosaico | ⬜ | Del Sticky y el Note 4; fotos, tarjetas, texto empujado |
 | 3.6 | Clima detallado: pronóstico de varios días, adentro vs. afuera | ⬜ | |
-| 3.7 | Radio por streaming, dashboard Casa Cerebro, lectura en voz alta de libros, Spotify | ❌ | |
+| 3.7 | Radio por streaming, dashboard Casa Cerebro, lectura en voz alta de libros | ❌ | |
+| 3.8 | Spotify: las playlists descargadas en la app están cifradas con DRM y solo las reproduce la app, no se pueden copiar a la SD. Lo único posible es Spotify Connect online con `cspot` (ESP32-S3 con PSRAM, cuenta Premium, WiFi arriba), sin offline | ❌ | Descartado por ahora; la música offline es 3.3 con MP3 propios en la SD |
 
 ## Fase 4 · Juegos
 
@@ -100,7 +101,7 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 
 ## Idiomas
 
-El aparato y el servidor hablan español, inglés, chino mandarín, francés, alemán, portugués y ruso. El idioma
+El aparato y el servidor hablan español, inglés, francés, alemán, portugués y ruso. El idioma
 se elige en Settings → Idioma; el aparato manda su código (`lang`) en cada llamada y el servidor escucha
 (transcripción), contesta y etiqueta el clima y las fechas en ese idioma. El traductor traduce desde el idioma
 de la UI al que se pida (si no se dice: al inglés, o al español si la UI está en inglés).
@@ -109,7 +110,7 @@ de la UI al que se pida (si no se dice: al inglés, o al español si la UI está
 |---|---------|--------|-------|
 | L.1 | Strings nuestros traducidos a es, en, fr, de, pt-BR, pt-PT, ru | ✅ | 1.5.18. Los de CrossPoint upstream ya estaban |
 | L.2 | Servidor multi-idioma: STT, prompts, clima, fechas, frases del día | ✅ | 1.5.18, `server/src/lang.ts` |
-| L.3 | Chino mandarín en la pantalla | ⬜ | Las fuentes de la UI no traen glifos CJK. Plan: subconjunto de Noto Sans SC con solo los caracteres del `chinese.yaml` en las fuentes UI 10/12 (normal y negrita) y en la que usa el visor de respuestas; recién ahí se agrega `chinese.yaml`. El servidor ya entiende y contesta en chino |
+| L.3 | Chino mandarín | ❌ | Sacado: la UI no tiene fuente CJK y no vale la complejidad |
 | L.4 | Nombres de las listas de fábrica en el idioma de la UI | ⬜ | Hoy son Entrada, Casa, Trabajo, Administrativo, Compras |
 
 ## Transversal
