@@ -25,6 +25,7 @@
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "ServerTestActivity.h"
+#include "activities/home/HubSyncActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
@@ -106,6 +107,7 @@ void SettingsActivity::rebuildSettingsLists() {
   // Own-server diagnostic (ServerClient): reachability, device token, offline queue.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_SERVER_TEST, SettingAction::ServerTest));
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
   }
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));
@@ -359,6 +361,9 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::ServerTest:
         startActivityForResult(std::make_unique<ServerTestActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::HubSync:
+        startActivityForResult(std::make_unique<HubSyncActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::CheckForUpdates:
         startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);

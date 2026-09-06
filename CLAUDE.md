@@ -105,7 +105,15 @@ llegue el hardware.
   "Próximamente". El reloj se repinta solo cuando cambia el minuto.
 - Preguntar = `AskBookActivity` en modo general (constructor sin libro): graba de entrada, `POST /api/ask` sin
   `text`; el Hono responde con conocimiento general (`generalPrompt`). Back vuelve al hub con `silentRestart()`.
-- Pendiente del hub: widgets del servidor (clima, agenda, próximo recordatorio) con cache offline.
+- Sincronización (`HubSyncActivity`, `src/HubStore.{h,cpp}` → `/.crosspoint/hub.json`): `GET /api/hub` devuelve
+  `{ok, now, weather{line,detail}, reminders[{title,when}], events[{when,title}], messages[{from,text}], quote}`.
+  Se dispara al entrar al hub con caché de más de 6 h (reintento a la hora si falló; sin RTC solo la primera vez),
+  manteniendo Atrás 1,2 s en el hub, o desde Settings → Sincronizar hub. Pone en hora el RTC con `now` del servidor
+  si difiere más de 2 min (`HalClock::getEpochUtc/setFromEpochUtc`), vacía la cola offline y termina con
+  `silentRestart()`. Servidor: `src/hub.ts` (Open-Meteo con `HUB_LAT`/`HUB_LON`/`HUB_TZ`; recordatorios, agenda y
+  mensajes de `/data/hub-data.json` hasta la Fase 2; frase del día de una lista).
+- Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
+  barra. Íconos de 24 px en `src/components/icons/hubWidgetIcons.h`. Pendiente: temperatura interior (SHTC3).
 
 ## Roadmap acordado
 
@@ -114,8 +122,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 
 0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido, IMU
    por polling (boca abajo = silenciar, doble golpe = PTT, sacudir = cancelar; modo atril horizontal para el hub).
-1. Hub (base hecha) + preguntarle al libro + cliente HTTP. Falta: sincronización programada con
-   `GET /api/hub`, widgets (clima, recordatorio, agenda, frase), pizarra de mensajes, mosaico "Hablar" (PTT).
+1. Hub + preguntarle al libro + cliente HTTP + sincronización con `GET /api/hub` y widgets (hecho). Falta:
+   pizarra de mensajes (1.8), mosaico "Hablar" (PTT), ajustes del hub en la web UI.
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;

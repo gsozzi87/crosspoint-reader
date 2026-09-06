@@ -41,4 +41,9 @@ class HalClock {
   // Debouncing (skip if already synced once) is enforced by the caller, not here,
   // so the HAL stays free of any app-layer settings dependency.
   bool syncFromNTP();
+
+  // UTC epoch seconds from the RTC. False when there is no RTC or it was never set.
+  bool getEpochUtc(time_t& out) const;
+  // Sets the RTC from a UTC epoch (e.g. the server's clock when NTP is not reachable).
+  bool setFromEpochUtc(time_t epoch);
 };
