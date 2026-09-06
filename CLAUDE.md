@@ -99,10 +99,15 @@ llegue el hardware.
 1. Hub de apps (base CrossMux, MIT) + "preguntarle al libro" (texto del EPUB → servidor → Claude) + cliente HTTP
    común con token, reintentos y cola offline.
 2. Asistente por voz PTT (mic → Whisper → Claude → TTS → parlante), recordatorios y listas (RTC + servidor),
-   traductor, lectura en voz alta.
-3. Biblia con índice invertido pregenerado en SD (búsqueda en ms, sin WiFi), reproductor MP3 desde SD y radio por
-   streaming (`ESP32-audioI2S`, tarea propia en core 1), dashboard Casa Cerebro, RSS/lectura web.
+   traductor. Descartado: lectura en voz alta del libro.
+3. Biblia con índice invertido pregenerado en SD (búsqueda en ms, sin WiFi), reproductor MP3 desde SD
+   (`ESP32-audioI2S`, tarea propia en core 1), RSS/lectura web. Descartados: radio por streaming, dashboard Casa
+   Cerebro.
 4. Juegos (cartas, sudoku). Spotify descartado.
+
+Hub (Fase 1): home con mosaicos (Leer, Preguntar, Recordatorios, Biblia, Música, Ajustes), barra de estado (hora,
+batería, WiFi, próximo recordatorio) y widgets que se llenan desde el servidor con WiFi (clima, agenda, última
+frase leída) y muestran lo último guardado sin WiFi. Navegación UP/DOWN/OK/Back, lista para el trackball.
 
 Principios: CrossPoint sigue siendo el lector; lo nuestro entra como Activities en el hub. Todo lo pesado (STT,
 LLM, TTS, render) en el servidor. Audio y red en tareas FreeRTOS separadas de la UI. El aparato nunca guarda
