@@ -116,6 +116,13 @@ llegue el hardware.
   `GET /api/hub/location/search?q=` (geocoding de Open-Meteo, lista de candidatos en un `OptionPopup`),
   `POST /api/hub/location` y pasa a `HubSyncActivity` con el WiFi ya arriba. El servidor lo guarda en
   `/data/hub-settings.json`; `HUB_LAT`/`HUB_LON` quedan de respaldo.
+- Hablar (`VoiceActivity`, mosaico Hablar): graba hasta 12 s, `POST /api/voice` (audio/wav, 90 s) →
+  `{ok, text, intent, reply, saved[]}`; si guardó algo, `HubSyncActivity::fetchNow()` refresca la caché y el título
+  del visor dice qué guardó; una pregunta se muestra con lo entendido como título. Back → hub con `silentRestart()`.
+  Servidor: `src/voice.ts` (transcribe con `transcribeWav` de `transcribe.ts`, clasifica con salida estructurada de
+  Claude, modelo `VOICE_MODEL`/`ASK_MODEL` default `claude-haiku-4-5`, ejecuta contra `src/store.ts` →
+  `/data/store.json`: recordatorios, listas por nombre con Entrada/Casa/Trabajo/Administrativo/Compras de fábrica,
+  notas, mensajes). `hub.ts` toma recordatorios y mensajes del store; `hub-data.json` queda para la agenda.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
@@ -128,8 +135,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 
 0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido, IMU
    por polling (boca abajo = silenciar, doble golpe = PTT, sacudir = cancelar; modo atril horizontal para el hub).
-1. Hub + preguntarle al libro + cliente HTTP + sincronización con `GET /api/hub` y widgets (hecho). Falta:
-   pizarra de mensajes (1.8), mosaico "Hablar" (PTT), ajustes del hub en la web UI.
+1. Hub + preguntarle al libro + cliente HTTP + sincronización con `GET /api/hub` y widgets + Hablar con
+   clasificador de intención (hecho). Falta: pizarra de mensajes desde el teléfono (1.8), ajustes del hub en la web UI.
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;

@@ -16,7 +16,7 @@
 #include "HubSyncActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
-#include "activities/reader/AskBookActivity.h"
+#include "VoiceActivity.h"
 #include "components/UITheme.h"
 #include "components/icons/hubIcons.h"
 #include "components/icons/hubWidgetIcons.h"
@@ -53,7 +53,7 @@ struct TileSpec {
 };
 
 const TileSpec TILES[] = {
-    {StrId::STR_HUB_READ, &icon_hub_read_48},         {StrId::STR_HUB_ASK, &icon_hub_ask_48},
+    {StrId::STR_HUB_READ, &icon_hub_read_48},         {StrId::STR_HUB_TALK, &icon_hub_ask_48},
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
     {StrId::STR_HUB_MUSIC, &icon_hub_music_48},       {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
@@ -104,7 +104,7 @@ void HubActivity::activate(const int tile) {
       activityManager.goToClassicHome();
       break;
     case TILE_ASK:
-      activityManager.replaceActivity(std::make_unique<AskBookActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
       break;
     case TILE_SETTINGS:
       activityManager.goToSettings();

@@ -19,6 +19,11 @@ class HubSyncActivity final : public Activity {
   void render(RenderLock&&) override;
   bool preventAutoSleep() override { return state == CONNECTING || state == SYNCING; }
 
+  // GET /api/hub into HubStore with WiFi already up (also sets the RTC from the
+  // server clock and stamps the attempt). Shared with the voice flow, which
+  // refreshes the widgets right after an action. Returns true on success.
+  static bool fetchNow(ServerClient::Result* resultOut = nullptr, int* statusOut = nullptr);
+
  private:
   enum State { CONNECTING, SYNCING, DONE, FAILED };
   State state = CONNECTING;
@@ -29,5 +34,5 @@ class HubSyncActivity final : public Activity {
 
   void onWifiSelectionComplete(bool connected);
   void runSync();
-  void markAttempt(bool ok);
+  static void markAttempt(bool ok);
 };
