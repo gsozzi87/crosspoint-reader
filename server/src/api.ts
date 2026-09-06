@@ -9,6 +9,7 @@ import { hub } from "./hub";
 import { voice } from "./voice";
 import { tts } from "./tts";
 import { translate } from "./translate";
+import { boardApi } from "./board";
 
 const TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -31,3 +32,4 @@ api.route("/hub", hub);               // GET  /api/hub?lang=   → clima, record
 api.route("/voice", voice);           // POST /api/voice       → una grabación: el servidor decide qué es y lo hace
 api.route("/tts", tts);               // GET  /api/tts?text=   → voz Piper en ADPCM (avisos que el aparato cachea en la SD)
 api.route("/translate", translate);   // POST /api/translate?from=&to= → traductor en conversación: texto + traducción + voz
+api.route("/board", boardApi);        // POST /api/board/{message,reminder,item,note} → lo que se carga desde la página web

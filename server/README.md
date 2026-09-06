@@ -29,6 +29,8 @@ el store de recordatorios, listas, notas y mensajes.
 | `GET /firmware/latest` | aparato (sin token) | JSON con forma de release de GitHub: `tag_name`, `assets[firmware-ws397.bin]`. |
 | `GET /firmware/firmware-ws397.bin` | aparato | El binario. |
 | `PUT /firmware` | `release.sh` (Bearer `OTA_TOKEN`, `X-Version`) | Sube un binario nuevo. |
+| `GET /board` | teléfono | Página web: mensajes para el hub, recordatorios, listas y notas. Pide el token del aparato una vez. |
+| `POST /api/board/{message,reminder,item,note}` | página web | Altas desde la página. |
 | `GET /api/ping` | aparato | Prueba del token. |
 | `POST /api/ask` | aparato | Pregunta sobre el libro (`text`) o general (sin `text`). `lang` = idioma de la UI. |
 | `POST /api/transcribe?lang=xx` | aparato | WAV → texto en el idioma de la UI. |

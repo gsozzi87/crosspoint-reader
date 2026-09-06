@@ -150,6 +150,10 @@ llegue el hardware.
 - Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
   hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
   mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
+- Página web `GET /board` (`server/src/board.ts`): mensajes, recordatorios, listas y notas desde el teléfono con el
+  token del aparato; altas en `POST /api/board/*`. Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`)
+  y se ven en Recordatorios → Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).
+- Ajuste Voz hablada (Settings → Sistema, `HubStore::speakMode`): `&speak=none|short|all` en `/api/voice`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la

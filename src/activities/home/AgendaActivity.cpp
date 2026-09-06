@@ -37,31 +37,53 @@ void AgendaActivity::onEnter() {
   level = SECTIONS;
   sectionIndex = 0;
   itemIndex = 0;
+  rebuildSections();
   requestUpdate();
 }
 
-int AgendaActivity::sectionCount() const { return 1 + static_cast<int>(HUB_STORE.lists.size()); }
+// Messages (only while there are unread ones), reminders, then every list.
+void AgendaActivity::rebuildSections() {
+  sections.clear();
+  if (!HUB_STORE.messages.empty()) sections.push_back({MESSAGES, -1});
+  sections.push_back({REMINDERS, -1});
+  for (int i = 0; i < static_cast<int>(HUB_STORE.lists.size()); ++i) sections.push_back({LIST, i});
+  if (sectionIndex >= sectionCount()) sectionIndex = sectionCount() - 1;
+}
 
 int AgendaActivity::itemCount() const {
-  if (sectionIndex == 0) return static_cast<int>(HUB_STORE.reminders.size());
-  const int li = sectionIndex - 1;
-  if (li < 0 || li >= static_cast<int>(HUB_STORE.lists.size())) return 0;
-  return static_cast<int>(HUB_STORE.lists[li].items.size());
+  switch (current().kind) {
+    case MESSAGES: return static_cast<int>(HUB_STORE.messages.size());
+    case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
+    case LIST: return static_cast<int>(HUB_STORE.lists[current().listIndex].items.size());
+  }
+  return 0;
 }
 
 std::string AgendaActivity::sectionTitle(const int index) const {
-  if (index == 0) return tr(STR_HUB_REMINDERS);
-  return HUB_STORE.lists[index - 1].name;
+  switch (sections[index].kind) {
+    case MESSAGES: return tr(STR_HUB_MESSAGES);
+    case REMINDERS: return tr(STR_HUB_REMINDERS);
+    case LIST: return HUB_STORE.lists[sections[index].listIndex].name;
+  }
+  return "";
 }
 
 std::string AgendaActivity::itemText(const int index, std::string& detail) const {
   detail.clear();
-  if (sectionIndex == 0) {
-    const HubStore::Reminder& r = HUB_STORE.reminders[index];
-    detail = r.when;
-    return r.title;
+  switch (current().kind) {
+    case MESSAGES: {
+      const HubStore::Message& m = HUB_STORE.messages[index];
+      detail = m.from;
+      return m.text;
+    }
+    case REMINDERS: {
+      const HubStore::Reminder& r = HUB_STORE.reminders[index];
+      detail = r.when;
+      return r.title;
+    }
+    case LIST: return HUB_STORE.lists[current().listIndex].items[index].text;
   }
-  return HUB_STORE.lists[sectionIndex - 1].items[index].text;
+  return "";
 }
 
 // Local removal first (the screen must answer right away), then the server:
@@ -70,13 +92,22 @@ std::string AgendaActivity::itemText(const int index, std::string& detail) const
 void AgendaActivity::tickCurrent() {
   if (itemCount() == 0) return;
   int id = 0;
-  const char* kind = sectionIndex == 0 ? "reminder" : "item";
-  if (sectionIndex == 0) {
-    id = HUB_STORE.reminders[itemIndex].id;
-    HUB_STORE.removeReminder(id);
-  } else {
-    id = HUB_STORE.lists[sectionIndex - 1].items[itemIndex].id;
-    HUB_STORE.removeItem(id);
+  const char* kind = "item";
+  switch (current().kind) {
+    case MESSAGES:
+      kind = "message";
+      id = HUB_STORE.messages[itemIndex].id;
+      HUB_STORE.removeMessage(id);
+      break;
+    case REMINDERS:
+      kind = "reminder";
+      id = HUB_STORE.reminders[itemIndex].id;
+      HUB_STORE.removeReminder(id);
+      break;
+    case LIST:
+      id = HUB_STORE.lists[current().listIndex].items[itemIndex].id;
+      HUB_STORE.removeItem(id);
+      break;
   }
   HUB_STORE.saveToFile();
   std::string body;
@@ -88,7 +119,12 @@ void AgendaActivity::tickCurrent() {
   }
   const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/hub/done", body);
   LOG_INF(TAG, "done %s %d: %s", kind, id, ServerClient::resultName(r));
-  if (itemIndex >= itemCount() && itemIndex > 0) itemIndex--;
+  if (current().kind == MESSAGES && HUB_STORE.messages.empty()) {
+    level = SECTIONS;  // the section disappears with its last message
+    rebuildSections();
+  } else if (itemIndex >= itemCount() && itemIndex > 0) {
+    itemIndex--;
+  }
   requestUpdate();
 }
 
@@ -107,8 +143,8 @@ void AgendaActivity::sendEdit(const char* action, const char* list, const char* 
 }
 
 void AgendaActivity::openItemMenu() {
-  if (level != ITEMS || sectionIndex == 0 || itemCount() == 0) return;  // lists only; reminders just tick
-  menuItemId = HUB_STORE.lists[sectionIndex - 1].items[itemIndex].id;
+  if (level != ITEMS || current().kind != LIST || itemCount() == 0) return;  // lists only; the rest just ticks
+  menuItemId = HUB_STORE.lists[current().listIndex].items[itemIndex].id;
   menuStep = MAIN;
   menuOptions = {tr(STR_AGENDA_MOVE), tr(STR_AGENDA_DATE), tr(STR_AGENDA_DELETE)};
   menu.show(StrId::STR_AGENDA_ITEM_MENU, menuOptions, 0, [this](int idx) { onMenuPick(idx); });
@@ -226,7 +262,8 @@ void AgendaActivity::render(RenderLock&&) {
 
   if (count == 0) {
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10,
-                              level == SECTIONS || sectionIndex == 0 ? tr(STR_HUB_NO_REMINDERS) : tr(STR_AGENDA_EMPTY));
+                              level == SECTIONS || current().kind == REMINDERS ? tr(STR_HUB_NO_REMINDERS)
+                                                                                : tr(STR_AGENDA_EMPTY));
   }
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
     const int y = top + (i - first) * ROW_H;
@@ -236,8 +273,12 @@ void AgendaActivity::render(RenderLock&&) {
     std::string detail;
     std::string text;
     if (level == SECTIONS) {
-      const int n = i == 0 ? static_cast<int>(HUB_STORE.reminders.size())
-                           : static_cast<int>(HUB_STORE.lists[i - 1].items.size());
+      int n = 0;
+      switch (sections[i].kind) {
+        case MESSAGES: n = static_cast<int>(HUB_STORE.messages.size()); break;
+        case REMINDERS: n = static_cast<int>(HUB_STORE.reminders.size()); break;
+        case LIST: n = static_cast<int>(HUB_STORE.lists[sections[i].listIndex].items.size()); break;
+      }
       text = sectionTitle(i);
       detail = std::to_string(n);
     } else {
@@ -256,8 +297,8 @@ void AgendaActivity::render(RenderLock&&) {
   }
 
   if (menuStep != NONE && menu.processRender(renderer, mappedInput)) return;
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), level == SECTIONS ? tr(STR_SELECT) : tr(STR_AGENDA_DONE),
-                                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const char* okLabel = level == SECTIONS ? tr(STR_SELECT) : current().kind == MESSAGES ? tr(STR_AGENDA_READ) : tr(STR_AGENDA_DONE);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

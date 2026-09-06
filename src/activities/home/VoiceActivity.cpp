@@ -8,6 +8,7 @@
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 
+#include "HubStore.h"
 #include "HubSyncActivity.h"
 #include "TimerActivity.h"
 #include "MappedInputManager.h"
@@ -98,8 +99,8 @@ void VoiceActivity::performRequest() {
   LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)recorder.wavBytes());
   ServerClient::Response resp;
   const ServerClient::Result r =
-      SERVER_CLIENT.postBytes(std::string("/api/voice?lang=") + uiLanguageCode(), "audio/wav", recorder.wav(),
-                              recorder.wavBytes(), resp, VOICE_TIMEOUT_MS);
+      SERVER_CLIENT.postBytes(std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam(),
+                              "audio/wav", recorder.wav(), recorder.wavBytes(), resp, VOICE_TIMEOUT_MS);
   recorder.release();
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);

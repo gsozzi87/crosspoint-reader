@@ -23,8 +23,14 @@ class AgendaActivity final : public Activity {
  private:
   enum Level { SECTIONS, ITEMS };
   Level level = SECTIONS;
+  enum Kind { MESSAGES, REMINDERS, LIST };
+  struct Section {
+    Kind kind;
+    int listIndex;  // into HUB_STORE.lists when kind == LIST
+  };
+  std::vector<Section> sections;
   ButtonNavigator buttonNavigator;
-  int sectionIndex = 0;  // 0 = reminders, 1.. = lists
+  int sectionIndex = 0;
   int itemIndex = 0;
   int itemsPerPage = 1;
   OptionPopup menu;                   // Move / Date / Delete, then the sub-choice
@@ -33,8 +39,10 @@ class AgendaActivity final : public Activity {
   std::vector<std::string> menuOptions;
   int menuItemId = 0;
 
-  int sectionCount() const;
+  void rebuildSections();
+  int sectionCount() const { return static_cast<int>(sections.size()); }
   int itemCount() const;
+  const Section& current() const { return sections[sectionIndex]; }
   std::string sectionTitle(int index) const;
   std::string itemText(int index, std::string& detail) const;
   void tickCurrent();
