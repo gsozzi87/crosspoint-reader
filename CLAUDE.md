@@ -109,23 +109,25 @@ llegue el hardware.
 
 ## Roadmap acordado
 
-0. Hardware: audio, trackball/botones, deep sleep medido.
-1. Hub de apps (base CrossMux, MIT) + "preguntarle al libro" (texto del EPUB → servidor → Claude) + cliente HTTP
-   común con token, reintentos y cola offline.
-2. Asistente por voz PTT (mic → Whisper → Claude → TTS → parlante), recordatorios y listas (RTC + servidor),
-   traductor. Descartado: lectura en voz alta del libro.
-3. Biblia con índice invertido pregenerado en SD (búsqueda en ms, sin WiFi), reproductor MP3 desde SD
-   (`ESP32-audioI2S`, tarea propia en core 1), RSS/lectura web. Descartados: radio por streaming, dashboard Casa
-   Cerebro.
-4. Juegos (cartas, sudoku). Spotify descartado.
+La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
+(fusión de lo planeado con lo que hacen el reTerminal Sticky y el ZecTrix Note 4). Resumen:
 
-Hub (Fase 1, base hecha): home con mosaicos (Leer, Preguntar, Recordatorios, Biblia, Música, Ajustes), barra de estado (hora,
-batería, WiFi, próximo recordatorio) y widgets que se llenan desde el servidor con WiFi (clima, agenda, última
-frase leída) y muestran lo último guardado sin WiFi. Navegación UP/DOWN/OK/Back, lista para el trackball.
+0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido.
+1. Hub (base hecha) + preguntarle al libro + cliente HTTP. Falta: sincronización programada con
+   `GET /api/hub`, widgets (clima, recordatorio, agenda, frase), pizarra de mensajes, mosaico "Hablar" (PTT).
+2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
+   nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; listas;
+   TTS por el parlante; traductor; temporizador/Pomodoro; agenda; memoria del asistente.
+3. Contenido: Biblia con índice en SD, versículo/frase del día, MP3 desde SD, RSS/lectura web, álbum de
+   imágenes en 4 grises, clima detallado.
+4. Juegos: sudoku, solitario, ajedrez opcional.
 
-Principios: CrossPoint sigue siendo el lector; lo nuestro entra como Activities en el hub. Todo lo pesado (STT,
-LLM, TTS, render) en el servidor. Audio y red en tareas FreeRTOS separadas de la UI. El aparato nunca guarda
-claves de Anthropic; habla con el Hono con un token propio.
+Descartado: radio por streaming, Casa Cerebro, lectura en voz alta de libros, Spotify, auto-rotación por IMU.
+
+Principios: un solo botón de voz (PTT) desde cualquier pantalla; respuesta escrita siempre y hablada cuando
+aporta; todo funciona sin WiFi con la caché de la SD; CrossPoint sigue siendo el lector y lo nuestro entra
+como Activities en el hub; todo lo pesado (STT, LLM, TTS, render) en el servidor; audio y red en tareas
+FreeRTOS separadas de la UI; el aparato nunca guarda claves de Anthropic.
 
 ## Convenciones
 
