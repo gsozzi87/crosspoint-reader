@@ -18,16 +18,34 @@ class HubStore : public PersistableStore<HubStore> {
     std::string from;
     std::string text;
   };
+  struct Reminder {
+    int id = 0;
+    std::string title;
+    std::string when;
+  };
+  struct ListItem {
+    int id = 0;
+    std::string text;
+  };
+  struct List {
+    std::string name;
+    std::vector<ListItem> items;  // pending only
+  };
 
   static constexpr int MAX_EVENTS = 4;
   static constexpr int MAX_MESSAGES = 5;
+  static constexpr int MAX_REMINDERS = 20;
+  static constexpr int MAX_LISTS = 12;
+  static constexpr int MAX_ITEMS = 30;
 
   time_t syncedAt = 0;       // UTC epoch of the last successful sync (0 = never)
   time_t lastAttemptAt = 0;  // UTC epoch of the last attempt, successful or not (1 = attempted, no clock)
   std::string weatherLine;   // "Nublado · 18°"
   std::string weatherDetail; // "Máx 22° · Mín 11° · Humedad 60 %"
-  std::string reminderTitle;
+  std::string reminderTitle;  // = reminders[0], kept for the widget
   std::string reminderWhen;
+  std::vector<Reminder> reminders;
+  std::vector<List> lists;
   std::vector<Event> events;
   std::vector<Message> messages;
   std::string quote;
@@ -39,6 +57,9 @@ class HubStore : public PersistableStore<HubStore> {
   // Replaces the cached content with a server payload ({weather, reminders, events, messages, quote}).
   void applyServer(JsonVariantConst doc);
   bool hasSynced() const { return syncedAt > 0; }
+  // Local tick (the server gets POST /api/hub/done from the caller, queued if offline).
+  void removeReminder(int id);
+  void removeItem(int id);
 
  private:
   HubStore() = default;

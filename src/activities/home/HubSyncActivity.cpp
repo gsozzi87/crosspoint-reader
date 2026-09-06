@@ -13,6 +13,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "voice/Lang.h"
 
 namespace {
 constexpr const char* TAG = "HUB_SYNC";
@@ -67,7 +68,7 @@ void HubSyncActivity::markAttempt(const bool ok) {
 bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) {
   WiFi.setSleep(false);
   ServerClient::Response resp;
-  const ServerClient::Result result = SERVER_CLIENT.get("/api/hub", resp, /*auth=*/true);
+  const ServerClient::Result result = SERVER_CLIENT.get(std::string("/api/hub?lang=") + uiLanguageCode(), resp, /*auth=*/true);
   if (resultOut) *resultOut = result;
   if (statusOut) *statusOut = resp.status;
   const int status = resp.status;

@@ -5,6 +5,28 @@ std::string str(JsonVariantConst v, const char* key) {
   const char* s = v[key] | "";
   return std::string(s);
 }
+
+void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) {
+  out.clear();
+  for (JsonVariantConst r : doc["reminders"].as<JsonArrayConst>()) {
+    if (out.size() >= HubStore::MAX_REMINDERS) break;
+    out.push_back({r["id"] | 0, str(r, "title"), str(r, "when")});
+  }
+}
+
+void parseLists(JsonVariantConst doc, std::vector<HubStore::List>& out) {
+  out.clear();
+  for (JsonVariantConst l : doc["lists"].as<JsonArrayConst>()) {
+    if (out.size() >= HubStore::MAX_LISTS) break;
+    HubStore::List list;
+    list.name = str(l, "name");
+    for (JsonVariantConst i : l["items"].as<JsonArrayConst>()) {
+      if (list.items.size() >= HubStore::MAX_ITEMS) break;
+      list.items.push_back({i["id"] | 0, str(i, "text")});
+    }
+    out.push_back(std::move(list));
+  }
+}
 }  // namespace
 
 void HubStore::toJson(JsonDocument& doc) const {
@@ -14,6 +36,24 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["weatherDetail"] = weatherDetail;
   doc["reminderTitle"] = reminderTitle;
   doc["reminderWhen"] = reminderWhen;
+  JsonArray rem = doc["reminders"].to<JsonArray>();
+  for (const Reminder& r : reminders) {
+    JsonObject o = rem.add<JsonObject>();
+    o["id"] = r.id;
+    o["title"] = r.title;
+    o["when"] = r.when;
+  }
+  JsonArray ls = doc["lists"].to<JsonArray>();
+  for (const List& l : lists) {
+    JsonObject o = ls.add<JsonObject>();
+    o["name"] = l.name;
+    JsonArray items = o["items"].to<JsonArray>();
+    for (const ListItem& i : l.items) {
+      JsonObject io = items.add<JsonObject>();
+      io["id"] = i.id;
+      io["text"] = i.text;
+    }
+  }
   JsonArray ev = doc["events"].to<JsonArray>();
   for (const Event& e : events) {
     JsonObject o = ev.add<JsonObject>();
@@ -36,6 +76,8 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   weatherDetail = str(doc, "weatherDetail");
   reminderTitle = str(doc, "reminderTitle");
   reminderWhen = str(doc, "reminderWhen");
+  parseReminders(doc, reminders);
+  parseLists(doc, lists);
   events.clear();
   for (JsonVariantConst e : doc["events"].as<JsonArrayConst>()) {
     if (events.size() >= MAX_EVENTS) break;
@@ -56,13 +98,10 @@ bool HubStore::fromJson(JsonVariantConst doc) {
 void HubStore::applyServer(JsonVariantConst doc) {
   weatherLine = str(doc["weather"], "line");
   weatherDetail = str(doc["weather"], "detail");
-  reminderTitle.clear();
-  reminderWhen.clear();
-  JsonArrayConst reminders = doc["reminders"].as<JsonArrayConst>();
-  if (reminders.size() > 0) {
-    reminderTitle = str(reminders[0], "title");
-    reminderWhen = str(reminders[0], "when");
-  }
+  parseReminders(doc, reminders);
+  parseLists(doc, lists);
+  reminderTitle = reminders.empty() ? "" : reminders[0].title;
+  reminderWhen = reminders.empty() ? "" : reminders[0].when;
   events.clear();
   for (JsonVariantConst e : doc["events"].as<JsonArrayConst>()) {
     if (events.size() >= MAX_EVENTS) break;
@@ -74,4 +113,26 @@ void HubStore::applyServer(JsonVariantConst doc) {
     messages.push_back({str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
+}
+
+void HubStore::removeReminder(const int id) {
+  for (auto it = reminders.begin(); it != reminders.end(); ++it) {
+    if (it->id == id) {
+      reminders.erase(it);
+      break;
+    }
+  }
+  reminderTitle = reminders.empty() ? "" : reminders[0].title;
+  reminderWhen = reminders.empty() ? "" : reminders[0].when;
+}
+
+void HubStore::removeItem(const int id) {
+  for (List& l : lists) {
+    for (auto it = l.items.begin(); it != l.items.end(); ++it) {
+      if (it->id == id) {
+        l.items.erase(it);
+        return;
+      }
+    }
+  }
 }
