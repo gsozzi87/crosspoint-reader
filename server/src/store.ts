@@ -20,8 +20,11 @@ export type Item = { id: number; text: string; done: boolean; dueDate: string | 
 export type Note = { id: number; text: string; createdAt: string };
 export type Message = { id: number; from: string; text: string; createdAt: string; read: boolean };
 
+export type Memory = { id: number; text: string; createdAt: string };
+
 export type Store = {
   nextId: number;
+  memories?: Memory[]; // "acordate que ...": datos que el asistente tiene presentes al contestar
   reminders: Reminder[];
   lists: Record<string, Item[]>; // "Entrada", "Casa", "Trabajo", "Administrativo", "Compras", proyectos...
   notes: Note[];
@@ -40,6 +43,7 @@ export async function load(): Promise<Store> {
     cache = { nextId: 1, reminders: [], lists: {}, notes: [], messages: [] };
   }
   for (const name of DEFAULT_LISTS) cache.lists[name] ??= [];
+  cache.memories ??= [];
   return cache;
 }
 

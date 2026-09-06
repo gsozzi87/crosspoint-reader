@@ -48,7 +48,7 @@ const SCHEMA = {
   properties: {
     intent: {
       type: "string",
-      enum: ["question", "reminder", "task", "shopping", "note", "message", "timer", "alarm", "translate"],
+      enum: ["question", "reminder", "task", "shopping", "note", "message", "timer", "alarm", "translate", "memory"],
       description: "Intención principal de lo dicho.",
     },
     reply: {
@@ -64,7 +64,7 @@ const SCHEMA = {
         additionalProperties: false,
         required: ["kind", "text", "list", "dueAt", "repeat", "seconds"],
         properties: {
-          kind: { type: "string", enum: ["reminder", "task", "shopping", "note", "message", "timer", "alarm"] },
+          kind: { type: "string", enum: ["reminder", "task", "shopping", "note", "message", "timer", "alarm", "memory"] },
           text: { type: "string", description: "Título de la tarea/recordatorio, ítem de compra, texto de la nota o mensaje." },
           list: { type: ["string", "null"], description: "Nombre de la lista si el usuario la nombró o se deduce; null si no." },
           dueAt: {
@@ -79,7 +79,7 @@ const SCHEMA = {
   },
 } as const;
 
-function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang): string {
+function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang, memories: string[]): string {
   return [
     "Sos el asistente por voz de un aparato de tinta electrónica sin teclado. Recibís una frase transcripta",
     "de voz (puede traer errores de reconocimiento; interpretala con sentido común y no comentes la transcripción)",
@@ -90,7 +90,11 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá a <lista>', 'en trabajo:',",
     "'tengo que', 'hay que' → task (list si la nombró; si no, null y va a Entrada). 'Nota:', 'anotá' → note. 'Mensaje para',",
     "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos').",
-    "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
+    "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora; repeat daily si dice 'todos los días') y reply corta.",
+    "'Acordate que', 'tené presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
+    memories.length
+      ? `Cosas que el usuario te pidió que recuerdes (usalas si vienen al caso): ${memories.map((m) => `«${m}»`).join(" ")}`
+      : "",
     `'Traducí', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
     "y reply la contesta con conocimiento general, corta y directa. Si la frase trae una acción y una pregunta, guardá la",
     "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task en Entrada y decilo.",
@@ -107,10 +111,11 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
   const local = now.toLocaleString("sv-SE", { timeZone: TZ }).slice(0, 16).replace(" ", "T");
   const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ });
   const lists = Array.from(new Set([...DEFAULT_LISTS, ...Object.keys(store.lists)]));
+  const memories = (store.memories ?? []).slice(-40).map((m) => m.text);
   const response = await client.messages.create({
     model: MODEL,
     max_tokens: 1024,
-    system: systemPrompt(local, weekday, lists, lang),
+    system: systemPrompt(local, weekday, lists, lang, memories),
     messages: [{ role: "user", content: text }],
     output_config: { format: { type: "json_schema", schema: SCHEMA } },
   });
@@ -154,8 +159,23 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
         store.messages.push({ id: nextId(store), from: "voz", text: title, createdAt: stamp, read: false });
         saved.push({ kind: "message", title });
         break;
+      case "memory":
+        store.memories ??= [];
+        store.memories.push({ id: nextId(store), text: title, createdAt: stamp });
+        if (store.memories.length > 100) store.memories.shift();
+        saved.push({ kind: "memory", title });
+        break;
+      case "alarm": {
+        // Una alarma es un recordatorio: despierta el aparato por el timer de
+        // deep sleep y suena aunque esté dormido.
+        const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}T/.test(a.dueAt) ? a.dueAt : null;
+        if (!dueAt) break;
+        store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt, repeat: a.repeat ?? "none", done: false, createdAt: stamp });
+        saved.push({ kind: "reminder", title: title || "Alarma", when: whenLabel(dueAt, lang) });
+        break;
+      }
       default:
-        break; // timer / alarm: todavía no se ejecutan (Fase 2.8 / 2.9)
+        break; // timer corre en el aparato (timerSeconds)
     }
   }
   if (saved.length) await save(store);
@@ -180,7 +200,6 @@ voice.post("/", async (c) => {
     let timerSeconds = 0;
     for (const a of parsed.actions ?? []) {
       if (a.kind === "timer" && a.seconds && a.seconds > 0) timerSeconds = Math.floor(a.seconds);
-      if (a.kind === "alarm" && a.dueAt) timerSeconds = Math.max(0, localToEpoch(a.dueAt) - Math.floor(Date.now() / 1000));
     }
     // Voz: confirmaciones y traducciones siempre; una respuesta a pregunta solo
     // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato

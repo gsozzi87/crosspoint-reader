@@ -29,6 +29,9 @@ class VoiceRecorder {
   void release();
 
   bool tooShort() const { return recorded < SAMPLE_RATE / 2; }  // < 0.5 s = accidental press
+  // Short tones through the speaker when the mic opens (high) and closes (low),
+  // so the user knows when to talk without looking. On by default.
+  void setBlips(bool on) { blips = on; }
   size_t samples() const { return recorded; }
   float seconds() const { return recorded / static_cast<float>(SAMPLE_RATE); }
   const uint8_t* wav() const { return buffer; }
@@ -40,4 +43,7 @@ class VoiceRecorder {
   size_t maxSamples;
   size_t recorded = 0;
   bool recording = false;
+  bool blips = true;
+
+  void blip(uint16_t hz, uint16_t ms);
 };
