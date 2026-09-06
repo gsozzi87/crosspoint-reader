@@ -142,7 +142,7 @@ void VoiceActivity::performRequest() {
   LOG_INF(TAG, "\"%s\" -> %s", heard.c_str(), intent.c_str());
 
   // Widgets: whatever was just saved shows up on the hub right away.
-  if (intent != "question" && intent != "translate") HubSyncActivity::fetchNow();
+  if (intent != "question" && intent != "translate" && intent != "memory") HubSyncActivity::fetchNow();
   WiFi.setSleep(true);
   if ((intent == "timer" || intent == "alarm") && timerSeconds > 0) {
     LOG_INF(TAG, "timer %d s", timerSeconds);
@@ -160,6 +160,8 @@ const char* VoiceActivity::intentTitle() const {
   if (intent == "note") return tr(STR_VOICE_SAVED_NOTE);
   if (intent == "message") return tr(STR_VOICE_SAVED_MESSAGE);
   if (intent == "translate") return tr(STR_VOICE_TRANSLATION);
+  if (intent == "memory") return tr(STR_VOICE_SAVED_MEMORY);
+  if (intent == "alarm") return tr(STR_VOICE_SAVED_REMINDER);
   return heard.c_str();  // question: what was asked, as the header
 }
 

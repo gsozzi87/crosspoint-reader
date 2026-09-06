@@ -25,6 +25,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
+import { load } from "./store";
 
 const MODEL = process.env.ASK_MODEL ?? "claude-haiku-4-5";
 const MAX_TEXT = 32_000; // chars; el aparato recorta antes, esto es defensa
@@ -51,9 +52,10 @@ function systemPrompt(book: string, chapter: string, lang: string): string {
   ].join(" ");
 }
 
-function generalPrompt(lang: string): string {
+function generalPrompt(lang: string, memories: string[]): string {
   const language = LANGUAGE_NAME[normalizeLang(lang)];
   return [
+    memories.length ? `Cosas que el usuario te pidió que recuerdes: ${memories.map((m) => `«${m}»`).join(" ")}` : "",
     "Sos el asistente por voz de un lector de libros electrónico de tinta electrónica.",
     "Respondé la pregunta de forma directa y útil con conocimiento general.",
     "La pregunta llega transcripta de voz: puede traer errores de reconocimiento; interpretala con",
@@ -84,7 +86,7 @@ ask.post("/", async (c) => {
       model: MODEL,
       max_tokens: 1024,
       system: general
-        ? generalPrompt(lang)
+        ? generalPrompt(lang, ((await load()).memories ?? []).slice(-40).map((m) => m.text))
         : [
             { type: "text", text: systemPrompt(book, chapter, lang) },
             {
