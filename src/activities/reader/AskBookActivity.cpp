@@ -7,7 +7,6 @@
 #include <ServerClient.h>
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
-#include <esp_heap_caps.h>
 
 #include "DictionaryDefinitionActivity.h"
 #include "MappedInputManager.h"
@@ -15,14 +14,13 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "util/WavHeader.h"
+#include "voice/SpeechToText.h"
 
 namespace {
 constexpr const char* TAG = "ASK";
-// Claude with a long chapter, or Whisper on a 10 s clip, take longer than the
-// ServerClient default that is sized for pings.
+// Claude with a long chapter takes longer than the ServerClient default that
+// is sized for pings.
 constexpr uint32_t ASK_TIMEOUT_MS = 90000;
-constexpr uint32_t TRANSCRIBE_TIMEOUT_MS = 60000;
 }  // namespace
 
 const StrId AskBookActivity::PRESETS[] = {StrId::STR_ASK_SUMMARIZE, StrId::STR_ASK_WHAT_HAPPENED,
@@ -48,8 +46,7 @@ void AskBookActivity::onEnter() {
 
 void AskBookActivity::onExit() {
   Activity::onExit();
-  audio.end();
-  releaseTake();
+  recorder.abort();
   if (wifiActivated) {
     WiFi.disconnect(false);
     delay(30);
@@ -69,17 +66,9 @@ void AskBookActivity::returnToReader() {
   }
 }
 
-void AskBookActivity::releaseTake() {
-  if (wavBuffer) {
-    heap_caps_free(wavBuffer);
-    wavBuffer = nullptr;
-  }
-  recorded = 0;
-}
-
 void AskBookActivity::fail(StrId why, std::string detail) {
   LOG_ERR(TAG, "%s %s", I18N.get(why), detail.c_str());
-  audio.endCapture();
+  recorder.abort();
   failureId = why;
   failureDetail = std::move(detail);
   state = FAILED;
@@ -87,7 +76,7 @@ void AskBookActivity::fail(StrId why, std::string detail) {
 }
 
 void AskBookActivity::showQuestionPicker() {
-  releaseTake();
+  recorder.release();
   // No list without a book: after an answer, a too-short take or Back while
   // recording, general mode just goes back to the hub.
   if (generalMode) {
@@ -118,54 +107,23 @@ void AskBookActivity::onQuestionPicked(int index) {
 }
 
 void AskBookActivity::startRecording() {
-  if (!BoardConfig::hasCodecMic()) {
-    fail(StrId::STR_ASK_NO_MIC);
-    return;
-  }
-  const size_t bytes = wav::HEADER_BYTES + MAX_SAMPLES * sizeof(int16_t);
-  wavBuffer = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-  if (!wavBuffer) wavBuffer = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
-  if (!wavBuffer) {
-    fail(StrId::STR_AUDIO_NO_MEMORY);
-    return;
-  }
-  recorded = 0;
-  if (!audio.begin() || !audio.beginCapture(SAMPLE_RATE)) {
-    fail(StrId::STR_AUDIO_CAPTURE_FAILED);
+  StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
+  if (!recorder.start(why)) {
+    fail(why);
     return;
   }
   voiceQuestion = true;
   state = RECORDING;
-  LOG_DBG(TAG, "Recording the question (max %u s)", (unsigned)MAX_SECONDS);
   requestUpdate();
 }
 
-// Called from loop() while RECORDING: drains the I2S RX DMA in small blocks so
-// the UI loop keeps servicing the OK (stop) and Back (abort) buttons.
-void AskBookActivity::pumpRecording() {
-  constexpr size_t BLOCK = 512;  // 32 ms at 16 kHz
-  int16_t* samples = reinterpret_cast<int16_t*>(wavBuffer + wav::HEADER_BYTES);
-  size_t want = MAX_SAMPLES - recorded;
-  if (want > BLOCK) want = BLOCK;
-  const int n = audio.readCapture(samples + recorded, want, 50);
-  if (n < 0) {
-    fail(StrId::STR_AUDIO_CAPTURE_FAILED);
-    return;
-  }
-  recorded += n;
-  if (recorded >= MAX_SAMPLES) stopRecording();
-}
-
 void AskBookActivity::stopRecording() {
-  audio.endCapture();
-  audio.end();  // release I2S + codec before WiFi/TLS need the heap
-  if (recorded < MIN_SAMPLES) {
-    LOG_DBG(TAG, "Take too short (%u samples), back to the picker", (unsigned)recorded);
+  recorder.stop();
+  if (recorder.tooShort()) {
+    LOG_DBG(TAG, "Take too short, back to the picker");
     showQuestionPicker();
     return;
   }
-  wav::writeHeader(wavBuffer, SAMPLE_RATE, recorded * sizeof(int16_t));
-  LOG_DBG(TAG, "Take: %u samples (%.1f s)", (unsigned)recorded, recorded / (float)SAMPLE_RATE);
   connectThenSend();
 }
 
@@ -193,33 +151,13 @@ void AskBookActivity::onWifiSelectionComplete(const bool connected) {
 
 void AskBookActivity::performTranscribe() {
   requestPending = false;
-  WiFi.setSleep(false);
-  const size_t bytes = wav::HEADER_BYTES + recorded * sizeof(int16_t);
-  LOG_DBG(TAG, "POST /api/transcribe: %u bytes", (unsigned)bytes);
-  ServerClient::Response resp;
-  const ServerClient::Result r =
-      SERVER_CLIENT.postBytes("/api/transcribe", "audio/wav", wavBuffer, bytes, resp, TRANSCRIBE_TIMEOUT_MS);
-  releaseTake();
-  if (r != ServerClient::Result::Ok) {
-    WiFi.setSleep(true);
-    char detail[96];
-    snprintf(detail, sizeof(detail), "%s (%d)", ServerClient::resultName(r), resp.status);
+  std::string detail;
+  const bool ok = SpeechToText::transcribe(recorder, question, detail);
+  recorder.release();
+  if (!ok) {
     fail(StrId::STR_ASK_TRANSCRIBE_FAILED, detail);
     return;
   }
-  JsonDocument doc;
-  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
-    WiFi.setSleep(true);
-    fail(StrId::STR_ASK_TRANSCRIBE_FAILED, "bad json");
-    return;
-  }
-  question = doc["text"] | "";
-  if (question.empty()) {
-    WiFi.setSleep(true);
-    fail(StrId::STR_ASK_TRANSCRIBE_FAILED, doc["error"] | "empty");
-    return;
-  }
-  LOG_DBG(TAG, "Question: \"%s\"", question.c_str());
   state = ASKING;
   requestPending = true;
   requestUpdate();
@@ -292,16 +230,15 @@ void AskBookActivity::loop() {
       break;
     case RECORDING:
       if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-        audio.endCapture();
-        audio.end();
+        recorder.abort();
         showQuestionPicker();
         break;
       }
-      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-        stopRecording();
+      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) || !recorder.isRecording()) {
+        stopRecording();  // OK, or the 10 s cap reached inside pump()
         break;
       }
-      pumpRecording();
+      if (!recorder.pump()) fail(StrId::STR_AUDIO_CAPTURE_FAILED);
       break;
     case TRANSCRIBING:
       if (requestPending) performTranscribe();

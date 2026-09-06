@@ -53,6 +53,7 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 1.8 | Pizarra de mensajes: texto que alguien manda desde el teléfono (página web del Hono con el token, o Telegram) y aparece en el hub; se marca leído con OK | ⬜ | Equivalente al "message board" del Sticky |
 | 1.9 | Mosaico "Hablar" (PTT) que reemplaza a "Preguntar": una grabación, el servidor clasifica | ⬜ | Base de la Fase 2 |
 | 1.10 | Ajustes del hub: orden de mosaicos y widgets, hora de sincronización, unidad °C/°F | ⬜ | Web UI |
+| 1.11 | Lugar del clima por voz: Settings → Lugar del clima, decís la ciudad, el servidor transcribe y geocodifica (Open-Meteo), elegís de la lista y queda guardado en el servidor; el hub se resincroniza | ✅ | 1.5.16 |
 
 ## Fase 2 · Voz, recordatorios y listas
 

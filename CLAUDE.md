@@ -112,6 +112,12 @@ llegue el hardware.
   si difiere más de 2 min (`HalClock::getEpochUtc/setFromEpochUtc`), vacía la cola offline y termina con
   `silentRestart()`. Servidor: `src/hub.ts` (Open-Meteo con `HUB_LAT`/`HUB_LON`/`HUB_TZ`; recordatorios, agenda y
   mensajes de `/data/hub-data.json` hasta la Fase 2; frase del día de una lista).
+- Lugar del clima por voz (`HubLocationActivity`, Settings → Lugar del clima): graba, `POST /api/transcribe`,
+  `GET /api/hub/location/search?q=` (geocoding de Open-Meteo, lista de candidatos en un `OptionPopup`),
+  `POST /api/hub/location` y pasa a `HubSyncActivity` con el WiFi ya arriba. El servidor lo guarda en
+  `/data/hub-settings.json`; `HUB_LAT`/`HUB_LON` quedan de respaldo.
+- Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
+  `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
   barra. Íconos de 24 px en `src/components/icons/hubWidgetIcons.h`. Pendiente: temperatura interior (SHTC3).
 

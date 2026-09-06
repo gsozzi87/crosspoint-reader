@@ -1,6 +1,5 @@
 #pragma once
 
-#include <AudioManager.h>
 #include <I18n.h>
 
 #include <cstdint>
@@ -9,6 +8,7 @@
 
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
+#include "voice/VoiceRecorder.h"
 
 // "Ask the book": the reader hands over the chapter text read so far (up to
 // MAX_CONTEXT_BYTES, most recent pages kept) and the current page; the user
@@ -50,12 +50,6 @@ class AskBookActivity final : public Activity {
   enum State { PICK, RECORDING, CONNECTING, TRANSCRIBING, ASKING, ANSWER, FAILED };
   State state = PICK;
 
-  // Voice take: 16 kHz mono 16-bit, capped so the upload stays small.
-  static constexpr uint32_t SAMPLE_RATE = 16000;
-  static constexpr uint32_t MAX_SECONDS = 10;
-  static constexpr size_t MAX_SAMPLES = SAMPLE_RATE * MAX_SECONDS;
-  static constexpr size_t MIN_SAMPLES = SAMPLE_RATE / 2;  // shorter than 0.5 s = accidental press
-
   const bool generalMode = false;
   std::string epubPath;
   std::string bookTitle;
@@ -72,9 +66,7 @@ class AskBookActivity final : public Activity {
   bool wifiActivated = false;
   bool requestPending = false;
 
-  AudioManager audio;
-  uint8_t* wavBuffer = nullptr;  // WAV header + samples, PSRAM
-  size_t recorded = 0;           // samples captured
+  VoiceRecorder recorder;  // 10 s max, keeps the upload small
   bool voiceQuestion = false;
 
   static const StrId PRESETS[];
@@ -83,7 +75,6 @@ class AskBookActivity final : public Activity {
   void showQuestionPicker();
   void onQuestionPicked(int index);
   void startRecording();
-  void pumpRecording();
   void stopRecording();
   void connectThenSend();
   void onWifiSelectionComplete(bool connected);
@@ -91,6 +82,5 @@ class AskBookActivity final : public Activity {
   void performAsk();
   void showAnswer();
   void fail(StrId why, std::string detail = "");
-  void releaseTake();
   void returnToReader();
 };
