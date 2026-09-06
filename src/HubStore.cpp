@@ -10,7 +10,7 @@ void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) 
   out.clear();
   for (JsonVariantConst r : doc["reminders"].as<JsonArrayConst>()) {
     if (out.size() >= HubStore::MAX_REMINDERS) break;
-    out.push_back({r["id"] | 0, str(r, "title"), str(r, "when")});
+    out.push_back({r["id"] | 0, str(r, "title"), str(r, "when"), static_cast<time_t>(r["dueAt"] | (int64_t)0)});
   }
 }
 
@@ -42,6 +42,7 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["id"] = r.id;
     o["title"] = r.title;
     o["when"] = r.when;
+    o["dueAt"] = static_cast<int64_t>(r.dueAt);
   }
   JsonArray ls = doc["lists"].to<JsonArray>();
   for (const List& l : lists) {
@@ -134,5 +135,27 @@ void HubStore::removeItem(const int id) {
         return;
       }
     }
+  }
+}
+
+time_t HubStore::nextDueAt(const time_t now) const {
+  time_t best = 0;
+  for (const Reminder& r : reminders) {
+    if (r.dueAt > now && (best == 0 || r.dueAt < best)) best = r.dueAt;
+  }
+  return best;
+}
+
+const HubStore::Reminder* HubStore::dueReminder(const time_t now) const {
+  const Reminder* best = nullptr;
+  for (const Reminder& r : reminders) {
+    if (r.dueAt > 0 && r.dueAt <= now && (!best || r.dueAt < best->dueAt)) best = &r;
+  }
+  return best;
+}
+
+void HubStore::snoozeReminder(const int id, const time_t until) {
+  for (Reminder& r : reminders) {
+    if (r.id == id) r.dueAt = until;
   }
 }

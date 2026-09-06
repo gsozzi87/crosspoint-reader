@@ -17,6 +17,7 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "AgendaActivity.h"
+#include "ReminderAlertActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
 #include "components/icons/hubIcons.h"
@@ -163,10 +164,20 @@ void HubActivity::loop() {
   }
 
   // Keep the clock honest while the hub sits on screen: one partial refresh
-  // per minute change, nothing more (the panel wants few partials).
+  // per minute change, nothing more (the panel wants few partials). The same
+  // tick fires a reminder that came due while awake.
   const unsigned long now = millis();
   if (now - lastClockMinuteTick >= 15000) {
     lastClockMinuteTick = now;
+    time_t epoch = 0;
+    if (halClock.getEpochUtc(epoch)) {
+      if (const HubStore::Reminder* due = HUB_STORE.dueReminder(epoch)) {
+        startActivityForResult(
+            std::make_unique<ReminderAlertActivity>(renderer, mappedInput, due->id, due->title, due->when),
+            [this](const ActivityResult&) { requestUpdate(); });
+        return;
+      }
+    }
     char buf[9] = {0};
     if (halClock.isAvailable() &&
         halClock.formatTime(buf, sizeof(buf), SETTINGS.clockUtcOffsetQ, SETTINGS.clockFormat == 1) &&

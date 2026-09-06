@@ -32,6 +32,8 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "HubStore.h"
+#include "activities/home/ReminderAlertActivity.h"
+#include <esp_sleep.h>
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
@@ -256,6 +258,21 @@ static bool loadSleepFrameBuffer() {
   return true;
 }
 
+// ws397: the RTC INT pin (GPIO45) is not an RTC GPIO, so a reminder cannot wake
+// the chip through the PCF85063 alarm. The deep-sleep timer does it instead:
+// armed to the next pending reminder (from the hub cache), the boot path then
+// shows ReminderAlertActivity. Needs the RTC set (server clock or NTP).
+static void armReminderWake() {
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now)) return;
+  const time_t due = HUB_STORE.nextDueAt(now);
+  if (due == 0) return;
+  uint64_t seconds = static_cast<uint64_t>(due - now);
+  if (seconds < 5) seconds = 5;
+  esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
+  LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -295,6 +312,7 @@ void enterDeepSleep(bool fromTimeout = false) {
   Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
+  armReminderWake();
   powerManager.startDeepSleep(gpio);
 }
 
@@ -486,9 +504,23 @@ void setup() {
   // retained frame and input dispatches against a visible UI.
   // Only a verified deep-sleep wake may use the one-shot persisted flag.
   // Otherwise a stale flag could suppress the splash on a cold boot.
-  const BootResume resume = isSilentReboot         ? BootResume::Silent
-                            : isPersistedSleepWake ? BootResume::SplashlessWake
-                                                   : BootResume::Splash;
+  // ws397: a deep-sleep timer wake is a reminder coming due (see armReminderWake).
+  const bool isReminderWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
+  const HubStore::Reminder* dueReminder = nullptr;
+  if (isReminderWake) {
+    time_t nowEpoch = 0;
+    if (halClock.getEpochUtc(nowEpoch)) dueReminder = HUB_STORE.dueReminder(nowEpoch + 30);
+    if (!dueReminder) {
+      // Woke early or the reminder went away (ticked from the phone): straight back to sleep.
+      LOG_INF("MAIN", "Timer wake with nothing due, sleeping again");
+      Storage.prepareForDeepSleep();
+      armReminderWake();
+      powerManager.startDeepSleep(gpio);
+    }
+  }
+  const BootResume resume = isSilentReboot                             ? BootResume::Silent
+                            : (isPersistedSleepWake || isReminderWake) ? BootResume::SplashlessWake
+                                                                       : BootResume::Splash;
   bool allowFastInitialReaderRefresh = false;
   bool needsWakeRefresh = false;
 
@@ -535,7 +567,10 @@ void setup() {
   // Output polarity is resolved per render by ActivityManager (night mode
   // inverts only the reading surfaces), so nothing to restore here.
 
-  if (recoveryFirmwareMode) {
+  if (dueReminder) {
+    activityManager.replaceActivity(std::make_unique<ReminderAlertActivity>(
+        renderer, mappedInputManager, dueReminder->id, dueReminder->title, dueReminder->when));
+  } else if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));

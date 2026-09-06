@@ -190,7 +190,7 @@ hub.get("/", async (c) => {
 // El aparato tilda un recordatorio o un ítem de lista (OK en la pantalla de
 // Recordatorios). Llega también desde la cola offline, por eso es idempotente.
 hub.post("/done", async (c) => {
-  let body: { kind?: string; id?: number };
+  let body: { kind?: string; id?: number; snooze?: number };
   try {
     body = await c.req.json();
   } catch {
@@ -200,6 +200,6 @@ hub.post("/done", async (c) => {
   if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item")) {
     return c.json({ ok: false, error: "kind (reminder|item) and id required" }, 400);
   }
-  const found = await markDone(body.kind, id);
+  const found = await markDone(body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0);
   return c.json({ ok: true, found });
 });
