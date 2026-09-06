@@ -32,12 +32,17 @@ class HubStore : public PersistableStore<HubStore> {
     std::string name;
     std::vector<ListItem> items;  // pending only
   };
+  struct Note {
+    int id = 0;
+    std::string text;
+  };
 
   static constexpr int MAX_EVENTS = 4;
   static constexpr int MAX_MESSAGES = 5;
   static constexpr int MAX_REMINDERS = 20;
   static constexpr int MAX_LISTS = 12;
   static constexpr int MAX_ITEMS = 30;
+  static constexpr int MAX_NOTES = 20;
 
   time_t syncedAt = 0;       // UTC epoch of the last successful sync (0 = never)
   time_t lastAttemptAt = 0;  // UTC epoch of the last attempt, successful or not (1 = attempted, no clock)
@@ -47,6 +52,7 @@ class HubStore : public PersistableStore<HubStore> {
   std::string reminderWhen;
   std::vector<Reminder> reminders;
   std::vector<List> lists;
+  std::vector<Note> notes;
   std::vector<Event> events;
   std::vector<Message> messages;
   std::string quote;
@@ -66,6 +72,8 @@ class HubStore : public PersistableStore<HubStore> {
   // First reminder whose time has come (dueAt <= now), or nullptr.
   const Reminder* dueReminder(time_t now) const;
   void snoozeReminder(int id, time_t until);
+  void removeNote(int id);
+  void moveItem(int id, const std::string& listName);
 
  private:
   HubStore() = default;

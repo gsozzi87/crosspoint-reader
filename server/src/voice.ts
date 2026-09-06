@@ -77,8 +77,8 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "Reglas: 'recordame', 'avisame', 'despertame' o algo con hora concreta → reminder (con dueAt). 'Comprar X', 'compras:' o",
     "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá a <lista>', 'en trabajo:',",
     "'tengo que', 'hay que' → task (list si la nombró; si no, null y va a Entrada). 'Nota:', 'anotá' → note. 'Mensaje para',",
-    "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' → timer con seconds. 'Alarma a las' → alarm;",
-    "para timer y alarm, reply avisa (en el idioma del usuario) que el aparato todavía no los ejecuta.",
+    "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos').",
+    "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
     `'Traducí', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
     "y reply la contesta con conocimiento general, corta y directa. Si la frase trae una acción y una pregunta, guardá la",
     "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task en Entrada y decilo.",
@@ -163,8 +163,13 @@ voice.post("/", async (c) => {
   try {
     const parsed = await classify(text, lang);
     const saved = await execute(parsed, text, lang);
-    const reply = parsed.reply;
-    return c.json({ ok: true, text, intent: parsed.intent, reply, saved });
+    // Temporizador y alarma corren en el aparato: segundos hasta que suene.
+    let timerSeconds = 0;
+    for (const a of parsed.actions ?? []) {
+      if (a.kind === "timer" && a.seconds && a.seconds > 0) timerSeconds = Math.floor(a.seconds);
+      if (a.kind === "alarm" && a.dueAt) timerSeconds = Math.max(0, localToEpoch(a.dueAt) - Math.floor(Date.now() / 1000));
+    }
+    return c.json({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds });
   } catch (err) {
     if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
     if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "bad ANTHROPIC_API_KEY" }, 500);
@@ -185,7 +190,41 @@ export async function hubSlice(lang: Lang) {
       items: items.filter((i) => !i.done).slice(0, 30).map((i) => ({ id: i.id, text: i.text })),
     })),
     messages: store.messages.filter((m) => !m.read).slice(-5).map((m) => ({ from: m.from, text: m.text })),
+    notes: store.notes.slice(-20).reverse().map((n) => ({ id: n.id, text: n.text })),
   };
+}
+
+// Ediciones desde el aparato (menú de la lista: mover, fecha, borrar; borrar nota).
+export async function editEntry(body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null }): Promise<boolean> {
+  const store = await load();
+  const id = Number(body.id);
+  if (body.kind === "note") {
+    const before = store.notes.length;
+    store.notes = store.notes.filter((n) => n.id !== id);
+    if (store.notes.length !== before) await save(store);
+    return store.notes.length !== before;
+  }
+  for (const [name, items] of Object.entries(store.lists)) {
+    const idx = items.findIndex((i) => i.id === id);
+    if (idx < 0) continue;
+    const item = items[idx];
+    if (body.action === "delete") {
+      items.splice(idx, 1);
+    } else if (body.action === "move") {
+      const target = resolveList(store, body.list, true);
+      if (target !== name) {
+        items.splice(idx, 1);
+        store.lists[target].push(item);
+      }
+    } else if (body.action === "date") {
+      item.dueDate = body.dueDate && /^\d{4}-\d{2}-\d{2}$/.test(body.dueDate) ? body.dueDate : null;
+    } else {
+      return false;
+    }
+    await save(store);
+    return true;
+  }
+  return false;
 }
 
 // Tildar (o posponer `snoozeSeconds`) desde el aparato. Idempotente: llega

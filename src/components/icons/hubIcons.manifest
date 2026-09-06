@@ -8,3 +8,5 @@ hub_reminders = bell
 hub_bible = book-marked
 hub_music = music
 hub_settings = settings
+hub_timer = timer
+hub_notes = notebook-pen

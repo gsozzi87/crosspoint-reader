@@ -9,6 +9,7 @@
 #include <WiFi.h>
 
 #include "HubSyncActivity.h"
+#include "TimerActivity.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -37,6 +38,7 @@ void VoiceActivity::onExit() {
   if (wifiActivated) {
     WiFi.disconnect(false);
     delay(30);
+    if (timerSeconds > 0) return;  // TimerActivity takes over; a restart would kill it
     silentRestart();
   }
 }
@@ -114,6 +116,7 @@ void VoiceActivity::performRequest() {
   heard = doc["text"] | "";
   intent = doc["intent"] | "";
   reply = doc["reply"] | "";
+  timerSeconds = doc["timerSeconds"] | 0;
   if (reply.empty()) {
     WiFi.setSleep(true);
     fail(StrId::STR_ASK_FAILED, doc["error"] | "empty reply");
@@ -124,6 +127,12 @@ void VoiceActivity::performRequest() {
   // Widgets: whatever was just saved shows up on the hub right away.
   if (intent != "question" && intent != "translate") HubSyncActivity::fetchNow();
   WiFi.setSleep(true);
+  if ((intent == "timer" || intent == "alarm") && timerSeconds > 0) {
+    LOG_INF(TAG, "timer %d s", timerSeconds);
+    activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, timerSeconds));
+    return;
+  }
+  timerSeconds = 0;
   showReply();
 }
 

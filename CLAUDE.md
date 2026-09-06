@@ -104,7 +104,7 @@ llegue el hardware.
 - `src/activities/home/HubActivity.{h,cpp}`: home de la ws397. `ActivityManager::goHome()` con `Board::WS397` abre
   el hub (salvo cuando vuelve de browser/recents/OPDS/transfer, que caen en la home clásica);
   `goToClassicHome()` es la home original de CrossPoint (mosaico Leer) y su Back vuelve al hub.
-- Mosaicos 2x3 (Leer, Preguntar, Recordatorios, Biblia, Música, Ajustes) con íconos Lucide de 48 px generados en
+- Mosaicos 2x4 (Leer, Hablar, Recordatorios, Tiempo, Notas, Biblia, Música, Ajustes) con íconos Lucide de 48 px generados en
   `src/components/icons/hubIcons.h` (manifest al lado; `gen_icons.py` del SDK, en la nube con `resvg-py` en vez de
   rsvg-convert). Barra de estado: hora del RTC (`--:--` si no está en hora), batería, WiFi si hay link. Widget
   "Continuar leyendo" con el último libro; Back en el hub lo abre. Recordatorios/Biblia/Música muestran
@@ -138,6 +138,10 @@ llegue el hardware.
   sirve para despertar); al arrancar por timer, si hay uno vencido se muestra el alerta y si no vuelve a dormir. En el
   hub, el tick de 15 s también lo dispara. OK = hecho (`POST /api/hub/done`), Atrás = posponer 10 min (`snooze` en
   el mismo POST); el servidor corre los repetidos al próximo ciclo.
+- Listas: Atrás largo sobre un ítem abre el menú (mover, fecha, borrar) → `POST /api/hub/edit` por `postOrQueue`.
+  Notas (`NotesActivity`): lista, OK abre, Atrás largo borra. Tiempo (`TimerActivity`): temporizador, cronómetro y
+  Pomodoro con dígitos de 7 segmentos; `VoiceActivity` lo abre directo cuando el servidor devuelve `timerSeconds`.
+  Pitido común en `src/voice/AlertBeep`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la

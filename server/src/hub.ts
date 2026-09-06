@@ -29,7 +29,7 @@
 import { Hono } from "hono";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
-import { hubSlice, markDone } from "./voice";
+import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 
 const LAT = process.env.HUB_LAT ?? "";
@@ -183,8 +183,23 @@ hub.get("/", async (c) => {
     lists: s.lists,
     events: (d.events ?? []).slice(0, 4),
     messages: s.messages.length ? s.messages : (d.messages ?? []).slice(0, 5),
+    notes: s.notes,
     quote: d.quote || quoteOfTheDay(lang),
   });
+});
+
+// Menú de un ítem de lista en el aparato (mover, fecha, borrar) o borrar una nota.
+//   { kind: "item", id, action: "move", list } | { kind: "item", id, action: "date", dueDate: "YYYY-MM-DD" | null }
+//   { kind: "item", id, action: "delete" } | { kind: "note", id, action: "delete" }
+hub.post("/edit", async (c) => {
+  let body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ ok: false, error: "invalid json" }, 400);
+  }
+  if (!Number.isFinite(Number(body.id))) return c.json({ ok: false, error: "id required" }, 400);
+  return c.json({ ok: true, found: await editEntry(body) });
 });
 
 // El aparato tilda un recordatorio o un ítem de lista (OK en la pantalla de
