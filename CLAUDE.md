@@ -4,8 +4,8 @@ Fork de [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-read
 Waveshare ESP32-S3-ePaper-3.97 (SSD1677 800x480, ESP32-S3-WROOM-1-N16R8, ES8311 + NS4150B, PMIC AXP2101-compatible,
 RTC PCF85063, IMU QMI8658, SD 4-bit). El submódulo `freeink-sdk/` apunta al fork propio con el perfil de placa.
 
-Idiomas del producto: español, inglés, chino mandarín, francés, alemán, portugués y ruso. Todo string nuestro
-va en los yaml de esos idiomas (chino pendiente de fuente CJK en la UI, ver FUNCIONES.md L.3); el aparato manda
+Idiomas del producto: español, inglés, francés, alemán, portugués y ruso (chino descartado). Todo string nuestro
+va en los yaml de esos idiomas; el aparato manda
 `lang` (`src/voice/Lang.h`) y el servidor escucha, contesta y traduce según ese idioma (`server/src/lang.ts`).
 
 Idioma con el usuario: español rioplatense/mexicano, informal y directo. Respuestas cortas. Él prueba en hardware
@@ -150,13 +150,14 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;
-   TTS por el parlante; traductor; temporizador/Pomodoro; agenda; memoria del asistente.
+   TTS por el parlante; traductor en modo conversación; temporizador, cronómetro y Pomodoro; agenda; memoria.
 3. Contenido: Biblia con índice en SD, versículo/frase del día, MP3 desde SD, RSS/lectura web, álbum de
    imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria
    (parejas, Simón), Tetris experimental, ajedrez opcional.
 
-Descartado: radio por streaming, Casa Cerebro, lectura en voz alta de libros, Spotify, auto-rotación por IMU.
+Descartado: radio por streaming, Casa Cerebro, lectura en voz alta de libros, Spotify (DRM; solo Connect online
+con cspot, no offline), auto-rotación por IMU, chino.
 
 Principios: un solo botón de voz (PTT) desde cualquier pantalla; respuesta escrita siempre y hablada cuando
 aporta; todo funciona sin WiFi con la caché de la SD; CrossPoint sigue siendo el lector y lo nuestro entra

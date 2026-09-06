@@ -1,8 +1,8 @@
-// Idiomas del aparato: es, en, zh, fr, de, pt, ru. El aparato manda el que
+// Idiomas del aparato: es, en, fr, de, pt, ru. El aparato manda el que
 // tiene en Settings (?lang=xx o "lang" en el JSON); todo lo que vuelve a la
 // pantalla o al parlante sale en ese idioma, y la transcripción escucha en él.
-export type Lang = "es" | "en" | "zh" | "fr" | "de" | "pt" | "ru";
-export const LANGS: Lang[] = ["es", "en", "zh", "fr", "de", "pt", "ru"];
+export type Lang = "es" | "en" | "fr" | "de" | "pt" | "ru";
+export const LANGS: Lang[] = ["es", "en", "fr", "de", "pt", "ru"];
 
 export function normalizeLang(raw: string | null | undefined): Lang {
   const code = (raw ?? "").toLowerCase().slice(0, 2) as Lang;
@@ -13,7 +13,6 @@ export function normalizeLang(raw: string | null | undefined): Lang {
 export const LANGUAGE_NAME: Record<Lang, string> = {
   es: "español rioplatense, informal",
   en: "English",
-  zh: "简体中文 (Mandarin Chinese, Simplified)",
   fr: "français",
   de: "Deutsch",
   pt: "português",
@@ -30,7 +29,6 @@ const WEATHER: Record<Lang, string[]> = {
   //          clear, partly, cloudy, fog, drizzle, rain, snow, showers, storm
   es: ["Despejado", "Algo nublado", "Nublado", "Niebla", "Llovizna", "Lluvia", "Nieve", "Chaparrones", "Tormenta"],
   en: ["Clear", "Partly cloudy", "Cloudy", "Fog", "Drizzle", "Rain", "Snow", "Showers", "Thunderstorm"],
-  zh: ["晴", "少云", "多云", "雾", "毛毛雨", "雨", "雪", "阵雨", "雷暴"],
   fr: ["Dégagé", "Peu nuageux", "Nuageux", "Brouillard", "Bruine", "Pluie", "Neige", "Averses", "Orage"],
   de: ["Klar", "Leicht bewölkt", "Bewölkt", "Nebel", "Nieselregen", "Regen", "Schnee", "Schauer", "Gewitter"],
   pt: ["Céu limpo", "Parcialmente nublado", "Nublado", "Névoa", "Chuvisco", "Chuva", "Neve", "Pancadas", "Tempestade"],
@@ -55,7 +53,6 @@ export function describeWeather(code: number, lang: Lang): string {
 export const LABELS: Record<Lang, { max: string; min: string; hum: string; today: string; tomorrow: string }> = {
   es: { max: "Máx", min: "Mín", hum: "Hum", today: "hoy", tomorrow: "mañana" },
   en: { max: "High", min: "Low", hum: "Hum", today: "today", tomorrow: "tomorrow" },
-  zh: { max: "最高", min: "最低", hum: "湿度", today: "今天", tomorrow: "明天" },
   fr: { max: "Max", min: "Min", hum: "Hum", today: "aujourd'hui", tomorrow: "demain" },
   de: { max: "Max", min: "Min", hum: "Feuchte", today: "heute", tomorrow: "morgen" },
   pt: { max: "Máx", min: "Mín", hum: "Umid", today: "hoje", tomorrow: "amanhã" },
@@ -82,7 +79,6 @@ export const QUOTES: Record<Lang, string[]> = {
     "Every day is a new page.",
     "He who has a why can bear almost any how.",
   ],
-  zh: ["今日事，今日毕。", "书是握在手中的梦。", "尽己所能，就地取材。", "耐心是苦的，果实是甜的。", "读书是不动身的旅行。", "每一天都是新的一页。", "知道为何而活的人，几乎能承受任何处境。"],
   fr: [
     "Ce qui n'est pas commencé aujourd'hui ne sera jamais fini demain.",
     "Un livre est un rêve que l'on tient dans les mains.",

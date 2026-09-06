@@ -36,7 +36,7 @@ el store de recordatorios, listas, notas y mensajes.
 | `POST /api/voice?lang=xx` | aparato | Una grabación: transcribe, clasifica la intención y ejecuta. |
 | `POST /api/hub/done` | aparato | `{kind: "reminder"\|"item", id}` marca hecho (también desde la cola offline). |
 
-Idiomas soportados (`lang`): `es`, `en`, `zh`, `fr`, `de`, `pt`, `ru`. El aparato manda el que tiene en Settings;
+Idiomas soportados (`lang`): `es`, `en`, `fr`, `de`, `pt`, `ru`. El aparato manda el que tiene en Settings;
 la transcripción escucha en ese idioma, las respuestas salen en ese idioma y el traductor traduce desde ese
 idioma al que se pida (si no se dice, al inglés; desde inglés, al español).
 
