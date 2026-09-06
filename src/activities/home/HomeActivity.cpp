@@ -1,6 +1,7 @@
 #include "HomeActivity.h"
 
 #include <Bitmap.h>
+#include <BoardConfig.h>
 #include <Epub.h>
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -224,9 +225,16 @@ void HomeActivity::loop() {
   // Back is otherwise unused on the home menu: open the most recently read
   // book directly (recentBooks is most-recent-first and already pruned of
   // files missing from the SD card).
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !recentBooks.empty()) {
-    onSelectBook(recentBooks[0].path);
-    return;
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
+      // ws397: this screen hangs off the hub's Read tile; Back returns there.
+      activityManager.goHome();
+      return;
+    }
+    if (!recentBooks.empty()) {
+      onSelectBook(recentBooks[0].path);
+      return;
+    }
   }
 
   const int coverColumnCount = std::max(1, metrics.homeRecentBooksCount);
@@ -332,8 +340,9 @@ void HomeActivity::render(RenderLock&&) {
       [&menuItems](int index) { return std::string(menuItems[index]); },
       [&menuIcons](int index) { return menuIcons[index]; });
 
-  const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
+  const bool hubBehind = BoardConfig::ACTIVE.board == BoardConfig::Board::WS397;
+  const auto labels = mappedInput.mapLabels(hubBehind ? tr(STR_BACK) : (recentBooks.empty() ? "" : tr(STR_RESUME)),
+                                            tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);

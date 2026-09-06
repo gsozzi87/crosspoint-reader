@@ -93,6 +93,20 @@ llegue el hardware.
   default `https://api.openai.com/v1`, `STT_MODEL` default `whisper-1`; Groq sirve con
   `https://api.groq.com/openai/v1` + `whisper-large-v3-turbo`). Devuelve `{ok, text}`.
 
+## Hub (Fase 1)
+
+- `src/activities/home/HubActivity.{h,cpp}`: home de la ws397. `ActivityManager::goHome()` con `Board::WS397` abre
+  el hub (salvo cuando vuelve de browser/recents/OPDS/transfer, que caen en la home clásica);
+  `goToClassicHome()` es la home original de CrossPoint (mosaico Leer) y su Back vuelve al hub.
+- Mosaicos 2x3 (Leer, Preguntar, Recordatorios, Biblia, Música, Ajustes) con íconos Lucide de 48 px generados en
+  `src/components/icons/hubIcons.h` (manifest al lado; `gen_icons.py` del SDK, en la nube con `resvg-py` en vez de
+  rsvg-convert). Barra de estado: hora del RTC (`--:--` si no está en hora), batería, WiFi si hay link. Widget
+  "Continuar leyendo" con el último libro; Back en el hub lo abre. Recordatorios/Biblia/Música muestran
+  "Próximamente". El reloj se repinta solo cuando cambia el minuto.
+- Preguntar = `AskBookActivity` en modo general (constructor sin libro): graba de entrada, `POST /api/ask` sin
+  `text`; el Hono responde con conocimiento general (`generalPrompt`). Back vuelve al hub con `silentRestart()`.
+- Pendiente del hub: widgets del servidor (clima, agenda, próximo recordatorio) con cache offline.
+
 ## Roadmap acordado
 
 0. Hardware: audio, trackball/botones, deep sleep medido.
@@ -105,7 +119,7 @@ llegue el hardware.
    Cerebro.
 4. Juegos (cartas, sudoku). Spotify descartado.
 
-Hub (Fase 1): home con mosaicos (Leer, Preguntar, Recordatorios, Biblia, Música, Ajustes), barra de estado (hora,
+Hub (Fase 1, base hecha): home con mosaicos (Leer, Preguntar, Recordatorios, Biblia, Música, Ajustes), barra de estado (hora,
 batería, WiFi, próximo recordatorio) y widgets que se llenan desde el servidor con WiFi (clima, agenda, última
 frase leída) y muestran lo último guardado sin WiFi. Navegación UP/DOWN/OK/Back, lista para el trackball.
 

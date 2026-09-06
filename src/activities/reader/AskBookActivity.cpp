@@ -31,7 +31,7 @@ const int AskBookActivity::PRESET_COUNT = sizeof(AskBookActivity::PRESETS) / siz
 
 void AskBookActivity::onEnter() {
   Activity::onEnter();
-  if (contextText.empty()) {
+  if (!generalMode && contextText.empty()) {
     fail(StrId::STR_ASK_NO_TEXT);
     return;
   }
@@ -39,7 +39,11 @@ void AskBookActivity::onEnter() {
     fail(StrId::STR_ASK_NO_TOKEN);
     return;
   }
-  showQuestionPicker();
+  if (generalMode) {
+    startRecording();
+  } else {
+    showQuestionPicker();
+  }
 }
 
 void AskBookActivity::onExit() {
@@ -49,11 +53,21 @@ void AskBookActivity::onExit() {
   if (wifiActivated) {
     WiFi.disconnect(false);
     delay(30);
-    silentRestartToReader();
+    if (generalMode) {
+      silentRestart();
+    } else {
+      silentRestartToReader();
+    }
   }
 }
 
-void AskBookActivity::returnToReader() { activityManager.goToReader(epubPath); }
+void AskBookActivity::returnToReader() {
+  if (generalMode) {
+    activityManager.goHome();
+  } else {
+    activityManager.goToReader(epubPath);
+  }
+}
 
 void AskBookActivity::releaseTake() {
   if (wavBuffer) {
@@ -74,6 +88,12 @@ void AskBookActivity::fail(StrId why, std::string detail) {
 
 void AskBookActivity::showQuestionPicker() {
   releaseTake();
+  // No list without a book: after an answer, a too-short take or Back while
+  // recording, general mode just goes back to the hub.
+  if (generalMode) {
+    returnToReader();
+    return;
+  }
   questionOptions.clear();
   // Voice first: it is the way to ask anything not on the list.
   questionOptions.emplace_back(tr(STR_ASK_VOICE));
@@ -212,10 +232,12 @@ void AskBookActivity::performAsk() {
   std::string body;
   {
     JsonDocument doc;
-    doc["book"] = bookTitle;
-    doc["chapter"] = chapterTitle;
-    doc["text"] = contextText;
-    doc["page"] = pageText;
+    if (!generalMode) {
+      doc["book"] = bookTitle;
+      doc["chapter"] = chapterTitle;
+      doc["text"] = contextText;
+      doc["page"] = pageText;
+    }
     doc["question"] = question;
     doc["lang"] = I18N.getLanguage() == Language::ES ? "es" : "en";
     serializeJson(doc, body);
@@ -306,7 +328,8 @@ void AskBookActivity::render(RenderLock&&) {
   const int mid = pageHeight / 2;
 
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_ASK_BOOK));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 generalMode ? tr(STR_HUB_ASK) : tr(STR_ASK_BOOK));
 
   const char* subtitle = !chapterTitle.empty() ? chapterTitle.c_str() : bookTitle.c_str();
   const std::string shortSubtitle = renderer.truncatedText(UI_10_FONT_ID, subtitle, pageWidth - 40);
@@ -314,7 +337,9 @@ void AskBookActivity::render(RenderLock&&) {
 
   switch (state) {
     case PICK:
-      renderer.drawCenteredText(UI_10_FONT_ID, metrics.topPadding + metrics.headerHeight + 20, shortSubtitle.c_str());
+      if (!generalMode) {
+        renderer.drawCenteredText(UI_10_FONT_ID, metrics.topPadding + metrics.headerHeight + 20, shortSubtitle.c_str());
+      }
       if (questionPopup.processRender(renderer, mappedInput)) return;
       break;
     case RECORDING:

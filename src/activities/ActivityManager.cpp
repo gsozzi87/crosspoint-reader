@@ -17,6 +17,7 @@
 #include "home/CrashActivity.h"
 #include "home/FileBrowserActivity.h"
 #include "home/HomeActivity.h"
+#include "home/HubActivity.h"
 #include "home/RecentBooksActivity.h"
 #include "network/CrossPointWebServerActivity.h"
 #include "network/UsbDriveActivity.h"
@@ -310,7 +311,20 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
       initialMenuItem = HomeMenuItem::SETTINGS_MENU;
     }
   }
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
+    // ws397: the hub is home. The classic home stays the parent of the
+    // library screens (browser, recents, OPDS, transfer) so Back from them
+    // lands where it left; Settings and everything else return to the hub.
+    if (initialMenuItem == HomeMenuItem::NONE || initialMenuItem == HomeMenuItem::SETTINGS_MENU) {
+      replaceActivity(std::make_unique<HubActivity>(renderer, mappedInput, cleanInitialRefresh));
+      return;
+    }
+  }
   replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, cleanInitialRefresh));
+}
+
+void ActivityManager::goToClassicHome(HomeMenuItem initialMenuItem) {
+  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, false));
 }
 void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
 

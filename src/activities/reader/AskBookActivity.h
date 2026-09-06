@@ -32,6 +32,11 @@ class AskBookActivity final : public Activity {
         contextText(std::move(contextText)),
         pageText(std::move(pageText)) {}
 
+  // General mode (hub "Ask" tile): no book, voice question straight away,
+  // the server answers from general knowledge; Back returns to the hub.
+  AskBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+      : Activity("AskBook", renderer, mappedInput), generalMode(true) {}
+
   void onEnter() override;
   void onExit() override;
   void loop() override;
@@ -51,6 +56,7 @@ class AskBookActivity final : public Activity {
   static constexpr size_t MAX_SAMPLES = SAMPLE_RATE * MAX_SECONDS;
   static constexpr size_t MIN_SAMPLES = SAMPLE_RATE / 2;  // shorter than 0.5 s = accidental press
 
+  const bool generalMode = false;
   std::string epubPath;
   std::string bookTitle;
   std::string chapterTitle;

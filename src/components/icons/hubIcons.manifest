@@ -1,0 +1,10 @@
+# Manifest for src/components/icons/hubIcons.h (ws397 hub tiles) — regenerate with:
+#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
+#     --manifest src/components/icons/hubIcons.manifest \
+#     --svgdir <lucide/icons> --sizes 48 --out src/components/icons/hubIcons.h
+hub_read = book-open
+hub_ask = mic
+hub_reminders = bell
+hub_bible = book-marked
+hub_music = music
+hub_settings = settings
