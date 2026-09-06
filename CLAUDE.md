@@ -133,6 +133,11 @@ llegue el hardware.
   lista con su cantidad) e ítems desde la caché de `HubStore` (`reminders[{id,title,when}]`, `lists[{name,
   items[{id,text}]}]` que trae `GET /api/hub`); OK tilda: se saca de la caché y `POST /api/hub/done` sale por
   `postOrQueue` (cola offline si no hay WiFi, la vacía la próxima sincronización).
+- Recordatorios que suenan (`ReminderAlertActivity`): `HubStore::Reminder.dueAt` (epoch del servidor). Al dormir,
+  `armReminderWake()` en main.cpp arma el timer de deep sleep al próximo `dueAt` (GPIO45 del RTC no es RTC GPIO, no
+  sirve para despertar); al arrancar por timer, si hay uno vencido se muestra el alerta y si no vuelve a dormir. En el
+  hub, el tick de 15 s también lo dispara. OK = hecho (`POST /api/hub/done`), Atrás = posponer 10 min (`snooze` en
+  el mismo POST); el servidor corre los repetidos al próximo ciclo.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la

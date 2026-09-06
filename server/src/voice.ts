@@ -19,7 +19,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav } from "./transcribe";
-import { load, save, nextId, resolveList, whenLabel, pendingReminders, DEFAULT_LISTS } from "./store";
+import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 
 const MODEL = process.env.VOICE_MODEL ?? process.env.ASK_MODEL ?? "claude-haiku-4-5";
@@ -179,7 +179,7 @@ voice.post("/", async (c) => {
 export async function hubSlice(lang: Lang) {
   const store = await load();
   return {
-    reminders: pendingReminders(store).slice(0, 20).map((r) => ({ id: r.id, title: r.title, when: whenLabel(r.dueAt, lang) })),
+    reminders: pendingReminders(store).slice(0, 20).map((r) => ({ id: r.id, title: r.title, when: whenLabel(r.dueAt, lang), dueAt: localToEpoch(r.dueAt) })),
     lists: Object.entries(store.lists).map(([name, items]) => ({
       name,
       items: items.filter((i) => !i.done).slice(0, 30).map((i) => ({ id: i.id, text: i.text })),
@@ -188,12 +188,19 @@ export async function hubSlice(lang: Lang) {
   };
 }
 
-// Tildar desde el aparato. Idempotente: llega repetido desde la cola offline.
-export async function markDone(kind: "reminder" | "item", id: number): Promise<boolean> {
+// Tildar (o posponer `snoozeSeconds`) desde el aparato. Idempotente: llega
+// repetido desde la cola offline. Un recordatorio con repetición no se cierra:
+// pasa al próximo ciclo.
+export async function markDone(kind: "reminder" | "item", id: number, snoozeSeconds = 0): Promise<boolean> {
   const store = await load();
   let found = false;
   if (kind === "reminder") {
-    for (const r of store.reminders) if (r.id === id) { r.done = true; found = true; }
+    for (const r of store.reminders) {
+      if (r.id !== id) continue;
+      found = true;
+      if (snoozeSeconds > 0) r.dueAt = epochToLocal(Math.floor(Date.now() / 1000) + snoozeSeconds);
+      else if (!advanceRepeat(r)) r.done = true;
+    }
   } else {
     for (const items of Object.values(store.lists)) for (const i of items) if (i.id === id) { i.done = true; found = true; }
   }

@@ -22,6 +22,7 @@ class HubStore : public PersistableStore<HubStore> {
     int id = 0;
     std::string title;
     std::string when;
+    time_t dueAt = 0;  // UTC epoch, 0 = no time
   };
   struct ListItem {
     int id = 0;
@@ -60,6 +61,11 @@ class HubStore : public PersistableStore<HubStore> {
   // Local tick (the server gets POST /api/hub/done from the caller, queued if offline).
   void removeReminder(int id);
   void removeItem(int id);
+  // Earliest dueAt in the future (or 0): what the deep-sleep timer is armed to.
+  time_t nextDueAt(time_t now) const;
+  // First reminder whose time has come (dueAt <= now), or nullptr.
+  const Reminder* dueReminder(time_t now) const;
+  void snoozeReminder(int id, time_t until);
 
  private:
   HubStore() = default;
