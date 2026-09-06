@@ -14,27 +14,13 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/UrlEncode.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 
 namespace {
 constexpr const char* TAG = "HUB_LOC";
 constexpr int MAX_CANDIDATES = 5;
-
-std::string urlEncode(const std::string& s) {
-  static const char* hex = "0123456789ABCDEF";
-  std::string out;
-  for (const unsigned char c : s) {
-    if (isalnum(c) || c == '-' || c == '_' || c == '.' || c == '~') {
-      out += static_cast<char>(c);
-    } else {
-      out += '%';
-      out += hex[c >> 4];
-      out += hex[c & 15];
-    }
-  }
-  return out;
-}
 }  // namespace
 
 void HubLocationActivity::onEnter() {

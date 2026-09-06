@@ -4,6 +4,7 @@
 
 #include "activities/Activity.h"
 #include "voice/AlertBeep.h"
+#include "voice/SpeechOut.h"
 
 // A reminder came due: title and time big on screen, a beep pattern through
 // the speaker (looped, up to a minute), OK = done, Back = snooze 10 minutes.
@@ -32,6 +33,8 @@ class ReminderAlertActivity final : public Activity {
   std::string title;
   std::string when;
   AlertBeep beep;
+  SpeechOut speech;
+  bool spoken = false;  // the cached "Reminder: <title>" clip was played (or absent)
   unsigned long startedAt = 0;
   void done();
   void snooze();

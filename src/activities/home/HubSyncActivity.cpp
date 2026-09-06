@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
+#include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
@@ -13,6 +14,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
 namespace {
@@ -100,8 +102,47 @@ bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) 
   return ok;
 }
 
+namespace {
+constexpr const char* TTS_DIR = "/.crosspoint/tts";
+constexpr int TTS_REMINDERS = 5;
+
+bool fetchClip(const std::string& text, const std::string& path) {
+  if (Storage.exists(path.c_str())) return true;
+  ServerClient::Response resp;
+  const ServerClient::Result r =
+      SERVER_CLIENT.get(std::string("/api/tts?lang=") + uiLanguageCode() + "&text=" + urlEncode(text), resp);
+  if (r != ServerClient::Result::Ok || resp.body.size() < 16) return false;
+  HalFile f;
+  if (!Storage.openFileForWrite("TTS", path, f)) return false;
+  const size_t written = f.write(reinterpret_cast<const uint8_t*>(resp.body.data()), resp.body.size());
+  f.close();
+  return written == resp.body.size();
+}
+}  // namespace
+
+void HubSyncActivity::cacheSpokenNotices() {
+  Storage.ensureDirectoryExists(TTS_DIR);
+  int fetched = 0;
+  int count = 0;
+  for (const HubStore::Reminder& r : HUB_STORE.reminders) {
+    if (count++ >= TTS_REMINDERS) break;
+    const std::string path = std::string(TTS_DIR) + "/r" + std::to_string(r.id) + ".bin";
+    if (!Storage.exists(path.c_str())) {
+      if (fetchClip(std::string(tr(STR_HUB_REMINDERS)) + ": " + r.title, path)) fetched++;
+    }
+  }
+  const std::string timerPath = std::string(TTS_DIR) + "/timer-" + uiLanguageCode() + ".bin";
+  if (fetchClip(tr(STR_TIMER_DONE), timerPath)) fetched++;
+  LOG_INF(TAG, "spoken notices: %d fetched", fetched);
+}
+
 void HubSyncActivity::runSync() {
   const bool ok = fetchNow(&result, &status);
+  if (ok) {
+    WiFi.setSleep(false);
+    cacheSpokenNotices();
+    WiFi.setSleep(true);
+  }
   flushed = 0;
   if (ok && SERVER_CLIENT.queueSize() > 0) {
     WiFi.setSleep(false);

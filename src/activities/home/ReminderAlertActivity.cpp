@@ -29,12 +29,16 @@ void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, 
 void ReminderAlertActivity::onEnter() {
   Activity::onEnter();
   startedAt = millis();
-  beep.start();
+  // "Reminder: <title>" from the SD (cached at sync), then the beeps.
+  const std::string clip = "/.crosspoint/tts/r" + std::to_string(reminderId) + ".bin";
+  spoken = !speech.playFile(clip.c_str());
+  if (spoken) beep.start();
   requestUpdate();
 }
 
 void ReminderAlertActivity::onExit() {
   Activity::onExit();
+  speech.stop();
   beep.stop();
 }
 
@@ -70,6 +74,7 @@ void ReminderAlertActivity::snooze() {
 }
 
 void ReminderAlertActivity::leave() {
+  speech.stop();
   beep.stop();
   if (resultHandler) {
     finish();
@@ -79,6 +84,11 @@ void ReminderAlertActivity::leave() {
 }
 
 void ReminderAlertActivity::loop() {
+  if (!spoken && !speech.isPlaying()) {
+    spoken = true;
+    speech.stop();
+    beep.start();
+  }
   if (beep.isPlaying() && millis() - startedAt > BEEP_MS) beep.stop();
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     done();

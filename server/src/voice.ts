@@ -1,7 +1,10 @@
 // El botón de voz del hub: una sola grabación, el servidor decide qué es.
 //
 //   POST /api/voice   (Bearer del aparato; body audio/wav 16 kHz mono)
-//   200: { ok: true, text, intent, reply, saved?: { kind, list?, title?, when? } }
+//   200: cuerpo binario "application/x-ws397-voice": [uint32 LE largo del JSON][JSON][audio ADPCM opcional]
+//        JSON = { ok: true, text, intent, reply, saved?: [{ kind, list?, title, when? }], timerSeconds, audio: bytes }
+//        El audio (Piper, ver tts.ts) es la reply hablada cuando es corta (o una traducción / confirmación):
+//        viaja en el mismo pedido para que suene junto con el texto, sin una segunda conexión TLS.
 //     text   = lo que se entendió
 //     intent = question | reminder | task | shopping | note | message | timer | alarm | translate
 //     reply  = texto corto para la pantalla (y para leer por el parlante cuando haya TTS)
@@ -21,6 +24,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav } from "./transcribe";
 import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
+import { synthesize } from "./tts";
 
 const MODEL = process.env.VOICE_MODEL ?? process.env.ASK_MODEL ?? "claude-haiku-4-5";
 const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
@@ -28,6 +32,14 @@ const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
 const client = new Anthropic();
 
 export const voice = new Hono();
+
+function framed(json: object, audio: Uint8Array | null): Response {
+  const head = Buffer.from(JSON.stringify(json), "utf8");
+  const len = Buffer.alloc(4);
+  len.writeUInt32LE(head.length, 0);
+  const body = Buffer.concat([len, head, audio ? Buffer.from(audio) : Buffer.alloc(0)]);
+  return new Response(body, { headers: { "Content-Type": "application/x-ws397-voice", "Content-Length": String(body.length) } });
+}
 
 const SCHEMA = {
   type: "object",
@@ -169,7 +181,12 @@ voice.post("/", async (c) => {
       if (a.kind === "timer" && a.seconds && a.seconds > 0) timerSeconds = Math.floor(a.seconds);
       if (a.kind === "alarm" && a.dueAt) timerSeconds = Math.max(0, localToEpoch(a.dueAt) - Math.floor(Date.now() / 1000));
     }
-    return c.json({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds });
+    // Voz: confirmaciones y traducciones siempre; una respuesta a pregunta solo
+    // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato
+    // la baje en menos de medio segundo.
+    const speakable = parsed.intent !== "question" || parsed.reply.length <= 220;
+    const audio = speakable ? await synthesize(parsed.reply, lang, 8) : null;
+    return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0 }, audio);
   } catch (err) {
     if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
     if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "bad ANTHROPIC_API_KEY" }, 500);

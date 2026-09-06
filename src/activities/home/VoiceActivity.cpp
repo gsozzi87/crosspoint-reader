@@ -35,6 +35,7 @@ void VoiceActivity::onEnter() {
 void VoiceActivity::onExit() {
   Activity::onExit();
   recorder.abort();
+  speech.stop();
   if (wifiActivated) {
     WiFi.disconnect(false);
     delay(30);
@@ -107,8 +108,18 @@ void VoiceActivity::performRequest() {
     fail(StrId::STR_ASK_FAILED, detail);
     return;
   }
+  // Framed body: [u32 LE json length][json][ADPCM speech, optional].
+  const std::string& raw = resp.body;
+  size_t jsonLen = 0;
+  if (raw.size() >= 4) {
+    jsonLen = static_cast<uint8_t>(raw[0]) | (static_cast<uint8_t>(raw[1]) << 8) |
+              (static_cast<uint8_t>(raw[2]) << 16) | (static_cast<size_t>(static_cast<uint8_t>(raw[3])) << 24);
+  }
+  const bool framed = jsonLen > 0 && 4 + jsonLen <= raw.size();
   JsonDocument doc;
-  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+  const DeserializationError jsonErr =
+      framed ? deserializeJson(doc, raw.data() + 4, jsonLen) : deserializeJson(doc, raw);
+  if (jsonErr != DeserializationError::Ok) {
     WiFi.setSleep(true);
     fail(StrId::STR_ASK_FAILED, "bad json");
     return;
@@ -117,6 +128,11 @@ void VoiceActivity::performRequest() {
   intent = doc["intent"] | "";
   reply = doc["reply"] | "";
   timerSeconds = doc["timerSeconds"] | 0;
+  const size_t audioBytes = framed ? raw.size() - 4 - jsonLen : 0;
+  if (audioBytes > 8) {
+    // Start the voice right away, while the widgets refresh and the text paints.
+    speech.playAdpcm(reinterpret_cast<const uint8_t*>(raw.data() + 4 + jsonLen), audioBytes);
+  }
   if (reply.empty()) {
     WiFi.setSleep(true);
     fail(StrId::STR_ASK_FAILED, doc["error"] | "empty reply");

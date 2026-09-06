@@ -3,6 +3,7 @@
 #include <string>
 
 #include "activities/Activity.h"
+#include "voice/SpeechOut.h"
 #include "voice/VoiceRecorder.h"
 
 // The hub's Talk tile (push-to-talk): one take, POST /api/voice, and the
@@ -35,6 +36,7 @@ class VoiceActivity final : public Activity {
   bool wifiActivated = false;
   bool requestPending = false;
   int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
+  SpeechOut speech;      // the reply, spoken by the server's Piper, played with the text
 
   void startRecording();
   void stopRecording();

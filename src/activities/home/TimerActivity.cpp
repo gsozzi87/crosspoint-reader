@@ -7,6 +7,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "voice/Lang.h"
 
 namespace {
 constexpr int DURATIONS_MIN[] = {1, 3, 5, 10, 15, 20, 25, 30, 45, 60};
@@ -43,6 +44,7 @@ void TimerActivity::onEnter() {
 
 void TimerActivity::onExit() {
   Activity::onExit();
+  speech.stop();
   beep.stop();
 }
 
@@ -95,6 +97,7 @@ void TimerActivity::startSegment(const long seconds) {
   finished = false;
   lastShownSeconds = -1;
   partialCount = 0;
+  speech.stop();
   beep.stop();
   requestUpdate();
 }
@@ -109,7 +112,9 @@ long TimerActivity::remainingSeconds() const {
 void TimerActivity::ring() {
   running = false;
   finished = true;
-  beep.start();
+  const std::string clip = std::string("/.crosspoint/tts/timer-") + uiLanguageCode() + ".bin";
+  spoken = !speech.playFile(clip.c_str());
+  if (spoken) beep.start();
   requestUpdate();
 }
 
@@ -125,8 +130,14 @@ void TimerActivity::loop() {
   }
 
   if (finished) {
+    if (!spoken && !speech.isPlaying()) {
+      spoken = true;
+      speech.stop();
+      beep.start();
+    }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      speech.stop();
       beep.stop();
       if (mode == POMODORO) {
         pomodoroBreak = !pomodoroBreak;

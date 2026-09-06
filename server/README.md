@@ -7,7 +7,7 @@ el store de recordatorios, listas, notas y mensajes.
 ## Railway
 
 - **Root Directory**: `server` (Settings → Source → Root Directory). Con eso Railway solo mira esta carpeta.
-- **Start command**: `bun run src/index.ts` (o `bun start`). Detecta Bun por el `package.json`.
+- **Build**: hay `Dockerfile` (Railway lo usa solo): Bun + Piper con las seis voces (~400 MB de imagen). Start = `bun run src/index.ts`.
 - **Volumen** montado en `/data` (firmware subido, `store.json`, `hub-settings.json`, `hub-data.json`).
 - Variables:
 
@@ -20,6 +20,7 @@ el store de recordatorios, listas, notas y mensajes.
 | `STT_BASE_URL`, `STT_MODEL` | Opcionales. Groq: `https://api.groq.com/openai/v1` + `whisper-large-v3-turbo`. |
 | `ASK_MODEL`, `VOICE_MODEL` | Opcionales, default `claude-haiku-4-5`. |
 | `HUB_LAT`, `HUB_LON`, `HUB_TZ` | Respaldo del clima mientras no se elija lugar por voz desde el aparato. |
+| `HUB_LANG` | Idioma cuyo Piper se precalienta al arrancar (default `es`). `TTS_ENABLED=0` apaga la voz. |
 
 ## Rutas
 
@@ -33,7 +34,8 @@ el store de recordatorios, listas, notas y mensajes.
 | `POST /api/transcribe?lang=xx` | aparato | WAV → texto en el idioma de la UI. |
 | `GET /api/hub?lang=xx` | aparato | Clima, recordatorios, listas, agenda, mensajes y frase, en el idioma de la UI. |
 | `GET /api/hub/location/search?q=`, `POST /api/hub/location` | aparato | Lugar del clima por voz. |
-| `POST /api/voice?lang=xx` | aparato | Una grabación: transcribe, clasifica la intención y ejecuta. |
+| `POST /api/voice?lang=xx` | aparato | Una grabación: transcribe, clasifica la intención y ejecuta. Devuelve JSON + voz Piper (ADPCM) en un cuerpo binario. |
+| `GET /api/tts?text=&lang=xx` | aparato | Voz Piper en ADPCM 16 kHz para los avisos que el aparato guarda en la SD. |
 | `POST /api/hub/done` | aparato | `{kind: "reminder"\|"item", id, snooze?}` marca hecho o pospone (también desde la cola offline). |
 | `POST /api/hub/edit` | aparato | Mover, poner fecha o borrar un ítem de lista; borrar una nota. |
 

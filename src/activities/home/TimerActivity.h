@@ -6,6 +6,7 @@
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "voice/AlertBeep.h"
+#include "voice/SpeechOut.h"
 
 // The Time tile: countdown timer, stopwatch and Pomodoro (25/5), big 7-segment
 // digits drawn with rectangles (no large font on board). Refreshes once a
@@ -41,6 +42,8 @@ class TimerActivity final : public Activity {
   long lastShownSeconds = -1;
   int partialCount = 0;
   AlertBeep beep;
+  SpeechOut speech;
+  bool spoken = false;
 
   long elapsedMs() const;
   long remainingSeconds() const;
