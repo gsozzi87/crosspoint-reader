@@ -4,6 +4,10 @@ Fork de [crosspoint-reader](https://github.com/crosspoint-reader/crosspoint-read
 Waveshare ESP32-S3-ePaper-3.97 (SSD1677 800x480, ESP32-S3-WROOM-1-N16R8, ES8311 + NS4150B, PMIC AXP2101-compatible,
 RTC PCF85063, IMU QMI8658, SD 4-bit). El submódulo `freeink-sdk/` apunta al fork propio con el perfil de placa.
 
+Idiomas del producto: español, inglés, chino mandarín, francés, alemán, portugués y ruso. Todo string nuestro
+va en los yaml de esos idiomas (chino pendiente de fuente CJK en la UI, ver FUNCIONES.md L.3); el aparato manda
+`lang` (`src/voice/Lang.h`) y el servidor escucha, contesta y traduce según ese idioma (`server/src/lang.ts`).
+
 Idioma con el usuario: español rioplatense/mexicano, informal y directo. Respuestas cortas. Él prueba en hardware
 y devuelve correcciones puntuales; no pedir que especifique todo de antemano.
 
@@ -39,8 +43,10 @@ llegue el hardware.
   `github.com/*/archive` bloqueados; SCons y las libs se traen de PyPI/GitHub). Sin `WS397_OTA_URL` y
   `WS397_OTA_TOKEN` en el environment no hay release: el .bin queda con la URL de OTA vacía y no se puede subir.
 - OTA: el aparato consulta `WS397_OTA_URL` (`https://paper-esp32.up.railway.app/firmware/latest`, JSON con la forma
-  de un release de GitHub). Comparación estricta major.minor.patch. Servidor: repo `ws397-server` (Bun + Hono,
-  Railway, volumen en `/data`).
+  de un release de GitHub). Comparación estricta major.minor.patch.
+- **Servidor: `server/` en este mismo repo** (Bun + Hono; Railway con Root Directory = `server`, volumen en
+  `/data`; rutas, variables y despliegue en `server/README.md`). Todo cambio de servidor va ahí, no en archivos
+  sueltos. `bun install && bunx tsc --noEmit` en `server/` como chequeo.
 - Compile checks rápidos sin toolchain: `g++ -std=c++17 -fsyntax-only` con stubs de Arduino/Wire (ver historial).
 
 ## Decisiones de hardware (freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h, perfil `WS397`)
@@ -123,6 +129,10 @@ llegue el hardware.
   Claude, modelo `VOICE_MODEL`/`ASK_MODEL` default `claude-haiku-4-5`, ejecuta contra `src/store.ts` →
   `/data/store.json`: recordatorios, listas por nombre con Entrada/Casa/Trabajo/Administrativo/Compras de fábrica,
   notas, mensajes). `hub.ts` toma recordatorios y mensajes del store; `hub-data.json` queda para la agenda.
+- Recordatorios y listas en el aparato (`AgendaActivity`, mosaico Recordatorios): secciones (Recordatorios y cada
+  lista con su cantidad) e ítems desde la caché de `HubStore` (`reminders[{id,title,when}]`, `lists[{name,
+  items[{id,text}]}]` que trae `GET /api/hub`); OK tilda: se saca de la caché y `POST /api/hub/done` sale por
+  `postOrQueue` (cola offline si no hay WiFi, la vacía la próxima sincronización).
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
