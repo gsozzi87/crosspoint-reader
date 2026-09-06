@@ -25,6 +25,7 @@
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "ServerTestActivity.h"
+#include "HubStore.h"
 #include "activities/home/HubLocationActivity.h"
 #include "activities/home/HubSyncActivity.h"
 #include "SettingsList.h"
@@ -110,6 +111,13 @@ void SettingsActivity::rebuildSettingsLists() {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_SERVER_TEST, SettingAction::ServerTest));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
+    systemSettings.push_back(SettingInfo::DynamicEnum(
+        StrId::STR_SPEAK_MODE, {StrId::STR_SPEAK_NEVER, StrId::STR_SPEAK_SHORT, StrId::STR_SPEAK_ALWAYS},
+        [] { return HUB_STORE.speakMode; },
+        [](uint8_t v) {
+          HUB_STORE.speakMode = v;
+          HUB_STORE.saveToFile();
+        }));
   }
   readerSettings.insert(readerSettings.begin(),
                         SettingInfo::Action(StrId::STR_TEXT_SETTINGS, SettingAction::TextSettings));

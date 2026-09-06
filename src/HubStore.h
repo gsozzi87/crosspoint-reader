@@ -15,6 +15,7 @@ class HubStore : public PersistableStore<HubStore> {
     std::string title;
   };
   struct Message {
+    int id = 0;
     std::string from;
     std::string text;
   };
@@ -57,6 +58,8 @@ class HubStore : public PersistableStore<HubStore> {
   std::vector<Message> messages;
   std::string quote;
   std::string translatorLang;  // the other side of the translator ("en", ...), remembered
+  uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
+  const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
 
   static const char* getFilePath() { return "/.crosspoint/hub.json"; }
   void toJson(JsonDocument& doc) const;
@@ -74,6 +77,7 @@ class HubStore : public PersistableStore<HubStore> {
   const Reminder* dueReminder(time_t now) const;
   void snoozeReminder(int id, time_t until);
   void removeNote(int id);
+  void removeMessage(int id);
   void moveItem(int id, const std::string& listName);
 
  private:

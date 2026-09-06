@@ -78,11 +78,13 @@ void HubStore::toJson(JsonDocument& doc) const {
   JsonArray msgs = doc["messages"].to<JsonArray>();
   for (const Message& m : messages) {
     JsonObject o = msgs.add<JsonObject>();
+    o["id"] = m.id;
     o["from"] = m.from;
     o["text"] = m.text;
   }
   doc["quote"] = quote;
   doc["translatorLang"] = translatorLang;
+  doc["speakMode"] = speakMode;
 }
 
 bool HubStore::fromJson(JsonVariantConst doc) {
@@ -103,10 +105,11 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   messages.clear();
   for (JsonVariantConst m : doc["messages"].as<JsonArrayConst>()) {
     if (messages.size() >= MAX_MESSAGES) break;
-    messages.push_back({str(m, "from"), str(m, "text")});
+    messages.push_back({m["id"] | 0, str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
   translatorLang = str(doc, "translatorLang");
+  speakMode = doc["speakMode"] | 1;
   return true;
 }
 
@@ -129,7 +132,7 @@ void HubStore::applyServer(JsonVariantConst doc) {
   messages.clear();
   for (JsonVariantConst m : doc["messages"].as<JsonArrayConst>()) {
     if (messages.size() >= MAX_MESSAGES) break;
-    messages.push_back({str(m, "from"), str(m, "text")});
+    messages.push_back({m["id"] | 0, str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
 }
@@ -209,4 +212,13 @@ void HubStore::moveItem(const int id, const std::string& listName) {
     }
   }
   lists.push_back({listName, {moved}});
+}
+
+void HubStore::removeMessage(const int id) {
+  for (auto it = messages.begin(); it != messages.end(); ++it) {
+    if (it->id == id) {
+      messages.erase(it);
+      return;
+    }
+  }
 }

@@ -165,6 +165,7 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
 
 voice.post("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
+  const speak = c.req.query("speak") ?? "short";  // none | short | all (ajuste del aparato)
   let text: string;
   try {
     text = await transcribeWav(await c.req.arrayBuffer(), lang);
@@ -184,8 +185,8 @@ voice.post("/", async (c) => {
     // Voz: confirmaciones y traducciones siempre; una respuesta a pregunta solo
     // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato
     // la baje en menos de medio segundo.
-    const speakable = parsed.intent !== "question" || parsed.reply.length <= 220;
-    const audio = speakable ? await synthesize(parsed.reply, lang, 8) : null;
+    const speakable = speak !== "none" && (speak === "all" || parsed.intent !== "question" || parsed.reply.length <= 220);
+    const audio = speakable ? await synthesize(parsed.reply, lang, speak === "all" ? 15 : 8) : null;
     return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0 }, audio);
   } catch (err) {
     if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
@@ -206,7 +207,7 @@ export async function hubSlice(lang: Lang) {
       name,
       items: items.filter((i) => !i.done).slice(0, 30).map((i) => ({ id: i.id, text: i.text })),
     })),
-    messages: store.messages.filter((m) => !m.read).slice(-5).map((m) => ({ from: m.from, text: m.text })),
+    messages: store.messages.filter((m) => !m.read).slice(-5).map((m) => ({ id: m.id, from: m.from, text: m.text })),
     notes: store.notes.slice(-20).reverse().map((n) => ({ id: n.id, text: n.text })),
   };
 }
@@ -247,10 +248,12 @@ export async function editEntry(body: { kind?: string; id?: number; action?: str
 // Tildar (o posponer `snoozeSeconds`) desde el aparato. Idempotente: llega
 // repetido desde la cola offline. Un recordatorio con repetición no se cierra:
 // pasa al próximo ciclo.
-export async function markDone(kind: "reminder" | "item", id: number, snoozeSeconds = 0): Promise<boolean> {
+export async function markDone(kind: "reminder" | "item" | "message", id: number, snoozeSeconds = 0): Promise<boolean> {
   const store = await load();
   let found = false;
-  if (kind === "reminder") {
+  if (kind === "message") {
+    for (const m of store.messages) if (m.id === id) { m.read = true; found = true; }
+  } else if (kind === "reminder") {
     for (const r of store.reminders) {
       if (r.id !== id) continue;
       found = true;

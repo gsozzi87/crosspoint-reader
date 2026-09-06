@@ -212,8 +212,8 @@ hub.post("/done", async (c) => {
     return c.json({ ok: false, error: "invalid json" }, 400);
   }
   const id = Number(body.id);
-  if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item")) {
-    return c.json({ ok: false, error: "kind (reminder|item) and id required" }, 400);
+  if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item" && body.kind !== "message")) {
+    return c.json({ ok: false, error: "kind (reminder|item|message) and id required" }, 400);
   }
   const found = await markDone(body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0);
   return c.json({ ok: true, found });
