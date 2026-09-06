@@ -16,6 +16,7 @@
 #include "HubSyncActivity.h"
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
+#include "AgendaActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
 #include "components/icons/hubIcons.h"
@@ -105,6 +106,12 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_ASK:
       activityManager.replaceActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
+      break;
+    case TILE_REMINDERS:
+      startActivityForResult(std::make_unique<AgendaActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+        loadLastBook();
+        requestUpdate();
+      });
       break;
     case TILE_SETTINGS:
       activityManager.goToSettings();

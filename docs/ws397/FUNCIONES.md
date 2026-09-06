@@ -60,8 +60,8 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | # | Función | Estado | Notas |
 |---|---------|--------|-------|
 | 2.1 | Clasificador de intención en el Hono (`POST /api/voice`): audio → texto → JSON con esquema (Claude, salida estructurada) → guarda en `store.json` y devuelve `{intent, reply, saved[]}` | ✅ | 1.5.17, `voice.ts` + `store.ts`. Temporizador y alarma se reconocen pero avisan que todavía no se ejecutan |
-| 2.2 | Recordatorios: título, fecha y hora, repetición (diaria, semanal por día, mensual), prioridad; se guardan en el servidor y en la SD; el aparato programa la alarma del RTC más cercana y despierta para avisar (pantalla + pitido o voz) | 🔧 | Guardado por voz en el servidor y "próximo" en el hub hechos (1.5.17). Falta la pantalla de recordatorios en el aparato y la alarma del RTC |
-| 2.3 | 🔧 en el servidor (listas por nombre, se crean por voz). **Varias listas de tareas.** Cada lista tiene nombre y tipo (tareas, compras, proyecto). Vienen de fábrica Entrada, Casa, Trabajo, Administrativo y Compras; las demás se crean por voz ("creá la lista Proyecto Norte"). Ítems con estado, prioridad, fecha opcional y nota. Mosaico Tareas → lista de listas con pendientes; adentro OK tilda, OK largo abre menú (mover a otra lista, poner fecha, borrar) | ⬜ | Modelo: `lists` + `items` con `list_id`, `due_date`, `week` |
+| 2.2 | Recordatorios: título, fecha y hora, repetición (diaria, semanal por día, mensual), prioridad; se guardan en el servidor y en la SD; el aparato programa la alarma del RTC más cercana y despierta para avisar (pantalla + pitido o voz) | 🔧 | 1.5.18: se crean por voz, se ven y tildan en el mosaico Recordatorios (caché en SD, tildado por cola offline). Falta la alarma del RTC (0.5) |
+| 2.3 | 🔧 1.5.18: listas de fábrica, creación por voz, ver y tildar en Recordatorios → lista; falta mover, fecha y borrar. **Varias listas de tareas.** Cada lista tiene nombre y tipo (tareas, compras, proyecto). Vienen de fábrica Entrada, Casa, Trabajo, Administrativo y Compras; las demás se crean por voz ("creá la lista Proyecto Norte"). Ítems con estado, prioridad, fecha opcional y nota. Mosaico Tareas → lista de listas con pendientes; adentro OK tilda, OK largo abre menú (mover a otra lista, poner fecha, borrar) | ⬜ | Modelo: `lists` + `items` con `list_id`, `due_date`, `week` |
 | 2.3b | **Vista por semana.** Todo ítem con fecha cae en su semana ISO; la vista "Semana" agrupa por día lo de todas las listas y permite moverlo a la siguiente. "Para la semana que viene: renovar el seguro" y "el jueves: mandar el informe" caen solos en su semana | ⬜ | Reemplaza a las listas por número de semana que llevás a mano |
 | 2.3c | Voz para listas: "agregá a la casa: cambiar el foco", "en trabajo: …", "compras: leche y huevos" (dos ítems). Sin lista nombrada el clasificador elige por contexto o lo deja en Entrada para ordenarlo después | ⬜ | |
 | 2.3d | Importación de las listas actuales (texto, Excel o lo que uses) al servidor, y edición desde la página web del Hono | ⬜ | |
@@ -98,6 +98,20 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 4.5 | Tetris: viable a velocidad baja con refresco parcial (4 grises, refresco completo cada tantas piezas); necesita el trackball o los botones extra para izquierda/derecha/girar | ⬜ | Experimental; 2048 como alternativa más apta para la tinta |
 | 4.6 | Ajedrez contra el servidor | ⬜ | Opcional |
 
+## Idiomas
+
+El aparato y el servidor hablan español, inglés, chino mandarín, francés, alemán, portugués y ruso. El idioma
+se elige en Settings → Idioma; el aparato manda su código (`lang`) en cada llamada y el servidor escucha
+(transcripción), contesta y etiqueta el clima y las fechas en ese idioma. El traductor traduce desde el idioma
+de la UI al que se pida (si no se dice: al inglés, o al español si la UI está en inglés).
+
+| # | Función | Estado | Notas |
+|---|---------|--------|-------|
+| L.1 | Strings nuestros traducidos a es, en, fr, de, pt-BR, pt-PT, ru | ✅ | 1.5.18. Los de CrossPoint upstream ya estaban |
+| L.2 | Servidor multi-idioma: STT, prompts, clima, fechas, frases del día | ✅ | 1.5.18, `server/src/lang.ts` |
+| L.3 | Chino mandarín en la pantalla | ⬜ | Las fuentes de la UI no traen glifos CJK. Plan: subconjunto de Noto Sans SC con solo los caracteres del `chinese.yaml` en las fuentes UI 10/12 (normal y negrita) y en la que usa el visor de respuestas; recién ahí se agrega `chinese.yaml`. El servidor ya entiende y contesta en chino |
+| L.4 | Nombres de las listas de fábrica en el idioma de la UI | ⬜ | Hoy son Entrada, Casa, Trabajo, Administrativo, Compras |
+
 ## Transversal
 
 | # | Función | Estado | Notas |
@@ -105,6 +119,7 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | T.1 | OTA desde el servidor propio, versión estricta | ✅ | |
 | T.2 | Web UI en el aparato: WiFi, servidor y token, libros | ✅ | Se le suman los ajustes del hub |
 | T.3 | Página web en el Hono con el token: mandar mensajes, ver y editar recordatorios y listas, subir imágenes | ⬜ | Sustituye a la app del teléfono de Sticky y Note 4 |
+| T.6 | Servidor completo en `server/` de este repo (Bun + Hono): OTA, ask, transcribe, hub, voice, store. Railway con Root Directory = `server` | ✅ | 1.5.18, ver `server/README.md` |
 | T.4 | Modo bajo consumo: deep sleep con wake por botón, RTC y sincronización programada | ⬜ | |
 | T.5 | Idiomas: español e inglés en toda la UI nuestra | ✅ | |
 

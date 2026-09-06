@@ -14,6 +14,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 
 namespace {
@@ -177,7 +178,7 @@ void AskBookActivity::performAsk() {
       doc["page"] = pageText;
     }
     doc["question"] = question;
-    doc["lang"] = I18N.getLanguage() == Language::ES ? "es" : "en";
+    doc["lang"] = uiLanguageCode();
     serializeJson(doc, body);
   }
   LOG_DBG(TAG, "POST /api/ask: %u bytes", (unsigned)body.size());

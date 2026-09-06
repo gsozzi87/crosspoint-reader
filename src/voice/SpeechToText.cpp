@@ -5,6 +5,7 @@
 #include <ServerClient.h>
 #include <WiFi.h>
 
+#include "Lang.h"
 #include "VoiceRecorder.h"
 
 namespace {
@@ -19,7 +20,8 @@ bool SpeechToText::transcribe(const VoiceRecorder& take, std::string& text, std:
   LOG_DBG(TAG, "POST /api/transcribe: %u bytes", (unsigned)take.wavBytes());
   ServerClient::Response resp;
   const ServerClient::Result r =
-      SERVER_CLIENT.postBytes("/api/transcribe", "audio/wav", take.wav(), take.wavBytes(), resp, TRANSCRIBE_TIMEOUT_MS);
+      SERVER_CLIENT.postBytes(std::string("/api/transcribe?lang=") + uiLanguageCode(), "audio/wav", take.wav(),
+                              take.wavBytes(), resp, TRANSCRIBE_TIMEOUT_MS);
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
     char buf[96];

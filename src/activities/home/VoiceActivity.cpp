@@ -15,6 +15,7 @@
 #include "activities/reader/DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "voice/Lang.h"
 
 namespace {
 constexpr const char* TAG = "VOICE_ACT";
@@ -94,7 +95,8 @@ void VoiceActivity::performRequest() {
   LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)recorder.wavBytes());
   ServerClient::Response resp;
   const ServerClient::Result r =
-      SERVER_CLIENT.postBytes("/api/voice", "audio/wav", recorder.wav(), recorder.wavBytes(), resp, VOICE_TIMEOUT_MS);
+      SERVER_CLIENT.postBytes(std::string("/api/voice?lang=") + uiLanguageCode(), "audio/wav", recorder.wav(),
+                              recorder.wavBytes(), resp, VOICE_TIMEOUT_MS);
   recorder.release();
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);

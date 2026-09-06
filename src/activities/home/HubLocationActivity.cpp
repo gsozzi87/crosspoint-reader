@@ -14,6 +14,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 
 namespace {
@@ -120,7 +121,8 @@ void HubLocationActivity::performTranscribe() {
 void HubLocationActivity::performSearch() {
   requestPending = false;
   ServerClient::Response resp;
-  const ServerClient::Result r = SERVER_CLIENT.get("/api/hub/location/search?q=" + urlEncode(spoken), resp);
+  const ServerClient::Result r =
+      SERVER_CLIENT.get("/api/hub/location/search?q=" + urlEncode(spoken) + "&lang=" + uiLanguageCode(), resp);
   WiFi.setSleep(true);
   if (r != ServerClient::Result::Ok) {
     char detail[96];
