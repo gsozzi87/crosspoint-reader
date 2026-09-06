@@ -64,11 +64,13 @@ void HubSyncActivity::markAttempt(const bool ok) {
   HUB_STORE.saveToFile();
 }
 
-void HubSyncActivity::runSync() {
+bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) {
   WiFi.setSleep(false);
   ServerClient::Response resp;
-  result = SERVER_CLIENT.get("/api/hub", resp, /*auth=*/true);
-  status = resp.status;
+  const ServerClient::Result result = SERVER_CLIENT.get("/api/hub", resp, /*auth=*/true);
+  if (resultOut) *resultOut = result;
+  if (statusOut) *statusOut = resp.status;
+  const int status = resp.status;
   bool ok = false;
   if (result == ServerClient::Result::Ok) {
     JsonDocument doc;
@@ -91,14 +93,20 @@ void HubSyncActivity::runSync() {
     LOG_ERR(TAG, "GET /api/hub: %s (%d)", ServerClient::resultName(result), status);
   }
   markAttempt(ok);
-
-  flushed = 0;
-  if (ok && SERVER_CLIENT.queueSize() > 0) flushed = SERVER_CLIENT.flushQueue();
   WiFi.setSleep(true);
+  LOG_INF(TAG, "sync %s: weather=\"%s\" events=%u messages=%u", ok ? "ok" : "failed", HUB_STORE.weatherLine.c_str(),
+          (unsigned)HUB_STORE.events.size(), (unsigned)HUB_STORE.messages.size());
+  return ok;
+}
 
-  LOG_INF(TAG, "sync %s: weather=\"%s\" events=%u messages=%u flushed=%d", ok ? "ok" : "failed",
-          HUB_STORE.weatherLine.c_str(), (unsigned)HUB_STORE.events.size(), (unsigned)HUB_STORE.messages.size(),
-          flushed);
+void HubSyncActivity::runSync() {
+  const bool ok = fetchNow(&result, &status);
+  flushed = 0;
+  if (ok && SERVER_CLIENT.queueSize() > 0) {
+    WiFi.setSleep(false);
+    flushed = SERVER_CLIENT.flushQueue();
+    WiFi.setSleep(true);
+  }
   state = ok ? DONE : FAILED;
   doneAt = millis();
   requestUpdate();
