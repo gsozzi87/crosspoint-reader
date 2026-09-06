@@ -28,6 +28,7 @@ enum class SettingAction {
   AudioTest,
   ServerTest,
   HubSync,
+  HubLocation,
 };
 
 struct SettingInfo {
