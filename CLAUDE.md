@@ -99,7 +99,7 @@ llegue el hardware.
 1. Hub de apps (base CrossMux, MIT) + "preguntarle al libro" (texto del EPUB → servidor → Claude) + cliente HTTP
    común con token, reintentos y cola offline.
 2. Asistente por voz PTT (mic → Whisper → Claude → TTS → parlante), recordatorios y listas (RTC + servidor),
-   traductor, lectura en voz alta.
+   traductor. Descartado: lectura en voz alta del libro.
 3. Biblia con índice invertido pregenerado en SD (búsqueda en ms, sin WiFi), reproductor MP3 desde SD
    (`ESP32-audioI2S`, tarea propia en core 1), RSS/lectura web. Descartados: radio por streaming, dashboard Casa
    Cerebro.
