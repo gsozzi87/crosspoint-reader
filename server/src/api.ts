@@ -8,6 +8,7 @@ import { transcribe } from "./transcribe";
 import { hub } from "./hub";
 import { voice } from "./voice";
 import { tts } from "./tts";
+import { translate } from "./translate";
 
 const TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -29,3 +30,4 @@ api.route("/transcribe", transcribe); // POST /api/transcribe  → voz a texto (
 api.route("/hub", hub);               // GET  /api/hub?lang=   → clima, recordatorios, listas, agenda, mensajes, frase; POST /api/hub/done
 api.route("/voice", voice);           // POST /api/voice       → una grabación: el servidor decide qué es y lo hace
 api.route("/tts", tts);               // GET  /api/tts?text=   → voz Piper en ADPCM (avisos que el aparato cachea en la SD)
+api.route("/translate", translate);   // POST /api/translate?from=&to= → traductor en conversación: texto + traducción + voz

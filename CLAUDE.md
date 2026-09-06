@@ -104,7 +104,7 @@ llegue el hardware.
 - `src/activities/home/HubActivity.{h,cpp}`: home de la ws397. `ActivityManager::goHome()` con `Board::WS397` abre
   el hub (salvo cuando vuelve de browser/recents/OPDS/transfer, que caen en la home clásica);
   `goToClassicHome()` es la home original de CrossPoint (mosaico Leer) y su Back vuelve al hub.
-- Mosaicos 2x4 (Leer, Hablar, Recordatorios, Tiempo, Notas, Biblia, Música, Ajustes) con íconos Lucide de 48 px generados en
+- Mosaicos 3x3 (Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Ajustes) con íconos Lucide de 48 px generados en
   `src/components/icons/hubIcons.h` (manifest al lado; `gen_icons.py` del SDK, en la nube con `resvg-py` en vez de
   rsvg-convert). Barra de estado: hora del RTC (`--:--` si no está en hora), batería, WiFi si hay link. Widget
   "Continuar leyendo" con el último libro; Back en el hub lo abre. Recordatorios/Biblia/Música muestran
@@ -147,6 +147,9 @@ llegue el hardware.
   (`src/voice/Adpcm`) y reproduce (`src/voice/SpeechOut`) mientras muestra el texto. `GET /api/tts?text=&lang=`
   da clips para los avisos; `HubSyncActivity::cacheSpokenNotices()` guarda los de los próximos 5 recordatorios y
   la frase del temporizador en `/.crosspoint/tts/`. El aparato nunca decodifica MP3 para la voz.
+- Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
+  hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
+  mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
@@ -164,7 +167,7 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;
-   TTS con Piper (hecho); traductor en modo conversación; temporizador, cronómetro y Pomodoro (hecho); agenda; memoria.
+   TTS con Piper (hecho); traductor en modo conversación (hecho); temporizador, cronómetro y Pomodoro (hecho); agenda; memoria.
 3. Contenido: Biblia con índice en SD, versículo/frase del día, MP3 desde SD, RSS/lectura web, álbum de
    imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria

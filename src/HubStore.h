@@ -56,6 +56,7 @@ class HubStore : public PersistableStore<HubStore> {
   std::vector<Event> events;
   std::vector<Message> messages;
   std::string quote;
+  std::string translatorLang;  // the other side of the translator ("en", ...), remembered
 
   static const char* getFilePath() { return "/.crosspoint/hub.json"; }
   void toJson(JsonDocument& doc) const;
