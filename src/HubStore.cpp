@@ -85,6 +85,8 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["quote"] = quote;
   doc["translatorLang"] = translatorLang;
   doc["speakMode"] = speakMode;
+  doc["bibleBook"] = bibleBook;
+  doc["bibleChapter"] = bibleChapter;
 }
 
 bool HubStore::fromJson(JsonVariantConst doc) {
@@ -110,6 +112,8 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   quote = str(doc, "quote");
   translatorLang = str(doc, "translatorLang");
   speakMode = doc["speakMode"] | 1;
+  bibleBook = doc["bibleBook"] | 0;
+  bibleChapter = doc["bibleChapter"] | 0;
   return true;
 }
 

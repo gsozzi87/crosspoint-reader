@@ -20,11 +20,15 @@ RUN cd /opt/piper/voices && for v in \
       ru/ru_RU/irina/medium/ru_RU-irina-medium ; do \
       n=$(basename $v); curl -sSL -o $n.onnx $HF/$v.onnx && curl -sSL -o $n.onnx.json $HF/$v.onnx.json ; done
 
+# Biblias (thiagobodruk/bible, JSON): es, en, fr, de, pt, ru (~27 MB)
+RUN mkdir -p /opt/bible && cd /opt/bible && for f in es_rvr en_kjv fr_apee de_schlachter pt_aa ru_synodal; do \
+      curl -sSL -o $f.json https://raw.githubusercontent.com/thiagobodruk/bible/master/json/$f.json ; done
+
 WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --production
 COPY src ./src
 
-ENV PIPER_BIN=/opt/piper/piper PIPER_VOICES=/opt/piper/voices PORT=3000
+ENV PIPER_BIN=/opt/piper/piper PIPER_VOICES=/opt/piper/voices BIBLE_DIR=/opt/bible PORT=3000
 EXPOSE 3000
 CMD ["bun", "run", "src/index.ts"]

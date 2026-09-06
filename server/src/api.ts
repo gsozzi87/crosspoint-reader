@@ -10,6 +10,7 @@ import { voice } from "./voice";
 import { tts } from "./tts";
 import { translate } from "./translate";
 import { boardApi } from "./board";
+import { bibleApi } from "./bible";
 
 const TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -33,3 +34,4 @@ api.route("/voice", voice);           // POST /api/voice       → una grabació
 api.route("/tts", tts);               // GET  /api/tts?text=   → voz Piper en ADPCM (avisos que el aparato cachea en la SD)
 api.route("/translate", translate);   // POST /api/translate?from=&to= → traductor en conversación: texto + traducción + voz
 api.route("/board", boardApi);        // POST /api/board/{message,reminder,item,note} → lo que se carga desde la página web
+api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find} → Biblia por capítulos, versículo del día, búsqueda
