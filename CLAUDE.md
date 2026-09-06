@@ -154,6 +154,10 @@ llegue el hardware.
   token del aparato; altas en `POST /api/board/*`. Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`)
   y se ven en Recordatorios → Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).
 - Ajuste Voz hablada (Settings → Sistema, `HubStore::speakMode`): `&speak=none|short|all` en `/api/voice`.
+- Biblia (`BibleActivity`, mosaico Biblia): `GET /api/bible/books|chapter|find|day?lang=` (`server/src/bible.ts`,
+  JSON de thiagobodruk/bible bajado en el Dockerfile a `/opt/bible`, nombres de libros por idioma en
+  `bibleNames.ts`); capítulos cacheados en `/.crosspoint/bible/<lang>/<libro>-<cap>.txt`, último lugar en
+  `HubStore::bibleBook/bibleChapter`; Atrás largo graba y `find` resuelve referencia o búsqueda de texto.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
@@ -172,8 +176,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;
    TTS con Piper (hecho); traductor en modo conversación (hecho); temporizador, cronómetro y Pomodoro (hecho); agenda; memoria.
-3. Contenido: Biblia con índice en SD, versículo/frase del día, MP3 desde SD, RSS/lectura web, álbum de
-   imágenes en 4 grises, clima detallado.
+3. Contenido: Biblia (hecha, capítulos cacheados; falta descarga por libro e índice offline), versículo/frase del
+   día, MP3 desde SD estilo Winamp, RSS/lectura web, álbum de imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria
    (parejas, Simón), Tetris experimental, ajedrez opcional.
 

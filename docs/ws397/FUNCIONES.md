@@ -79,8 +79,8 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 
 | # | Función | Estado | Notas |
 |---|---------|--------|-------|
-| 3.1 | Biblia: índice invertido pregenerado en la SD, búsqueda en milisegundos sin WiFi, navegación por libro, capítulo y versículo, pedido por voz ("Juan 3 16", "buscá misericordia") | ⬜ | |
-| 3.2 | Versículo del día y frase del día en el hub | ⬜ | Del servidor, con caché |
+| 3.1 | Biblia (mosaico Biblia): libros → capítulos → texto paginado; cada capítulo se trae del servidor (Reina-Valera, King James, Bible de l'Épée, Schlachter, Almeida, Sinodal según el idioma) y queda en la SD (`/.crosspoint/bible/<lang>/`), marcado con un punto en la lista; recuerda el último lugar leído. Atrás largo = por voz: "Juan 3 16" abre directo, "salmo 23" también, "misericordia y verdad" busca en todo el texto y lista los versículos (sin LLM: parser de referencias y búsqueda en el servidor) | ✅ | 1.5.25. Falta: descargar un libro entero para leer sin WiFi y la búsqueda offline con índice en SD |
+| 3.2 | Versículo del día (`GET /api/bible/day`) y frase del día en el hub | 🔧 | Servidor listo; falta mostrarlo en el hub |
 | 3.3 | Reproductor MP3 desde la SD **con pinta de Winamp**: ventana principal con contador grande de tiempo, título del tema en la marquesina, kbps y kHz, barra de posición, botones ⏮ ▶ ⏸ ⏹ ⏭, shuffle y repeat, volumen; playlist debajo con numeración y duración, y el tema actual resaltado; carpetas de la SD como playlists. Todo en blanco y negro con el estilo de bordes biselados del skin clásico. Decodificación con `ESP32-audioI2S` en una tarea del core 1, botones y trackball para navegar | ⬜ | Música y audiolibros propios; sin streaming |
 | 3.4 | RSS y lectura web: el servidor baja y limpia el artículo, el aparato lo muestra con el paginador del diccionario | ⬜ | Fuentes configuradas en la web UI |
 | 3.5 | Álbum de imágenes: el servidor convierte a 4 grises 800x480, el aparato las guarda en la SD y las muestra como salvapantallas de sueño o en un mosaico | ⬜ | Del Sticky y el Note 4; fotos, tarjetas, texto empujado |
