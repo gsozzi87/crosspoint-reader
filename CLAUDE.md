@@ -112,15 +112,18 @@ llegue el hardware.
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
 (fusión de lo planeado con lo que hacen el reTerminal Sticky y el ZecTrix Note 4). Resumen:
 
-0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido.
+0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido, IMU
+   por polling (boca abajo = silenciar, doble golpe = PTT, sacudir = cancelar; modo atril horizontal para el hub).
 1. Hub (base hecha) + preguntarle al libro + cliente HTTP. Falta: sincronización programada con
    `GET /api/hub`, widgets (clima, recordatorio, agenda, frase), pizarra de mensajes, mosaico "Hablar" (PTT).
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
-   nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; listas;
+   nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
+   listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;
    TTS por el parlante; traductor; temporizador/Pomodoro; agenda; memoria del asistente.
 3. Contenido: Biblia con índice en SD, versículo/frase del día, MP3 desde SD, RSS/lectura web, álbum de
    imágenes en 4 grises, clima detallado.
-4. Juegos: sudoku, solitario, ajedrez opcional.
+4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria
+   (parejas, Simón), Tetris experimental, ajedrez opcional.
 
 Descartado: radio por streaming, Casa Cerebro, lectura en voz alta de libros, Spotify, auto-rotación por IMU.
 

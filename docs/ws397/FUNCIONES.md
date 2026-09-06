@@ -35,7 +35,9 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 0.6 | Driver SHTC3 (temperatura y humedad interior) | ⬜ | Para el widget de clima, como el Sticky |
 | 0.7 | Porcentaje de batería real y consumo en deep sleep medidos | ⬜ | |
 | 0.8 | Refresco de un solo destello (halfrefresh) verificado | ⬜ | |
-| 0.9 | Auto-rotación por IMU | ❌ | El lector es vertical; no vale la complejidad |
+| 0.9 | Driver QMI8658 por polling (INT1 está compartido con el amp) y gestos: **boca abajo** = silenciar alarma o temporizador y posponer; **doble golpe** = PTT alternativo; **sacudir** = cancelar la grabación o deshacer el último ítem | ⬜ | Se usa en 2.2, 2.8, 2.9 |
+| 0.10 | Modo atril: el hub, los widgets y el álbum en horizontal cuando el aparato está apoyado de costado (IMU). El lector siempre vertical | ⬜ | Opcional, se activa en Settings |
+| 0.11 | Auto-rotación del lector por IMU | ❌ | |
 
 ## Fase 1 · Hub y servidor (base hecha)
 
@@ -58,8 +60,11 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 |---|---------|--------|-------|
 | 2.1 | Clasificador de intención en el Hono (`POST /api/voice`): audio → texto → `{intent, payload}` con Claude; devuelve la acción hecha y el texto para pantalla y parlante | ⬜ | Intenciones: pregunta, tarea, recordatorio, compras, nota, mensaje, temporizador, traducción, alarma |
 | 2.2 | Recordatorios: título, fecha y hora, repetición (diaria, semanal por día, mensual), prioridad; se guardan en el servidor y en la SD; el aparato programa la alarma del RTC más cercana y despierta para avisar (pantalla + pitido o voz) | ⬜ | Modelo tomado del Note 4 |
-| 2.3 | Lista de tareas: agregar por voz, tildar con OK, borrar con OK largo, pendientes arriba | ⬜ | |
-| 2.4 | Lista de compras: separada de las tareas, ítems sueltos, se vacía de a uno o entera | ⬜ | Como el Sticky, "comprá leche y huevos" → dos ítems |
+| 2.3 | **Varias listas de tareas.** Cada lista tiene nombre y tipo (tareas, compras, proyecto). Vienen de fábrica Entrada, Casa, Trabajo, Administrativo y Compras; las demás se crean por voz ("creá la lista Proyecto Norte"). Ítems con estado, prioridad, fecha opcional y nota. Mosaico Tareas → lista de listas con pendientes; adentro OK tilda, OK largo abre menú (mover a otra lista, poner fecha, borrar) | ⬜ | Modelo: `lists` + `items` con `list_id`, `due_date`, `week` |
+| 2.3b | **Vista por semana.** Todo ítem con fecha cae en su semana ISO; la vista "Semana" agrupa por día lo de todas las listas y permite moverlo a la siguiente. "Para la semana que viene: renovar el seguro" y "el jueves: mandar el informe" caen solos en su semana | ⬜ | Reemplaza a las listas por número de semana que llevás a mano |
+| 2.3c | Voz para listas: "agregá a la casa: cambiar el foco", "en trabajo: …", "compras: leche y huevos" (dos ítems). Sin lista nombrada el clasificador elige por contexto o lo deja en Entrada para ordenarlo después | ⬜ | |
+| 2.3d | Importación de las listas actuales (texto, Excel o lo que uses) al servidor, y edición desde la página web del Hono | ⬜ | |
+| 2.4 | Lista de compras: es una lista más, de tipo compras: ítems sueltos, se vacía de a uno o entera | ⬜ | Como el Sticky |
 | 2.5 | Notas y memos: texto dictado, lista paginada, borrar | ⬜ | |
 | 2.6 | TTS: el servidor devuelve audio (MP3 o WAV) y el aparato lo reproduce; respuesta hablada opcional en las preguntas y obligatoria en avisos | ⬜ | `POST /api/tts`, tarea de audio en core 1 |
 | 2.7 | Traductor: "traducí al inglés …" o "cómo se dice …"; muestra y lee la traducción | ⬜ | |
@@ -85,9 +90,12 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 
 | # | Función | Estado | Notas |
 |---|---------|--------|-------|
-| 4.1 | Sudoku (tablero generado en el servidor o en la SD, entrada con trackball) | ⬜ | |
-| 4.2 | Cartas (solitario) | ⬜ | |
-| 4.3 | Ajedrez contra el servidor | ⬜ | Opcional |
+| 4.1 | Damas contra la máquina (motor local, minimax corto) | ⬜ | Tablero 8x8, cursor con trackball o UP/DOWN + OK |
+| 4.2 | Cartas: rummy (contra la máquina), solitario Klondike, blackjack; chinchón y escoba si sobra tiempo | ⬜ | Baraja dibujada a 4 grises |
+| 4.3 | Retos mentales: sudoku, acertijos y trivia que manda el servidor (por voz se responde), cálculo mental, secuencias lógicas | ⬜ | Los acertijos se cachean en la SD |
+| 4.4 | Memoria: parejas (Memory), Simón (secuencias con sonido por el parlante), recordar listas de palabras o números con puntaje | ⬜ | |
+| 4.5 | Tetris: viable a velocidad baja con refresco parcial (4 grises, refresco completo cada tantas piezas); necesita el trackball o los botones extra para izquierda/derecha/girar | ⬜ | Experimental; 2048 como alternativa más apta para la tinta |
+| 4.6 | Ajedrez contra el servidor | ⬜ | Opcional |
 
 ## Transversal
 
@@ -106,3 +114,5 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 - `GET/POST/PATCH/DELETE /api/reminders`, `/api/todos`, `/api/shopping`, `/api/notes`, `/api/messages`.
 - `POST /api/tts` (`{text}`) → audio.
 - `GET /api/bible/day`, `GET /api/rss`, `GET /api/rss/:id`, `GET /api/images`.
+- `GET/POST /api/lists`, `GET/POST/PATCH/DELETE /api/lists/:id/items`, `GET /api/week/:iso` (ítems de la semana).
+- `GET /api/games/riddles`, `GET /api/games/sudoku`.
