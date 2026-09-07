@@ -43,6 +43,17 @@ const WEATHER_TTL_MS = 15 * 60 * 1000;
 
 type Place = { name: string; label: string; lat: number; lon: number; timezone: string };
 
+// Desfase (ms) de la zona del lugar respecto de UTC, para ubicar "ahora" en
+// las horas del pronóstico.
+function tzOffsetMs(at: number): number {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(at));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - Math.floor(at / 1000) * 1000;
+}
+
 let placeCache: Place | null | undefined; // undefined = not loaded yet
 
 async function place(): Promise<Place | null> {
@@ -171,6 +182,78 @@ hub.post("/location", async (c) => {
 });
 
 hub.get("/location", async (c) => c.json({ ok: true, place: await place() }));
+
+// Pronóstico para la pantalla de Clima del aparato: hoy por horas y los
+// próximos días. Una sola llamada, cacheada 15 minutos como el resumen.
+let forecastCache: { at: number; lang: Lang; value: object } | null = null;
+
+hub.get("/forecast", async (c) => {
+  const lang = normalizeLang(c.req.query("lang"));
+  const p = await place();
+  if (!p) return c.json({ ok: false, error: "no place set" }, 503);
+  if (forecastCache && forecastCache.lang === lang && Date.now() - forecastCache.at < WEATHER_TTL_MS) {
+    return c.json(forecastCache.value);
+  }
+  const tz = p.timezone || TZ;
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}` +
+    `&current=temperature_2m,relative_humidity_2m,weather_code,apparent_temperature,wind_speed_10m` +
+    `&hourly=temperature_2m,weather_code,precipitation_probability` +
+    `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,sunrise,sunset` +
+    `&forecast_days=6&timezone=${encodeURIComponent(tz)}`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`open-meteo ${res.status}`);
+    const d = (await res.json()) as {
+      current: { temperature_2m: number; relative_humidity_2m: number; weather_code: number; apparent_temperature: number; wind_speed_10m: number };
+      hourly: { time: string[]; temperature_2m: number[]; weather_code: number[]; precipitation_probability: number[] };
+      daily: { time: string[]; temperature_2m_max: number[]; temperature_2m_min: number[]; weather_code: number[]; precipitation_probability_max: number[]; sunrise: string[]; sunset: string[] };
+    };
+    // Horas: de la próxima en adelante, de a dos, ocho tramos.
+    const nowIso = new Date(Date.now() + tzOffsetMs(Date.now())).toISOString().slice(0, 13);
+    let start = d.hourly.time.findIndex((t) => t.slice(0, 13) >= nowIso);
+    if (start < 0) start = 0;
+    const hours = [];
+    for (let i = start; i < d.hourly.time.length && hours.length < 8; i += 2) {
+      hours.push({
+        h: d.hourly.time[i].slice(11, 16),
+        t: Math.round(d.hourly.temperature_2m[i]),
+        c: describeWeather(d.hourly.weather_code[i], lang),
+        p: Math.round(d.hourly.precipitation_probability?.[i] ?? 0),
+      });
+    }
+    const wd = new Intl.DateTimeFormat(lang === "en" ? "en-US" : lang, { weekday: "short", timeZone: tz });
+    const days = d.daily.time.slice(0, 6).map((t, i) => ({
+      d: wd.format(new Date(t + "T12:00:00Z")),
+      date: t.slice(8, 10) + "/" + t.slice(5, 7),
+      max: Math.round(d.daily.temperature_2m_max[i]),
+      min: Math.round(d.daily.temperature_2m_min[i]),
+      c: describeWeather(d.daily.weather_code[i], lang),
+      p: Math.round(d.daily.precipitation_probability_max?.[i] ?? 0),
+    }));
+    const value = {
+      ok: true,
+      place: p.name || p.label,
+      now: {
+        t: Math.round(d.current.temperature_2m),
+        feels: Math.round(d.current.apparent_temperature),
+        hum: Math.round(d.current.relative_humidity_2m),
+        wind: Math.round(d.current.wind_speed_10m),
+        c: describeWeather(d.current.weather_code, lang),
+      },
+      sunrise: d.daily.sunrise?.[0]?.slice(11, 16) ?? "",
+      sunset: d.daily.sunset?.[0]?.slice(11, 16) ?? "",
+      hours,
+      days,
+    };
+    forecastCache = { at: Date.now(), lang, value };
+    return c.json(value);
+  } catch (err) {
+    console.error("forecast:", err);
+    if (forecastCache) return c.json(forecastCache.value);
+    return c.json({ ok: false, error: "weather unavailable" }, 502);
+  }
+});
 
 hub.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
