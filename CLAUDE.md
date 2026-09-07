@@ -164,7 +164,10 @@ llegue el hardware.
 - Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se
   cargan en `/board`, artículo limpiado a texto sin LLM); titulares y artículos leídos cacheados en `/.crosspoint/rss/`.
   El hub pasa a 3x4: Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos,
-  Ajustes (Fotos y Juegos todavía dicen "Próximamente").
+  Ajustes (Juegos todavía dice "Próximamente").
+- Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`); la
+  conversión a 4 grises la hace el navegador en `/board` (canvas + Floyd-Steinberg + BMP 2 bpp), el aparato solo baja
+  a `/Photos` de la SD y dibuja con el `Bitmap` del SDK.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
