@@ -355,10 +355,13 @@ void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const i
     const int tw = colW - pad - 24 - 8 - 8;
     drawSdkIcon(renderer, icon_hub_weather_24, x + pad, y + 12, true);
     if (hub.weatherLine.empty()) {
-      // Sin lugar cargado el servidor no puede dar clima: decirlo en vez de "sin datos".
-      const char* none = !hub.hasSynced()  ? tr(STR_HUB_NEVER_SYNCED)
-                         : hub.weatherNoPlace ? tr(STR_HUB_NO_PLACE)
-                                              : tr(STR_HUB_NO_WEATHER);
+      // El motivo concreto en vez de "sin datos": falta el token, falta el lugar,
+      // o el servicio del clima falló en el servidor.
+      const char* none = !SERVER_STORE.hasToken() ? tr(STR_HUB_NO_TOKEN)
+                         : !hub.hasSynced()       ? tr(STR_HUB_NEVER_SYNCED)
+                         : hub.weatherNoPlace     ? tr(STR_HUB_NO_PLACE)
+                         : !hub.weatherError.empty() ? tr(STR_HUB_WEATHER_ERROR)
+                                                     : tr(STR_HUB_NO_WEATHER);
       renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, none, tw).c_str());
     } else {
       renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.weatherLine.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);

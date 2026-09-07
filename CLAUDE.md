@@ -155,6 +155,17 @@ llegue el hardware.
 - OJO con los botones: en esta placa OK es confirm+power compartidos, así que `wasLongPressed(Confirm, ...)` NUNCA es
   cierto (mantener OK apaga). Las funciones que estaban colgadas de "OK largo" no existían: el Clima quedó como
   mosaico propio (en el lugar de Juegos, que decía "Próximamente").
+- OJO con el audio: el I2S es uno solo y cada clase (`SpeechOut`, `AlertBeep`, `VoiceRecorder`) tiene su propio
+  `AudioManager`. Abrir el micrófono mientras habla el parlante da "Falló la captura del micrófono", y navegar
+  mientras habla corta la frase. Regla: `speech.stop()` antes de grabar, y si hay que hacer algo después de hablar,
+  esperar a `!speech.isPlaying()` (estado `SPEAKING` de `VoiceActivity`).
+- Avisos hablados: los clips de Piper se cachean en `/.crosspoint/tts/<hash>.bin`, con el hash de
+  (voz + idioma + texto) — `src/voice/SpeechCache.h`. El servidor manda la voz en uso en `ttsVoice` de `GET /api/hub`;
+  cambiar la voz cambia el nombre del archivo, así que el clip viejo no se puede reusar (antes el aviso del
+  temporizador siguió con la voz masculina vieja para siempre). La sincronización borra los clips que ya no están
+  en la lista.
+- Listas con barra de botones: el margen de abajo va `buttonHintsHeight + verticalSpacing`, no solo el alto de los
+  hints, o la última fila queda pegada a los botones y parece tapada.
 - TTS (`server/src/tts.ts`, Piper en el Dockerfile con una voz por idioma; español = `es_MX-claude-high`, femenina neutra): `POST /api/voice` devuelve un cuerpo
   binario `[u32 LE largo JSON][JSON][ADPCM]` (`application/x-ws397-voice`); `VoiceActivity` lo parte, decodifica
   (`src/voice/Adpcm`) y reproduce (`src/voice/SpeechOut`) mientras muestra el texto. `GET /api/tts?text=&lang=`
@@ -189,8 +200,11 @@ llegue el hardware.
   El hub pasa a 3x4: Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos,
   Ajustes (Juegos todavía dice "Próximamente").
 - Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`); la
-  conversión a 4 grises la hace el navegador en `/board` (canvas + Floyd-Steinberg + BMP 2 bpp), el aparato solo baja
-  a `/Photos` de la SD y dibuja con el `Bitmap` del SDK.
+  conversión la hace el navegador en `/board` (canvas + Floyd-Steinberg + BMP 2 bpp) al **tamaño de la pantalla,
+  480x800 vertical** (antes 800x480 y una foto de teléfono quedaba en una franja de 480x288). El aparato pide la
+  lista al servidor cada vez que se entra, baja a `/Photos` de la SD y dibuja con el **pipeline de grises** del SDK
+  (base BW + pasada LSB + pasada MSB + `displayGrayBuffer`): una sola pasada en modo BW pintaba de negro todo lo que
+  no fuera blanco puro y la foto salía como una mancha.
 - Clima detallado (`WeatherActivity`, mosaico Clima): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y seis
   días), último pronóstico cacheado en `/.crosspoint/forecast.json` con `savedAt`; si tiene más de una hora se
   refresca solo al entrar y Atrás mantenido lo fuerza. Un 503 del servidor (no hay lugar cargado) se muestra como
@@ -198,7 +212,9 @@ llegue el hardware.
   `GET /api/hub`), que es otra fuente: si viene vacío con `weather.noPlace`, el hub también dice que falta el lugar,
   y `shouldAutoSync()` reintenta a la hora en vez de esperar el ciclo entero.
 - Log: `src/util/DeviceLog` engancha `setLogSink` de `lib/Logging` y guarda cada línea en `/.crosspoint/device.log`
-  (rota a 64 KB); `HubSyncActivity` lo sube con `POST /api/log` y se lee en `/board/log`.
+  (rota a 64 KB); `HubSyncActivity` lo sube con `POST /api/log` (también cuando la sincronización falla, que es
+  cuando más sirve) y se lee en `/board/log` **con el token** (`GET /api/log`): ahí adentro están los nombres de las
+  redes WiFi y todo lo que se dicta por voz, así que la página no puede ser pública.
 - El audio de subida va en ADPCM (`adpcm::encode`), una cuarta parte de un WAV: es lo que más tardaba. El servidor
   acepta `audio/adpcm` o `audio/wav` (`toWav` en `transcribe.ts`) y devuelve tiempos por etapa en `ms`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y

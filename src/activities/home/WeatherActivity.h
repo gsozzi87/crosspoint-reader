@@ -27,6 +27,7 @@ class WeatherActivity final : public Activity {
   State state = SHOW;
   time_t cachedAt = 0;   // cuándo se guardó el pronóstico de la SD (0 = sin fecha)
   int lastStatus = 0;    // último código HTTP de /api/hub/forecast, para el mensaje de error
+  std::string failureDetail;  // "Server 503", "Transport 0": el motivo real, para no adivinar
 
   struct Hour {
     std::string at;

@@ -11,6 +11,7 @@
 #include "components/UITheme.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "fontIds.h"
+#include "voice/SpeechCache.h"
 
 namespace {
 constexpr const char* TAG = "REMIND";
@@ -30,7 +31,7 @@ void ReminderAlertActivity::onEnter() {
   Activity::onEnter();
   startedAt = millis();
   // "Reminder: <title>" from the SD (cached at sync), then the beeps.
-  const std::string clip = "/.crosspoint/tts/r" + std::to_string(reminderId) + ".bin";
+  const std::string clip = speechcache::clipPath(std::string(tr(STR_HUB_REMINDERS)) + ": " + title);
   spoken = !speech.playFile(clip.c_str());
   if (spoken) beep.start();
   requestUpdate();

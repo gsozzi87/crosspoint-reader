@@ -7,6 +7,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <ServerClient.h>
+#include <ServerCredentialStore.h>
 #include <WiFi.h>
 
 #include <algorithm>
@@ -37,6 +38,14 @@ void PhotosActivity::onEnter() {
   scanLocal();
   state = LIST;
   requestUpdate();
+  // Siempre se busca la lista del servidor al entrar (mostrando lo que ya está
+  // en la SD mientras tanto): antes había que saber que Atrás mantenido
+  // actualizaba, y el que subía una foto desde el teléfono entraba acá y veía
+  // "Sin fotos". Si la red falla, queda lo local y se avisa.
+  if (SERVER_STORE.hasToken()) {
+    pending = REFRESH;
+    ensureConnected();
+  }
 }
 
 void PhotosActivity::onExit() {
@@ -90,7 +99,12 @@ void PhotosActivity::scanLocal() {
 
 bool PhotosActivity::fetchList() {
   ServerClient::Response resp;
-  if (SERVER_CLIENT.get("/api/photos", resp) != ServerClient::Result::Ok) return false;
+  const ServerClient::Result r = SERVER_CLIENT.get("/api/photos", resp);
+  if (r != ServerClient::Result::Ok) {
+    lastError = std::string(ServerClient::resultName(r)) + " " + std::to_string(resp.status);
+    LOG_ERR(TAG, "GET /api/photos: %s", lastError.c_str());
+    return false;
+  }
   JsonDocument doc;
   if (deserializeJson(doc, resp.body) != DeserializationError::Ok) return false;
   for (JsonVariantConst pv : doc["photos"].as<JsonArrayConst>()) {
@@ -109,7 +123,12 @@ bool PhotosActivity::fetchList() {
 
 bool PhotosActivity::download(Photo& photo) {
   ServerClient::Response resp;
-  if (SERVER_CLIENT.get("/api/photos/file?id=" + photo.id, resp) != ServerClient::Result::Ok) return false;
+  const ServerClient::Result r = SERVER_CLIENT.get("/api/photos/file?id=" + photo.id, resp);
+  if (r != ServerClient::Result::Ok) {
+    lastError = std::string(ServerClient::resultName(r)) + " " + std::to_string(resp.status);
+    LOG_ERR(TAG, "GET /api/photos/file: %s", lastError.c_str());
+    return false;
+  }
   if (resp.body.size() < 100) return false;
   HalFile f;
   if (!Storage.openFileForWrite(TAG, photo.path, f)) return false;
@@ -169,7 +188,10 @@ void PhotosActivity::loop() {
         const bool ok = fetchList();
         WiFi.setSleep(true);
         if (!ok) {
-          fail(StrId::STR_ASK_FAILED, "list");
+          // La lista no se pudo traer: se sigue mostrando lo que hay en la SD.
+          LOG_ERR(TAG, "lista: %s", lastError.c_str());
+          state = LIST;
+          requestUpdate();
           break;
         }
         state = LIST;
@@ -178,7 +200,7 @@ void PhotosActivity::loop() {
         const bool ok = download(photos[index]);
         WiFi.setSleep(true);
         if (!ok) {
-          fail(StrId::STR_ASK_FAILED, "download");
+          fail(StrId::STR_ASK_FAILED, lastError.empty() ? "download" : lastError);
           break;
         }
         state = VIEW;
@@ -250,21 +272,33 @@ void PhotosActivity::loop() {
   }
 }
 
-// Full screen, centred, no chrome except the hint row: same path the BMP
-// viewer uses (the SDK reader handles the 2 bpp palette natively).
+// Pantalla completa, centrada, con los 4 grises de verdad. Ojo: una sola pasada
+// en modo BW pinta de negro TODO lo que no sea blanco puro (drawBitmap en BW:
+// negro si val < 3, nada si val == 3), así que una foto difuminada a 4 niveles
+// salía como una mancha negra. Hay que correr el pipeline de gris del SDK:
+// base en blanco y negro + pasada LSB + pasada MSB, igual que el salvapantallas.
 void PhotosActivity::drawPhoto() {
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "<", ">");
+
   HalFile file;
   if (!Storage.openFileForRead(TAG, photos[index].path, file)) {
+    renderer.clearScreen();
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     return;
   }
   Bitmap bitmap(file, true);
   if (bitmap.parseHeaders() != BmpReaderError::Ok) {
+    renderer.clearScreen();
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
+    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
     return;
   }
+
   int x = 0, y = 0;
   if (bitmap.getWidth() > pageWidth || bitmap.getHeight() > pageHeight) {
     const float ratio = static_cast<float>(bitmap.getWidth()) / static_cast<float>(bitmap.getHeight());
@@ -278,7 +312,32 @@ void PhotosActivity::drawPhoto() {
     x = (pageWidth - bitmap.getWidth()) / 2;
     y = (pageHeight - bitmap.getHeight()) / 2;
   }
+
+  const bool gray = bitmap.hasGreyscale();
+  renderer.clearScreen();
   renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  // La base tiene que ser HALF: la LUT del empujón de gris está calibrada
+  // contra el estado que deja esa forma de onda.
+  if (gray) {
+    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+    bitmap.rewindToData();
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+    renderer.copyGrayscaleLsbBuffers();
+
+    bitmap.rewindToData();
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+    renderer.copyGrayscaleMsbBuffers();
+
+    renderer.displayGrayBuffer();
+    renderer.setRenderMode(GfxRenderer::BW);
+  } else {
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  }
 }
 
 void PhotosActivity::render(RenderLock&&) {
@@ -287,15 +346,12 @@ void PhotosActivity::render(RenderLock&&) {
   const int pageHeight = renderer.getScreenHeight();
   const int mid = pageHeight / 2;
 
-  renderer.clearScreen();
   if (state == VIEW && !photos.empty()) {
-    drawPhoto();
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "<", ">");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);  // photos deserve the clean waveform
+    drawPhoto();  // se encarga de su propio refresco (pipeline de grises)
     return;
   }
 
+  renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_PHOTOS));
   switch (state) {
     case LIST: {

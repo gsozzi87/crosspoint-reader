@@ -134,6 +134,7 @@ void TranslatorActivity::showLanguagePicker() {
 }
 
 void TranslatorActivity::startRecording(const bool me) {
+  speech.stop();  // el parlante y el micrófono comparten el I2S: si sigue hablando, la captura falla
   speech.stop();
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder.start(why)) {

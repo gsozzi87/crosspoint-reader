@@ -12,6 +12,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
+#include "voice/SpeechCache.h"
 
 namespace {
 constexpr int DURATIONS_MIN[] = {1, 3, 5, 10, 15, 20, 25, 30, 45, 60};
@@ -224,8 +225,7 @@ void TimerActivity::ring() {
   finishedAt = millis();
   HUB_STORE.clearTimer();
   HUB_STORE.saveToFile();
-  const std::string clip = std::string("/.crosspoint/tts/timer-") + uiLanguageCode() + ".bin";
-  spoken = !speech.playFile(clip.c_str());
+  spoken = !speech.playFile(speechcache::clipPath(tr(STR_TIMER_DONE)).c_str());
   if (spoken) beep.start();
   requestUpdate();
 }

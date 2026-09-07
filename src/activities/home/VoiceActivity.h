@@ -24,8 +24,14 @@ class VoiceActivity final : public Activity {
   bool preventAutoSleep() override { return state != REPLY && state != FAILED; }
 
  private:
-  enum State { RECORDING, CONNECTING, SENDING, REPLY, FAILED };
+  // SPEAKING: la respuesta se está reproduciendo y hay algo que hacer después.
+  // Hace falta porque el I2S es uno solo: abrir el micrófono mientras habla el
+  // parlante falla ("error de micrófono"), y navegar mientras habla corta la frase.
+  enum State { RECORDING, CONNECTING, SENDING, SPEAKING, REPLY, FAILED };
   State state = RECORDING;
+  enum AfterSpeech { AFTER_NONE, AFTER_ASK_TIME, AFTER_TIMER };
+  AfterSpeech afterSpeech = AFTER_NONE;
+  unsigned long speakStartedAt = 0;
 
   VoiceRecorder recorder{12};
   std::string heard;   // what the server understood
@@ -45,6 +51,9 @@ class VoiceActivity final : public Activity {
   void onWifiSelectionComplete(bool connected);
   void performRequest();
   void showReply();
+  // Espera a que termine de hablar y recién ahí graba de nuevo o abre el reloj.
+  void speakThen(AfterSpeech what);
+  void runAfterSpeech();
   void fail(StrId why, std::string detail = "");
   void leave();
   const char* intentTitle() const;

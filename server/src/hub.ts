@@ -31,6 +31,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
+import { VOICES } from "./tts";
 import { load as loadStore, DEFAULT_SETTINGS } from "./store";
 import { agendaConfigured, todayForHub } from "./agenda";
 import { verseOfTheDay } from "./bible";
@@ -83,6 +84,23 @@ type Weather = { line: string; detail: string; noPlace?: boolean; error?: string
 
 let weatherCache: { at: number; lang: Lang; value: Weather } | null = null;
 
+// Open-Meteo desde Railway falla de a ratos (corte de red, 429 por IP compartida).
+// Con un solo intento el clima quedaba vacío hasta el próximo ciclo de 15 minutos.
+async function fetchRetry(url: string, tries = 3): Promise<Response> {
+  let last: unknown;
+  for (let i = 0; i < tries; i++) {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      if (res.ok || (res.status >= 400 && res.status < 500 && res.status !== 429)) return res;
+      last = new Error(`open-meteo ${res.status}`);
+    } catch (err) {
+      last = err;
+    }
+    if (i < tries - 1) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+  }
+  throw last instanceof Error ? last : new Error(String(last));
+}
+
 async function weather(lang: Lang): Promise<Weather> {
   const p = await place();
   // Sin lugar guardado no hay clima posible: el aparato lo dice tal cual
@@ -94,8 +112,8 @@ async function weather(lang: Lang): Promise<Weather> {
     `&current=temperature_2m,relative_humidity_2m,weather_code` +
     `&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=${encodeURIComponent(p.timezone || TZ)}`;
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`open-meteo ${res.status}`);
+    const res = await fetchRetry(url);
+    if (!res.ok) throw new Error(`open-meteo ${res.status}: ${(await res.text()).slice(0, 120)}`);
     const data = (await res.json()) as {
       current: { temperature_2m: number; relative_humidity_2m: number; weather_code: number };
       daily: { temperature_2m_max: number[]; temperature_2m_min: number[] };
@@ -111,7 +129,7 @@ async function weather(lang: Lang): Promise<Weather> {
     weatherCache = { at: Date.now(), lang, value };
     return value;
   } catch (err) {
-    console.error("hub weather:", err);
+    console.error("hub weather:", p.label || `${p.lat},${p.lon}`, err);
     return weatherCache?.value ?? { line: "", detail: "", error: String(err).slice(0, 200) };
   }
 }
@@ -150,6 +168,7 @@ hub.get("/location/search", async (c) => {
     try {
       const res = await fetch(
         `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(name)}&count=5&language=es&format=json`,
+        { signal: AbortSignal.timeout(8000) },
       );
       if (!res.ok) continue;
       const data = (await res.json()) as {
@@ -213,8 +232,8 @@ hub.get("/forecast", async (c) => {
     `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,sunrise,sunset` +
     `&forecast_days=6&timezone=${encodeURIComponent(tz)}`;
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`open-meteo ${res.status}`);
+    const res = await fetchRetry(url);
+    if (!res.ok) throw new Error(`open-meteo ${res.status}: ${(await res.text()).slice(0, 120)}`);
     const d = (await res.json()) as {
       current: { temperature_2m: number; relative_humidity_2m: number; weather_code: number; apparent_temperature: number; wind_speed_10m: number };
       hourly: { time: string[]; temperature_2m: number[]; weather_code: number[]; precipitation_probability: number[] };
@@ -298,6 +317,9 @@ hub.get("/", async (c) => {
     verse,  // { ref, text } del día, o null si la Biblia no está
     // Ajustes cargados en /board; el aparato los aplica si `rev` subió.
     settings: store.settings ?? DEFAULT_SETTINGS,
+    // Voz de Piper en uso: si cambió, el aparato tira los clips que tenía
+    // cacheados en la SD (si no, sigue avisando con la voz vieja para siempre).
+    ttsVoice: VOICES[lang],
   });
 });
 

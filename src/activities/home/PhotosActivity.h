@@ -43,6 +43,7 @@ class PhotosActivity final : public Activity {
   bool wifiActivated = false;
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
+  std::string lastError;  // "Server 401", "Transport 0": el motivo real del último pedido
 
   void scanLocal();
   bool fetchList();

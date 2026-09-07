@@ -6,6 +6,7 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <ServerClient.h>
+#include <ServerCredentialStore.h>
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
@@ -96,8 +97,10 @@ bool WeatherActivity::fetchForecast() {
   lastStatus = resp.status;
   if (r != ServerClient::Result::Ok) {
     LOG_ERR(TAG, "GET /api/hub/forecast: %s (%d)", ServerClient::resultName(r), resp.status);
+    failureDetail = std::string(ServerClient::resultName(r)) + " " + std::to_string(resp.status);
     return false;
   }
+  failureDetail.clear();
   if (!parse(resp.body)) {
     LOG_ERR(TAG, "bad forecast payload (%d bytes)", (int)resp.body.size());
     return false;
@@ -134,6 +137,7 @@ void WeatherActivity::ensureConnected() {
 void WeatherActivity::onWifiSelectionComplete(const bool connected) {
   if (!connected) {
     failureId = StrId::STR_SERVER_WIFI_FAILED;
+    failureDetail.clear();
     state = days.empty() ? FAILED : SHOW;
     requestUpdate();
     return;
@@ -193,6 +197,16 @@ void WeatherActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_WEATHER_LOADING), true, EpdFontFamily::BOLD);
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, I18N.get(failureId), true, EpdFontFamily::BOLD);
+    // El motivo concreto: sin esto "no se pudo" no dice si es el WiFi, el token,
+    // el servidor o que falta el lugar.
+    if (!failureDetail.empty()) {
+      renderer.drawCenteredText(SMALL_FONT_ID, mid + 20,
+                                renderer.truncatedText(SMALL_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
+    }
+    const std::string base = SERVER_STORE.getBaseUrl();
+    renderer.drawCenteredText(SMALL_FONT_ID, mid + 46,
+                              base.empty() ? tr(STR_SERVER_NOT_CONFIGURED)
+                                           : renderer.truncatedText(SMALL_FONT_ID, base.c_str(), pageWidth - 40).c_str());
   } else {
     int y = metrics.topPadding + metrics.headerHeight + 10;
     const int w = pageWidth - 2 * SIDE;
