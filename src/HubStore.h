@@ -59,7 +59,8 @@ class HubStore : public PersistableStore<HubStore> {
   std::string quote;
   std::string translatorLang;
   int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
-  int bibleChapter = 0;  // the other side of the translator ("en", ...), remembered
+  int bibleChapter = 0;
+  int musicVolume = 70;  // MP3 player volume, 0-100  // the other side of the translator ("en", ...), remembered
   uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
 
