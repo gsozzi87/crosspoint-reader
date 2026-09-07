@@ -155,6 +155,9 @@ llegue el hardware.
 - OJO con los botones: en esta placa OK es confirm+power compartidos, así que `wasLongPressed(Confirm, ...)` NUNCA es
   cierto (mantener OK apaga). Las funciones que estaban colgadas de "OK largo" no existían: el Clima quedó como
   mosaico propio (en el lugar de Juegos, que decía "Próximamente").
+- Atajo de voz global: **ARRIBA + ABAJO juntos** abren Hablar desde cualquier pantalla tranquila
+  (`checkVoiceShortcut()` en el loop de `main.cpp`). Los cuatro botones ya tienen dueño, el combo es lo único libre.
+  Atrás en el hub no hace nada: el hub es el fondo (antes abría el último libro y no había forma de quedarse).
 - OJO con el audio: el I2S es uno solo y cada clase (`SpeechOut`, `AlertBeep`, `VoiceRecorder`) tiene su propio
   `AudioManager`. Abrir el micrófono mientras habla el parlante da "Falló la captura del micrófono", y navegar
   mientras habla corta la frase. Regla: `speech.stop()` antes de grabar, y si hay que hacer algo después de hablar,
@@ -199,12 +202,14 @@ llegue el hardware.
   cargan en `/board`, artículo limpiado a texto sin LLM); titulares y artículos leídos cacheados en `/.crosspoint/rss/`.
   El hub pasa a 3x4: Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos,
   Ajustes (Juegos todavía dice "Próximamente").
-- Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`); la
-  conversión la hace el navegador en `/board` (canvas + Floyd-Steinberg + BMP 2 bpp) al **tamaño de la pantalla,
-  480x800 vertical** (antes 800x480 y una foto de teléfono quedaba en una franja de 480x288). El aparato pide la
-  lista al servidor cada vez que se entra, baja a `/Photos` de la SD y dibuja con el **pipeline de grises** del SDK
-  (base BW + pasada LSB + pasada MSB + `displayGrayBuffer`): una sola pasada en modo BW pintaba de negro todo lo que
-  no fuera blanco puro y la foto salía como una mancha.
+- Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`). La
+  foto se sube **tal como sale del teléfono** y la convierte el servidor con `sharp` (`toDeviceBmp`: rota por EXIF,
+  escala a 480x800, 4 grises con Floyd-Steinberg y BMP de 2 bpp, ~150 ms); el navegador ya no arma nada. El aparato
+  pide la lista al servidor cada vez que se entra, baja a `/Photos` de la SD y dibuja con el **pipeline de grises**
+  del SDK (base BW + pasada LSB + pasada MSB + `displayGrayBuffer`): una sola pasada en modo BW pintaba de negro todo
+  lo que no fuera blanco puro y la foto salía como una mancha.
+- Clima: Open-Meteo primero y **met.no de respaldo** (`server/src/metno.ts`, mismo formato traducido con
+  `wmoFromSymbol`, User-Agent obligatorio): desde Railway Open-Meteo devolvía 502 sin parar y el hub quedaba vacío.
 - Clima detallado (`WeatherActivity`, mosaico Clima): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y seis
   días), último pronóstico cacheado en `/.crosspoint/forecast.json` con `savedAt`; si tiene más de una hora se
   refresca solo al entrar y Atrás mantenido lo fuerza. Un 503 del servidor (no hay lugar cargado) se muestra como

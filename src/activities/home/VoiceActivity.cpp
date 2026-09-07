@@ -104,6 +104,7 @@ void VoiceActivity::performRequest() {
   LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)bytes);
   std::string path = std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam();
   if (!pendingTitle.empty()) path += "&pending=" + urlEncode(pendingTitle);
+  if (!pendingDate.empty()) path += "&pendingDate=" + urlEncode(pendingDate);
   ServerClient::Response resp;
   const ServerClient::Result r = SERVER_CLIENT.postBytes(path, "audio/adpcm", body, bytes, resp, VOICE_TIMEOUT_MS);
   recorder.release();
@@ -151,14 +152,18 @@ void VoiceActivity::performRequest() {
     // Primero termina de preguntar en voz alta: el micrófono y el parlante
     // comparten el I2S, abrir la captura mientras suena da error de micrófono.
     pendingTitle = askTime;
+    pendingDate = doc["askDate"] | "";
     askingTime = true;
     WiFi.setSleep(true);
     speakThen(AFTER_ASK_TIME);
     return;
   }
   pendingTitle.clear();
+  pendingDate.clear();
   askingTime = false;
-  LOG_INF(TAG, "\"%s\" -> %s", heard.c_str(), intent.c_str());
+  LOG_INF(TAG, "\"%s\" -> %s (stt=%d llm=%d tts=%d total=%d ms)", heard.c_str(), intent.c_str(),
+          (int)(doc["ms"]["stt"] | 0), (int)(doc["ms"]["llm"] | 0), (int)(doc["ms"]["tts"] | 0),
+          (int)(doc["ms"]["total"] | 0));
 
   // Widgets: whatever was just saved shows up on the hub right away.
   if (intent != "question" && intent != "translate" && intent != "memory") HubSyncActivity::fetchNow();
@@ -273,8 +278,17 @@ void VoiceActivity::render(RenderLock&&) {
                                   renderer.truncatedText(UI_10_FONT_ID, pendingTitle.c_str(), pageWidth - 40).c_str());
         renderer.drawCenteredText(UI_10_FONT_ID, mid + 26, tr(STR_VOICE_ASK_TIME_HINT));
       } else {
-        renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, tr(STR_VOICE_PROMPT), true, EpdFontFamily::BOLD);
-        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, tr(STR_VOICE_HINT));
+        // Ejemplos de lo que entiende: sin esto hay que adivinar qué se le puede pedir.
+        renderer.drawCenteredText(UI_12_FONT_ID, mid - 150, tr(STR_VOICE_PROMPT), true, EpdFontFamily::BOLD);
+        renderer.drawCenteredText(SMALL_FONT_ID, mid - 118, tr(STR_VOICE_HINT));
+        const StrId examples[] = {StrId::STR_VOICE_EX1, StrId::STR_VOICE_EX2, StrId::STR_VOICE_EX3,
+                                  StrId::STR_VOICE_EX4, StrId::STR_VOICE_EX5, StrId::STR_VOICE_EX6};
+        int y = mid - 76;
+        for (const StrId id : examples) {
+          renderer.drawCenteredText(UI_10_FONT_ID, y,
+                                    renderer.truncatedText(UI_10_FONT_ID, I18N.get(id), pageWidth - 30).c_str());
+          y += 34;
+        }
       }
       confirmLabel = tr(STR_SELECT);
       break;

@@ -198,10 +198,10 @@ void HubActivity::loop() {
     startSync();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !lastBookPath.empty()) {
-    activityManager.goToReader(lastBookPath);
-    return;
-  }
+  // El hub es el fondo del todo: Atrás no va a ninguna parte. El último libro se
+  // abre con el widget "Continuar leyendo" (OK sobre el mosaico Leer) o desde
+  // Leer; antes Atrás lo abría y no había manera de quedarse en el hub.
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) return;
 
   // Keep the clock honest while the hub sits on screen: one partial refresh
   // per minute change, nothing more (the panel wants few partials). Lo que suena
@@ -444,9 +444,11 @@ void HubActivity::render(RenderLock&&) {
   const int infoH = std::min(INFO_H, hintsTop - 8 - widgetTop);
   if (infoH > 80) drawInfoWidgets(SIDE, widgetTop, pageWidth - 2 * SIDE, infoH);
 
+  renderer.drawCenteredText(SMALL_FONT_ID, hintsTop - 16, tr(STR_VOICE_SHORTCUT_HINT));
+
   if (comingSoon) GUI.drawPopup(renderer, tr(STR_HUB_COMING_SOON));
 
-  const auto labels = mappedInput.mapLabels(lastBookPath.empty() ? tr(STR_HUB_SYNC_HINT) : tr(STR_RESUME), tr(STR_SELECT),
+  const auto labels = mappedInput.mapLabels(tr(STR_HUB_SYNC_HINT), tr(STR_SELECT),
                                             tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

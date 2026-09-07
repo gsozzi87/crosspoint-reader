@@ -44,6 +44,7 @@ class VoiceActivity final : public Activity {
   int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
   SpeechOut speech;      // the reply, spoken by the server's Piper, played with the text
   std::string pendingTitle;  // reminder waiting for its hour (the server asked)
+  std::string pendingDate;   // día que ya se había dicho ("2026-09-08"), vacío si no dijo ninguno
   bool askingTime = false;
 
   void startRecording();

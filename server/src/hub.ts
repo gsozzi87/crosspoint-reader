@@ -32,6 +32,7 @@ import { dirname } from "node:path";
 import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 import { VOICES } from "./tts";
+import { metNoForecast, type MetNoData } from "./metno";
 import { load as loadStore, DEFAULT_SETTINGS } from "./store";
 import { agendaConfigured, todayForHub } from "./agenda";
 import { verseOfTheDay } from "./bible";
@@ -82,6 +83,19 @@ async function savePlace(p: Place): Promise<void> {
 
 type Weather = { line: string; detail: string; noPlace?: boolean; error?: string };
 
+// Open-Meteo primero; si el servidor no puede con él (desde Railway venía dando
+// 502 sin parar), se cae a met.no, que devuelve lo mismo traducido en metno.ts.
+async function openMeteoOrMetNo(url: string, p: Place): Promise<MetNoData> {
+  try {
+    const res = await fetchRetry(url);
+    if (!res.ok) throw new Error(`open-meteo ${res.status}: ${(await res.text()).slice(0, 120)}`);
+    return (await res.json()) as MetNoData;
+  } catch (err) {
+    console.error("open-meteo falló, probando met.no:", err);
+    return metNoForecast(p.lat, p.lon, p.timezone || TZ);
+  }
+}
+
 let weatherCache: { at: number; lang: Lang; value: Weather } | null = null;
 
 // Open-Meteo desde Railway falla de a ratos (corte de red, 429 por IP compartida).
@@ -112,12 +126,7 @@ async function weather(lang: Lang): Promise<Weather> {
     `&current=temperature_2m,relative_humidity_2m,weather_code` +
     `&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=${encodeURIComponent(p.timezone || TZ)}`;
   try {
-    const res = await fetchRetry(url);
-    if (!res.ok) throw new Error(`open-meteo ${res.status}: ${(await res.text()).slice(0, 120)}`);
-    const data = (await res.json()) as {
-      current: { temperature_2m: number; relative_humidity_2m: number; weather_code: number };
-      daily: { temperature_2m_max: number[]; temperature_2m_min: number[] };
-    };
+    const data = await openMeteoOrMetNo(url, p);
     const l = LABELS[lang];
     const value = {
       line: `${describeWeather(data.current.weather_code, lang)} · ${Math.round(data.current.temperature_2m)}°`,
@@ -232,13 +241,7 @@ hub.get("/forecast", async (c) => {
     `&daily=temperature_2m_max,temperature_2m_min,weather_code,precipitation_probability_max,sunrise,sunset` +
     `&forecast_days=6&timezone=${encodeURIComponent(tz)}`;
   try {
-    const res = await fetchRetry(url);
-    if (!res.ok) throw new Error(`open-meteo ${res.status}: ${(await res.text()).slice(0, 120)}`);
-    const d = (await res.json()) as {
-      current: { temperature_2m: number; relative_humidity_2m: number; weather_code: number; apparent_temperature: number; wind_speed_10m: number };
-      hourly: { time: string[]; temperature_2m: number[]; weather_code: number[]; precipitation_probability: number[] };
-      daily: { time: string[]; temperature_2m_max: number[]; temperature_2m_min: number[]; weather_code: number[]; precipitation_probability_max: number[]; sunrise: string[]; sunset: string[] };
-    };
+    const d = await openMeteoOrMetNo(url, p);
     // Horas: de la próxima en adelante, de a dos, ocho tramos.
     // La zona del lugar elegido, no la del env: si no, las horas del pronóstico
   // arrancan corridas para cualquier ciudad de otro huso.
