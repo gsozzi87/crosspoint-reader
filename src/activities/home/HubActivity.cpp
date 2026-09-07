@@ -21,6 +21,7 @@
 #include "MusicActivity.h"
 #include "NewsActivity.h"
 #include "PhotosActivity.h"
+#include "WeatherActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
 #include "TranslatorActivity.h"
@@ -189,6 +190,11 @@ void HubActivity::loop() {
   }
   if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, SYNC_HOLD_MS)) {
     startSync();
+    return;
+  }
+  // The weather widget has no tile of its own: OK held opens the forecast.
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, SYNC_HOLD_MS)) {
+    activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !lastBookPath.empty()) {
