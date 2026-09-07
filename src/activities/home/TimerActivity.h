@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Arduino.h>
+
 #include <string>
 #include <vector>
 
@@ -23,7 +25,10 @@ class TimerActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return mode != PICK && running; }
+  // Solo mientras suena, y con tope: con el estado guardado, dormir es lo
+  // correcto (el aparato se despierta con el timer de deep sleep y suena).
+  // Antes devolvía true mientras corría y por eso nunca llegaba a ese wake.
+  bool preventAutoSleep() override { return finished && millis() - finishedAt < RING_MAX_MS; }
 
  private:
   enum Mode { PICK, COUNTDOWN, STOPWATCH, POMODORO };
@@ -33,9 +38,16 @@ class TimerActivity final : public Activity {
   OptionPopup picker;
   std::vector<std::string> pickerOptions;
   bool pickingDuration = false;
+  // Volver a mostrar un popup desde adentro de su propio callback destruiría el
+  // std::function en ejecución: se anota acá y lo atiende loop().
+  enum PendingPicker { NONE, MODE_PICKER, DURATION_PICKER };
+  PendingPicker pendingPicker = NONE;
+
+  static constexpr unsigned long RING_MAX_MS = 3 * 60 * 1000;  // si nadie atiende, dejarlo dormir
 
   bool running = false;
   bool finished = false;
+  unsigned long finishedAt = 0;
   unsigned long startMs = 0;      // when the current run (segment) started
   unsigned long accumulatedMs = 0;  // paused time carried over
   long totalSeconds = 0;          // countdown / pomodoro segment length

@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <ServerClient.h>
@@ -19,6 +20,7 @@ namespace {
 constexpr const char* TAG = "WEATHER";
 constexpr const char* CACHE = "/.crosspoint/forecast.json";
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
+constexpr time_t CACHE_MAX_AGE_S = 3600;  // más viejo que esto: refrescar al entrar
 constexpr int SIDE = 20;
 
 void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y, bool ink = true) {
@@ -34,12 +36,15 @@ void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, 
 
 void WeatherActivity::onEnter() {
   Activity::onEnter();
-  if (loadCache()) {
+  const bool haveCache = loadCache();
+  time_t now = 0;
+  const bool fresh = haveCache && cachedAt > 0 && halClock.getEpochUtc(now) && now - cachedAt < CACHE_MAX_AGE_S;
+  if (haveCache) {
     state = SHOW;
     requestUpdate();
-  } else {
-    ensureConnected();
   }
+  // Sin caché, o con una vieja, se pide de nuevo: si falla, queda lo cacheado.
+  if (!fresh) ensureConnected();
 }
 
 void WeatherActivity::onExit() {
@@ -54,6 +59,7 @@ void WeatherActivity::onExit() {
 bool WeatherActivity::parse(const std::string& json) {
   JsonDocument doc;
   if (deserializeJson(doc, json) != DeserializationError::Ok || !(doc["ok"] | false)) return false;
+  cachedAt = static_cast<time_t>(doc["savedAt"] | (int64_t)0);
   place = doc["place"] | "";
   nowTemp = doc["now"]["t"] | 0;
   feels = doc["now"]["feels"] | 0;
@@ -86,13 +92,29 @@ bool WeatherActivity::loadCache() {
 
 bool WeatherActivity::fetchForecast() {
   ServerClient::Response resp;
-  if (SERVER_CLIENT.get(std::string("/api/hub/forecast?lang=") + uiLanguageCode(), resp) != ServerClient::Result::Ok) {
+  const ServerClient::Result r = SERVER_CLIENT.get(std::string("/api/hub/forecast?lang=") + uiLanguageCode(), resp);
+  lastStatus = resp.status;
+  if (r != ServerClient::Result::Ok) {
+    LOG_ERR(TAG, "GET /api/hub/forecast: %s (%d)", ServerClient::resultName(r), resp.status);
     return false;
   }
-  if (!parse(resp.body)) return false;
+  if (!parse(resp.body)) {
+    LOG_ERR(TAG, "bad forecast payload (%d bytes)", (int)resp.body.size());
+    return false;
+  }
+  // Se guarda con la hora para saber después si la caché sirve o hay que pedir
+  // de nuevo (el cuerpo siempre empieza con '{').
+  std::string body = resp.body;
+  time_t now = 0;
+  if (halClock.getEpochUtc(now) && !body.empty() && body[0] == '{') {
+    char stamp[40];
+    snprintf(stamp, sizeof(stamp), "{\"savedAt\":%lld,", (long long)now);
+    body = stamp + body.substr(1);
+    cachedAt = now;
+  }
   HalFile f;
   if (Storage.openFileForWrite(TAG, CACHE, f)) {
-    f.write(reinterpret_cast<const uint8_t*>(resp.body.data()), resp.body.size());
+    f.write(reinterpret_cast<const uint8_t*>(body.data()), body.size());
     f.close();
   }
   return true;
@@ -127,7 +149,8 @@ void WeatherActivity::loop() {
       const bool ok = fetchForecast();
       WiFi.setSleep(true);
       if (!ok && days.empty()) {
-        failureId = StrId::STR_ASK_FAILED;
+        // 503 del servidor = no hay lugar cargado: decirlo, no "no se pudo".
+        failureId = lastStatus == 503 ? StrId::STR_HUB_NO_PLACE : StrId::STR_ASK_FAILED;
         state = FAILED;
       } else {
         state = SHOW;

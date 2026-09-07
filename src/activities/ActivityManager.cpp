@@ -347,6 +347,10 @@ void ActivityManager::popActivity() {
   pendingAction = PendingAction::Pop;
 }
 
+const char* ActivityManager::currentActivityName() const {
+  return currentActivity ? currentActivity->name.c_str() : "";
+}
+
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
 bool ActivityManager::requiresExclusiveStorageLoop() const {

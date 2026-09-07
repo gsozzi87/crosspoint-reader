@@ -11,6 +11,9 @@ namespace devlog {
 void begin();                 // opens the file, writes a boot banner
 void write(const char* line); // called by Logging for every line
 void flush();                 // called before sleeping / rebooting
+// Cierra el log: después de esto no se escribe más (la SD se desmonta antes de
+// dormir y escribir sobre un filesystem desmontado se pierde en silencio).
+void close();
 // Whole log (current + previous), capped at maxBytes from the end.
 std::string tail(size_t maxBytes = 32 * 1024);
 size_t size();

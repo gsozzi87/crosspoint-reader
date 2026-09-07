@@ -5,6 +5,7 @@
 #include <I18n.h>
 
 #include <HalClock.h>
+#include <Logging.h>
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
@@ -17,7 +18,8 @@ constexpr int DURATIONS_MIN[] = {1, 3, 5, 10, 15, 20, 25, 30, 45, 60};
 constexpr int DURATION_COUNT = sizeof(DURATIONS_MIN) / sizeof(DURATIONS_MIN[0]);
 constexpr long POMODORO_WORK_S = 25 * 60;
 constexpr long POMODORO_BREAK_S = 5 * 60;
-constexpr int PARTIALS_BEFORE_CLEAN = 40;
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr unsigned long CANCEL_HOLD_MS = 1000;  // Atrás mantenido: cancelar
 
 // 7-segment digit: segments a b c d e f g (top, top-right, bottom-right, bottom, bottom-left, top-left, middle)
 constexpr uint8_t SEGMENTS[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
@@ -41,9 +43,8 @@ void TimerActivity::onEnter() {
     // Woken because the countdown ran out: show it finished and ring.
     mode = HUB_STORE.timerMode == 0 ? COUNTDOWN : POMODORO;
     pomodoroBreak = HUB_STORE.timerMode == 2;
+    pomodoroRound = HUB_STORE.timerRound > 0 ? HUB_STORE.timerRound : 1;
     totalSeconds = HUB_STORE.timerTotal;
-    HUB_STORE.timerEndAt = 0;
-    HUB_STORE.saveToFile();
     ring();
     return;
   }
@@ -57,39 +58,92 @@ void TimerActivity::onEnter() {
   }
 }
 
-// The countdown lives in the store as an absolute time, so sleeping, waking or
-// leaving the screen does not lose it.
+// El estado vive en el store como tiempo absoluto: dormir, despertar o salir de
+// la pantalla no lo pierde. Salir con Atrás deja todo corriendo; solo Atrás
+// largo (o el final) lo borra.
 void TimerActivity::persist() {
   time_t now = 0;
-  if (!halClock.getEpochUtc(now)) return;
-  if (mode == STOPWATCH || !running || finished) {
-    HUB_STORE.timerEndAt = 0;
+  const bool haveClock = halClock.getEpochUtc(now);
+  if (!haveClock) LOG_ERR("TIMER", "sin hora del RTC: no puede sonar dormido (sincronizá el hub)");
+  const long elapsedS = elapsedMs() / 1000;
+  if (mode == STOPWATCH) {
+    HUB_STORE.clearTimer();
+    if (finished || (!running && elapsedS <= 0)) {
+      HUB_STORE.clearStopwatch();
+    } else if (running && haveClock) {
+      HUB_STORE.stopwatchStartAt = now - elapsedS;  // el hub calcula lo corrido desde acá
+      HUB_STORE.stopwatchAccumS = 0;
+    } else {
+      HUB_STORE.stopwatchStartAt = 0;
+      HUB_STORE.stopwatchAccumS = static_cast<int>(elapsedS);
+    }
   } else {
-    HUB_STORE.timerEndAt = now + remainingSeconds();
-    HUB_STORE.timerTotal = static_cast<int>(totalSeconds);
-    HUB_STORE.timerMode = mode == POMODORO ? (pomodoroBreak ? 2 : 1) : 0;
+    HUB_STORE.clearStopwatch();
+    const long left = remainingSeconds();
+    if (finished || left <= 0) {
+      HUB_STORE.clearTimer();
+    } else {
+      HUB_STORE.timerTotal = static_cast<int>(totalSeconds);
+      HUB_STORE.timerMode = mode == POMODORO ? (pomodoroBreak ? 2 : 1) : 0;
+      HUB_STORE.timerRound = static_cast<uint8_t>(pomodoroRound);
+      // Sin reloj no se puede guardar un fin absoluto: se guarda como pausado
+      // para no perderlo (no va a sonar dormido, pero al volver sigue ahí).
+      if (running && haveClock) {
+        HUB_STORE.timerEndAt = now + left;
+        HUB_STORE.timerPausedLeft = 0;
+      } else {
+        HUB_STORE.timerEndAt = 0;
+        HUB_STORE.timerPausedLeft = static_cast<int>(left);
+      }
+    }
   }
   HUB_STORE.saveToFile();
 }
 
+// Retoma lo que haya quedado corriendo o pausado (al entrar de nuevo a Tiempo o
+// al arrancar después de dormir).
 bool TimerActivity::resumeStored() {
   time_t now = 0;
-  if (HUB_STORE.timerEndAt == 0 || !halClock.getEpochUtc(now)) return false;
-  const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
-  mode = HUB_STORE.timerMode == 0 ? COUNTDOWN : POMODORO;
-  pomodoroBreak = HUB_STORE.timerMode == 2;
-  totalSeconds = HUB_STORE.timerTotal > 0 ? HUB_STORE.timerTotal : left;
-  if (left <= 0) {
-    HUB_STORE.timerEndAt = 0;
-    HUB_STORE.saveToFile();
-    ring();
+  const bool haveClock = halClock.getEpochUtc(now);
+  if (HUB_STORE.stopwatchActive()) {
+    mode = STOPWATCH;
+    totalSeconds = 0;
+    const long el = haveClock ? HUB_STORE.stopwatchElapsed(now) : HUB_STORE.stopwatchAccumS;
+    accumulatedMs = el > 0 ? el * 1000L : 0;
+    running = HUB_STORE.stopwatchStartAt > 0 && haveClock;
+    startMs = millis();
+    finished = false;
+    lastShownSeconds = -1;
+    partialCount = 0;
+    requestUpdate();
     return true;
   }
-  accumulatedMs = (totalSeconds - left) * 1000L;
-  startMs = millis();
-  running = true;
+  const bool countdown = HUB_STORE.timerRunning() || HUB_STORE.timerPaused();
+  if (!countdown) return false;
+  mode = HUB_STORE.timerMode == 0 ? COUNTDOWN : POMODORO;
+  pomodoroBreak = HUB_STORE.timerMode == 2;
+  pomodoroRound = HUB_STORE.timerRound > 0 ? HUB_STORE.timerRound : 1;
   finished = false;
   lastShownSeconds = -1;
+  partialCount = 0;
+  if (HUB_STORE.timerRunning()) {
+    if (!haveClock) return false;  // no se puede saber cuánto queda
+    const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
+    if (left <= 0) {
+      totalSeconds = HUB_STORE.timerTotal;
+      ring();
+      return true;
+    }
+    totalSeconds = HUB_STORE.timerTotal > left ? HUB_STORE.timerTotal : left;
+    accumulatedMs = (totalSeconds - left) * 1000L;
+    startMs = millis();
+    running = true;
+  } else {
+    const long left = HUB_STORE.timerPausedLeft;
+    totalSeconds = HUB_STORE.timerTotal > left ? HUB_STORE.timerTotal : left;
+    accumulatedMs = (totalSeconds - left) * 1000L;
+    running = false;
+  }
   requestUpdate();
   return true;
 }
@@ -102,13 +156,14 @@ void TimerActivity::onExit() {
 
 void TimerActivity::showModePicker() {
   mode = PICK;
+  pendingPicker = NONE;
   running = false;
   finished = false;
   pickingDuration = false;
   pickerOptions = {tr(STR_TIMER_COUNTDOWN), tr(STR_TIMER_STOPWATCH), tr(STR_TIMER_POMODORO)};
   picker.show(StrId::STR_HUB_TIMER, pickerOptions, 0, [this](int idx) {
     if (idx == 0) {
-      showDurationPicker();
+      pendingPicker = DURATION_PICKER;
     } else if (idx == 1) {
       mode = STOPWATCH;
       startSegment(0);
@@ -123,6 +178,7 @@ void TimerActivity::showModePicker() {
 }
 
 void TimerActivity::showDurationPicker() {
+  pendingPicker = NONE;
   pickingDuration = true;
   pickerOptions.clear();
   for (int i = 0; i < DURATION_COUNT; ++i) {
@@ -132,7 +188,7 @@ void TimerActivity::showDurationPicker() {
   }
   picker.show(StrId::STR_TIMER_COUNTDOWN, pickerOptions, 3, [this](int idx) {
     if (idx < 0 || idx >= DURATION_COUNT) {
-      showModePicker();
+      pendingPicker = MODE_PICKER;
       return;
     }
     mode = COUNTDOWN;
@@ -165,7 +221,8 @@ long TimerActivity::remainingSeconds() const {
 void TimerActivity::ring() {
   running = false;
   finished = true;
-  HUB_STORE.timerEndAt = 0;
+  finishedAt = millis();
+  HUB_STORE.clearTimer();
   HUB_STORE.saveToFile();
   const std::string clip = std::string("/.crosspoint/tts/timer-") + uiLanguageCode() + ".bin";
   spoken = !speech.playFile(clip.c_str());
@@ -174,6 +231,13 @@ void TimerActivity::ring() {
 }
 
 void TimerActivity::loop() {
+  if (pendingPicker != NONE) {
+    const PendingPicker next = pendingPicker;
+    pendingPicker = NONE;
+    if (next == DURATION_PICKER) showDurationPicker();
+    else showModePicker();
+    return;
+  }
   if (mode == PICK) {
     if (picker.handleInput(mappedInput, [this] { requestUpdate(); })) {
       if (mode == PICK && !picker.isActive()) {
@@ -189,6 +253,11 @@ void TimerActivity::loop() {
       spoken = true;
       speech.stop();
       beep.start();
+    }
+    // Nadie atendió: callar y dejar que el aparato se duerma.
+    if (millis() - finishedAt >= RING_MAX_MS) {
+      speech.stop();
+      beep.stop();
     }
     if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -218,15 +287,18 @@ void TimerActivity::loop() {
     requestUpdate();
     return;
   }
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    if (mode == STOPWATCH && !running && elapsedMs() > 0) {
-      accumulatedMs = 0;  // reset a paused stopwatch first, leave on the next Back
-      requestUpdate();
-      return;
-    }
-    HUB_STORE.timerEndAt = 0;
+  // Atrás largo cancela lo que esté corriendo; Atrás corto sale al hub y lo deja
+  // corriendo (era lo que faltaba: antes salir lo borraba y nunca sonaba).
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, CANCEL_HOLD_MS)) {
+    HUB_STORE.clearTimer();
+    HUB_STORE.clearStopwatch();
     HUB_STORE.saveToFile();
     showModePicker();
+    return;
+  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    persist();
+    finish();
     return;
   }
 
@@ -237,8 +309,9 @@ void TimerActivity::loop() {
     return;
   }
   if (shown != lastShownSeconds) {
-    // Seconds always for the stopwatch; a countdown ticks every 10 s until the last minute.
-    if (mode == STOPWATCH || shown <= 60 || shown % 10 == 0) requestUpdate();
+    // Cronómetro: cada segundo. Cuenta regresiva: cada 5 s y al segundo en los
+    // últimos 10, para no saturar el panel de parciales.
+    if (mode == STOPWATCH || shown <= 10 || shown % 5 == 0) requestUpdate();
   }
 }
 
@@ -300,8 +373,12 @@ void TimerActivity::render(RenderLock&&) {
   }
   if (sub[0]) renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 + 60, sub, true, EpdFontFamily::BOLD);
 
+  if (!finished) {
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 88, tr(STR_TIMER_CANCEL_HINT));
+  }
+
   const char* confirmLabel = finished ? tr(STR_AGENDA_DONE) : running ? tr(STR_TIMER_PAUSE) : tr(STR_TIMER_RESUME);
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
+  const auto labels = mappedInput.mapLabels(finished ? tr(STR_BACK) : tr(STR_TIMER_LEAVE), confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Mostly partial refreshes; a clean one now and then keeps the digits crisp.

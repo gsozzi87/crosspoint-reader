@@ -68,6 +68,14 @@ void devlog::flush() {
   if (ready && file.isOpen()) file.flush();
 }
 
+void devlog::close() {
+  if (ready && file.isOpen()) {
+    file.flush();
+    file.close();
+  }
+  ready = false;  // la SD se desmonta enseguida: no escribir más
+}
+
 size_t devlog::size() { return written; }
 
 std::string devlog::tail(const size_t maxBytes) {

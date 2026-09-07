@@ -142,6 +142,19 @@ llegue el hardware.
   Notas (`NotesActivity`): lista, OK abre, Atrás largo borra. Tiempo (`TimerActivity`): temporizador, cronómetro y
   Pomodoro con dígitos de 7 segmentos; `VoiceActivity` lo abre directo cuando el servidor devuelve `timerSeconds`.
   Pitido común en `src/voice/AlertBeep`.
+- Reglas del temporizador (lo que estaba roto hasta 1.5.32): **Atrás sale y lo deja corriendo**, solo Atrás largo (1 s)
+  cancela; el estado vive en `HubStore` como tiempo absoluto (`timerEndAt`, `timerPausedLeft` para la pausa,
+  `stopwatchStartAt`/`stopwatchAccumS` para el cronómetro, `timerRound` para el pomodoro), así que sobrevive a salir,
+  dormir y reiniciar. `preventAutoSleep()` solo es true mientras suena (con tope de 3 min): dormir es lo correcto,
+  porque el que lo hace sonar es el wake por deep sleep. El hub lo muestra en la barra de estado en minutos (repinta
+  solo cuando cambia, si no fantasmea el panel) y con un punto en el mosaico Tiempo.
+- Alarmas desde cualquier pantalla: `checkTimeAlarms()` en el loop de `main.cpp` (cada 5 s) abre `TimerActivity` o
+  `ReminderAlertActivity` sobre las pantallas tranquilas (hub, home, agenda, notas, ajustes, clima), no solo desde el
+  tick del hub. Todo camino de deep sleep pasa por `sleepNow()`, que arma el wake: antes el re-sleep por wake espurio
+  del botón dormía sin nada armado y el temporizador quedaba mudo para siempre.
+- OJO con los botones: en esta placa OK es confirm+power compartidos, así que `wasLongPressed(Confirm, ...)` NUNCA es
+  cierto (mantener OK apaga). Las funciones que estaban colgadas de "OK largo" no existían: el Clima quedó como
+  mosaico propio (en el lugar de Juegos, que decía "Próximamente").
 - TTS (`server/src/tts.ts`, Piper en el Dockerfile con una voz por idioma; español = `es_MX-claude-high`, femenina neutra): `POST /api/voice` devuelve un cuerpo
   binario `[u32 LE largo JSON][JSON][ADPCM]` (`application/x-ws397-voice`); `VoiceActivity` lo parte, decodifica
   (`src/voice/Adpcm`) y reproduce (`src/voice/SpeechOut`) mientras muestra el texto. `GET /api/tts?text=&lang=`
@@ -178,8 +191,12 @@ llegue el hardware.
 - Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`); la
   conversión a 4 grises la hace el navegador en `/board` (canvas + Floyd-Steinberg + BMP 2 bpp), el aparato solo baja
   a `/Photos` de la SD y dibuja con el `Bitmap` del SDK.
-- Clima detallado (`WeatherActivity`, OK largo en el hub): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y
-  seis días), último pronóstico cacheado en `/.crosspoint/forecast.json`.
+- Clima detallado (`WeatherActivity`, mosaico Clima): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y seis
+  días), último pronóstico cacheado en `/.crosspoint/forecast.json` con `savedAt`; si tiene más de una hora se
+  refresca solo al entrar y Atrás mantenido lo fuerza. Un 503 del servidor (no hay lugar cargado) se muestra como
+  "cargá el lugar en la web", no como error genérico. El widget del hub sale de `HUB_STORE.weatherLine` (de
+  `GET /api/hub`), que es otra fuente: si viene vacío con `weather.noPlace`, el hub también dice que falta el lugar,
+  y `shouldAutoSync()` reintenta a la hora en vez de esperar el ciclo entero.
 - Log: `src/util/DeviceLog` engancha `setLogSink` de `lib/Logging` y guarda cada línea en `/.crosspoint/device.log`
   (rota a 64 KB); `HubSyncActivity` lo sube con `POST /api/log` y se lee en `/board/log`.
 - El audio de subida va en ADPCM (`adpcm::encode`), una cuarta parte de un WAV: es lo que más tardaba. El servidor

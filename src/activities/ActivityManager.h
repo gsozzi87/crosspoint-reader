@@ -104,6 +104,10 @@ class ActivityManager {
   // Note: if popActivity() on last activity on the stack, we will goHome()
   void popActivity();
 
+  // Nombre de la Activity actual ("" si no hay). Lo usa el chequeo de alarmas
+  // del loop principal para no abrirse encima de sí mismo.
+  const char* currentActivityName() const;
+
   bool preventAutoSleep() const;
   bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;

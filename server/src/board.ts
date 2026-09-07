@@ -21,6 +21,7 @@
 import { Hono } from "hono";
 import { load, save, nextId, resolveList, DEFAULT_SETTINGS, type Settings } from "./store";
 import { savePhoto, MAX_PHOTO_BYTES } from "./photos";
+import { hubDiagnostics } from "./hub";
 
 export const boardApi = new Hono();
 
@@ -108,6 +109,7 @@ boardApi.get("/extra", async (c) => {
     memories: store.memories ?? [],
     settings: store.settings ?? DEFAULT_SETTINGS,
     lists: Object.keys(store.lists),
+    diag: await hubDiagnostics(),
   });
 });
 
@@ -266,9 +268,23 @@ async function refresh(){
   $("setVolume").value = settings.musicVolume;
   $("volumeOut").textContent = settings.musicVolume + " %";
 
-  const w = d.weather && d.weather.line ? d.weather.line + " · " + (d.weather.detail || "") : "";
-  const loc = await api("/api/hub/location");
-  $("place").textContent = loc.place ? (loc.place.label || loc.place.name || (loc.place.lat + ", " + loc.place.lon)) + (w ? " — " + w : "") : "Sin lugar configurado: el clima queda vacío";
+  const g = x.diag || {};
+  const p0 = g.place;
+  $("place").textContent = p0 ? (p0.label || p0.name || (p0.lat + ", " + p0.lon)) : "Sin lugar configurado: el clima queda vacío";
+  const wx = g.weather || {};
+  $("weatherNow").textContent = wx.line
+    ? wx.line + (wx.detail ? " · " + wx.detail : "")
+    : wx.noPlace ? "El servidor no tiene lugar: elegilo acá abajo"
+    : wx.error ? "Open-Meteo falló: " + wx.error
+    : "Sin datos todavía";
+  const last = g.lastDeviceFetch || 0;
+  if (!last) {
+    $("lastSync").textContent = "El aparato todavía no vino a buscar datos.";
+  } else {
+    const mins = Math.max(0, Math.round((Date.now() - last) / 60000));
+    $("lastSync").textContent = "El aparato sincronizó hace " + (mins < 1 ? "menos de un minuto" : mins + " min") + ". " +
+      "Para que se lleve lo que cambiaste ahora: mantené Atrás 1,2 s en el hub del aparato.";
+  }
 }
 
 // Un solo manejador para todos los botones de las listas.
@@ -284,16 +300,17 @@ document.addEventListener("click", async (ev) => {
       if (!confirm("¿Borrar la lista " + b.dataset.name + " con todo lo que tenga?")) return;
       await api("/api/board/list/delete", { name: b.dataset.name });
     } else if (act === "place") {
-      await api("/api/hub/location", JSON.parse(b.dataset.place));
+      const r = await api("/api/hub/location", JSON.parse(b.dataset.place));
       $("placeResults").innerHTML = "";
-      toast("Lugar guardado");
+      // El servidor ya consultó el clima del lugar nuevo: se ve al toque.
+      toast(r.weather && r.weather.line ? "Lugar guardado · " + r.weather.line : "Lugar guardado");
     } else return;
     await refresh();
   } catch (e) { toast("No se pudo"); }
 });
 
 async function post(path, body){
-  try { await api(path, body); await refresh(); toast("Listo"); return true; }
+  try { await api(path, body); await refresh(); toast("Guardado · sincronizá el aparato"); return true; }
   catch (e) { toast("No se pudo guardar"); return false; }
 }
 
@@ -420,6 +437,7 @@ start();
 const PAGE = `<!doctype html>
 <html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Pizarra</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23111'/%3E%3Crect x='8' y='9' width='16' height='2.5' fill='%23fff'/%3E%3Crect x='8' y='15' width='16' height='2.5' fill='%23fff'/%3E%3Crect x='8' y='21' width='10' height='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>${STYLE}</style></head><body>
 <header><strong>Pizarra del aparato</strong><span><a href="/board/log" style="margin-right:12px">Log</a><button class="ghost" id="tokenBtn">Token</button></span></header>
 
@@ -477,6 +495,8 @@ const PAGE = `<!doctype html>
 
 <section><h2>Ajustes</h2>
   <p class="muted">Lugar del clima: <b id="place">—</b></p>
+  <p class="muted">Clima en el servidor: <span id="weatherNow">—</span></p>
+  <p class="muted" id="lastSync"></p>
   <form id="formPlace"><input type="text" id="placeQuery" placeholder="Ciudad" required><button>Buscar</button></form>
   <ul id="placeResults"></ul>
   <div class="row"><label for="setLang">Idioma</label>
@@ -493,7 +513,7 @@ const PAGE = `<!doctype html>
     </select></div>
   <div class="row"><label for="setVolume">Volumen música</label><input type="range" id="setVolume" min="0" max="100" step="5"><span id="volumeOut" class="muted"></span></div>
   <div class="row"><button id="settingsSave">Guardar ajustes</button></div>
-  <p class="muted">Los ajustes viajan al aparato en la próxima sincronización del hub (Atrás 1,2 s en el hub o Ajustes → Sincronizar hub).</p>
+  <p class="muted">Los ajustes viajan al aparato en la próxima sincronización del hub (mantené Atrás 1,2 s en el hub, o Ajustes → Sincronizar hub). El aparato sincroniza solo cada 3 h.</p>
 </section>
 
 <p class="muted">Lo que cargues acá aparece en el aparato en la próxima sincronización.</p>

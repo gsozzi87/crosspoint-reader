@@ -42,6 +42,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["lastAttemptAt"] = static_cast<int64_t>(lastAttemptAt);
   doc["weatherLine"] = weatherLine;
   doc["weatherDetail"] = weatherDetail;
+  doc["weatherNoPlace"] = weatherNoPlace;
   doc["reminderTitle"] = reminderTitle;
   doc["reminderWhen"] = reminderWhen;
   JsonArray rem = doc["reminders"].to<JsonArray>();
@@ -93,6 +94,10 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
   doc["timerTotal"] = timerTotal;
   doc["timerMode"] = timerMode;
+  doc["timerPausedLeft"] = timerPausedLeft;
+  doc["timerRound"] = timerRound;
+  doc["stopwatchStartAt"] = static_cast<int64_t>(stopwatchStartAt);
+  doc["stopwatchAccumS"] = stopwatchAccumS;
   doc["settingsRev"] = settingsRev;
   doc["uiLang"] = uiLang;
 }
@@ -102,6 +107,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   lastAttemptAt = static_cast<time_t>(doc["lastAttemptAt"] | (int64_t)0);
   weatherLine = str(doc, "weatherLine");
   weatherDetail = str(doc, "weatherDetail");
+  weatherNoPlace = doc["weatherNoPlace"] | false;
   reminderTitle = str(doc, "reminderTitle");
   reminderWhen = str(doc, "reminderWhen");
   parseReminders(doc, reminders);
@@ -128,6 +134,10 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);
   timerTotal = doc["timerTotal"] | 0;
   timerMode = doc["timerMode"] | 0;
+  timerPausedLeft = doc["timerPausedLeft"] | 0;
+  timerRound = doc["timerRound"] | 1;
+  stopwatchStartAt = static_cast<time_t>(doc["stopwatchStartAt"] | (int64_t)0);
+  stopwatchAccumS = doc["stopwatchAccumS"] | 0;
   settingsRev = doc["settingsRev"] | 0;
   uiLang = str(doc, "uiLang");
   return true;
@@ -139,6 +149,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
 void HubStore::applyServer(JsonVariantConst doc) {
   weatherLine = str(doc["weather"], "line");
   weatherDetail = str(doc["weather"], "detail");
+  weatherNoPlace = doc["weather"]["noPlace"] | false;
   parseReminders(doc, reminders);
   parseLists(doc, lists);
   parseNotes(doc, notes);
