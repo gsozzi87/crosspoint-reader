@@ -115,14 +115,19 @@ const DAILY: [number, number, number][] = [
   [18, 91, 1], [22, 40, 31], [39, 28, 20], [61, 4, 8], [42, 15, 5], [18, 37, 4], [46, 12, 9],
 ];
 
-bibleApi.get("/day", async (c) => {
-  const lang = normalizeLang(c.req.query("lang"));
+export async function verseOfTheDay(lang: Lang): Promise<{ book: number; chapter: number; verse: number; ref: string; text: string } | null> {
   const books = await bible(lang);
-  if (!books) return c.json({ ok: false, error: "bible unavailable" }, 503);
+  if (!books) return null;
   const day = Math.floor(Date.now() / 86_400_000);
   const [b, ch, v] = DAILY[day % DAILY.length];
   const text = books[b]?.chapters[ch - 1]?.[v - 1] ?? "";
-  return c.json({ ok: true, book: b, chapter: ch, verse: v, ref: `${BOOK_NAMES[lang][b]} ${ch}:${v}`, text });
+  return { book: b, chapter: ch, verse: v, ref: `${BOOK_NAMES[lang][b]} ${ch}:${v}`, text };
+}
+
+bibleApi.get("/day", async (c) => {
+  const v = await verseOfTheDay(normalizeLang(c.req.query("lang")));
+  if (!v) return c.json({ ok: false, error: "bible unavailable" }, 503);
+  return c.json({ ok: true, ...v });
 });
 
 bibleApi.get("/find", async (c) => {

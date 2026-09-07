@@ -32,6 +32,7 @@ import { dirname } from "node:path";
 import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 import { agendaConfigured, todayForHub } from "./agenda";
+import { verseOfTheDay } from "./bible";
 
 const LAT = process.env.HUB_LAT ?? "";
 const LON = process.env.HUB_LON ?? "";
@@ -173,7 +174,7 @@ hub.get("/location", async (c) => c.json({ ok: true, place: await place() }));
 
 hub.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
-  const [w, d, s, ics] = await Promise.all([weather(lang), data(), hubSlice(lang), agendaConfigured() ? todayForHub(lang) : Promise.resolve([])]);
+  const [w, d, s, ics, verse] = await Promise.all([weather(lang), data(), hubSlice(lang), agendaConfigured() ? todayForHub(lang) : Promise.resolve([]), verseOfTheDay(lang)]);
   // Recordatorios, listas y mensajes salen del store del asistente (voice.ts);
   // el hub-data.json a mano sigue sirviendo para la agenda y como respaldo.
   return c.json({
@@ -186,6 +187,7 @@ hub.get("/", async (c) => {
     messages: s.messages.length ? s.messages : (d.messages ?? []).slice(0, 5),
     notes: s.notes,
     quote: d.quote || quoteOfTheDay(lang),
+    verse,  // { ref, text } del día, o null si la Biblia no está
   });
 });
 

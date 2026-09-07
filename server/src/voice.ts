@@ -235,6 +235,18 @@ export async function hubSlice(lang: Lang) {
 export async function editEntry(body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null }): Promise<boolean> {
   const store = await load();
   const id = Number(body.id);
+  if (body.kind === "feed") {
+    const before = (store.feeds ?? []).length;
+    store.feeds = (store.feeds ?? []).filter((f) => f.id !== id);
+    if (store.feeds.length !== before) await save(store);
+    return store.feeds.length !== before;
+  }
+  if (body.kind === "memory") {
+    const before = (store.memories ?? []).length;
+    store.memories = (store.memories ?? []).filter((m) => m.id !== id);
+    if (store.memories.length !== before) await save(store);
+    return store.memories.length !== before;
+  }
   if (body.kind === "note") {
     const before = store.notes.length;
     store.notes = store.notes.filter((n) => n.id !== id);

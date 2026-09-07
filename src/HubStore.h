@@ -57,6 +57,8 @@ class HubStore : public PersistableStore<HubStore> {
   std::vector<Event> events;
   std::vector<Message> messages;
   std::string quote;
+  std::string verseRef;   // verse of the day (Bible), shown alternating with the quote
+  std::string verseText;
   std::string translatorLang;
   int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
   int bibleChapter = 0;

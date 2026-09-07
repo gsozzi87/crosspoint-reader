@@ -22,9 +22,12 @@ export type Message = { id: number; from: string; text: string; createdAt: strin
 
 export type Memory = { id: number; text: string; createdAt: string };
 
+export type Feed = { id: number; name: string; url: string };
+
 export type Store = {
   nextId: number;
   memories?: Memory[]; // "acordate que ...": datos que el asistente tiene presentes al contestar
+  feeds?: Feed[];      // RSS/Atom para Noticias (se cargan desde /board)
   reminders: Reminder[];
   lists: Record<string, Item[]>; // "Entrada", "Casa", "Trabajo", "Administrativo", "Compras", proyectos...
   notes: Note[];
@@ -44,6 +47,7 @@ export async function load(): Promise<Store> {
   }
   for (const name of DEFAULT_LISTS) cache.lists[name] ??= [];
   cache.memories ??= [];
+  cache.feeds ??= [];
   return cache;
 }
 

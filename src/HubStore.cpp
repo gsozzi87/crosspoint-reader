@@ -83,6 +83,8 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["text"] = m.text;
   }
   doc["quote"] = quote;
+  doc["verseRef"] = verseRef;
+  doc["verseText"] = verseText;
   doc["translatorLang"] = translatorLang;
   doc["speakMode"] = speakMode;
   doc["bibleBook"] = bibleBook;
@@ -111,6 +113,8 @@ bool HubStore::fromJson(JsonVariantConst doc) {
     messages.push_back({m["id"] | 0, str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
+  verseRef = str(doc, "verseRef");
+  verseText = str(doc, "verseText");
   translatorLang = str(doc, "translatorLang");
   speakMode = doc["speakMode"] | 1;
   bibleBook = doc["bibleBook"] | 0;
@@ -141,6 +145,8 @@ void HubStore::applyServer(JsonVariantConst doc) {
     messages.push_back({m["id"] | 0, str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
+  verseRef = str(doc["verse"], "ref");
+  verseText = str(doc["verse"], "text");
 }
 
 void HubStore::removeReminder(const int id) {
