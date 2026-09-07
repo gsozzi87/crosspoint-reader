@@ -150,9 +150,19 @@ llegue el hardware.
 - Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
   hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
   mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
-- Página web `GET /board` (`server/src/board.ts`): mensajes, recordatorios, listas y notas desde el teléfono con el
-  token del aparato; altas en `POST /api/board/*`. Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`)
-  y se ven en Recordatorios → Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).
+- Página web `GET /board` (`server/src/board.ts`): mensajes, recordatorios, listas (crear, borrar, tildar), notas,
+  fotos, feeds RSS, memoria del asistente y **Ajustes** desde el teléfono con el token del aparato; altas en
+  `POST /api/board/*`, borrados por `POST /api/hub/edit {kind, id, action:"delete"}` (kind = reminder, item, note,
+  feed, memory). Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`) y se ven en Recordatorios →
+  Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).
+  El token se pide en un formulario de la propia página (no `prompt()`) y se guarda en `localStorage`; los botones
+  de las listas van por delegación con `data-act`, nunca por `onclick` armado con comillas (una comilla escapada
+  dentro del template literal rompía el script entero y dejaba la página muerta).
+- Ajustes desde la web (`store.ts` → `settings{rev,lang,speak,musicVolume,translatorLang}`, `POST /api/board/settings`):
+  viajan en `GET /api/hub` y `HubStore::applySettings` los aplica solo si `rev` subió respecto de `settingsRev`, así
+  lo que se cambia en el aparato no se pisa en cada sincronización. El idioma lo aplica `HubSyncActivity::applyUiLanguage()`
+  sobre `SETTINGS.language`. El lugar del clima también se elige ahí (buscador → `POST /api/hub/location`); sin lugar
+  guardado ni `HUB_LAT`/`HUB_LON`, el clima llega vacío.
 - Ajuste Voz hablada (Settings → Sistema, `HubStore::speakMode`): `&speak=none|short|all` en `/api/voice`.
 - Biblia (`BibleActivity`, mosaico Biblia): `GET /api/bible/books|chapter|find|day?lang=` (`server/src/bible.ts`,
   JSON de thiagobodruk/bible bajado en el Dockerfile a `/opt/bible`, nombres de libros por idioma en

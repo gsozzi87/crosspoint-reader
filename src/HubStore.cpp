@@ -93,6 +93,8 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
   doc["timerTotal"] = timerTotal;
   doc["timerMode"] = timerMode;
+  doc["settingsRev"] = settingsRev;
+  doc["uiLang"] = uiLang;
 }
 
 bool HubStore::fromJson(JsonVariantConst doc) {
@@ -126,6 +128,8 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);
   timerTotal = doc["timerTotal"] | 0;
   timerMode = doc["timerMode"] | 0;
+  settingsRev = doc["settingsRev"] | 0;
+  uiLang = str(doc, "uiLang");
   return true;
 }
 
@@ -153,6 +157,24 @@ void HubStore::applyServer(JsonVariantConst doc) {
   quote = str(doc, "quote");
   verseRef = str(doc["verse"], "ref");
   verseText = str(doc["verse"], "text");
+  applySettings(doc["settings"]);
+}
+
+// { rev, lang, speak: "none"|"short"|"all", musicVolume, translatorLang }
+void HubStore::applySettings(JsonVariantConst s) {
+  if (s.isNull()) return;
+  const int rev = s["rev"] | 0;
+  if (rev <= settingsRev) return;
+  settingsRev = rev;
+  const std::string speak = str(s, "speak");
+  if (speak == "none") speakMode = 0;
+  else if (speak == "all") speakMode = 2;
+  else if (speak == "short") speakMode = 1;
+  const int vol = s["musicVolume"] | -1;
+  if (vol >= 0 && vol <= 100) musicVolume = vol;
+  const std::string other = str(s, "translatorLang");
+  if (!other.empty()) translatorLang = other;
+  uiLang = str(s, "lang");
 }
 
 void HubStore::removeReminder(const int id) {

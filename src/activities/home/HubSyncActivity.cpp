@@ -8,6 +8,7 @@
 #include <Logging.h>
 #include <WiFi.h>
 
+#include "CrossPointSettings.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -89,6 +90,7 @@ bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) 
         }
       }
       HUB_STORE.applyServer(doc.as<JsonVariantConst>());
+      applyUiLanguage();
       ok = true;
     } else {
       LOG_ERR(TAG, "bad /api/hub payload");
@@ -101,6 +103,22 @@ bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) 
   LOG_INF(TAG, "sync %s: weather=\"%s\" events=%u messages=%u", ok ? "ok" : "failed", HUB_STORE.weatherLine.c_str(),
           (unsigned)HUB_STORE.events.size(), (unsigned)HUB_STORE.messages.size());
   return ok;
+}
+
+// El idioma se elige en el aparato o en /board; acá se aplica el de la web.
+void HubSyncActivity::applyUiLanguage() {
+  if (HUB_STORE.uiLang.empty()) return;
+  std::string code = HUB_STORE.uiLang;
+  for (char& c : code) c = static_cast<char>(toupper(static_cast<unsigned char>(c)));
+  HUB_STORE.uiLang.clear();
+  const Language lang = I18n::languageFromCode(code.c_str());
+  // languageFromCode devuelve EN ante un código desconocido: no cambiar nada.
+  if (lang == Language::EN && code != "EN") return;
+  if (static_cast<uint8_t>(lang) == SETTINGS.language) return;
+  I18N.setLanguage(lang);
+  SETTINGS.language = static_cast<uint8_t>(lang);
+  SETTINGS.saveToFile();
+  LOG_INF(TAG, "UI language from web: %s", code.c_str());
 }
 
 namespace {
