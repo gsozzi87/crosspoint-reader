@@ -91,7 +91,9 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang,
     "'Comprar X', 'compras:' o",
     "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá a <lista>', 'en trabajo:',",
     "'tengo que', 'hay que' → task (list si la nombró; si no, null y va a Entrada). 'Nota:', 'anotá' → note. 'Mensaje para',",
-    "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos').",
+    "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
+    "OJO con la unidad: `seconds` va SIEMPRE en SEGUNDOS. '20 segundos' → 20 (no 1200). '10 minutos' → 600. " +
+    "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repetí en la reply la misma unidad que dijo el usuario.",
     "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora; repeat daily si dice 'todos los días') y reply corta.",
     "'Acordate que', 'tené presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
     memories.length
@@ -256,7 +258,7 @@ voice.post("/", async (c) => {
     // Temporizador y alarma corren en el aparato: segundos hasta que suene.
     let timerSeconds = 0;
     for (const a of parsed.actions ?? []) {
-      if (a.kind === "timer" && a.seconds && a.seconds > 0) timerSeconds = Math.floor(a.seconds);
+      if (a.kind === "timer" && a.seconds && a.seconds > 0) timerSeconds = fixTimerUnit(Math.floor(a.seconds), text);
     }
     // Voz: confirmaciones y traducciones siempre; una respuesta a pregunta solo
     // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato
@@ -300,6 +302,22 @@ export async function hubSlice(lang: Lang) {
 }
 
 // Ediciones desde el aparato (menú de la lista: mover, fecha, borrar; borrar nota).
+// Red de contención de la unidad del temporizador: el clasificador a veces
+// devuelve "20 segundos" como 1200 (multiplica por 60 igual). Si el usuario dijo
+// segundos y no dijo minutos ni horas, y el número es un múltiplo redondo de 60,
+// se divide. Al revés no hace falta: decir minutos y que devuelva segundos
+// sueltos no se vio nunca.
+const SECOND_WORDS = /\b(segundos?|seconds?|secondes?|sekunden?|segundos?|секунд\w*)\b/i;
+const MINUTE_WORDS = /\b(minutos?|minutes?|minuten?|hora|horas|hour|hours|stunde\w*|час\w*|мин\w*)\b/i;
+
+export function fixTimerUnit(seconds: number, said: string): number {
+  const capped = Math.min(seconds, 24 * 3600);
+  if (SECOND_WORDS.test(said) && !MINUTE_WORDS.test(said) && capped >= 60 && capped % 60 === 0) {
+    return capped / 60;
+  }
+  return capped;
+}
+
 export async function editEntry(body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null }): Promise<boolean> {
   const store = await load();
   const id = Number(body.id);

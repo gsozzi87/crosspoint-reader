@@ -50,6 +50,7 @@ class HubStore : public PersistableStore<HubStore> {
   std::string weatherLine;   // "Nublado · 18°"
   std::string weatherDetail; // "Máx 22° · Mín 11° · Humedad 60 %"
   bool weatherNoPlace = false;  // el servidor no tiene lugar cargado: hay que ponerlo en /board
+  std::string weatherError;     // motivo que manda el servidor cuando el clima falló (Open-Meteo caído, 429...)
   std::string reminderTitle;  // = reminders[0], kept for the widget
   std::string reminderWhen;
   std::vector<Reminder> reminders;
@@ -99,6 +100,7 @@ class HubStore : public PersistableStore<HubStore> {
   // cambia en el aparato no se pisa en cada sincronización.
   int settingsRev = 0;
   std::string uiLang;          // idioma pedido desde la web ("es", "en", ...); lo aplica HubSyncActivity
+  std::string ttsVoice;        // voz de Piper del servidor: entra en el nombre de los clips cacheados
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
 
   static const char* getFilePath() { return "/.crosspoint/hub.json"; }

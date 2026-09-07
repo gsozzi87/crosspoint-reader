@@ -18,7 +18,8 @@ RUN cd /opt/piper/voices && for v in \
       de/de_DE/thorsten/medium/de_DE-thorsten-medium \
       pt/pt_BR/faber/medium/pt_BR-faber-medium \
       ru/ru_RU/irina/medium/ru_RU-irina-medium ; do \
-      n=$(basename $v); curl -sSL -o $n.onnx $HF/$v.onnx && curl -sSL -o $n.onnx.json $HF/$v.onnx.json ; done
+      n=$(basename $v); curl -fsSL --retry 3 --retry-delay 2 -o $n.onnx $HF/$v.onnx \
+      && curl -fsSL --retry 3 --retry-delay 2 -o $n.onnx.json $HF/$v.onnx.json ; done
 
 # Biblias (thiagobodruk/bible, JSON): es, en, fr, de, pt, ru (~27 MB)
 RUN mkdir -p /opt/bible && cd /opt/bible && for f in es_rvr en_kjv fr_apee de_schlachter pt_aa ru_synodal; do \

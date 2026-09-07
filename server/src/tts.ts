@@ -13,7 +13,7 @@
 import { Hono } from "hono";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, unlink } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { normalizeLang, type Lang } from "./lang";
 
 const PIPER_BIN = process.env.PIPER_BIN ?? "/opt/piper/piper";
@@ -36,7 +36,14 @@ type Worker = { proc: ChildProcess; queue: ((line: string) => void)[]; buffer: s
 const workers = new Map<Lang, Worker>();
 
 export function ttsAvailable(lang: Lang): boolean {
-  return ENABLED && existsSync(PIPER_BIN) && existsSync(`${VOICES_DIR}/${VOICES[lang]}.onnx`);
+  if (!ENABLED || !existsSync(PIPER_BIN)) return false;
+  // Existir no alcanza: un 404 en el build dejaría una página de error de 2 KB
+  // con nombre de modelo y Piper se moriría en cada pedido.
+  try {
+    return statSync(`${VOICES_DIR}/${VOICES[lang]}.onnx`).size > 1_000_000;
+  } catch {
+    return false;
+  }
 }
 
 function worker(lang: Lang): Worker {

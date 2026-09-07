@@ -334,8 +334,10 @@ async function searchPlace(ev){
   } catch (e) { $("placeResults").innerHTML = empty("No se pudo buscar"); }
 }
 
-// El aparato muestra 800x480 en 4 grises: convertimos acá (canvas, difuminado
+// El aparato muestra 480x800 en 4 grises: convertimos acá (canvas, difuminado
 // Floyd-Steinberg) y mandamos un BMP de 2 bpp ya listo, sin trabajo en el servidor.
+// Ojo con el tamaño: antes se mandaba 800x480 (apaisado) y el aparato lo escalaba
+// a 480x288, así que una foto vertical de teléfono quedaba diminuta.
 async function sendPhoto(){
   const input = $("photoInput");
   const file = input.files && input.files[0];
@@ -346,7 +348,7 @@ async function sendPhoto(){
     const img = new Image();
     img.src = URL.createObjectURL(file);
     await img.decode();
-    const W = 800, H = 480;
+    const W = 480, H = 800;  // la pantalla del aparato es vertical: una foto de teléfono entra entera
     const cv = document.createElement("canvas");
     cv.width = W; cv.height = H;
     const ctx = cv.getContext("2d");

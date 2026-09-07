@@ -43,6 +43,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["weatherLine"] = weatherLine;
   doc["weatherDetail"] = weatherDetail;
   doc["weatherNoPlace"] = weatherNoPlace;
+  doc["weatherError"] = weatherError;
   doc["reminderTitle"] = reminderTitle;
   doc["reminderWhen"] = reminderWhen;
   JsonArray rem = doc["reminders"].to<JsonArray>();
@@ -100,6 +101,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["stopwatchAccumS"] = stopwatchAccumS;
   doc["settingsRev"] = settingsRev;
   doc["uiLang"] = uiLang;
+  doc["ttsVoice"] = ttsVoice;
 }
 
 bool HubStore::fromJson(JsonVariantConst doc) {
@@ -108,6 +110,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   weatherLine = str(doc, "weatherLine");
   weatherDetail = str(doc, "weatherDetail");
   weatherNoPlace = doc["weatherNoPlace"] | false;
+  weatherError = str(doc, "weatherError");
   reminderTitle = str(doc, "reminderTitle");
   reminderWhen = str(doc, "reminderWhen");
   parseReminders(doc, reminders);
@@ -140,6 +143,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   stopwatchAccumS = doc["stopwatchAccumS"] | 0;
   settingsRev = doc["settingsRev"] | 0;
   uiLang = str(doc, "uiLang");
+  ttsVoice = str(doc, "ttsVoice");
   return true;
 }
 
@@ -150,6 +154,7 @@ void HubStore::applyServer(JsonVariantConst doc) {
   weatherLine = str(doc["weather"], "line");
   weatherDetail = str(doc["weather"], "detail");
   weatherNoPlace = doc["weather"]["noPlace"] | false;
+  weatherError = str(doc["weather"], "error");
   parseReminders(doc, reminders);
   parseLists(doc, lists);
   parseNotes(doc, notes);
@@ -169,6 +174,11 @@ void HubStore::applyServer(JsonVariantConst doc) {
   verseRef = str(doc["verse"], "ref");
   verseText = str(doc["verse"], "text");
   applySettings(doc["settings"]);
+  // Voz del servidor: si cambió, los clips cacheados en la SD son de la voz
+  // vieja y hay que tirarlos (si no, el aviso del temporizador sigue sonando
+  // con la voz que ya no se usa).
+  const std::string voice = str(doc, "ttsVoice");
+  if (!voice.empty()) ttsVoice = voice;
 }
 
 // { rev, lang, speak: "none"|"short"|"all", musicVolume, translatorLang }

@@ -23,6 +23,7 @@
 namespace {
 constexpr const char* TAG = "VOICE_ACT";
 constexpr uint32_t VOICE_TIMEOUT_MS = 90000;  // Whisper + Claude on one request
+constexpr unsigned long SPEAK_MAX_MS = 15000;  // tope por si el audio no termina nunca
 }  // namespace
 
 void VoiceActivity::onEnter() {
@@ -58,6 +59,7 @@ void VoiceActivity::fail(StrId why, std::string detail) {
 }
 
 void VoiceActivity::startRecording() {
+  speech.stop();  // el parlante y el micrófono comparten el I2S: si sigue hablando, la captura falla
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder.start(why)) {
     fail(why);
@@ -146,10 +148,12 @@ void VoiceActivity::performRequest() {
   if (askTime[0]) {
     // "Remind me to buy milk tomorrow" with no hour: ask for it and listen
     // again, carrying what is pending so the server keeps title and day.
+    // Primero termina de preguntar en voz alta: el micrófono y el parlante
+    // comparten el I2S, abrir la captura mientras suena da error de micrófono.
     pendingTitle = askTime;
     askingTime = true;
     WiFi.setSleep(true);
-    startRecording();
+    speakThen(AFTER_ASK_TIME);
     return;
   }
   pendingTitle.clear();
@@ -161,7 +165,7 @@ void VoiceActivity::performRequest() {
   WiFi.setSleep(true);
   if ((intent == "timer" || intent == "alarm") && timerSeconds > 0) {
     LOG_INF(TAG, "timer %d s", timerSeconds);
-    activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, timerSeconds));
+    speakThen(AFTER_TIMER);  // que termine de decir "listo, 20 segundos" antes de irse
     return;
   }
   timerSeconds = 0;
@@ -178,6 +182,34 @@ const char* VoiceActivity::intentTitle() const {
   if (intent == "memory") return tr(STR_VOICE_SAVED_MEMORY);
   if (intent == "alarm") return tr(STR_VOICE_SAVED_REMINDER);
   return heard.c_str();  // question: what was asked, as the header
+}
+
+// La respuesta ya se está reproduciendo (playAdpcm): se espera a que termine y
+// recién ahí se hace lo que sigue. Sin audio, sigue de una.
+void VoiceActivity::speakThen(const AfterSpeech what) {
+  afterSpeech = what;
+  if (!speech.hasStarted()) {
+    runAfterSpeech();
+    return;
+  }
+  speakStartedAt = millis();
+  state = SPEAKING;
+  requestUpdate();
+}
+
+void VoiceActivity::runAfterSpeech() {
+  const AfterSpeech what = afterSpeech;
+  afterSpeech = AFTER_NONE;
+  speech.stop();  // libera el I2S y la PSRAM antes de grabar o de irse
+  if (what == AFTER_ASK_TIME) {
+    startRecording();
+    return;
+  }
+  if (what == AFTER_TIMER) {
+    activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, timerSeconds));
+    return;
+  }
+  showReply();
 }
 
 void VoiceActivity::showReply() {
@@ -203,6 +235,16 @@ void VoiceActivity::loop() {
     case SENDING:
       if (requestPending) performRequest();
       break;
+    case SPEAKING: {
+      // 400 ms de gracia: la tarea de audio tarda un toque en arrancar y
+      // isPlaying() sería false justo después de pedir la reproducción.
+      const unsigned long spoken = millis() - speakStartedAt;
+      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) || spoken > SPEAK_MAX_MS ||
+          (spoken > 400 && !speech.isPlaying())) {
+        runAfterSpeech();
+      }
+      break;
+    }
     case FAILED:
       if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
           mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
@@ -238,6 +280,20 @@ void VoiceActivity::render(RenderLock&&) {
       break;
     case SENDING:
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_VOICE_THINKING), true, EpdFontFamily::BOLD);
+      break;
+    case SPEAKING:
+      // Mientras habla se muestra lo mismo que va a decir; si lo que sigue es
+      // preguntar la hora, ya se ve el pedido para no perder tiempo después.
+      if (afterSpeech == AFTER_ASK_TIME) {
+        renderer.drawCenteredText(UI_12_FONT_ID, mid - 40, tr(STR_VOICE_ASK_TIME), true, EpdFontFamily::BOLD);
+        renderer.drawCenteredText(UI_10_FONT_ID, mid - 4,
+                                  renderer.truncatedText(UI_10_FONT_ID, pendingTitle.c_str(), pageWidth - 40).c_str());
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 26, tr(STR_VOICE_ASK_TIME_HINT));
+      } else {
+        renderer.drawCenteredText(UI_12_FONT_ID, mid - 20,
+                                  renderer.truncatedText(UI_12_FONT_ID, reply.c_str(), pageWidth - 40, EpdFontFamily::BOLD).c_str(),
+                                  true, EpdFontFamily::BOLD);
+      }
       break;
     case FAILED:
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);

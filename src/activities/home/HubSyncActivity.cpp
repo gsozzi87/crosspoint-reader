@@ -8,6 +8,9 @@
 #include <Logging.h>
 #include <WiFi.h>
 
+#include <algorithm>
+#include <vector>
+
 #include "CrossPointSettings.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
@@ -16,6 +19,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/DeviceLog.h"
+#include "voice/SpeechCache.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
@@ -122,7 +126,7 @@ void HubSyncActivity::applyUiLanguage() {
 }
 
 namespace {
-constexpr const char* TTS_DIR = "/.crosspoint/tts";
+constexpr const char* TTS_DIR = speechcache::DIR;
 constexpr int TTS_REMINDERS = 5;
 
 bool fetchClip(const std::string& text, const std::string& path) {
@@ -152,22 +156,36 @@ static void uploadLog() {
 
 void HubSyncActivity::cacheSpokenNotices() {
   Storage.ensureDirectoryExists(TTS_DIR);
+  // Los nombres salen del hash de (voz + idioma + texto): si el servidor cambió
+  // de voz, el clip viejo simplemente ya no es el que se busca.
+  std::vector<std::string> wanted;
   int fetched = 0;
   int count = 0;
   for (const HubStore::Reminder& r : HUB_STORE.reminders) {
     if (count++ >= TTS_REMINDERS) break;
-    const std::string path = std::string(TTS_DIR) + "/r" + std::to_string(r.id) + ".bin";
-    if (!Storage.exists(path.c_str())) {
-      if (fetchClip(std::string(tr(STR_HUB_REMINDERS)) + ": " + r.title, path)) fetched++;
-    }
+    const std::string text = std::string(tr(STR_HUB_REMINDERS)) + ": " + r.title;
+    const std::string path = speechcache::clipPath(text);
+    wanted.push_back(path);
+    if (!Storage.exists(path.c_str()) && fetchClip(text, path)) fetched++;
   }
-  const std::string timerPath = std::string(TTS_DIR) + "/timer-" + uiLanguageCode() + ".bin";
+  const std::string timerPath = speechcache::clipPath(tr(STR_TIMER_DONE));
+  wanted.push_back(timerPath);
   if (fetchClip(tr(STR_TIMER_DONE), timerPath)) fetched++;
-  LOG_INF(TAG, "spoken notices: %d fetched", fetched);
+
+  // Barrido: todo lo que no está en la lista es de una voz, un idioma o un
+  // texto que ya no se usan.
+  int removed = 0;
+  for (const String& name : Storage.listFiles(TTS_DIR, 60)) {
+    const std::string path = std::string(TTS_DIR) + "/" + name.c_str();
+    if (std::find(wanted.begin(), wanted.end(), path) != wanted.end()) continue;
+    if (Storage.remove(path.c_str())) removed++;
+  }
+  LOG_INF(TAG, "spoken notices: %d fetched, %d stale removed", fetched, removed);
 }
 
 void HubSyncActivity::runSync() {
   const bool ok = fetchNow(&result, &status);
+  if (!ok) uploadLog();  // sobre todo cuando falla: el log dice por qué
   if (ok) {
     WiFi.setSleep(false);
     cacheSpokenNotices();
