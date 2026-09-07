@@ -198,10 +198,19 @@ export function decodeAdpcm(data: Uint8Array): Int16Array {
 
 // Texto -> ADPCM 16 kHz. null si Piper no está o falló. maxSeconds recorta
 // (una respuesta larga no se habla entera: el aparato la muestra).
+// Caché en memoria de frases cortas que se repiten siempre (la pregunta de la
+// hora, "listo", los avisos): sintetizarlas de nuevo en cada pedido es medio
+// segundo de "Pensando..." regalado.
+const shortCache = new Map<string, Uint8Array>();
+const SHORT_CACHE_MAX = 40;
+
 export async function synthesize(text: string, lang: Lang, maxSeconds = 12): Promise<Uint8Array | null> {
   if (!ttsAvailable(lang)) return null;
   const clean = text.replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
   if (!clean) return null;
+  const key = `${lang}|${VOICES[lang]}|${clean}`;
+  const cached = clean.length <= 60 ? shortCache.get(key) : undefined;
+  if (cached) return cached;
   const t0 = Date.now();
   const wav = await piperWav(clean, lang);
   if (!wav) return null;
@@ -211,6 +220,10 @@ export async function synthesize(text: string, lang: Lang, maxSeconds = 12): Pro
   const maxSamples = maxSeconds * TARGET_RATE;
   if (pcm.length > maxSamples) pcm = pcm.subarray(0, maxSamples);
   const out = encodeAdpcm(pcm);
+  if (clean.length <= 60) {
+    if (shortCache.size >= SHORT_CACHE_MAX) shortCache.delete(shortCache.keys().next().value as string);
+    shortCache.set(key, out);
+  }
   console.log(`tts ${lang}: ${clean.length} chars -> ${(pcm.length / TARGET_RATE).toFixed(1)} s, ${out.length} bytes, ${Date.now() - t0} ms`);
   return out;
 }

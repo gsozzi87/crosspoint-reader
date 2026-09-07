@@ -34,6 +34,7 @@
 #include "HubStore.h"
 #include "activities/home/ReminderAlertActivity.h"
 #include "activities/home/TimerActivity.h"
+#include "activities/home/VoiceActivity.h"
 #include "util/DeviceLog.h"
 #include <esp_sleep.h>
 #include "RecentBooksStore.h"
@@ -305,6 +306,26 @@ static bool isCalmScreen(const char* name) {
     if (strcmp(name, n) == 0) return true;
   }
   return false;
+}
+
+// Atajo de voz desde cualquier pantalla tranquila: UP + DOWN juntos. Los cuatro
+// botones de esta placa ya tienen dueño (OK es power, Atrás es sincronizar o
+// volver, UP/DOWN mantenidos pasan de página), así que el combo es lo único libre.
+static void checkVoiceShortcut() {
+  static bool comboActive = false;
+  const bool both = mappedInputManager.isPressed(MappedInputManager::Button::Up) &&
+                    mappedInputManager.isPressed(MappedInputManager::Button::Down);
+  if (!both) {
+    comboActive = false;
+    return;
+  }
+  if (comboActive) return;  // ya se disparó con esta pulsación
+  comboActive = true;
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
+  const char* name = activityManager.currentActivityName();
+  if (!isCalmScreen(name)) return;
+  LOG_INF("MAIN", "PTT shortcut from %s", name);
+  activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
 }
 
 static void checkTimeAlarms() {
@@ -863,6 +884,8 @@ void loop() {
   if (gpio.wasUsbStateChanged() && !activityManager.isReaderActivity()) {
     activityManager.requestUpdate();
   }
+
+  checkVoiceShortcut();
 
   static unsigned long lastAlarmCheck = 0;
   if (millis() - lastAlarmCheck >= 5000) {

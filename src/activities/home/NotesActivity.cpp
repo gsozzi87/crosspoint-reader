@@ -99,7 +99,10 @@ void NotesActivity::render(RenderLock&&) {
   perPage = std::max(1, (bottom - top) / ROW_H);
   const int count = static_cast<int>(HUB_STORE.notes.size());
   const int first = count > 0 ? (index / perPage) * perPage : 0;
-  if (count == 0) renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_NOTES_EMPTY));
+  if (count == 0) {
+    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_NOTES_EMPTY));
+    renderer.drawCenteredText(SMALL_FONT_ID, pageHeight / 2 + 20, tr(STR_VOICE_SHORTCUT_HINT));
+  }
   for (int i = first; i < count && i < first + perPage; ++i) {
     const int y = top + (i - first) * ROW_H;
     const bool sel = i == index;

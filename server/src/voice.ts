@@ -117,8 +117,27 @@ const ASK_TIME: Record<Lang, string> = {
 
 // Respuesta a "¿a qué hora?": "a las nueve", "14:30", "ocho y media". Se
 // resuelve sin LLM cuando alcanza con los dígitos, y con él si no.
-async function parseTimeReply(text: string, lang: Lang): Promise<string | null> {
-  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+// Desfase de HUB_TZ respecto de UTC, para saber qué hora es "ahora" en casa.
+function tzOffsetMsLocal(): number {
+  const tz = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
+  const at = Date.now();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+  }).formatToParts(new Date(at));
+  const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
+  return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - Math.floor(at / 1000) * 1000;
+}
+
+async function parseTimeReply(text: string, lang: Lang, baseDate = ""): Promise<string | null> {
+  // El día es el que ya había dicho ("mañana"); si no dijo ninguno, hoy cuando la
+  // hora todavía no pasó y mañana si ya pasó.
+  const dayFor = (h: number, m: number) => {
+    if (baseDate) return baseDate;
+    const now = new Date(Date.now() + tzOffsetMsLocal());
+    const past = h < now.getUTCHours() || (h === now.getUTCHours() && m <= now.getUTCMinutes());
+    return new Date(Date.now() + (past ? 86_400_000 : 0) + tzOffsetMsLocal()).toISOString().slice(0, 10);
+  };
   const t = text.toLowerCase();
   const digits = /(\d{1,2})\s*[:.]?\s*(\d{2})?/.exec(t);
   if (digits) {
@@ -126,7 +145,7 @@ async function parseTimeReply(text: string, lang: Lang): Promise<string | null> 
     const m = digits[2] ? Number(digits[2]) : 0;
     if (h >= 0 && h <= 23 && m >= 0 && m < 60) {
       if (/\b(pm|tarde|noche|abend|soir|вечера|нoчи)\b/.test(t) && h < 12) h += 12;
-      return `${tomorrow}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      return `${dayFor(h, m)}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
     }
   }
   try {
@@ -139,7 +158,10 @@ async function parseTimeReply(text: string, lang: Lang): Promise<string | null> 
     let out = "";
     for (const b of r.content) if (b.type === "text") out += b.text;
     const m2 = /(\d{1,2}):(\d{2})/.exec(out);
-    return m2 ? `${tomorrow}T${m2[1].padStart(2, "0")}:${m2[2]}` : null;
+    if (!m2) return null;
+    const h = Number(m2[1]);
+    const m = Number(m2[2]);
+    return `${dayFor(h, m)}T${m2[1].padStart(2, "0")}:${m2[2]}`;
   } catch {
     return null;
   }
@@ -232,6 +254,9 @@ voice.post("/", async (c) => {
   // Segunda vuelta cuando le preguntamos la hora de un recordatorio: el
   // aparato reenvía el título pendiente y esta grabación es solo la hora.
   const pending = (c.req.query("pending") ?? "").slice(0, 200);
+  // Día que ya había dicho el usuario en el primer turno ("mañana"), si lo dijo.
+  const pendingDateRaw = (c.req.query("pendingDate") ?? "").slice(0, 10);
+  const pendingDate = /^\d{4}-\d{2}-\d{2}$/.test(pendingDateRaw) ? pendingDateRaw : "";
   const t0 = Date.now();
   let text: string;
   try {
@@ -243,7 +268,7 @@ voice.post("/", async (c) => {
   const tStt = Date.now();
   try {
     if (pending) {
-      const dueAt = await parseTimeReply(text, lang);
+      const dueAt = await parseTimeReply(text, lang, pendingDate);
       const store = await load();
       store.reminders.push({ id: nextId(store), title: pending, dueAt, repeat: "none", done: false, createdAt: new Date().toISOString() });
       await save(store);
@@ -254,6 +279,23 @@ voice.post("/", async (c) => {
       return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", title: pending, when: label }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
     }
     const parsed = await classify(text, lang);
+    // Recordatorio sin hora (con día o sin día): se pregunta en vez de inventarla,
+    // y no se guarda nada todavía — antes execute() ya lo había guardado y el
+    // segundo turno creaba un duplicado.
+    const needsTime = (parsed.actions ?? []).find(
+      (a) => (a.kind === "reminder" || a.kind === "alarm") && (!a.dueAt || !a.dueAt.includes("T")),
+    );
+    if (needsTime) {
+      const reply = ASK_TIME[lang];
+      const audio = speak !== "none" ? await synthesize(reply, lang, 6) : null;
+      const day = needsTime.dueAt ? needsTime.dueAt.slice(0, 10) : "";
+      console.log(`voice: falta la hora de "${needsTime.text}"${day ? ` (${day})` : ""}`);
+      return framed(
+        { ok: true, text, intent: "reminder", reply, askTime: needsTime.text, askDate: day, saved: [], timerSeconds: 0,
+          audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } },
+        audio,
+      );
+    }
     const saved = await execute(parsed, text, lang);
     // Temporizador y alarma corren en el aparato: segundos hasta que suene.
     let timerSeconds = 0;
@@ -263,14 +305,6 @@ voice.post("/", async (c) => {
     // Voz: confirmaciones y traducciones siempre; una respuesta a pregunta solo
     // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato
     // la baje en menos de medio segundo.
-    // Recordatorio con día pero sin hora: se la pedimos en vez de inventarla.
-    const dateOnly = (parsed.actions ?? []).find((a) => a.kind === "reminder" && a.dueAt && !a.dueAt.includes("T"));
-    if (dateOnly) {
-      const reply = ASK_TIME[lang];
-      const audio = speak !== "none" ? await synthesize(reply, lang, 6) : null;
-      console.log(`voice: falta la hora de "${dateOnly.text}"`);
-      return framed({ ok: true, text, intent: "reminder", reply, askTime: dateOnly.text, saved: [], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
-    }
     const tLlm = Date.now();
     const speakable = speak !== "none" && (speak === "all" || parsed.intent !== "question" || parsed.reply.length <= 220);
     const audio = speakable ? await synthesize(parsed.reply, lang, speak === "all" ? 15 : 8) : null;
