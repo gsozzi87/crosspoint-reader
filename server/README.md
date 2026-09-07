@@ -40,6 +40,7 @@ el store de recordatorios, listas, notas y mensajes.
 | `POST /api/voice?lang=xx` | aparato | Una grabación: transcribe, clasifica la intención y ejecuta. Devuelve JSON + voz Piper (ADPCM) en un cuerpo binario. |
 | `GET /api/tts?text=&lang=xx` | aparato | Voz Piper en ADPCM 16 kHz para los avisos que el aparato guarda en la SD. |
 | `GET /api/bible/{books,chapter,day,find}?lang=xx` | aparato | Biblia por capítulos (cacheados en la SD), versículo del día, búsqueda por referencia o texto (sin LLM). |
+| `GET /api/photos`, `GET /api/photos/file?id=` | aparato | Álbum: BMP de 2 bpp (4 grises) que el navegador convierte al subirlos desde `/board`. |
 | `GET /api/rss`, `GET /api/rss/article?feed=&item=` | aparato | Noticias de los feeds RSS/Atom cargados en `/board`; artículo limpiado a texto. |
 | `POST /api/translate?from=xx&to=yy` | aparato | Traductor en conversación: WAV en `from` → texto, traducción y voz en `to` (cuerpo binario como `/api/voice`). |
 | `POST /api/hub/done` | aparato | `{kind: "reminder"\|"item", id, snooze?}` marca hecho o pospone (también desde la cola offline). |

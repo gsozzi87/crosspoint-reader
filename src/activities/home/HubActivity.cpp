@@ -20,6 +20,7 @@
 #include "BibleActivity.h"
 #include "MusicActivity.h"
 #include "NewsActivity.h"
+#include "PhotosActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
 #include "TranslatorActivity.h"
@@ -135,6 +136,9 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_NEWS:
       activityManager.replaceActivity(std::make_unique<NewsActivity>(renderer, mappedInput));
+      break;
+    case TILE_PHOTOS:
+      activityManager.replaceActivity(std::make_unique<PhotosActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));

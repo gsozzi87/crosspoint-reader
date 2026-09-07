@@ -583,3 +583,6 @@ STR_NEWS_NO_FEEDS: "Нет лент: добавьте их на веб-стра�
 STR_NEWS_NO_ITEMS: "Нет новостей"
 STR_NEWS_LOADING: "Загружаю новости..."
 STR_NEWS_REFRESH_HINT: "Удерживайте Назад: обновить"
+STR_PHOTOS_EMPTY: "Нет фото: загрузите их на веб-странице (/board)"
+STR_PHOTOS_LOADING: "Загружаю фото..."
+STR_PHOTOS_REFRESH_HINT: "Удерживайте Назад: обновить"

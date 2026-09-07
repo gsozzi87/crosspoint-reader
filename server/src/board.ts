@@ -12,6 +12,7 @@
 //   (leer, tildar y borrar: GET /api/hub, POST /api/hub/done, POST /api/hub/edit)
 import { Hono } from "hono";
 import { load, save, nextId, resolveList } from "./store";
+import { savePhoto, MAX_PHOTO_BYTES } from "./photos";
 
 export const boardApi = new Hono();
 
@@ -58,6 +59,17 @@ boardApi.post("/feed", async (c) => {
   store.feeds.push({ id: nextId(store), name, url });
   await save(store);
   return c.json({ ok: true });
+});
+
+// El BMP ya viene convertido por el navegador (ver la página): 2 bpp, 4 grises.
+boardApi.post("/photo", async (c) => {
+  const name = (c.req.query("name") ?? "foto").toString().slice(0, 80);
+  const bytes = new Uint8Array(await c.req.arrayBuffer());
+  if (bytes.byteLength < 100 || bytes.byteLength > MAX_PHOTO_BYTES) return c.json({ ok: false, error: "bad size" }, 400);
+  if (bytes[0] !== 0x42 || bytes[1] !== 0x4d) return c.json({ ok: false, error: "not a BMP" }, 400);
+  const id = await savePhoto(name, bytes);
+  console.log(`photo ${id}: ${name} (${bytes.byteLength} bytes)`);
+  return c.json({ ok: true, id });
 });
 
 boardApi.get("/extra", async (c) => {
@@ -109,6 +121,10 @@ li small{color:#666}
 <section><h2>Listas</h2>
 <form onsubmit="return send(event,'/api/board/item',{list:f.list.value,text:f.text.value})"><select name="list" id="lists"></select><input type="text" name="text" placeholder="Ítem" required><button>Agregar</button></form>
 <div id="listItems"></div></section>
+<section><h2>Fotos</h2>
+<form onsubmit="return false"><input type="file" name="photo" id="photoInput" accept="image/*"><button type="button" onclick="sendPhoto()">Subir</button></form>
+<p class="muted" id="photoStatus"></p>
+<ul id="photos"></ul></section>
 <section><h2>Noticias (RSS)</h2>
 <form onsubmit="return send(event,'/api/board/feed',{name:f.name.value,url:f.url.value})"><input type="text" name="name" placeholder="Nombre" style="max-width:140px"><input type="text" name="url" placeholder="https://.../rss" required><button>Agregar</button></form>
 <ul id="feeds"></ul></section>
@@ -136,10 +152,75 @@ async function refresh(){
   document.getElementById('lists').innerHTML=d.lists.map(l=>'<option>'+esc(l.name)+'</option>').join('');
   document.getElementById('listItems').innerHTML=d.lists.map(l=>'<h3 style="margin:10px 0 0;font-size:15px">'+esc(l.name)+' <small class="muted">'+l.items.length+'</small></h3><ul>'+(l.items.map(i=>'<li><span>'+esc(i.text)+'</span><button class="ghost" onclick="done(\\'item\\','+i.id+')">Hecho</button><button class="ghost" onclick="edit(\\'item\\','+i.id+',\\'delete\\')">Borrar</button></li>').join('')||'<li class="muted">Vacía</li>')+'</ul>').join('');
   const x=await api('/api/board/extra');
+  const ph=await api('/api/photos');
+  document.getElementById('photos').innerHTML=ph.photos.map(p=>'<li><span>'+esc(p.name)+' <small>'+Math.round(p.size/1024)+' KB</small></span><button class="ghost" onclick="delPhoto(\''+p.id+'\')">Borrar</button></li>').join('')||'<li class="muted">Sin fotos</li>';
   document.getElementById('feeds').innerHTML=x.feeds.map(f=>'<li><span>'+esc(f.name)+' <small>'+esc(f.url)+'</small></span><button class="ghost" onclick="edit(\'feed\','+f.id+',\'delete\')">Borrar</button></li>').join('')||'<li class="muted">Sin feeds</li>';
   document.getElementById('memories').innerHTML=x.memories.map(m=>'<li><span>'+esc(m.text)+'</span><button class="ghost" onclick="edit(\'memory\','+m.id+',\'delete\')">Borrar</button></li>').join('')||'<li class="muted">Nada guardado</li>';
   document.getElementById('notes').innerHTML=d.notes.map(n=>'<li><span>'+esc(n.text)+'</span><button class="ghost" onclick="edit(\\'note\\','+n.id+',\\'delete\\')">Borrar</button></li>').join('')||'<li class="muted">Sin notas</li>';
 }
+// El aparato muestra 800x480 en 4 grises: convertimos acá (canvas, difuminado
+// Floyd-Steinberg) y mandamos un BMP de 2 bpp ya listo, sin trabajo en el servidor.
+async function sendPhoto(){
+  const input=document.getElementById('photoInput');
+  const file=input.files&&input.files[0];
+  if(!file){alert('Elegí una foto');return;}
+  const st=document.getElementById('photoStatus');
+  st.textContent='Convirtiendo...';
+  const img=new Image();
+  img.src=URL.createObjectURL(file);
+  await img.decode();
+  const W=800,H=480;
+  const cv=document.createElement('canvas');cv.width=W;cv.height=H;
+  const ctx=cv.getContext('2d');
+  ctx.fillStyle='#fff';ctx.fillRect(0,0,W,H);
+  const s=Math.min(W/img.width,H/img.height);
+  const dw=Math.round(img.width*s),dh=Math.round(img.height*s);
+  ctx.drawImage(img,Math.round((W-dw)/2),Math.round((H-dh)/2),dw,dh);
+  const px=ctx.getImageData(0,0,W,H).data;
+  const gray=new Float32Array(W*H);
+  for(let i=0,j=0;i<px.length;i+=4,j++) gray[j]=0.299*px[i]+0.587*px[i+1]+0.114*px[i+2];
+  const idx=new Uint8Array(W*H);
+  for(let y=0;y<H;y++){
+    for(let x=0;x<W;x++){
+      const p=y*W+x;
+      const old=gray[p];
+      const q=Math.max(0,Math.min(3,Math.round(old/85)));
+      idx[p]=q;
+      const err=old-q*85;
+      if(x+1<W)gray[p+1]+=err*7/16;
+      if(y+1<H){
+        if(x>0)gray[p+W-1]+=err*3/16;
+        gray[p+W]+=err*5/16;
+        if(x+1<W)gray[p+W+1]+=err*1/16;
+      }
+    }
+  }
+  const rowBytes=Math.ceil(W*2/32)*4;      // 2 bpp, filas alineadas a 4
+  const pixels=rowBytes*H;
+  const off=14+40+4*4;                      // cabeceras + paleta de 4 colores
+  const buf=new Uint8Array(off+pixels);
+  const dv=new DataView(buf.buffer);
+  buf[0]=0x42;buf[1]=0x4d;
+  dv.setUint32(2,buf.length,true);dv.setUint32(10,off,true);
+  dv.setUint32(14,40,true);dv.setInt32(18,W,true);dv.setInt32(22,H,true);
+  dv.setUint16(26,1,true);dv.setUint16(28,2,true);dv.setUint32(34,pixels,true);
+  dv.setUint32(46,4,true);dv.setUint32(50,4,true);
+  const levels=[0,85,170,255];
+  for(let i=0;i<4;i++){const o=54+i*4;buf[o]=levels[i];buf[o+1]=levels[i];buf[o+2]=levels[i];buf[o+3]=0;}
+  for(let y=0;y<H;y++){
+    const row=off+(H-1-y)*rowBytes;         // BMP: de abajo hacia arriba
+    for(let x=0;x<W;x++){
+      const shift=6-2*(x%4);
+      buf[row+(x>>2)]|=idx[y*W+x]<<shift;
+    }
+  }
+  st.textContent='Subiendo '+Math.round(buf.length/1024)+' KB...';
+  const r=await fetch('/api/board/photo?name='+encodeURIComponent(file.name),{method:'POST',headers:{'Authorization':'Bearer '+token,'Content-Type':'image/bmp'},body:buf});
+  st.textContent=r.ok?'Foto subida':'No se pudo subir';
+  input.value='';
+  refresh();
+}
+async function delPhoto(id){await api('/api/photos/delete',{id});refresh();}
 function boot(){if(!token){token=prompt('Token del aparato (web UI del aparato → Servidor)')||'';if(!token)return;localStorage.setItem('deviceToken',token);}refresh().catch(()=>{});}
 boot();
 </script></body></html>`;
