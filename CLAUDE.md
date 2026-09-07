@@ -158,6 +158,9 @@ llegue el hardware.
   JSON de thiagobodruk/bible bajado en el Dockerfile a `/opt/bible`, nombres de libros por idioma en
   `bibleNames.ts`); capítulos cacheados en `/.crosspoint/bible/<lang>/<libro>-<cap>.txt`, último lugar en
   `HubStore::bibleBook/bibleChapter`; Atrás largo graba y `find` resuelve referencia o búsqueda de texto.
+- Música (`MusicActivity`, mosaico Música): MP3 de `/Music/<carpeta>/` en la SD. `src/music/Mp3Source` decodifica con
+  Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una `AudioManager::WavSource` con cabecera WAV
+  sintética, así el SDK no cambia; tags ID3v2/v1; volumen en `HubStore::musicVolume`. Pausa = volumen 0.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
@@ -176,8 +179,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
    nota, mensaje, temporizador, traducción, alarma); recordatorios con repetición y alarma del RTC; varias
    listas de tareas (Entrada, Casa, Trabajo, Administrativo, Compras, proyectos) con vista por semana ISO;
    TTS con Piper (hecho); traductor en modo conversación (hecho); temporizador, cronómetro y Pomodoro (hecho); agenda; memoria.
-3. Contenido: Biblia (hecha, capítulos cacheados; falta descarga por libro e índice offline), versículo/frase del
-   día, MP3 desde SD estilo Winamp, RSS/lectura web, álbum de imágenes en 4 grises, clima detallado.
+3. Contenido: Biblia (hecha, capítulos cacheados; falta descarga por libro e índice offline), MP3 estilo Winamp
+   (hecho), versículo/frase del día, RSS/lectura web, álbum de imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria
    (parejas, Simón), Tetris experimental, ajedrez opcional.
 

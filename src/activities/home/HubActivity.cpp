@@ -18,6 +18,7 @@
 #include "RecentBooksStore.h"
 #include "AgendaActivity.h"
 #include "BibleActivity.h"
+#include "MusicActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
 #include "TranslatorActivity.h"
@@ -125,6 +126,9 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_BIBLE:
       activityManager.replaceActivity(std::make_unique<BibleActivity>(renderer, mappedInput));
+      break;
+    case TILE_MUSIC:
+      activityManager.replaceActivity(std::make_unique<MusicActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
