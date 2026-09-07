@@ -48,6 +48,23 @@ boardApi.post("/item", async (c) => {
   return c.json({ ok: true, list });
 });
 
+boardApi.post("/feed", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const url = (b.url ?? "").toString().trim().slice(0, 500);
+  if (!/^https?:\/\//.test(url)) return c.json({ ok: false, error: "url required" }, 400);
+  const store = await load();
+  store.feeds ??= [];
+  const name = (b.name ?? "").toString().trim().slice(0, 40) || new URL(url).hostname.replace(/^www\./, "");
+  store.feeds.push({ id: nextId(store), name, url });
+  await save(store);
+  return c.json({ ok: true });
+});
+
+boardApi.get("/extra", async (c) => {
+  const store = await load();
+  return c.json({ ok: true, feeds: store.feeds ?? [], memories: store.memories ?? [] });
+});
+
 boardApi.post("/note", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const text = (b.text ?? "").toString().trim().slice(0, 2000);
@@ -92,6 +109,10 @@ li small{color:#666}
 <section><h2>Listas</h2>
 <form onsubmit="return send(event,'/api/board/item',{list:f.list.value,text:f.text.value})"><select name="list" id="lists"></select><input type="text" name="text" placeholder="Ítem" required><button>Agregar</button></form>
 <div id="listItems"></div></section>
+<section><h2>Noticias (RSS)</h2>
+<form onsubmit="return send(event,'/api/board/feed',{name:f.name.value,url:f.url.value})"><input type="text" name="name" placeholder="Nombre" style="max-width:140px"><input type="text" name="url" placeholder="https://.../rss" required><button>Agregar</button></form>
+<ul id="feeds"></ul></section>
+<section><h2>Memoria del asistente</h2><ul id="memories"></ul></section>
 <section><h2>Notas</h2>
 <form onsubmit="return send(event,'/api/board/note',{text:f.text.value})"><textarea name="text" rows="2" placeholder="Nota" required></textarea><button>Guardar</button></form>
 <ul id="notes"></ul></section>
@@ -114,6 +135,9 @@ async function refresh(){
   document.getElementById('reminders').innerHTML=d.reminders.map(r=>'<li><span>'+esc(r.title)+' <small>'+esc(r.when||'')+'</small></span><button class="ghost" onclick="done(\\'reminder\\','+r.id+')">Hecho</button></li>').join('')||'<li class="muted">Sin recordatorios</li>';
   document.getElementById('lists').innerHTML=d.lists.map(l=>'<option>'+esc(l.name)+'</option>').join('');
   document.getElementById('listItems').innerHTML=d.lists.map(l=>'<h3 style="margin:10px 0 0;font-size:15px">'+esc(l.name)+' <small class="muted">'+l.items.length+'</small></h3><ul>'+(l.items.map(i=>'<li><span>'+esc(i.text)+'</span><button class="ghost" onclick="done(\\'item\\','+i.id+')">Hecho</button><button class="ghost" onclick="edit(\\'item\\','+i.id+',\\'delete\\')">Borrar</button></li>').join('')||'<li class="muted">Vacía</li>')+'</ul>').join('');
+  const x=await api('/api/board/extra');
+  document.getElementById('feeds').innerHTML=x.feeds.map(f=>'<li><span>'+esc(f.name)+' <small>'+esc(f.url)+'</small></span><button class="ghost" onclick="edit(\'feed\','+f.id+',\'delete\')">Borrar</button></li>').join('')||'<li class="muted">Sin feeds</li>';
+  document.getElementById('memories').innerHTML=x.memories.map(m=>'<li><span>'+esc(m.text)+'</span><button class="ghost" onclick="edit(\'memory\','+m.id+',\'delete\')">Borrar</button></li>').join('')||'<li class="muted">Nada guardado</li>';
   document.getElementById('notes').innerHTML=d.notes.map(n=>'<li><span>'+esc(n.text)+'</span><button class="ghost" onclick="edit(\\'note\\','+n.id+',\\'delete\\')">Borrar</button></li>').join('')||'<li class="muted">Sin notas</li>';
 }
 function boot(){if(!token){token=prompt('Token del aparato (web UI del aparato → Servidor)')||'';if(!token)return;localStorage.setItem('deviceToken',token);}refresh().catch(()=>{});}

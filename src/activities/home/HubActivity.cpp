@@ -19,6 +19,7 @@
 #include "AgendaActivity.h"
 #include "BibleActivity.h"
 #include "MusicActivity.h"
+#include "NewsActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
 #include "TranslatorActivity.h"
@@ -34,10 +35,10 @@ namespace {
 constexpr int SIDE = 20;        // left/right margin
 constexpr int GAP = 12;         // between tiles
 constexpr int STATUS_H = 44;    // status line band
-constexpr int TILE_H = 104;
+constexpr int TILE_H = 80;
 constexpr int TILE_RADIUS = 12;
-constexpr int CONTINUE_H = 70;
-constexpr int INFO_H = 150;
+constexpr int CONTINUE_H = 60;
+constexpr int INFO_H = 136;
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
 constexpr time_t SYNC_INTERVAL_S = 6 * 3600;      // cache older than this at entry = sync
 constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
@@ -64,7 +65,9 @@ const TileSpec TILES[] = {
     {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_48},
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
     {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
-    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
+    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_HUB_NEWS, &icon_hub_news_48},
+    {StrId::STR_HUB_PHOTOS, &icon_hub_photos_48},       {StrId::STR_HUB_GAMES, &icon_hub_games_48},
+    {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
 }  // namespace
 
@@ -129,6 +132,9 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_MUSIC:
       activityManager.replaceActivity(std::make_unique<MusicActivity>(renderer, mappedInput));
+      break;
+    case TILE_NEWS:
+      activityManager.replaceActivity(std::make_unique<NewsActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
@@ -256,13 +262,13 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   }
   const bool ink = !isSelected;  // white on the selected tile
   const int iconX = x + (w - spec.icon->w) / 2;
-  const int iconY = y + (h - spec.icon->h - 30) / 2;
+  const int iconY = y + (h - spec.icon->h - 22) / 2;
   drawSdkIcon(renderer, *spec.icon, iconX, iconY, ink);
 
   const char* label = I18N.get(spec.label);
   const std::string shortLabel = renderer.truncatedText(UI_10_FONT_ID, label, w - 10, EpdFontFamily::BOLD);
   const int labelW = renderer.getTextWidth(UI_10_FONT_ID, shortLabel.c_str(), EpdFontFamily::BOLD);
-  renderer.drawText(UI_10_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 6, shortLabel.c_str(), ink,
+  renderer.drawText(UI_10_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 2, shortLabel.c_str(), ink,
                     EpdFontFamily::BOLD);
 }
 
@@ -276,9 +282,9 @@ void HubActivity::drawContinueWidget(const int x, const int y, const int w, cons
     return;
   }
   const std::string title = renderer.truncatedText(UI_12_FONT_ID, lastBookTitle.c_str(), textW, EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, textX, y + 8, title.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, textX, y + 6, title.c_str(), true, EpdFontFamily::BOLD);
   const std::string sub = lastBookAuthor.empty() ? tr(STR_CONTINUE_READING) : lastBookAuthor;
-  renderer.drawText(UI_10_FONT_ID, textX, y + 34, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
+  renderer.drawText(UI_10_FONT_ID, textX, y + 32, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
 }
 
 // Weather + next reminder on the first row, today's events (or the quote) on
@@ -324,7 +330,12 @@ void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const i
     const int tw = w - (tx - x) - pad;
     drawSdkIcon(renderer, icon_hub_calendar_24, x + pad, ty, true);
     if (hub.events.empty()) {
-      const std::string line = hub.quote.empty() ? std::string(tr(STR_HUB_NO_EVENTS)) : hub.quote;
+      // No events: the verse of the day on even days, the quote on odd ones.
+      time_t epoch = 0;
+      const bool verseDay = halClock.getEpochUtc(epoch) && ((epoch / 86400) % 2 == 0);
+      const bool useVerse = !hub.verseText.empty() && (verseDay || hub.quote.empty());
+      const std::string line = useVerse ? hub.verseText + " (" + hub.verseRef + ")"
+                                        : hub.quote.empty() ? std::string(tr(STR_HUB_NO_EVENTS)) : hub.quote;
       // Two lines max for the quote.
       const std::string first = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), tw);
       renderer.drawText(UI_10_FONT_ID, tx, ty + 2, first.c_str());

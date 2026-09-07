@@ -11,3 +11,6 @@ hub_settings = settings
 hub_timer = timer
 hub_notes = notebook-pen
 hub_translator = languages
+hub_news = newspaper
+hub_photos = image
+hub_games = gamepad-2
