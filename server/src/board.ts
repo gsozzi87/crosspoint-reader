@@ -107,7 +107,7 @@ li span{flex:1}
 li small{color:#666}
 .muted{color:#666;font-size:14px}
 </style></head><body>
-<header><strong>Pizarra del aparato</strong><button class="ghost" onclick="logout()">Token</button></header>
+<header><strong>Pizarra del aparato</strong><span><a href="/board/log" style="color:#fff;margin-right:12px">Log</a><button class="ghost" onclick="logout()">Token</button></span></header>
 <main>
 <section><h2>Mensaje para el hub</h2>
 <form onsubmit="return send(event,'/api/board/message',{from:f.from.value,text:f.text.value})" id="fm">

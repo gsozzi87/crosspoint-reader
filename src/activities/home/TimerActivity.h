@@ -15,8 +15,9 @@
 // lands here with the seconds already chosen.
 class TimerActivity final : public Activity {
  public:
-  explicit TimerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int countdownSeconds = 0)
-      : Activity("Timer", renderer, mappedInput), presetSeconds(countdownSeconds) {}
+  explicit TimerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, int countdownSeconds = 0,
+                         bool resumeFired = false)
+      : Activity("Timer", renderer, mappedInput), presetSeconds(countdownSeconds), resumeFired(resumeFired) {}
 
   void onEnter() override;
   void onExit() override;
@@ -28,6 +29,7 @@ class TimerActivity final : public Activity {
   enum Mode { PICK, COUNTDOWN, STOPWATCH, POMODORO };
   Mode mode = PICK;
   int presetSeconds;
+  const bool resumeFired = false;  // woken by the deep-sleep timer: ring right away
   OptionPopup picker;
   std::vector<std::string> pickerOptions;
   bool pickingDuration = false;
@@ -50,6 +52,8 @@ class TimerActivity final : public Activity {
   void showModePicker();
   void showDurationPicker();
   void startSegment(long seconds);
+  void persist();       // store endAt so the timer survives sleep
+  bool resumeStored();  // pick a stored timer back up (entering or waking)
   void ring();
   void drawBigTime(long seconds, int centerY) const;
 };

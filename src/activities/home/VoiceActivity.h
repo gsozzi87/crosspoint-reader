@@ -37,6 +37,8 @@ class VoiceActivity final : public Activity {
   bool requestPending = false;
   int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
   SpeechOut speech;      // the reply, spoken by the server's Piper, played with the text
+  std::string pendingTitle;  // reminder waiting for its hour (the server asked)
+  bool askingTime = false;
 
   void startRecording();
   void stopRecording();

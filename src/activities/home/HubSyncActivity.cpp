@@ -14,6 +14,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/DeviceLog.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
@@ -120,6 +121,17 @@ bool fetchClip(const std::string& text, const std::string& path) {
 }
 }  // namespace
 
+// The log goes up with the sync so a problem that happened away from the
+// cable can be read at /board later.
+static void uploadLog() {
+  const std::string tail = devlog::tail(24 * 1024);
+  if (tail.size() < 64) return;
+  ServerClient::Response resp;
+  const ServerClient::Result r =
+      SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()), tail.size(), resp);
+  LOG_INF(TAG, "log upload: %s (%u bytes)", ServerClient::resultName(r), (unsigned)tail.size());
+}
+
 void HubSyncActivity::cacheSpokenNotices() {
   Storage.ensureDirectoryExists(TTS_DIR);
   int fetched = 0;
@@ -141,6 +153,7 @@ void HubSyncActivity::runSync() {
   if (ok) {
     WiFi.setSleep(false);
     cacheSpokenNotices();
+    uploadLog();
     WiFi.setSleep(true);
   }
   flushed = 0;

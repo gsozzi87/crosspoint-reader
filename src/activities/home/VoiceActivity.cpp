@@ -17,6 +17,7 @@
 #include "activities/reader/DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
 namespace {
@@ -92,15 +93,17 @@ void VoiceActivity::onWifiSelectionComplete(const bool connected) {
   requestUpdate();
 }
 
-// POST /api/voice (audio/wav) -> {ok, text, intent, reply, saved[]}
+// POST /api/voice (audio/adpcm) -> [u32 json length][json][speech]
 void VoiceActivity::performRequest() {
   requestPending = false;
   WiFi.setSleep(false);
-  LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)recorder.wavBytes());
+  const uint8_t* body = recorder.adpcm();
+  const size_t bytes = recorder.adpcmBytes();
+  LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)bytes);
+  std::string path = std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam();
+  if (!pendingTitle.empty()) path += "&pending=" + urlEncode(pendingTitle);
   ServerClient::Response resp;
-  const ServerClient::Result r =
-      SERVER_CLIENT.postBytes(std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam(),
-                              "audio/wav", recorder.wav(), recorder.wavBytes(), resp, VOICE_TIMEOUT_MS);
+  const ServerClient::Result r = SERVER_CLIENT.postBytes(path, "audio/adpcm", body, bytes, resp, VOICE_TIMEOUT_MS);
   recorder.release();
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
@@ -129,6 +132,7 @@ void VoiceActivity::performRequest() {
   intent = doc["intent"] | "";
   reply = doc["reply"] | "";
   timerSeconds = doc["timerSeconds"] | 0;
+  const char* askTime = doc["askTime"] | "";  // reminder with no time: ask for it
   const size_t audioBytes = framed ? raw.size() - 4 - jsonLen : 0;
   if (audioBytes > 8) {
     // Start the voice right away, while the widgets refresh and the text paints.
@@ -139,6 +143,17 @@ void VoiceActivity::performRequest() {
     fail(StrId::STR_ASK_FAILED, doc["error"] | "empty reply");
     return;
   }
+  if (askTime[0]) {
+    // "Remind me to buy milk tomorrow" with no hour: ask for it and listen
+    // again, carrying what is pending so the server keeps title and day.
+    pendingTitle = askTime;
+    askingTime = true;
+    WiFi.setSleep(true);
+    startRecording();
+    return;
+  }
+  pendingTitle.clear();
+  askingTime = false;
   LOG_INF(TAG, "\"%s\" -> %s", heard.c_str(), intent.c_str());
 
   // Widgets: whatever was just saved shows up on the hub right away.
@@ -210,8 +225,15 @@ void VoiceActivity::render(RenderLock&&) {
   const char* confirmLabel = "";
   switch (state) {
     case RECORDING:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, tr(STR_VOICE_PROMPT), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, tr(STR_VOICE_HINT));
+      if (askingTime) {
+        renderer.drawCenteredText(UI_12_FONT_ID, mid - 40, tr(STR_VOICE_ASK_TIME), true, EpdFontFamily::BOLD);
+        renderer.drawCenteredText(UI_10_FONT_ID, mid - 4,
+                                  renderer.truncatedText(UI_10_FONT_ID, pendingTitle.c_str(), pageWidth - 40).c_str());
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 26, tr(STR_VOICE_ASK_TIME_HINT));
+      } else {
+        renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, tr(STR_VOICE_PROMPT), true, EpdFontFamily::BOLD);
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, tr(STR_VOICE_HINT));
+      }
       confirmLabel = tr(STR_SELECT);
       break;
     case SENDING:

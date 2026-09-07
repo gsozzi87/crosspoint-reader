@@ -171,76 +171,88 @@ void WeatherActivity::render(RenderLock&&) {
   } else if (state == FAILED) {
     renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, I18N.get(failureId), true, EpdFontFamily::BOLD);
   } else {
-    int y = metrics.topPadding + metrics.headerHeight + 14;
-    // Now: big temperature, condition and the rest in one line.
+    int y = metrics.topPadding + metrics.headerHeight + 10;
+    const int w = pageWidth - 2 * SIDE;
+    char line[128];
+
+    // Now: temperature big on the left, condition and the rest stacked right.
     char big[16];
     snprintf(big, sizeof(big), "%d°", nowTemp);
-    renderer.drawText(UI_12_FONT_ID, SIDE, y, big, true, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, SIDE, y + 6, big, true, EpdFontFamily::BOLD);
     const int bigW = renderer.getTextWidth(UI_12_FONT_ID, big, EpdFontFamily::BOLD);
-    drawSdkIcon(renderer, icon_hub_weather_24, SIDE + bigW + 12, y - 2);
-    renderer.drawText(UI_12_FONT_ID, SIDE + bigW + 44, y, renderer.truncatedText(UI_12_FONT_ID, nowCond.c_str(), pageWidth - SIDE * 2 - bigW - 44).c_str(), true, EpdFontFamily::BOLD);
-    y += 28;
-    char line[128];
-    snprintf(line, sizeof(line), "%s %d°   %s %d %%   %s %d km/h", tr(STR_WEATHER_FEELS), feels, tr(STR_WEATHER_HUM), hum,
-             tr(STR_WEATHER_WIND), wind);
-    renderer.drawText(UI_10_FONT_ID, SIDE, y, line);
-    y += 24;
+    const int tx = SIDE + bigW + 14;
+    renderer.drawText(UI_10_FONT_ID, tx, y, renderer.truncatedText(UI_10_FONT_ID, nowCond.c_str(), pageWidth - SIDE - tx).c_str(), true, EpdFontFamily::BOLD);
+    snprintf(line, sizeof(line), "%s %d°  ·  %s %d%%", tr(STR_WEATHER_FEELS), feels, tr(STR_WEATHER_HUM), hum);
+    renderer.drawText(SMALL_FONT_ID, tx, y + 22, line);
+    snprintf(line, sizeof(line), "%s %d km/h", tr(STR_WEATHER_WIND), wind);
     if (!sunrise.empty()) {
-      snprintf(line, sizeof(line), "%s %s   %s %s", tr(STR_WEATHER_SUNRISE), sunrise.c_str(), tr(STR_WEATHER_SUNSET), sunset.c_str());
-      renderer.drawText(SMALL_FONT_ID, SIDE, y, line);
-      y += 22;
+      snprintf(line + strlen(line), sizeof(line) - strlen(line), "  ·  %s %s  %s %s", tr(STR_WEATHER_SUNRISE),
+               sunrise.c_str(), tr(STR_WEATHER_SUNSET), sunset.c_str());
     }
+    renderer.drawText(SMALL_FONT_ID, tx, y + 40, renderer.truncatedText(SMALL_FONT_ID, line, pageWidth - SIDE - tx).c_str());
+    y += 66;
 
-    // Hours: a row of columns with time, temperature and rain chance.
+    // Hours: two rows of four columns, each with time, temperature and rain.
     if (!hours.empty()) {
       renderer.drawLine(SIDE, y, pageWidth - SIDE, y, true);
-      y += 10;
-      const int cols = static_cast<int>(hours.size());
-      const int colW = (pageWidth - 2 * SIDE) / cols;
-      for (int i = 0; i < cols; ++i) {
-        const int cx = SIDE + i * colW;
+      y += 8;
+      const int cols = 4;
+      const int colW = w / cols;
+      for (size_t i = 0; i < hours.size() && i < 8; ++i) {
+        const int cx = SIDE + static_cast<int>(i % cols) * colW;
+        const int cy = y + static_cast<int>(i / cols) * 48;
         const Hour& h = hours[i];
-        renderer.drawText(SMALL_FONT_ID, cx, y, h.at.c_str());
+        renderer.drawText(SMALL_FONT_ID, cx, cy, h.at.c_str());
         snprintf(line, sizeof(line), "%d°", h.temp);
-        renderer.drawText(UI_10_FONT_ID, cx, y + 18, line, true, EpdFontFamily::BOLD);
+        renderer.drawText(UI_10_FONT_ID, cx, cy + 16, line, true, EpdFontFamily::BOLD);
         if (h.rain >= 20) {
           snprintf(line, sizeof(line), "%d%%", h.rain);
-          renderer.drawText(SMALL_FONT_ID, cx, y + 40, line);
+          renderer.drawText(SMALL_FONT_ID, cx + 34, cy + 20, line);
         }
       }
-      y += 62;
+      y += hours.size() > 4 ? 100 : 52;
     }
 
-    // Days: name, condition, rain chance and max/min with a simple range bar.
+    // Days: one row each — name, date, condition, rain, and the min/max bar.
     renderer.drawLine(SIDE, y, pageWidth - SIDE, y, true);
-    y += 8;
+    y += 6;
     int gmin = 99, gmax = -99;
     for (const Day& d : days) {
       gmin = std::min(gmin, d.min);
       gmax = std::max(gmax, d.max);
     }
     if (gmax <= gmin) gmax = gmin + 1;
-    const int rowH = std::max(26, (pageHeight - metrics.buttonHintsHeight - 14 - y) / static_cast<int>(days.size()));
+    const int avail = pageHeight - metrics.buttonHintsHeight - 10 - y;
+    const int rowH = days.empty() ? 0 : std::min(56, avail / static_cast<int>(days.size()));
     for (size_t i = 0; i < days.size(); ++i) {
       const Day& d = days[i];
       const int ry = y + static_cast<int>(i) * rowH;
-      renderer.drawText(UI_10_FONT_ID, SIDE, ry + 4, d.name.c_str(), true, i == 0 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-      renderer.drawText(SMALL_FONT_ID, SIDE + 60, ry + 6, d.date.c_str());
-      renderer.drawText(UI_10_FONT_ID, SIDE + 110, ry + 4, renderer.truncatedText(UI_10_FONT_ID, d.cond.c_str(), 150).c_str());
-      if (d.rain >= 20) {
-        snprintf(line, sizeof(line), "%d%%", d.rain);
-        renderer.drawText(SMALL_FONT_ID, SIDE + 262, ry + 6, line);
-      }
-      // Range bar between the week's min and max
-      const int barX = SIDE + 320, barW = pageWidth - SIDE - 80 - barX;
+      const bool today = i == 0;
+      renderer.drawText(UI_10_FONT_ID, SIDE, ry + 2, d.name.c_str(), true,
+                        today ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+      renderer.drawText(SMALL_FONT_ID, SIDE + 54, ry + 4, d.date.c_str());
+      // Condition, and the rain chance right after it
+      std::string cond = d.cond;
+      if (d.rain >= 20) cond += "  " + std::to_string(d.rain) + "%";
+      renderer.drawText(SMALL_FONT_ID, SIDE + 104, ry + 4,
+                        renderer.truncatedText(SMALL_FONT_ID, cond.c_str(), w - 104 - 4).c_str());
+      // Bar with the min/max of the week, temperatures at both ends
+      const int barY = ry + 24;
       snprintf(line, sizeof(line), "%d°", d.min);
-      renderer.drawText(SMALL_FONT_ID, barX - renderer.getTextWidth(SMALL_FONT_ID, line) - 8, ry + 6, line);
-      const int x0 = barX + barW * (d.min - gmin) / (gmax - gmin);
-      const int x1 = barX + barW * (d.max - gmin) / (gmax - gmin);
-      renderer.drawLine(barX, ry + 12, barX + barW, ry + 12, true);
-      renderer.fillRoundedRect(x0, ry + 8, std::max(x1 - x0, 6), 9, 4, Color::Black);
+      const int minW = renderer.getTextWidth(SMALL_FONT_ID, line);
+      renderer.drawText(SMALL_FONT_ID, SIDE, barY - 2, line);
       snprintf(line, sizeof(line), "%d°", d.max);
-      renderer.drawText(UI_10_FONT_ID, barX + barW + 10, ry + 4, line, true, EpdFontFamily::BOLD);
+      const int maxW = renderer.getTextWidth(UI_10_FONT_ID, line, EpdFontFamily::BOLD);
+      renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - maxW, barY - 6, line, true, EpdFontFamily::BOLD);
+      const int barX = SIDE + minW + 8;
+      const int barW = pageWidth - SIDE - maxW - 8 - barX;
+      if (barW > 20) {
+        renderer.drawLine(barX, barY + 4, barX + barW, barY + 4, true);
+        const int x0 = barX + barW * (d.min - gmin) / (gmax - gmin);
+        const int x1 = barX + barW * (d.max - gmin) / (gmax - gmin);
+        renderer.fillRoundedRect(x0, barY, std::max(x1 - x0, 6), 9, 4, Color::Black);
+      }
+      if (i + 1 < days.size()) renderer.drawLine(SIDE, ry + rowH - 4, pageWidth - SIDE, ry + rowH - 4, true);
     }
   }
 

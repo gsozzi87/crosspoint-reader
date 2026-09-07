@@ -12,7 +12,7 @@ RUN mkdir -p /opt/piper/voices && cd /opt \
 # Voces (rhasspy/piper-voices en Hugging Face): es, en, fr, de, pt, ru
 ARG HF=https://huggingface.co/rhasspy/piper-voices/resolve/main
 RUN cd /opt/piper/voices && for v in \
-      es/es_MX/ald/medium/es_MX-ald-medium \
+      es/es_MX/claude/high/es_MX-claude-high \
       en/en_US/lessac/medium/en_US-lessac-medium \
       fr/fr_FR/siwis/medium/fr_FR-siwis-medium \
       de/de_DE/thorsten/medium/de_DE-thorsten-medium \

@@ -6,6 +6,7 @@
 
 #include <cmath>
 
+#include "Adpcm.h"
 #include "util/WavHeader.h"
 
 namespace {
@@ -81,8 +82,25 @@ void VoiceRecorder::release() {
     heap_caps_free(buffer);
     buffer = nullptr;
   }
+  if (packed) {
+    heap_caps_free(packed);
+    packed = nullptr;
+  }
   recorded = 0;
 }
+
+const uint8_t* VoiceRecorder::adpcm() {
+  if (packed || !buffer || recorded == 0) return packed;
+  const size_t bytes = adpcm::encodedSize(recorded);
+  packed = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!packed) packed = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_8BIT));
+  if (!packed) return nullptr;
+  adpcm::encode(reinterpret_cast<const int16_t*>(buffer + wav::HEADER_BYTES), recorded, packed);
+  LOG_DBG(TAG, "upload: %u bytes (was %u)", (unsigned)bytes, (unsigned)wavBytes());
+  return packed;
+}
+
+size_t VoiceRecorder::adpcmBytes() const { return buffer ? adpcm::encodedSize(recorded) : 0; }
 
 size_t VoiceRecorder::wavBytes() const { return buffer ? wav::HEADER_BYTES + recorded * sizeof(int16_t) : 0; }
 

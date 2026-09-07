@@ -24,7 +24,7 @@ export const TARGET_RATE = 16000;
 const MAX_CHARS = 400;
 
 export const VOICES: Record<Lang, string> = {
-  es: "es_MX-ald-medium",
+  es: "es_MX-claude-high",  // femenina, español neutro latino
   en: "en_US-lessac-medium",
   fr: "fr_FR-siwis-medium",
   de: "de_DE-thorsten-medium",

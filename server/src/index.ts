@@ -3,6 +3,7 @@ import { Hono } from "hono";
 import { api } from "./api";
 import { firmware } from "./firmware";
 import { board } from "./board";
+import { logPage } from "./devicelog";
 import { warmUp } from "./tts";
 import { normalizeLang } from "./lang";
 
@@ -10,7 +11,8 @@ const app = new Hono();
 
 app.get("/", (c) => c.text("ws397 server ok"));
 app.route("/firmware", firmware);
-app.route("/board", board);  // página web para el teléfono (pide el token del aparato)
+app.route("/board", board);
+app.route("/board/log", logPage);  // log del aparato, texto plano  // página web para el teléfono (pide el token del aparato)
 app.route("/api", api);
 
 warmUp(normalizeLang(process.env.HUB_LANG ?? "es"));  // Piper carga el modelo una vez

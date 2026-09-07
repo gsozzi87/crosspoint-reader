@@ -16,4 +16,10 @@ uint32_t sampleCount(const uint8_t* data, size_t len);
 // Decodes into a complete WAV (header + 16-bit PCM) allocated with
 // heap_caps_malloc (PSRAM first). Caller frees with heap_caps_free.
 uint8_t* decodeToWav(const uint8_t* data, size_t len, size_t& wavBytes);
+
+// Encodes 16-bit PCM into the same format, in place-ish: writes into `out`,
+// which must hold HEADER_BYTES + (samples + 1) / 2 bytes. Used for uploads:
+// a 10 s take goes from 320 KB to 80 KB, which is the bulk of the wait.
+size_t encodedSize(uint32_t samples);
+size_t encode(const int16_t* pcm, uint32_t samples, uint8_t* out);
 }  // namespace adpcm
