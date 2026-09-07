@@ -15,10 +15,10 @@
 import { Hono } from "hono";
 import { normalizeLang, type Lang } from "./lang";
 import { decodeAdpcm, TARGET_RATE } from "./tts";
+import { config } from "./config";
 
-const API_KEY = process.env.STT_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
-const BASE_URL = (process.env.STT_BASE_URL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
-const MODEL = process.env.STT_MODEL ?? "whisper-1";
+// El servicio de transcripción se elige desde /board -> Ajustes (Groq es gratis
+// y el más rápido); las variables de entorno quedan como valor por defecto.
 const MAX_BYTES = 2_000_000;
 
 export const transcribe = new Hono();
@@ -50,23 +50,25 @@ export function toWav(body: ArrayBuffer, contentType?: string | null): ArrayBuff
 }
 
 export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Promise<string> {
-  if (!API_KEY) throw new Error("STT_API_KEY not set");
+  const stt = (await config()).stt;
+  if (!stt.key) throw new Error("falta la clave de transcripción (web → Ajustes)");
   if (audio.byteLength < 1_000) throw new Error("audio too short");
   if (audio.byteLength > MAX_BYTES) throw new Error("audio too large");
   const form = new FormData();
   form.append("file", new Blob([audio], { type: "audio/wav" }), "question.wav");
-  form.append("model", MODEL);
+  form.append("model", stt.model);
   form.append("language", lang);
   form.append("response_format", "json");
-  const res = await fetch(`${BASE_URL}/audio/transcriptions`, {
+  const res = await fetch(`${stt.baseUrl.replace(/\/+$/, "")}/audio/transcriptions`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${API_KEY}` },
+    headers: { Authorization: `Bearer ${stt.key}` },
     body: form,
+    signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
     const detail = (await res.text()).slice(0, 300);
     console.error("transcribe:", res.status, detail);
-    throw new Error(`stt ${res.status}`);
+    throw new Error(`stt ${res.status}: ${detail.slice(0, 120)}`);
   }
   const data = (await res.json()) as { text?: string };
   const text = (data.text ?? "").trim();

@@ -3,6 +3,7 @@
 // del OTA_TOKEN (ese solo sube firmware). Las features se montan acá adentro y
 // heredan el chequeo. En index.ts: app.route("/api", api);
 import { Hono } from "hono";
+import { config } from "./config";
 import { ask } from "./ask";
 import { transcribe } from "./transcribe";
 import { hub } from "./hub";
@@ -15,14 +16,19 @@ import { rss } from "./rss";
 import { photos } from "./photos";
 import { deviceLog } from "./devicelog";
 
-const TOKEN = process.env.DEVICE_TOKEN ?? "";
+const ENV_TOKEN = process.env.DEVICE_TOKEN ?? "";
 
 export const api = new Hono();
 
+// Vale el token del entorno (el de siempre) y también el que se haya puesto
+// desde la web. Los dos: así cambiar el token en /board nunca deja a nadie
+// afuera si el aparato todavía tiene el viejo.
 api.use("*", async (c, next) => {
   const auth = c.req.header("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-  if (!TOKEN || token !== TOKEN) return c.json({ ok: false, error: "unauthorized" }, 401);
+  const extra = (await config()).deviceToken;
+  const ok = !!token && ((ENV_TOKEN && token === ENV_TOKEN) || (extra && token === extra));
+  if (!ok) return c.json({ ok: false, error: "unauthorized" }, 401);
   await next();
 });
 

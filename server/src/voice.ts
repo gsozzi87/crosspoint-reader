@@ -17,19 +17,18 @@
 // aparato, así que se avisa. Una grabación puede traer una acción y una
 // pregunta a la vez: se hacen las dos.
 //
-// Modelo: VOICE_MODEL (default claude-haiku-4-5, el más barato; cualquier ID
-// actual sirve, el pedido no usa parámetros específicos de modelo).
+// Modelo: el que esté elegido en /board → Ajustes (Claude, Groq, DeepSeek u otra
+// API compatible con OpenAI). Ver src/llm.ts y src/config.ts.
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav } from "./transcribe";
 import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
+import { chatJson, chatText, LlmError } from "./llm";
 
-const MODEL = process.env.VOICE_MODEL ?? process.env.ASK_MODEL ?? "claude-haiku-4-5";
 const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
 
-const client = new Anthropic();
 
 export const voice = new Hono();
 
@@ -149,14 +148,11 @@ async function parseTimeReply(text: string, lang: Lang, baseDate = ""): Promise<
     }
   }
   try {
-    const r = await client.messages.create({
-      model: MODEL,
-      max_tokens: 40,
+    const out = await chatText({
       system: "Devolvé solo la hora que dice el usuario en formato HH:MM de 24 horas, sin nada más. Si no se entiende, devolvé 09:00.",
-      messages: [{ role: "user", content: text }],
+      user: text,
+      maxTokens: 40,
     });
-    let out = "";
-    for (const b of r.content) if (b.type === "text") out += b.text;
     const m2 = /(\d{1,2}):(\d{2})/.exec(out);
     if (!m2) return null;
     const h = Number(m2[1]);
@@ -177,17 +173,10 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
   const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ });
   const lists = Array.from(new Set([...DEFAULT_LISTS, ...Object.keys(store.lists)]));
   const memories = (store.memories ?? []).slice(-40).map((m) => m.text);
-  const response = await client.messages.create({
-    model: MODEL,
-    max_tokens: 1024,
-    system: systemPrompt(local, weekday, lists, lang, memories),
-    messages: [{ role: "user", content: text }],
-    output_config: { format: { type: "json_schema", schema: SCHEMA } },
-  });
-  if (response.stop_reason === "refusal") throw new Error("refused");
-  let json = "";
-  for (const block of response.content) if (block.type === "text") json += block.text;
-  return JSON.parse(json) as Parsed;
+  return chatJson<Parsed>(
+    { system: systemPrompt(local, weekday, lists, lang, memories), user: text, maxTokens: 1024 },
+    SCHEMA,
+  );
 }
 
 async function execute(parsed: Parsed, spoken: string, lang: Lang) {
@@ -312,11 +301,15 @@ voice.post("/", async (c) => {
     console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
     return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0, ms }, audio);
   } catch (err) {
+    if (err instanceof LlmError) {
+      console.error("voice llm:", err.message);
+      return c.json({ ok: false, error: err.message }, 502);
+    }
     if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
-    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "bad ANTHROPIC_API_KEY" }, 500);
-    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `claude ${err.status}: ${err.message}` }, 502);
+    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "falta o no sirve la clave del modelo" }, 500);
+    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `modelo ${err.status}: ${err.message}` }, 502);
     console.error("voice:", err);
-    return c.json({ ok: false, error: "internal" }, 500);
+    return c.json({ ok: false, error: String(err).slice(0, 200) }, 500);
   }
 });
 
