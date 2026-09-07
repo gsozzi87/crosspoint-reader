@@ -17,6 +17,54 @@ const int16_t STEP_TABLE[89] = {
 const int8_t INDEX_TABLE[16] = {-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8};
 }  // namespace
 
+size_t adpcm::encodedSize(const uint32_t samples) { return HEADER_BYTES + (samples + 1) / 2; }
+
+size_t adpcm::encode(const int16_t* pcm, const uint32_t samples, uint8_t* out) {
+  memcpy(out, "ADPC", 4);
+  out[4] = samples & 0xFF;
+  out[5] = (samples >> 8) & 0xFF;
+  out[6] = (samples >> 16) & 0xFF;
+  out[7] = (samples >> 24) & 0xFF;
+  int predictor = 0;
+  int index = 0;
+  int step = STEP_TABLE[0];
+  uint8_t* codes = out + HEADER_BYTES;
+  memset(codes, 0, (samples + 1) / 2);
+  for (uint32_t i = 0; i < samples; ++i) {
+    int diff = pcm[i] - predictor;
+    int code = 0;
+    if (diff < 0) {
+      code = 8;
+      diff = -diff;
+    }
+    int delta = step >> 3;
+    if (diff >= step) {
+      code |= 4;
+      diff -= step;
+      delta += step;
+    }
+    if (diff >= (step >> 1)) {
+      code |= 2;
+      diff -= step >> 1;
+      delta += step >> 1;
+    }
+    if (diff >= (step >> 2)) {
+      code |= 1;
+      delta += step >> 2;
+    }
+    predictor += (code & 8) ? -delta : delta;
+    if (predictor > 32767) predictor = 32767;
+    else if (predictor < -32768) predictor = -32768;
+    index += INDEX_TABLE[code];
+    if (index < 0) index = 0;
+    else if (index > 88) index = 88;
+    step = STEP_TABLE[index];
+    if (i & 1) codes[i >> 1] |= static_cast<uint8_t>(code << 4);
+    else codes[i >> 1] = static_cast<uint8_t>(code);
+  }
+  return encodedSize(samples);
+}
+
 bool adpcm::isValid(const uint8_t* data, const size_t len) {
   if (!data || len < HEADER_BYTES) return false;
   if (memcmp(data, "ADPC", 4) != 0) return false;

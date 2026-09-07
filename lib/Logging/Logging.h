@@ -66,6 +66,11 @@ void logPrintf(const char* level, const char* origin, const char* format, ...);
 #endif
 
 std::string getLastLogs();
+
+// Optional sink for every formatted line (the ws397 SD log). Logging stays
+// storage-agnostic: the firmware registers the writer once the card is up.
+using LogSink = void (*)(const char*);
+void setLogSink(LogSink sink);
 void clearLastLogs();
 // Validates the RTC log state (magic word + logHead range). Returns true if
 // corruption was detected (magic mismatch or logHead out of range), meaning

@@ -36,6 +36,10 @@ class VoiceRecorder {
   float seconds() const { return recorded / static_cast<float>(SAMPLE_RATE); }
   const uint8_t* wav() const { return buffer; }
   size_t wavBytes() const;
+  // Same take as ADPCM (4x smaller): what actually gets uploaded. Encoded in
+  // place over the WAV buffer's tail, valid until the next start()/release().
+  const uint8_t* adpcm();
+  size_t adpcmBytes() const;
 
  private:
   AudioManager audio;
@@ -44,6 +48,7 @@ class VoiceRecorder {
   size_t recorded = 0;
   bool recording = false;
   bool blips = true;
+  uint8_t* packed = nullptr;  // ADPCM view of the take
 
   void blip(uint16_t hz, uint16_t ms);
 };

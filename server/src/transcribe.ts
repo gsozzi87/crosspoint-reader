@@ -14,6 +14,7 @@
 //   4xx/5xx: { ok: false, error }
 import { Hono } from "hono";
 import { normalizeLang, type Lang } from "./lang";
+import { decodeAdpcm, TARGET_RATE } from "./tts";
 
 const API_KEY = process.env.STT_API_KEY ?? process.env.OPENAI_API_KEY ?? "";
 const BASE_URL = (process.env.STT_BASE_URL ?? "https://api.openai.com/v1").replace(/\/+$/, "");
@@ -23,6 +24,31 @@ const MAX_BYTES = 2_000_000;
 export const transcribe = new Hono();
 
 // Reutilizable desde voice.ts: WAV -> texto. Lanza Error con el detalle si falla.
+// El aparato sube ADPCM (una cuarta parte de un WAV, que es lo que más tarda
+// en la subida): acá se vuelve a PCM y se le pone cabecera WAV para el STT.
+export function adpcmToWav(data: Uint8Array): ArrayBuffer {
+  const pcm = decodeAdpcm(data);
+  const bytes = pcm.length * 2;
+  const out = new ArrayBuffer(44 + bytes);
+  const dv = new DataView(out);
+  const ascii = (off: number, s: string) => { for (let i = 0; i < s.length; i++) dv.setUint8(off + i, s.charCodeAt(i)); };
+  ascii(0, "RIFF"); dv.setUint32(4, 36 + bytes, true); ascii(8, "WAVEfmt ");
+  dv.setUint32(16, 16, true); dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
+  dv.setUint32(24, TARGET_RATE, true); dv.setUint32(28, TARGET_RATE * 2, true);
+  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
+  ascii(36, "data"); dv.setUint32(40, bytes, true);
+  new Int16Array(out, 44).set(pcm);
+  return out;
+}
+
+// Acepta WAV o ADPCM (por el content-type o la firma "ADPC").
+export function toWav(body: ArrayBuffer, contentType?: string | null): ArrayBuffer {
+  const head = new Uint8Array(body.slice(0, 4));
+  const isAdpcm = (contentType ?? "").includes("adpcm") ||
+    (head.length === 4 && head[0] === 0x41 && head[1] === 0x44 && head[2] === 0x50 && head[3] === 0x43);
+  return isAdpcm ? adpcmToWav(new Uint8Array(body)) : body;
+}
+
 export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Promise<string> {
   if (!API_KEY) throw new Error("STT_API_KEY not set");
   if (audio.byteLength < 1_000) throw new Error("audio too short");
@@ -50,7 +76,8 @@ export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Prom
 
 transcribe.post("/", async (c) => {
   try {
-    const text = await transcribeWav(await c.req.arrayBuffer(), normalizeLang(c.req.query("lang")));
+    const body = toWav(await c.req.arrayBuffer(), c.req.header("content-type"));
+    const text = await transcribeWav(body, normalizeLang(c.req.query("lang")));
     return c.json({ ok: true, text });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "internal";

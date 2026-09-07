@@ -17,11 +17,12 @@ bool SpeechToText::transcribe(const VoiceRecorder& take, std::string& text, std:
   text.clear();
   detail.clear();
   WiFi.setSleep(false);
-  LOG_DBG(TAG, "POST /api/transcribe: %u bytes", (unsigned)take.wavBytes());
+  const uint8_t* body = const_cast<VoiceRecorder&>(take).adpcm();
+  const size_t bytes = take.adpcmBytes();
+  LOG_DBG(TAG, "POST /api/transcribe: %u bytes", (unsigned)bytes);
   ServerClient::Response resp;
-  const ServerClient::Result r =
-      SERVER_CLIENT.postBytes(std::string("/api/transcribe?lang=") + uiLanguageCode(), "audio/wav", take.wav(),
-                              take.wavBytes(), resp, TRANSCRIBE_TIMEOUT_MS);
+  const ServerClient::Result r = SERVER_CLIENT.postBytes(std::string("/api/transcribe?lang=") + uiLanguageCode(),
+                                                        "audio/adpcm", body, bytes, resp, TRANSCRIBE_TIMEOUT_MS);
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
     char buf[96];

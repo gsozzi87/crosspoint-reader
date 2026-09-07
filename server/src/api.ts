@@ -13,6 +13,7 @@ import { boardApi } from "./board";
 import { bibleApi } from "./bible";
 import { rss } from "./rss";
 import { photos } from "./photos";
+import { deviceLog } from "./devicelog";
 
 const TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -38,4 +39,5 @@ api.route("/translate", translate);   // POST /api/translate?from=&to= → tradu
 api.route("/board", boardApi);        // POST /api/board/{message,reminder,item,note} → lo que se carga desde la página web
 api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find} → Biblia por capítulos, versículo del día, búsqueda
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
-api.route("/photos", photos);         // GET  /api/photos, /api/photos/file?id= → álbum (BMP 2 bpp ya convertido)
+api.route("/photos", photos);
+api.route("/log", deviceLog);         // POST /api/log → el aparato sube su log; se lee en /board/log         // GET  /api/photos, /api/photos/file?id= → álbum (BMP 2 bpp ya convertido)

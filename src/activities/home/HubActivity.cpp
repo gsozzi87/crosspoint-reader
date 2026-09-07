@@ -210,6 +210,11 @@ void HubActivity::loop() {
     lastClockMinuteTick = now;
     time_t epoch = 0;
     if (halClock.getEpochUtc(epoch)) {
+      if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= epoch) {
+        activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, 0, /*resumeFired=*/true));
+        return;
+      }
+      if (HUB_STORE.timerRunning()) requestUpdate();  // the countdown in the status line
       if (const HubStore::Reminder* due = HUB_STORE.dueReminder(epoch)) {
         startActivityForResult(
             std::make_unique<ReminderAlertActivity>(renderer, mappedInput, due->id, due->title, due->when),
@@ -248,6 +253,19 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
     rightEdge -= 24;
     drawSdkIcon(renderer, icon_wifi_24, rightEdge, y + (height - 24) / 2, true);
     rightEdge -= 12;
+  }
+  // A running timer is visible from the hub, and fires from here while awake.
+  if (HUB_STORE.timerRunning()) {
+    time_t now = 0;
+    if (halClock.getEpochUtc(now)) {
+      const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
+      char t[24];
+      snprintf(t, sizeof(t), "%s %ld:%02ld", tr(STR_HUB_TIMER), left > 0 ? left / 60 : 0, left > 0 ? left % 60 : 0);
+      const int w = renderer.getTextWidth(UI_10_FONT_ID, t);
+      rightEdge -= w;
+      renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, t, true, EpdFontFamily::BOLD);
+      rightEdge -= 12;
+    }
   }
   if (!HUB_STORE.messages.empty()) {
     char count[24];

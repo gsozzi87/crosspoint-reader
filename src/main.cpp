@@ -33,6 +33,8 @@
 #include "OpdsServerStore.h"
 #include "HubStore.h"
 #include "activities/home/ReminderAlertActivity.h"
+#include "activities/home/TimerActivity.h"
+#include "util/DeviceLog.h"
 #include <esp_sleep.h>
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -265,7 +267,9 @@ static bool loadSleepFrameBuffer() {
 static void armReminderWake() {
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) return;
-  const time_t due = HUB_STORE.nextDueAt(now);
+  time_t due = HUB_STORE.nextDueAt(now);
+  // A running timer wakes the device too, and wins when it fires first.
+  if (HUB_STORE.timerEndAt > now && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
   if (due == 0) return;
   uint64_t seconds = static_cast<uint64_t>(due - now);
   if (seconds < 5) seconds = 5;
@@ -309,6 +313,7 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   halTiltSensor.deepSleep();
   display.deepSleep();
+  devlog::flush();
   Storage.prepareForDeepSleep();
   LOG_DBG("MAIN", "Entering deep sleep");
 
@@ -447,6 +452,8 @@ void setup() {
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
   KOREADER_STORE.loadFromFile();
+  devlog::begin();  // from here every LOG_* line also goes to the SD
+  setLogSink(&devlog::write);
   SERVER_STORE.loadFromFile();
   HUB_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
@@ -507,10 +514,14 @@ void setup() {
   // ws397: a deep-sleep timer wake is a reminder coming due (see armReminderWake).
   const bool isReminderWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
   const HubStore::Reminder* dueReminder = nullptr;
+  bool timerFired = false;
   if (isReminderWake) {
     time_t nowEpoch = 0;
-    if (halClock.getEpochUtc(nowEpoch)) dueReminder = HUB_STORE.dueReminder(nowEpoch + 30);
-    if (!dueReminder) {
+    if (halClock.getEpochUtc(nowEpoch)) {
+      dueReminder = HUB_STORE.dueReminder(nowEpoch + 30);
+      timerFired = HUB_STORE.timerEndAt > 0 && HUB_STORE.timerEndAt <= nowEpoch + 30;
+    }
+    if (!dueReminder && !timerFired) {
       // Woke early or the reminder went away (ticked from the phone): straight back to sleep.
       LOG_INF("MAIN", "Timer wake with nothing due, sleeping again");
       Storage.prepareForDeepSleep();
@@ -567,7 +578,10 @@ void setup() {
   // Output polarity is resolved per render by ActivityManager (night mode
   // inverts only the reading surfaces), so nothing to restore here.
 
-  if (dueReminder) {
+  if (timerFired) {
+    // The timer ran out while asleep: same alert screen, no server round trip.
+    activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
+  } else if (dueReminder) {
     activityManager.replaceActivity(std::make_unique<ReminderAlertActivity>(
         renderer, mappedInputManager, dueReminder->id, dueReminder->title, dueReminder->when));
   } else if (recoveryFirmwareMode) {

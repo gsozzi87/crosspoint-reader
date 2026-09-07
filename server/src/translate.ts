@@ -11,7 +11,7 @@
 // y sintetiza en `to`. Modelo: VOICE_MODEL / ASK_MODEL, default claude-haiku-4-5.
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
-import { transcribeWav } from "./transcribe";
+import { transcribeWav, toWav } from "./transcribe";
 import { synthesize } from "./tts";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 
@@ -33,7 +33,7 @@ translate.post("/", async (c) => {
   const to = normalizeLang(c.req.query("to"));
   let text: string;
   try {
-    text = await transcribeWav(await c.req.arrayBuffer(), from);
+    text = await transcribeWav(toWav(await c.req.arrayBuffer(), c.req.header("content-type")), from);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "internal";
     return c.json({ ok: false, error: msg }, msg.startsWith("stt ") ? 502 : 400);

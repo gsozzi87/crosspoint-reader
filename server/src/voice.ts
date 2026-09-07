@@ -21,7 +21,7 @@
 // actual sirve, el pedido no usa parámetros específicos de modelo).
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
-import { transcribeWav } from "./transcribe";
+import { transcribeWav, toWav } from "./transcribe";
 import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
@@ -86,7 +86,9 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang,
     "y devolvés JSON según el esquema.",
     `Ahora es ${now} (${weekday}), zona ${TZ}. Resolvé fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
     `Listas de tareas existentes: ${lists.join(", ")}. Si el usuario nombra una que no existe, usá ese nombre igual (se crea).`,
-    "Reglas: 'recordame', 'avisame', 'despertame' o algo con hora concreta → reminder (con dueAt). 'Comprar X', 'compras:' o",
+    "Reglas: 'recordame', 'avisame', 'despertame' → reminder. En dueAt poné la hora SOLO si el usuario la dijo; si dijo",
+    "el día pero no la hora ('mañana', 'el jueves'), poné la fecha sola (YYYY-MM-DD, sin T) y NUNCA inventes una hora.",
+    "'Comprar X', 'compras:' o",
     "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá a <lista>', 'en trabajo:',",
     "'tengo que', 'hay que' → task (list si la nombró; si no, null y va a Entrada). 'Nota:', 'anotá' → note. 'Mensaje para',",
     "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos').",
@@ -100,6 +102,45 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang,
     "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task en Entrada y decilo.",
     `El usuario habla en ${LANGUAGE_NAME[lang]}: los títulos de las acciones y reply van en ese idioma (salvo la traducción). Texto plano, sin markdown ni listas. Máximo 120 palabras salvo que pida más.`,
   ].join(" ");
+}
+
+const ASK_TIME: Record<Lang, string> = {
+  es: "¿A qué hora te lo recuerdo?",
+  en: "At what time should I remind you?",
+  fr: "À quelle heure je te le rappelle ?",
+  de: "Um wie viel Uhr soll ich dich erinnern?",
+  pt: "A que horas te lembro?",
+  ru: "Во сколько напомнить?",
+};
+
+// Respuesta a "¿a qué hora?": "a las nueve", "14:30", "ocho y media". Se
+// resuelve sin LLM cuando alcanza con los dígitos, y con él si no.
+async function parseTimeReply(text: string, lang: Lang): Promise<string | null> {
+  const tomorrow = new Date(Date.now() + 86_400_000).toISOString().slice(0, 10);
+  const t = text.toLowerCase();
+  const digits = /(\d{1,2})\s*[:.]?\s*(\d{2})?/.exec(t);
+  if (digits) {
+    let h = Number(digits[1]);
+    const m = digits[2] ? Number(digits[2]) : 0;
+    if (h >= 0 && h <= 23 && m >= 0 && m < 60) {
+      if (/\b(pm|tarde|noche|abend|soir|вечера|нoчи)\b/.test(t) && h < 12) h += 12;
+      return `${tomorrow}T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+    }
+  }
+  try {
+    const r = await client.messages.create({
+      model: MODEL,
+      max_tokens: 40,
+      system: "Devolvé solo la hora que dice el usuario en formato HH:MM de 24 horas, sin nada más. Si no se entiende, devolvé 09:00.",
+      messages: [{ role: "user", content: text }],
+    });
+    let out = "";
+    for (const b of r.content) if (b.type === "text") out += b.text;
+    const m2 = /(\d{1,2}):(\d{2})/.exec(out);
+    return m2 ? `${tomorrow}T${m2[1].padStart(2, "0")}:${m2[2]}` : null;
+  } catch {
+    return null;
+  }
 }
 
 type Action = { kind: string; text: string; list: string | null; dueAt: string | null; repeat: "none" | "daily" | "weekly" | "monthly"; seconds: number | null };
@@ -186,14 +227,30 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
 voice.post("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const speak = c.req.query("speak") ?? "short";  // none | short | all (ajuste del aparato)
+  // Segunda vuelta cuando le preguntamos la hora de un recordatorio: el
+  // aparato reenvía el título pendiente y esta grabación es solo la hora.
+  const pending = (c.req.query("pending") ?? "").slice(0, 200);
+  const t0 = Date.now();
   let text: string;
   try {
-    text = await transcribeWav(await c.req.arrayBuffer(), lang);
+    text = await transcribeWav(toWav(await c.req.arrayBuffer(), c.req.header("content-type")), lang);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "internal";
     return c.json({ ok: false, error: msg }, msg.startsWith("stt ") ? 502 : 400);
   }
+  const tStt = Date.now();
   try {
+    if (pending) {
+      const dueAt = await parseTimeReply(text, lang);
+      const store = await load();
+      store.reminders.push({ id: nextId(store), title: pending, dueAt, repeat: "none", done: false, createdAt: new Date().toISOString() });
+      await save(store);
+      const label = whenLabel(dueAt, lang);
+      const reply = dueAt ? `${pending} — ${label}` : pending;
+      const audio = speak !== "none" ? await synthesize(reply, lang, 8) : null;
+      console.log(`voice: hora de "${pending}" -> ${dueAt}`);
+      return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", title: pending, when: label }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
+    }
     const parsed = await classify(text, lang);
     const saved = await execute(parsed, text, lang);
     // Temporizador y alarma corren en el aparato: segundos hasta que suene.
@@ -204,9 +261,20 @@ voice.post("/", async (c) => {
     // Voz: confirmaciones y traducciones siempre; una respuesta a pregunta solo
     // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato
     // la baje en menos de medio segundo.
+    // Recordatorio con día pero sin hora: se la pedimos en vez de inventarla.
+    const dateOnly = (parsed.actions ?? []).find((a) => a.kind === "reminder" && a.dueAt && !a.dueAt.includes("T"));
+    if (dateOnly) {
+      const reply = ASK_TIME[lang];
+      const audio = speak !== "none" ? await synthesize(reply, lang, 6) : null;
+      console.log(`voice: falta la hora de "${dateOnly.text}"`);
+      return framed({ ok: true, text, intent: "reminder", reply, askTime: dateOnly.text, saved: [], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
+    }
+    const tLlm = Date.now();
     const speakable = speak !== "none" && (speak === "all" || parsed.intent !== "question" || parsed.reply.length <= 220);
     const audio = speakable ? await synthesize(parsed.reply, lang, speak === "all" ? 15 : 8) : null;
-    return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0 }, audio);
+    const ms = { stt: tStt - t0, llm: tLlm - tStt, tts: Date.now() - tLlm, total: Date.now() - t0 };
+    console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
+    return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0, ms }, audio);
   } catch (err) {
     if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
     if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "bad ANTHROPIC_API_KEY" }, 500);

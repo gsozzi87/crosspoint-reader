@@ -142,7 +142,7 @@ llegue el hardware.
   Notas (`NotesActivity`): lista, OK abre, Atrás largo borra. Tiempo (`TimerActivity`): temporizador, cronómetro y
   Pomodoro con dígitos de 7 segmentos; `VoiceActivity` lo abre directo cuando el servidor devuelve `timerSeconds`.
   Pitido común en `src/voice/AlertBeep`.
-- TTS (`server/src/tts.ts`, Piper en el Dockerfile con una voz por idioma): `POST /api/voice` devuelve un cuerpo
+- TTS (`server/src/tts.ts`, Piper en el Dockerfile con una voz por idioma; español = `es_MX-claude-high`, femenina neutra): `POST /api/voice` devuelve un cuerpo
   binario `[u32 LE largo JSON][JSON][ADPCM]` (`application/x-ws397-voice`); `VoiceActivity` lo parte, decodifica
   (`src/voice/Adpcm`) y reproduce (`src/voice/SpeechOut`) mientras muestra el texto. `GET /api/tts?text=&lang=`
   da clips para los avisos; `HubSyncActivity::cacheSpokenNotices()` guarda los de los próximos 5 recordatorios y
@@ -170,6 +170,10 @@ llegue el hardware.
   a `/Photos` de la SD y dibuja con el `Bitmap` del SDK.
 - Clima detallado (`WeatherActivity`, OK largo en el hub): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y
   seis días), último pronóstico cacheado en `/.crosspoint/forecast.json`.
+- Log: `src/util/DeviceLog` engancha `setLogSink` de `lib/Logging` y guarda cada línea en `/.crosspoint/device.log`
+  (rota a 64 KB); `HubSyncActivity` lo sube con `POST /api/log` y se lee en `/board/log`.
+- El audio de subida va en ADPCM (`adpcm::encode`), una cuarta parte de un WAV: es lo que más tardaba. El servidor
+  acepta `audio/adpcm` o `audio/wav` (`toWav` en `transcribe.ts`) y devuelve tiempos por etapa en `ms`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
 - Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la

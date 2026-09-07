@@ -4,6 +4,9 @@
 #include <HalDisplay.h>
 #include <I18n.h>
 
+#include <HalClock.h>
+
+#include "HubStore.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -34,12 +37,61 @@ void drawDigit(const GfxRenderer& r, int digit, int x, int y, int w, int h, int 
 
 void TimerActivity::onEnter() {
   Activity::onEnter();
+  if (resumeFired) {
+    // Woken because the countdown ran out: show it finished and ring.
+    mode = HUB_STORE.timerMode == 0 ? COUNTDOWN : POMODORO;
+    pomodoroBreak = HUB_STORE.timerMode == 2;
+    totalSeconds = HUB_STORE.timerTotal;
+    HUB_STORE.timerEndAt = 0;
+    HUB_STORE.saveToFile();
+    ring();
+    return;
+  }
   if (presetSeconds > 0) {
     mode = COUNTDOWN;
     startSegment(presetSeconds);
+  } else if (resumeStored()) {
+    // Something was already running (the device slept in between).
   } else {
     showModePicker();
   }
+}
+
+// The countdown lives in the store as an absolute time, so sleeping, waking or
+// leaving the screen does not lose it.
+void TimerActivity::persist() {
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now)) return;
+  if (mode == STOPWATCH || !running || finished) {
+    HUB_STORE.timerEndAt = 0;
+  } else {
+    HUB_STORE.timerEndAt = now + remainingSeconds();
+    HUB_STORE.timerTotal = static_cast<int>(totalSeconds);
+    HUB_STORE.timerMode = mode == POMODORO ? (pomodoroBreak ? 2 : 1) : 0;
+  }
+  HUB_STORE.saveToFile();
+}
+
+bool TimerActivity::resumeStored() {
+  time_t now = 0;
+  if (HUB_STORE.timerEndAt == 0 || !halClock.getEpochUtc(now)) return false;
+  const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
+  mode = HUB_STORE.timerMode == 0 ? COUNTDOWN : POMODORO;
+  pomodoroBreak = HUB_STORE.timerMode == 2;
+  totalSeconds = HUB_STORE.timerTotal > 0 ? HUB_STORE.timerTotal : left;
+  if (left <= 0) {
+    HUB_STORE.timerEndAt = 0;
+    HUB_STORE.saveToFile();
+    ring();
+    return true;
+  }
+  accumulatedMs = (totalSeconds - left) * 1000L;
+  startMs = millis();
+  running = true;
+  finished = false;
+  lastShownSeconds = -1;
+  requestUpdate();
+  return true;
 }
 
 void TimerActivity::onExit() {
@@ -99,6 +151,7 @@ void TimerActivity::startSegment(const long seconds) {
   partialCount = 0;
   speech.stop();
   beep.stop();
+  persist();
   requestUpdate();
 }
 
@@ -112,6 +165,8 @@ long TimerActivity::remainingSeconds() const {
 void TimerActivity::ring() {
   running = false;
   finished = true;
+  HUB_STORE.timerEndAt = 0;
+  HUB_STORE.saveToFile();
   const std::string clip = std::string("/.crosspoint/tts/timer-") + uiLanguageCode() + ".bin";
   spoken = !speech.playFile(clip.c_str());
   if (spoken) beep.start();
@@ -159,6 +214,7 @@ void TimerActivity::loop() {
       startMs = millis();
       running = true;
     }
+    persist();
     requestUpdate();
     return;
   }
@@ -168,6 +224,8 @@ void TimerActivity::loop() {
       requestUpdate();
       return;
     }
+    HUB_STORE.timerEndAt = 0;
+    HUB_STORE.saveToFile();
     showModePicker();
     return;
   }

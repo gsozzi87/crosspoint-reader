@@ -62,7 +62,13 @@ class HubStore : public PersistableStore<HubStore> {
   std::string translatorLang;
   int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
   int bibleChapter = 0;
-  int musicVolume = 70;  // MP3 player volume, 0-100  // the other side of the translator ("en", ...), remembered
+  int musicVolume = 70;  // MP3 player volume, 0-100
+  // Running timer/pomodoro: survives deep sleep (the device wakes for it) and
+  // shows on the hub. endAt = UTC epoch when it fires, 0 = nothing running.
+  time_t timerEndAt = 0;
+  int timerTotal = 0;      // seconds of the segment, for the progress line
+  uint8_t timerMode = 0;   // 0 countdown, 1 pomodoro work, 2 pomodoro break
+  bool timerRunning() const { return timerEndAt > 0; }  // the other side of the translator ("en", ...), remembered
   uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
 
