@@ -315,6 +315,12 @@ export async function editEntry(body: { kind?: string; id?: number; action?: str
     if (store.memories.length !== before) await save(store);
     return store.memories.length !== before;
   }
+  if (body.kind === "reminder") {
+    const before = store.reminders.length;
+    store.reminders = store.reminders.filter((r) => r.id !== id);
+    if (store.reminders.length !== before) await save(store);
+    return store.reminders.length !== before;
+  }
   if (body.kind === "note") {
     const before = store.notes.length;
     store.notes = store.notes.filter((n) => n.id !== id);

@@ -59,7 +59,7 @@ class HubStore : public PersistableStore<HubStore> {
   std::string quote;
   std::string verseRef;   // verse of the day (Bible), shown alternating with the quote
   std::string verseText;
-  std::string translatorLang;
+  std::string translatorLang;  // the other side of the translator ("en", ...), remembered
   int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
   int bibleChapter = 0;
   int musicVolume = 70;  // MP3 player volume, 0-100
@@ -68,8 +68,13 @@ class HubStore : public PersistableStore<HubStore> {
   time_t timerEndAt = 0;
   int timerTotal = 0;      // seconds of the segment, for the progress line
   uint8_t timerMode = 0;   // 0 countdown, 1 pomodoro work, 2 pomodoro break
-  bool timerRunning() const { return timerEndAt > 0; }  // the other side of the translator ("en", ...), remembered
+  bool timerRunning() const { return timerEndAt > 0; }
   uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
+  // Ajustes cargados en /board. El servidor manda `settings.rev`; solo se
+  // aplican cuando esa revisión es mayor a la última aplicada, así lo que se
+  // cambia en el aparato no se pisa en cada sincronización.
+  int settingsRev = 0;
+  std::string uiLang;          // idioma pedido desde la web ("es", "en", ...); lo aplica HubSyncActivity
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
 
   static const char* getFilePath() { return "/.crosspoint/hub.json"; }
@@ -78,6 +83,8 @@ class HubStore : public PersistableStore<HubStore> {
 
   // Replaces the cached content with a server payload ({weather, reminders, events, messages, quote}).
   void applyServer(JsonVariantConst doc);
+  // Ajustes de /board dentro de esa respuesta; solo si `rev` subió.
+  void applySettings(JsonVariantConst settings);
   bool hasSynced() const { return syncedAt > 0; }
   // Local tick (the server gets POST /api/hub/done from the caller, queued if offline).
   void removeReminder(int id);

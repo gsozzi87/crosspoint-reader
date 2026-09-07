@@ -24,8 +24,23 @@ export type Memory = { id: number; text: string; createdAt: string };
 
 export type Feed = { id: number; name: string; url: string };
 
+// Ajustes que se cambian desde /board y el aparato aplica al sincronizar.
+// `rev` sube con cada cambio: el aparato solo pisa lo suyo cuando ve una
+// revisión mayor a la que ya aplicó, así un cambio hecho en el aparato no se
+// deshace en la próxima sincronización.
+export type Settings = {
+  rev: number;
+  lang: string;           // idioma de la interfaz del aparato ("es", "en", ...)
+  speak: "none" | "short" | "all";
+  musicVolume: number;    // 0-100
+  translatorLang: string; // el otro idioma del traductor
+};
+
+export const DEFAULT_SETTINGS: Settings = { rev: 0, lang: "es", speak: "short", musicVolume: 70, translatorLang: "en" };
+
 export type Store = {
   nextId: number;
+  settings?: Settings;  // ajustes del aparato, editables en /board
   memories?: Memory[]; // "acordate que ...": datos que el asistente tiene presentes al contestar
   feeds?: Feed[];      // RSS/Atom para Noticias (se cargan desde /board)
   reminders: Reminder[];
@@ -46,6 +61,7 @@ export async function load(): Promise<Store> {
     cache = { nextId: 1, reminders: [], lists: {}, notes: [], messages: [] };
   }
   for (const name of DEFAULT_LISTS) cache.lists[name] ??= [];
+  cache.settings = { ...DEFAULT_SETTINGS, ...(cache.settings ?? {}) };
   cache.memories ??= [];
   cache.feeds ??= [];
   return cache;

@@ -23,6 +23,9 @@ class HubSyncActivity final : public Activity {
   // server clock and stamps the attempt). Shared with the voice flow, which
   // refreshes the widgets right after an action. Returns true on success.
   static bool fetchNow(ServerClient::Result* resultOut = nullptr, int* statusOut = nullptr);
+  // Aplica el idioma pedido desde /board (HubStore::uiLang) a los ajustes del
+  // lector. Se llama sola al terminar una sincronización.
+  static void applyUiLanguage();
 
  private:
   enum State { CONNECTING, SYNCING, DONE, FAILED };

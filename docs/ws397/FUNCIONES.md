@@ -50,9 +50,9 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 1.5 | Hub con mosaicos, barra de estado (hora, batería, WiFi), "Continuar leyendo" | ✅ | 1.5.14 |
 | 1.6 | Sincronización con el servidor: al entrar al hub con la caché de más de 6 h (reintento a la hora si falló), manteniendo Atrás en el hub, y desde Settings → Sincronizar hub. Trae `GET /api/hub` (clima, agenda, mensajes, recordatorios, frase) a `/.crosspoint/hub.json`, pone en hora el RTC con el reloj del servidor y vacía la cola offline | ✅ | 1.5.15. Falta el timed wake del RTC (0.5) para sincronizar dormido |
 | 1.7 | Widgets del hub: clima exterior, próximo recordatorio, agenda de hoy (o frase del día si no hay eventos), contador de mensajes en la barra | ✅ | 1.5.15. Falta la temperatura interior del SHTC3 (0.6) |
-| 1.8 | Pizarra y "app del teléfono": página web del Hono (`/board`, pide el token una vez) para dejar mensajes en el hub, crear recordatorios con fecha y repetición, agregar ítems a las listas, escribir notas, y tildar o borrar. En el aparato los mensajes aparecen en Recordatorios → Mensajes y se marcan leídos con OK; el contador va en la barra del hub | ✅ | 1.5.23 |
+| 1.8 | Pizarra y "app del teléfono": página web del Hono (`/board`, pide el token una vez) para dejar mensajes en el hub, crear recordatorios con fecha y repetición, manejar las listas (crear, borrar, agregar, tildar), escribir notas, subir fotos, cargar feeds y ver la memoria del asistente. En el aparato los mensajes aparecen en Recordatorios → Mensajes y se marcan leídos con OK; el contador va en la barra del hub | ✅ | 1.5.31 (reescrita: la 1.5.23 tenía el script roto y no andaba ningún botón) |
 | 1.9 | Mosaico "Hablar" (PTT) que reemplaza a "Preguntar": una grabación, `POST /api/voice`, el servidor clasifica y ejecuta; la respuesta o la confirmación se muestra paginada y el hub se resincroniza | ✅ | 1.5.17 (`VoiceActivity`) |
-| 1.10 | Ajustes del hub: orden de mosaicos y widgets, hora de sincronización, unidad °C/°F | ⬜ | Web UI |
+| 1.10 | Ajustes desde `/board`: lugar del clima (buscador de ciudades), idioma de la interfaz, voz hablada, idioma del traductor y volumen de la música. Van en `settings{rev,...}` de `GET /api/hub` y el aparato los aplica al sincronizar solo si `rev` subió | ✅ | 1.5.31. Falta orden de mosaicos y widgets, hora de sincronización y unidad °C/°F |
 | 1.11 | Lugar del clima por voz: Settings → Lugar del clima, decís la ciudad, el servidor transcribe y geocodifica (Open-Meteo), elegís de la lista y queda guardado en el servidor; el hub se resincroniza | ✅ | 1.5.16 |
 
 ## Fase 2 · Voz, recordatorios y listas
@@ -72,7 +72,7 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 | 2.8 | Mosaico Tiempo: temporizador (1 a 60 min), cronómetro y Pomodoro (25/5 con rondas), dígitos grandes de 7 segmentos, OK pausa/sigue, Atrás vuelve, pitido por el parlante al terminar; refresco parcial por segundo con limpieza cada 40. Por voz: "poné 10 minutos" o "alarma a las 7" abre el temporizador con el tiempo ya puesto | ✅ | 1.5.30: el temporizador se guarda como hora absoluta, sobrevive al deep sleep (despierta y suena), se ve la cuenta en la barra del hub y se retoma al volver a entrar |
 | 2.9 | Alarma / despertador: "alarma a las 7", "despertame a las 6 y media todos los días" se guarda como recordatorio (con repetición si la pide) y usa el mismo timer wake: suena aunque el aparato esté dormido; OK apaga, Atrás pospone 10 min | ✅ | 1.5.24 |
 | 2.10 | Agenda del día desde un calendario ICS (`HUB_ICS_URL`: Google, Apple, Outlook, Nextcloud; varias URLs separadas por coma): eventos de hoy en el widget (o los de mañana si hoy no queda nada), repeticiones diarias y semanales expandidas | ✅ | 1.5.24, `server/src/agenda.ts`; sin URL sigue `hub-data.json` |
-| 2.11 | Memoria del asistente: "acordate que la patente es AB123CD", "tené presente que Ana es alérgica al maní" → se guarda (hasta 100 datos) y entra en el prompt de Hablar y de Preguntar; se ven y borran desde la página web | 🔧 | 1.5.24; falta verlas y borrarlas en `/board` |
+| 2.11 | Memoria del asistente: "acordate que la patente es AB123CD", "tené presente que Ana es alérgica al maní" → se guarda (hasta 100 datos) y entra en el prompt de Hablar y de Preguntar; se ven y borran desde la página web | ✅ | 1.5.24; se ven y borran en `/board` desde 1.5.31 |
 | 2.12 | Sonidos del sistema por el parlante: pitido corto al abrir el mic (agudo) y al cerrarlo (grave) en toda grabación, pitidos de recordatorio y temporizador (`AlertBeep`) | ✅ | 1.5.24 |
 
 ## Fase 3 · Contenido
@@ -119,7 +119,7 @@ de la UI al que se pida (si no se dice: al inglés, o al español si la UI está
 |---|---------|--------|-------|
 | T.1 | OTA desde el servidor propio, versión estricta | ✅ | |
 | T.2 | Web UI en el aparato: WiFi, servidor y token, libros | ✅ | Se le suman los ajustes del hub |
-| T.3 | Página web en el Hono con el token: mandar mensajes, ver y editar recordatorios y listas, subir imágenes | ⬜ | Sustituye a la app del teléfono de Sticky y Note 4 |
+| T.3 | Página web en el Hono con el token: mandar mensajes, ver y editar recordatorios y listas, subir imágenes, configurar el aparato | ✅ | 1.5.31. Sustituye a la app del teléfono de Sticky y Note 4 |
 | T.6 | Servidor completo en `server/` de este repo (Bun + Hono): OTA, ask, transcribe, hub, voice, store. Railway con Root Directory = `server` | ✅ | 1.5.18, ver `server/README.md` |
 | T.7 | Log del aparato en la SD (`/.crosspoint/device.log`, rota a 64 KB, con hora del RTC): cada línea de LOG_* queda guardada, se sube en cada sincronización (`POST /api/log`) y se lee desde el teléfono en `/board/log` | ✅ | 1.5.30 |
 | T.4 | Modo bajo consumo: deep sleep con wake por botón, RTC y sincronización programada | ⬜ | |
