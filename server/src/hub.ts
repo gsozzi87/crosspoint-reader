@@ -46,25 +46,29 @@ type Place = { name: string; label: string; lat: number; lon: number; timezone: 
 
 // Desfase (ms) de la zona del lugar respecto de UTC, para ubicar "ahora" en
 // las horas del pronóstico.
-function tzOffsetMs(at: number): number {
+function tzOffsetMs(at: number, tz: string = TZ): number {
   const parts = new Intl.DateTimeFormat("en-US", {
-    timeZone: TZ, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
     hour: "2-digit", minute: "2-digit", second: "2-digit",
   }).formatToParts(new Date(at));
   const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0);
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - Math.floor(at / 1000) * 1000;
 }
 
-let placeCache: Place | null | undefined; // undefined = not loaded yet
+let placeCache: Place | null = null;
+let forecastCache: { at: number; lang: Lang; value: object } | null = null;
 
+// Ojo: el "no hay lugar" NO se cachea. Si se cacheara, un proceso que arrancó
+// antes de que se guardara el lugar no volvería a leer el archivo nunca más y el
+// clima quedaría vacío para siempre aunque el lugar ya esté cargado.
 async function place(): Promise<Place | null> {
-  if (placeCache !== undefined) return placeCache;
+  if (placeCache) return placeCache;
   try {
     placeCache = JSON.parse(await readFile(SETTINGS_FILE, "utf8")) as Place;
+    return placeCache;
   } catch {
-    placeCache = LAT && LON ? { name: "", label: "", lat: Number(LAT), lon: Number(LON), timezone: TZ } : null;
+    return LAT && LON ? { name: "", label: "", lat: Number(LAT), lon: Number(LON), timezone: TZ } : null;
   }
-  return placeCache;
 }
 
 async function savePlace(p: Place): Promise<void> {
@@ -72,13 +76,18 @@ async function savePlace(p: Place): Promise<void> {
   await writeFile(SETTINGS_FILE, JSON.stringify(p, null, 2));
   placeCache = p;
   weatherCache = null;
+  forecastCache = null;  // el pronóstico cacheado era del lugar viejo
 }
 
-let weatherCache: { at: number; lang: Lang; value: { line: string; detail: string } } | null = null;
+type Weather = { line: string; detail: string; noPlace?: boolean; error?: string };
 
-async function weather(lang: Lang): Promise<{ line: string; detail: string }> {
+let weatherCache: { at: number; lang: Lang; value: Weather } | null = null;
+
+async function weather(lang: Lang): Promise<Weather> {
   const p = await place();
-  if (!p) return { line: "", detail: "" };
+  // Sin lugar guardado no hay clima posible: el aparato lo dice tal cual
+  // ("cargá el lugar en la web") en vez de un "sin datos" que no explica nada.
+  if (!p) return { line: "", detail: "", noPlace: true };
   if (weatherCache && weatherCache.lang === lang && Date.now() - weatherCache.at < WEATHER_TTL_MS) return weatherCache.value;
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}` +
@@ -103,7 +112,7 @@ async function weather(lang: Lang): Promise<{ line: string; detail: string }> {
     return value;
   } catch (err) {
     console.error("hub weather:", err);
-    return weatherCache?.value ?? { line: "", detail: "" };
+    return weatherCache?.value ?? { line: "", detail: "", error: String(err).slice(0, 200) };
   }
 }
 
@@ -179,19 +188,20 @@ hub.post("/location", async (c) => {
   };
   await savePlace(p);
   console.log("hub place:", p.label || `${lat},${lon}`);
-  return c.json({ ok: true, place: p });
+  // Se consulta el clima ahí mismo: así /board muestra enseguida si el lugar
+  // nuevo anda, sin esperar a que el aparato sincronice.
+  const w = await weather(normalizeLang(c.req.query("lang")));
+  return c.json({ ok: true, place: p, weather: w });
 });
 
 hub.get("/location", async (c) => c.json({ ok: true, place: await place() }));
 
 // Pronóstico para la pantalla de Clima del aparato: hoy por horas y los
 // próximos días. Una sola llamada, cacheada 15 minutos como el resumen.
-let forecastCache: { at: number; lang: Lang; value: object } | null = null;
-
 hub.get("/forecast", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const p = await place();
-  if (!p) return c.json({ ok: false, error: "no place set" }, 503);
+  if (!p) return c.json({ ok: false, noPlace: true, error: "no place set" }, 503);
   if (forecastCache && forecastCache.lang === lang && Date.now() - forecastCache.at < WEATHER_TTL_MS) {
     return c.json(forecastCache.value);
   }
@@ -211,7 +221,9 @@ hub.get("/forecast", async (c) => {
       daily: { time: string[]; temperature_2m_max: number[]; temperature_2m_min: number[]; weather_code: number[]; precipitation_probability_max: number[]; sunrise: string[]; sunset: string[] };
     };
     // Horas: de la próxima en adelante, de a dos, ocho tramos.
-    const nowIso = new Date(Date.now() + tzOffsetMs(Date.now())).toISOString().slice(0, 13);
+    // La zona del lugar elegido, no la del env: si no, las horas del pronóstico
+  // arrancan corridas para cualquier ciudad de otro huso.
+  const nowIso = new Date(Date.now() + tzOffsetMs(Date.now(), tz)).toISOString().slice(0, 13);
     let start = d.hourly.time.findIndex((t) => t.slice(0, 13) >= nowIso);
     if (start < 0) start = 0;
     const hours = [];
@@ -251,13 +263,25 @@ hub.get("/forecast", async (c) => {
     return c.json(value);
   } catch (err) {
     console.error("forecast:", err);
-    if (forecastCache) return c.json(forecastCache.value);
-    return c.json({ ok: false, error: "weather unavailable" }, 502);
+    // Un pronóstico viejo sirve, pero no uno de ayer.
+    if (forecastCache && Date.now() - forecastCache.at < 6 * 3600 * 1000) return c.json(forecastCache.value);
+    return c.json({ ok: false, error: String(err).slice(0, 200) }, 502);
   }
 });
 
+// Cuándo fue la última vez que el aparato pidió sus datos. Se ve en /board para
+// saber si ya se llevó lo que se cargó desde el teléfono.
+export let lastDeviceFetch = 0;
+
+// Lo que /board muestra para saber por qué el clima está vacío y si el aparato
+// ya vino a buscar los datos.
+export async function hubDiagnostics(): Promise<{ place: Place | null; weather: Weather; lastDeviceFetch: number }> {
+  return { place: await place(), weather: await weather("es"), lastDeviceFetch };
+}
+
 hub.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
+  lastDeviceFetch = Date.now();
   const [w, d, s, ics, verse, store] = await Promise.all([weather(lang), data(), hubSlice(lang), agendaConfigured() ? todayForHub(lang) : Promise.resolve([]), verseOfTheDay(lang), loadStore()]);
   // Recordatorios, listas y mensajes salen del store del asistente (voice.ts);
   // el hub-data.json a mano sigue sirviendo para la agenda y como respaldo.

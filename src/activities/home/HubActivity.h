@@ -23,7 +23,10 @@ class HubActivity final : public Activity {
   bool isHomeActivity() const override { return true; }
 
  private:
-  enum Tile { TILE_READ = 0, TILE_TALK, TILE_TRANSLATOR, TILE_REMINDERS, TILE_TIMER, TILE_NOTES, TILE_BIBLE, TILE_MUSIC, TILE_NEWS, TILE_PHOTOS, TILE_GAMES, TILE_SETTINGS, TILE_COUNT };
+  // Clima ocupa el lugar que tenía Juegos (que todavía dice "Próximamente"): en
+  // esta placa OK no tiene pulsación larga (OK mantenido apaga), así que el
+  // "OK largo: clima" del hub nunca se podía usar.
+  enum Tile { TILE_READ = 0, TILE_TALK, TILE_TRANSLATOR, TILE_REMINDERS, TILE_TIMER, TILE_NOTES, TILE_BIBLE, TILE_MUSIC, TILE_NEWS, TILE_PHOTOS, TILE_WEATHER, TILE_SETTINGS, TILE_COUNT };
   static constexpr int COLUMNS = 3;
 
   ButtonNavigator buttonNavigator;
@@ -34,6 +37,9 @@ class HubActivity final : public Activity {
   bool autoSyncPending = false;  // cache stale at entry: run HubSyncActivity after the first paint
   unsigned long lastClockMinuteTick = 0;
   char lastClock[9] = {0};
+  char lastTimeChip[40] = {0};  // lo último dibujado del temporizador/cronómetro
+  // Texto del temporizador o el cronómetro para la barra de estado ("" si no hay nada).
+  void formatTimeChip(char* out, size_t size) const;
 
   // Most recent book still on the card (the Back shortcut + the widget).
   std::string lastBookPath;

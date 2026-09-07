@@ -264,17 +264,62 @@ static bool loadSleepFrameBuffer() {
 // the chip through the PCF85063 alarm. The deep-sleep timer does it instead:
 // armed to the next pending reminder (from the hub cache), the boot path then
 // shows ReminderAlertActivity. Needs the RTC set (server clock or NTP).
-static void armReminderWake() {
+static void armReminderWake(const bool quiet = false) {
   time_t now = 0;
-  if (!halClock.getEpochUtc(now)) return;
+  if (!halClock.getEpochUtc(now)) {
+    if (!quiet) LOG_ERR("MAIN", "no clock: nothing armed, the timer will not ring asleep");
+    return;
+  }
   time_t due = HUB_STORE.nextDueAt(now);
   // A running timer wakes the device too, and wins when it fires first.
-  if (HUB_STORE.timerEndAt > now && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
-  if (due == 0) return;
-  uint64_t seconds = static_cast<uint64_t>(due - now);
+  if (HUB_STORE.timerEndAt > 0 && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
+  // Algo ya vencido (venció en otra pantalla o mientras se apagaba) tiene que
+  // despertar al toque, no quedarse mudo para siempre.
+  if (due == 0) {
+    const HubStore::Reminder* overdue = HUB_STORE.dueReminder(now);
+    if (!overdue) return;
+    due = now;
+  }
+  uint64_t seconds = due > now ? static_cast<uint64_t>(due - now) : 0;
   if (seconds < 5) seconds = 5;
   esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
-  LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
+  if (!quiet) LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
+}
+
+// Todo camino de deep sleep pasa por acá: si alguno se olvida de armar el
+// despertador, el temporizador y los recordatorios quedan mudos hasta que el
+// usuario apriete un botón (pasaba en el re-sleep por wake espurio del botón).
+static void sleepNow() {
+  armReminderWake(/*quiet=*/true);
+  powerManager.startDeepSleep(gpio);
+}
+
+// ws397: el temporizador y los recordatorios tienen que sonar aunque el aparato
+// esté despierto en otra pantalla. Antes solo los miraba el tick del hub y el
+// arranque después de dormir, así que un temporizador vencido en Notas, Agenda o
+// Ajustes no sonaba nunca. Se dispara sobre las pantallas tranquilas; el lector y
+// las que usan red o audio se dejan en paz (ahí manda el wake por deep sleep).
+static bool isCalmScreen(const char* name) {
+  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather"};
+  for (const char* n : CALM) {
+    if (strcmp(name, n) == 0) return true;
+  }
+  return false;
+}
+
+static void checkTimeAlarms() {
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
+  if (!isCalmScreen(activityManager.currentActivityName())) return;
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now)) return;
+  if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= now) {
+    activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
+    return;
+  }
+  if (const HubStore::Reminder* due = HUB_STORE.dueReminder(now)) {
+    activityManager.pushActivity(
+        std::make_unique<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
+  }
 }
 
 // Enter deep sleep mode
@@ -313,12 +358,14 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   halTiltSensor.deepSleep();
   display.deepSleep();
-  devlog::flush();
-  Storage.prepareForDeepSleep();
-  LOG_DBG("MAIN", "Entering deep sleep");
-
+  // Armar y loguear con la SD todavía montada: después de prepareForDeepSleep()
+  // el log se escribe sobre un filesystem desmontado y se pierde.
   armReminderWake();
-  powerManager.startDeepSleep(gpio);
+  LOG_DBG("MAIN", "Entering deep sleep");
+  devlog::close();
+  Storage.prepareForDeepSleep();
+
+  sleepNow();
 }
 
 void setupDisplayAndFonts(bool seamless = false) {
@@ -472,8 +519,9 @@ void setup() {
       // device; otherwise the button must still be held (ghost-wake debounce).
       if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
+        devlog::close();
         Storage.prepareForDeepSleep();
-        powerManager.startDeepSleep(gpio);
+        sleepNow();
       }
       wakePowerReleasePending = true;
       break;
@@ -492,8 +540,9 @@ void setup() {
       // the device in a USB-replug boot loop (or sleep right after a flash).
       break;
 #else
+      devlog::close();
       Storage.prepareForDeepSleep();
-      powerManager.startDeepSleep(gpio);
+      sleepNow();
       break;
 #endif
     case HalGPIO::WakeupReason::AfterFlash:
@@ -515,18 +564,34 @@ void setup() {
   const bool isReminderWake = esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_TIMER;
   const HubStore::Reminder* dueReminder = nullptr;
   bool timerFired = false;
-  if (isReminderWake) {
+  {
+    // En CUALQUIER arranque: si el temporizador venció o hay un recordatorio en
+    // hora, suena. Antes solo se miraba cuando la causa del wake era el timer,
+    // así que despertar con OK dejaba todo mudo.
     time_t nowEpoch = 0;
-    if (halClock.getEpochUtc(nowEpoch)) {
+    bool haveClock = false;
+    for (int i = 0; i < 3 && !haveClock; ++i) {  // el bus I²C es compartido: reintentar
+      haveClock = halClock.getEpochUtc(nowEpoch);
+      if (!haveClock) delay(20);
+    }
+    if (haveClock) {
       dueReminder = HUB_STORE.dueReminder(nowEpoch + 30);
       timerFired = HUB_STORE.timerEndAt > 0 && HUB_STORE.timerEndAt <= nowEpoch + 30;
+    } else if (isReminderWake) {
+      // Despertó por el timer y el RTC no contestó: reintentar en un minuto en
+      // vez de dormir sin nada armado (quedaría mudo para siempre).
+      LOG_ERR("MAIN", "timer wake without a clock: retrying in 60 s");
+      esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+      devlog::close();
+      Storage.prepareForDeepSleep();
+      powerManager.startDeepSleep(gpio);
     }
-    if (!dueReminder && !timerFired) {
+    if (isReminderWake && !dueReminder && !timerFired) {
       // Woke early or the reminder went away (ticked from the phone): straight back to sleep.
       LOG_INF("MAIN", "Timer wake with nothing due, sleeping again");
+      devlog::close();
       Storage.prepareForDeepSleep();
-      armReminderWake();
-      powerManager.startDeepSleep(gpio);
+      sleepNow();
     }
   }
   const BootResume resume = isSilentReboot                             ? BootResume::Silent
@@ -797,6 +862,12 @@ void loop() {
   // page turn instead.
   if (gpio.wasUsbStateChanged() && !activityManager.isReaderActivity()) {
     activityManager.requestUpdate();
+  }
+
+  static unsigned long lastAlarmCheck = 0;
+  if (millis() - lastAlarmCheck >= 5000) {
+    lastAlarmCheck = millis();
+    checkTimeAlarms();
   }
 
   const unsigned long activityStartTime = millis();

@@ -25,7 +25,6 @@
 #include "NotesActivity.h"
 #include "TimerActivity.h"
 #include "TranslatorActivity.h"
-#include "ReminderAlertActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
 #include "components/icons/hubIcons.h"
@@ -42,7 +41,8 @@ constexpr int TILE_RADIUS = 12;
 constexpr int CONTINUE_H = 60;
 constexpr int INFO_H = 136;
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
-constexpr time_t SYNC_INTERVAL_S = 6 * 3600;      // cache older than this at entry = sync
+constexpr time_t SYNC_INTERVAL_S = 3 * 3600;      // cache older than this at entry = sync
+                                                  // (3 h: lo que se carga desde /board tarda menos en llegar)
 constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
 
 // Draws an SDK (freeink::Icon) bitmap through the renderer's pixel path, so it
@@ -68,7 +68,7 @@ const TileSpec TILES[] = {
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
     {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
     {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_HUB_NEWS, &icon_hub_news_48},
-    {StrId::STR_HUB_PHOTOS, &icon_hub_photos_48},       {StrId::STR_HUB_GAMES, &icon_hub_games_48},
+    {StrId::STR_HUB_PHOTOS, &icon_hub_photos_48},       {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
     {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
 }  // namespace
@@ -90,7 +90,10 @@ bool HubActivity::shouldAutoSync() const {
     // No clock yet: only the very first run, so a dead server cannot loop us.
     return HUB_STORE.syncedAt == 0 && HUB_STORE.lastAttemptAt == 0;
   }
-  if (HUB_STORE.syncedAt > 1 && now - HUB_STORE.syncedAt < SYNC_INTERVAL_S) return false;
+  // Clima vacío = falta el lugar o el servidor falló: reintentar a la hora en vez
+  // de esperar el ciclo entero (el lugar recién cargado en /board entra acá).
+  const time_t interval = HUB_STORE.weatherLine.empty() ? SYNC_RETRY_S : SYNC_INTERVAL_S;
+  if (HUB_STORE.syncedAt > 1 && now - HUB_STORE.syncedAt < interval) return false;
   if (HUB_STORE.lastAttemptAt > 1 && now - HUB_STORE.lastAttemptAt < SYNC_RETRY_S) return false;
   return true;
 }
@@ -140,6 +143,9 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_PHOTOS:
       activityManager.replaceActivity(std::make_unique<PhotosActivity>(renderer, mappedInput));
+      break;
+    case TILE_WEATHER:
+      activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
@@ -192,34 +198,26 @@ void HubActivity::loop() {
     startSync();
     return;
   }
-  // The weather widget has no tile of its own: OK held opens the forecast.
-  if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, SYNC_HOLD_MS)) {
-    activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
-    return;
-  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back) && !lastBookPath.empty()) {
     activityManager.goToReader(lastBookPath);
     return;
   }
 
   // Keep the clock honest while the hub sits on screen: one partial refresh
-  // per minute change, nothing more (the panel wants few partials). The same
-  // tick fires a reminder that came due while awake.
+  // per minute change, nothing more (the panel wants few partials). Lo que suena
+  // (temporizador vencido, recordatorio en hora) lo dispara checkTimeAlarms()
+  // en el loop de main.cpp, que funciona desde cualquier pantalla tranquila.
   const unsigned long now = millis();
   if (now - lastClockMinuteTick >= 15000) {
     lastClockMinuteTick = now;
     time_t epoch = 0;
     if (halClock.getEpochUtc(epoch)) {
-      if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= epoch) {
-        activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, 0, /*resumeFired=*/true));
-        return;
-      }
-      if (HUB_STORE.timerRunning()) requestUpdate();  // the countdown in the status line
-      if (const HubStore::Reminder* due = HUB_STORE.dueReminder(epoch)) {
-        startActivityForResult(
-            std::make_unique<ReminderAlertActivity>(renderer, mappedInput, due->id, due->title, due->when),
-            [this](const ActivityResult&) { requestUpdate(); });
-        return;
+      // Repintar solo cuando cambia lo que se muestra (minutos), no cada tick.
+      char chip[40] = "";
+      formatTimeChip(chip, sizeof(chip));
+      if (strcmp(chip, lastTimeChip) != 0) {
+        snprintf(lastTimeChip, sizeof(lastTimeChip), "%s", chip);
+        requestUpdate();
       }
     }
     char buf[9] = {0};
@@ -228,6 +226,27 @@ void HubActivity::loop() {
         strcmp(buf, lastClock) != 0) {
       requestUpdate();
     }
+  }
+}
+
+// En minutos, no en segundos: el hub repinta poco (parciales del panel), así
+// que un M:SS quedaría siempre atrasado y encima fantasmearía la pantalla.
+void HubActivity::formatTimeChip(char* out, const size_t size) const {
+  out[0] = '\0';
+  time_t now = 0;
+  const bool haveClock = halClock.getEpochUtc(now);
+  auto minutes = [](long seconds) { return seconds <= 0 ? 0L : (seconds + 59) / 60; };
+  if (HUB_STORE.timerRunning() && haveClock) {
+    const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
+    if (left > 60) snprintf(out, size, "%s %ld min", tr(STR_HUB_TIMER), minutes(left));
+    else snprintf(out, size, "%s <1 min", tr(STR_HUB_TIMER));
+  } else if (HUB_STORE.timerPaused()) {
+    snprintf(out, size, "%s %ld min %s", tr(STR_HUB_TIMER), minutes(HUB_STORE.timerPausedLeft),
+             tr(STR_TIMER_PAUSED_SHORT));
+  } else if (HUB_STORE.stopwatchActive() && haveClock) {
+    const long el = HUB_STORE.stopwatchElapsed(now);
+    if (el >= 60) snprintf(out, size, "%s %ld min", tr(STR_TIMER_STOPWATCH), el / 60);
+    else snprintf(out, size, "%s <1 min", tr(STR_TIMER_STOPWATCH));
   }
 }
 
@@ -254,13 +273,12 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
     drawSdkIcon(renderer, icon_wifi_24, rightEdge, y + (height - 24) / 2, true);
     rightEdge -= 12;
   }
-  // A running timer is visible from the hub, and fires from here while awake.
-  if (HUB_STORE.timerRunning()) {
-    time_t now = 0;
-    if (halClock.getEpochUtc(now)) {
-      const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
-      char t[24];
-      snprintf(t, sizeof(t), "%s %ld:%02ld", tr(STR_HUB_TIMER), left > 0 ? left / 60 : 0, left > 0 ? left % 60 : 0);
+  // Lo que esté corriendo en Tiempo se ve desde el hub (y suena desde acá
+  // mientras el aparato está despierto).
+  {
+    char t[40] = "";
+    formatTimeChip(t, sizeof(t));
+    if (t[0]) {
       const int w = renderer.getTextWidth(UI_10_FONT_ID, t);
       rightEdge -= w;
       renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, t, true, EpdFontFamily::BOLD);
@@ -292,6 +310,11 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   const int iconX = x + (w - spec.icon->w) / 2;
   const int iconY = y + (h - spec.icon->h - 22) / 2;
   drawSdkIcon(renderer, *spec.icon, iconX, iconY, ink);
+
+  // Punto en la esquina del mosaico Tiempo cuando hay algo corriendo o pausado.
+  if (index == TILE_TIMER && HUB_STORE.timeActive()) {
+    renderer.fillRoundedRect(x + w - 18, y + 10, 8, 8, 4, ink ? Color::Black : Color::White);
+  }
 
   const char* label = I18N.get(spec.label);
   const std::string shortLabel = renderer.truncatedText(UI_10_FONT_ID, label, w - 10, EpdFontFamily::BOLD);
@@ -332,7 +355,11 @@ void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const i
     const int tw = colW - pad - 24 - 8 - 8;
     drawSdkIcon(renderer, icon_hub_weather_24, x + pad, y + 12, true);
     if (hub.weatherLine.empty()) {
-      renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, hub.hasSynced() ? tr(STR_HUB_NO_WEATHER) : tr(STR_HUB_NEVER_SYNCED), tw).c_str());
+      // Sin lugar cargado el servidor no puede dar clima: decirlo en vez de "sin datos".
+      const char* none = !hub.hasSynced()  ? tr(STR_HUB_NEVER_SYNCED)
+                         : hub.weatherNoPlace ? tr(STR_HUB_NO_PLACE)
+                                              : tr(STR_HUB_NO_WEATHER);
+      renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, none, tw).c_str());
     } else {
       renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.weatherLine.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
       renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, hub.weatherDetail.c_str(), tw).c_str());

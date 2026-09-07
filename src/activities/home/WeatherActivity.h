@@ -8,9 +8,9 @@
 #include "activities/Activity.h"
 
 // Detailed weather: now (temperature, feels like, humidity, wind), the next
-// hours and six days, from GET /api/hub/forecast. Reached from the hub's
-// weather widget (OK on the hub). The last forecast is cached on the SD so it
-// opens offline; Back held refreshes.
+// hours and six days, from GET /api/hub/forecast. Mosaico Clima del hub. El
+// último pronóstico queda cacheado en la SD para abrirlo sin WiFi; si tiene más
+// de una hora se refresca solo al entrar, y Atrás mantenido lo fuerza.
 class WeatherActivity final : public Activity {
  public:
   explicit WeatherActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -25,6 +25,8 @@ class WeatherActivity final : public Activity {
  private:
   enum State { SHOW, CONNECTING, LOADING, FAILED };
   State state = SHOW;
+  time_t cachedAt = 0;   // cuándo se guardó el pronóstico de la SD (0 = sin fecha)
+  int lastStatus = 0;    // último código HTTP de /api/hub/forecast, para el mensaje de error
 
   struct Hour {
     std::string at;
