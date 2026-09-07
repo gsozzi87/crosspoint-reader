@@ -44,6 +44,13 @@ llegue el hardware.
   `WS397_OTA_TOKEN` en el environment no hay release: el .bin queda con la URL de OTA vacía y no se puede subir.
 - OTA: el aparato consulta `WS397_OTA_URL` (`https://paper-esp32.up.railway.app/firmware/latest`, JSON con la forma
   de un release de GitHub). Comparación estricta major.minor.patch.
+- Proveedor de IA configurable desde la web (`server/src/config.ts` → `/data/config.json`, `server/src/llm.ts`):
+  Anthropic (Claude) o cualquier API compatible con OpenAI (Groq gratis, DeepSeek barato, OpenAI). `chatText()` y
+  `chatJson()` son lo único que usan `ask.ts` y `voice.ts`; en Anthropic el esquema va por `output_config` y el
+  capítulo por `cache_control`, en las compatibles el esquema se explica en el system y se pide `json_object`.
+  La transcripción sale de la misma config (`stt.baseUrl/model/key`). Las claves se guardan en el volumen y **no
+  se devuelven nunca** por la API (solo `hasKey`). El token del aparato también se puede cambiar desde la web; el
+  `DEVICE_TOKEN` del entorno sigue valiendo siempre para no quedar afuera.
 - **Servidor: `server/` en este mismo repo** (Bun + Hono; Railway con Root Directory = `server`, volumen en
   `/data`; rutas, variables y despliegue en `server/README.md`). Todo cambio de servidor va ahí, no en archivos
   sueltos. `bun install && bunx tsc --noEmit` en `server/` como chequeo.
@@ -155,8 +162,9 @@ llegue el hardware.
 - OJO con los botones: en esta placa OK es confirm+power compartidos, así que `wasLongPressed(Confirm, ...)` NUNCA es
   cierto (mantener OK apaga). Las funciones que estaban colgadas de "OK largo" no existían: el Clima quedó como
   mosaico propio (en el lugar de Juegos, que decía "Próximamente").
-- Atajo de voz global: **ARRIBA + ABAJO juntos** abren Hablar desde cualquier pantalla tranquila
-  (`checkVoiceShortcut()` en el loop de `main.cpp`). Los cuatro botones ya tienen dueño, el combo es lo único libre.
+- Atajo de voz global: **dos toques de Atrás** abren Hablar desde cualquier pantalla tranquila
+  (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 500 ms). ARRIBA/ABAJO es una palanca física
+  (arriba XOR abajo, nunca las dos), OK es el botón de encendido y Atrás mantenido ya sincroniza o actualiza.
   Atrás en el hub no hace nada: el hub es el fondo (antes abría el último libro y no había forma de quedarse).
 - OJO con el audio: el I2S es uno solo y cada clase (`SpeechOut`, `AlertBeep`, `VoiceRecorder`) tiene su propio
   `AudioManager`. Abrir el micrófono mientras habla el parlante da "Falló la captura del micrófono", y navegar
@@ -177,8 +185,9 @@ llegue el hardware.
 - Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
   hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
   mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
-- Página web `GET /board` (`server/src/board.ts`): mensajes, recordatorios, listas (crear, borrar, tildar), notas,
-  fotos, feeds RSS, memoria del asistente y **Ajustes** desde el teléfono con el token del aparato; altas en
+- Página web `GET /board` (`server/src/board.ts`), con pestañas: Pizarra (mensajes, recordatorios, memoria), Listas,
+  Notas, Fotos, Noticias, **IA** (proveedor, modelo, claves, token), Ajustes (clima, idioma, voz, volumen) y Log.
+  Todo desde el teléfono con el token del aparato; altas en
   `POST /api/board/*`, borrados por `POST /api/hub/edit {kind, id, action:"delete"}` (kind = reminder, item, note,
   feed, memory). Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`) y se ven en Recordatorios →
   Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).

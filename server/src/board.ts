@@ -22,6 +22,8 @@ import { Hono } from "hono";
 import { load, save, nextId, resolveList, DEFAULT_SETTINGS, type Settings } from "./store";
 import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
+import { config, saveConfig, publicConfig, type Config } from "./config";
+import { chatText, providerLabel } from "./llm";
 
 export const boardApi = new Hono();
 
@@ -142,6 +144,48 @@ boardApi.post("/settings", async (c) => {
   return c.json({ ok: true, settings: s });
 });
 
+// Proveedores de IA y token, configurables desde la web. Las claves entran acá y
+// no salen nunca: la página solo ve si hay clave puesta.
+boardApi.get("/config", async (c) => c.json({ ok: true, config: await publicConfig() }));
+
+boardApi.post("/config", async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const cfg = await config();
+  const next: Config = { llm: { ...cfg.llm }, stt: { ...cfg.stt }, deviceToken: cfg.deviceToken };
+  if (b.llm) {
+    if (b.llm.provider === "anthropic" || b.llm.provider === "openai") next.llm.provider = b.llm.provider;
+    if (typeof b.llm.baseUrl === "string") next.llm.baseUrl = b.llm.baseUrl.trim().replace(/\/+$/, "");
+    if (typeof b.llm.model === "string" && b.llm.model.trim()) next.llm.model = b.llm.model.trim();
+    if (typeof b.llm.key === "string" && b.llm.key.trim()) next.llm.key = b.llm.key.trim();
+  }
+  if (b.stt) {
+    if (typeof b.stt.baseUrl === "string" && b.stt.baseUrl.trim()) next.stt.baseUrl = b.stt.baseUrl.trim().replace(/\/+$/, "");
+    if (typeof b.stt.model === "string" && b.stt.model.trim()) next.stt.model = b.stt.model.trim();
+    if (typeof b.stt.key === "string" && b.stt.key.trim()) next.stt.key = b.stt.key.trim();
+  }
+  if (typeof b.deviceToken === "string") next.deviceToken = b.deviceToken.trim().slice(0, 200);
+  if (next.llm.provider === "openai" && !next.llm.baseUrl) return c.json({ ok: false, error: "falta la URL del proveedor" }, 400);
+  await saveConfig(next);
+  console.log(`config: llm=${next.llm.provider}/${next.llm.model} stt=${next.stt.model}`);
+  return c.json({ ok: true, config: await publicConfig() });
+});
+
+// Prueba rápida de los dos servicios, para no descubrir que la clave está mal
+// hablándole al aparato.
+boardApi.post("/config/test", async (c) => {
+  const out: { llm?: string; stt?: string } = {};
+  const t0 = Date.now();
+  try {
+    const answer = await chatText({ system: "Respondé exactamente: ok", user: "decime ok", maxTokens: 10 });
+    out.llm = `${await providerLabel()} → "${answer.trim().slice(0, 40)}" (${Date.now() - t0} ms)`;
+  } catch (err) {
+    out.llm = `ERROR: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`;
+  }
+  const cfg = (await config()).stt;
+  out.stt = cfg.key ? `${cfg.model} en ${cfg.baseUrl} (clave puesta)` : "ERROR: falta la clave de transcripción";
+  return c.json({ ok: true, ...out });
+});
+
 boardApi.post("/note", async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const text = (b.text ?? "").toString().trim().slice(0, 2000);
@@ -153,44 +197,56 @@ boardApi.post("/note", async (c) => {
 });
 
 const STYLE = `
-:root{color-scheme:light dark}
-body{font-family:system-ui,sans-serif;margin:0;background:#f4f4f4;color:#111}
-header{background:#111;color:#fff;padding:12px 16px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:5}
-header a{color:#fff}
-main{max-width:720px;margin:0 auto;padding:12px 12px 40px}
-section{background:#fff;border-radius:12px;padding:12px 14px;margin:12px 0;box-shadow:0 1px 3px #0002}
-h2{margin:0 0 8px;font-size:17px}
-h3{margin:12px 0 0;font-size:15px}
+:root{color-scheme:light dark;--bg:#f2f3f5;--card:#fff;--ink:#111;--muted:#666;--line:#e6e6e6;--accent:#111}
+@media (prefers-color-scheme:dark){:root{--bg:#15171a;--card:#1e2126;--ink:#e9e9e9;--muted:#9aa0a6;--line:#2c3036;--accent:#e9e9e9}}
+*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,sans-serif;margin:0;background:var(--bg);color:var(--ink)}
+header{background:#111;color:#fff;padding:10px 14px;display:flex;justify-content:space-between;align-items:center;position:sticky;top:0;z-index:6}
+header strong{font-size:16px}
+header button{background:#2a2a2a;color:#fff;border:none;padding:6px 10px;border-radius:8px;font:inherit}
+nav{display:flex;gap:6px;overflow-x:auto;padding:8px 10px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:46px;z-index:5;scrollbar-width:none}
+nav::-webkit-scrollbar{display:none}
+nav button{flex:0 0 auto;background:transparent;color:var(--muted);border:1px solid var(--line);border-radius:999px;padding:7px 14px;font:inherit}
+nav button.on{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:600}
+main{max-width:760px;margin:0 auto;padding:12px 12px 60px}
+section.tab{display:none}
+section.tab.on{display:block}
+.card{background:var(--card);border-radius:14px;padding:14px;margin:0 0 12px;box-shadow:0 1px 2px #0000000d}
+h2{margin:0 0 10px;font-size:16px}
+h3{margin:14px 0 4px;font-size:14px;color:var(--muted);font-weight:600}
 form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center}
-input,select,textarea,button{font:inherit;padding:8px 10px;border:1px solid #bbb;border-radius:8px;background:#fff;color:#111}
-input[type=text],textarea{flex:1;min-width:150px}
-input[type=range]{flex:1;min-width:150px;padding:0}
-button{background:#111;color:#fff;border:none;cursor:pointer}
-button.ghost{background:#eee;color:#111;padding:6px 10px}
-button.link{background:none;color:#06c;padding:4px 6px}
+input,select,textarea,button{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
+input[type=text],input[type=password],textarea{flex:1;min-width:150px}
+input[type=range]{flex:1;min-width:140px;padding:0}
+button{background:var(--accent);color:var(--bg);border:none;font-weight:600}
+button.ghost{background:transparent;color:var(--ink);border:1px solid var(--line);font-weight:400;padding:7px 11px}
+button.danger{background:#b3261e;color:#fff}
 ul{list-style:none;margin:0;padding:0}
-li{display:flex;gap:8px;align-items:center;padding:8px 0;border-top:1px solid #eee}
+li{display:flex;gap:8px;align-items:center;padding:9px 0;border-top:1px solid var(--line)}
 li span{flex:1;word-break:break-word}
-li small{color:#666}
-label{font-size:14px;color:#444;min-width:120px}
-.row{display:flex;gap:8px;align-items:center;margin:8px 0;flex-wrap:wrap}
-.muted{color:#666;font-size:14px}
-.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;background:#111;color:#fff;padding:10px 16px;border-radius:20px;opacity:0;transition:opacity .2s;pointer-events:none}
+li small{color:var(--muted)}
+label{font-size:13px;color:var(--muted);min-width:130px}
+.row{display:flex;gap:8px;align-items:center;margin:9px 0;flex-wrap:wrap}
+.muted{color:var(--muted);font-size:13px;line-height:1.45}
+.ok{color:#1e7d32;font-size:13px}
+.bad{color:#b3261e;font-size:13px}
+pre{white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Menlo,monospace;background:var(--bg);padding:10px;border-radius:10px;max-height:60vh;overflow:auto}
+.toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:#111;color:#fff;padding:11px 18px;border-radius:22px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
 .toast.on{opacity:1}
 #gate{display:none;max-width:420px;margin:60px auto;text-align:center}
 `;
 
-// Ojo al editar: esto vive dentro de un template literal, así que un
-// backslash antes de una comilla se lo come el literal y rompe el script
-// entero. Regla: nada de \\' ni backticks acá adentro; las cadenas van con
-// comillas dobles y los atributos HTML con comillas simples. Los botones no
-// llevan onclick: se manejan por delegación con data-act.
+// Ojo al editar: esto vive dentro de un template literal, así que un backslash
+// antes de una comilla se lo come el literal y rompe el script entero. Regla:
+// nada de \\' ni backticks acá adentro; las cadenas van con comillas dobles y los
+// atributos HTML con comillas simples. Los botones no llevan onclick: se manejan
+// por delegación con data-act.
 const SCRIPT = `
 let token = localStorage.getItem("deviceToken") || "";
-let settings = null;
+let cfg = null;
 const $ = (id) => document.getElementById(id);
 function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\\u0022":"&quot;","\\u0027":"&#39;"}[c])); }
-function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 1800); }
+function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 2200); }
 
 async function api(path, body, method){
   const r = await fetch(path, {
@@ -199,13 +255,18 @@ async function api(path, body, method){
     body: body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 401) { gate("Token rechazado"); throw new Error("token"); }
-  if (!r.ok) throw new Error("http " + r.status);
+  if (!r.ok) {
+    let detail = "";
+    try { detail = (await r.json()).error || ""; } catch (e) {}
+    throw new Error(detail || ("http " + r.status));
+  }
   return r.json();
 }
 
 function gate(msg){
   $("gate").style.display = "block";
   $("app").style.display = "none";
+  $("nav").style.display = "none";
   $("gateMsg").textContent = msg || "";
   $("tokenInput").value = token;
 }
@@ -217,25 +278,31 @@ function saveToken(){
   localStorage.setItem("deviceToken", token);
   $("gate").style.display = "none";
   $("app").style.display = "block";
-  refresh().catch(() => gate("No se pudo conectar"));
+  $("nav").style.display = "flex";
+  refresh().catch((e) => gate("No se pudo conectar: " + e.message));
 }
 
-function btn(label, act, extra){
+function showTab(name){
+  document.querySelectorAll("section.tab").forEach((s) => s.classList.toggle("on", s.id === "tab-" + name));
+  document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
+  localStorage.setItem("boardTab", name);
+  if (name === "log") loadLog();
+  window.scrollTo(0, 0);
+}
+
+function btn(label, act, extra, cls){
   let attrs = "";
   for (const k in extra) attrs += " data-" + k + "='" + esc(extra[k]) + "'";
-  return "<button class='ghost' data-act='" + act + "'" + attrs + ">" + label + "</button>";
+  return "<button class='" + (cls || "ghost") + "' data-act='" + act + "'" + attrs + ">" + label + "</button>";
 }
-
 function row(text, small, buttons){
-  return "<li><span>" + esc(text) + (small ? " <small>" + esc(small) + "</small>" : "") + "</span>" + buttons + "</li>";
+  return "<li><span>" + esc(text) + (small ? " <small>" + esc(small) + "</small>" : "") + "</span>" + (buttons || "") + "</li>";
 }
-
 function empty(text){ return "<li class='muted'>" + esc(text) + "</li>"; }
 
 async function refresh(){
   const d = await api("/api/hub?lang=es");
   const x = await api("/api/board/extra");
-  settings = x.settings;
 
   $("messages").innerHTML = d.messages.map((m) =>
     row(m.from + ": " + m.text, "", btn("Leído", "done", { kind: "message", id: m.id }))).join("") || empty("Sin mensajes");
@@ -255,8 +322,7 @@ async function refresh(){
   d.lists.forEach((l) => { byName[l.name] = l.items; });
   $("listItems").innerHTML = names.map((n) => {
     const items = byName[n] || [];
-    return "<h3>" + esc(n) + " <small class='muted'>" + items.length + "</small>" +
-      btn("Borrar lista", "dellist", { name: n }) + "</h3><ul>" +
+    return "<h3>" + esc(n) + " · " + items.length + " " + btn("Borrar lista", "dellist", { name: n }) + "</h3><ul>" +
       (items.map((i) => row(i.text, "",
         btn("Hecho", "done", { kind: "item", id: i.id }) +
         btn("Borrar", "del", { kind: "item", id: i.id }))).join("") || empty("Vacía")) + "</ul>";
@@ -264,10 +330,8 @@ async function refresh(){
 
   $("notes").innerHTML = d.notes.map((n) =>
     row(n.text, "", btn("Borrar", "del", { kind: "note", id: n.id }))).join("") || empty("Sin notas");
-
   $("feeds").innerHTML = x.feeds.map((f) =>
     row(f.name, f.url, btn("Borrar", "del", { kind: "feed", id: f.id }))).join("") || empty("Sin feeds");
-
   $("memories").innerHTML = x.memories.map((m) =>
     row(m.text, "", btn("Borrar", "del", { kind: "memory", id: m.id }))).join("") || empty("Nada guardado");
 
@@ -275,33 +339,70 @@ async function refresh(){
   $("photos").innerHTML = ph.photos.map((p) =>
     row(p.name, Math.round(p.size / 1024) + " KB", btn("Borrar", "delphoto", { id: p.id }))).join("") || empty("Sin fotos");
 
-  $("setLang").value = settings.lang;
-  $("setSpeak").value = settings.speak;
-  $("setTranslator").value = settings.translatorLang;
-  $("setVolume").value = settings.musicVolume;
-  $("volumeOut").textContent = settings.musicVolume + " %";
+  $("setLang").value = x.settings.lang;
+  $("setSpeak").value = x.settings.speak;
+  $("setTranslator").value = x.settings.translatorLang;
+  $("setVolume").value = x.settings.musicVolume;
+  $("volumeOut").textContent = x.settings.musicVolume + " %";
 
   const g = x.diag || {};
   const p0 = g.place;
-  $("place").textContent = p0 ? (p0.label || p0.name || (p0.lat + ", " + p0.lon)) : "Sin lugar configurado: el clima queda vacío";
+  $("place").textContent = p0 ? (p0.label || p0.name || (p0.lat + ", " + p0.lon)) : "sin lugar configurado";
   const wx = g.weather || {};
   $("weatherNow").textContent = wx.line
     ? wx.line + (wx.detail ? " · " + wx.detail : "")
     : wx.noPlace ? "El servidor no tiene lugar: elegilo acá abajo"
-    : wx.error ? "Open-Meteo falló: " + wx.error
+    : wx.error ? "Falló: " + wx.error
     : "Sin datos todavía";
   const last = g.lastDeviceFetch || 0;
-  if (!last) {
-    $("lastSync").textContent = "El aparato todavía no vino a buscar datos.";
-  } else {
-    const mins = Math.max(0, Math.round((Date.now() - last) / 60000));
-    $("lastSync").textContent = "El aparato sincronizó hace " + (mins < 1 ? "menos de un minuto" : mins + " min") + ". " +
-      "Para que se lleve lo que cambiaste ahora: mantené Atrás 1,2 s en el hub del aparato.";
+  $("lastSync").textContent = !last
+    ? "El aparato todavía no vino a buscar datos."
+    : "El aparato sincronizó hace " + Math.max(0, Math.round((Date.now() - last) / 60000)) + " min. Para que se lleve lo que cambiaste: mantené Atrás 1,2 s en el hub.";
+
+  await loadConfig();
+}
+
+async function loadConfig(){
+  const r = await api("/api/board/config");
+  cfg = r.config;
+  const presets = cfg.presets || {};
+  $("llmPreset").innerHTML = Object.keys(presets).map((k) =>
+    "<option value='" + esc(k) + "'>" + esc(presets[k].label) + "</option>").join("");
+  // El preset que coincide con lo que está guardado.
+  let current = "anthropic";
+  for (const k in presets) {
+    const p = presets[k];
+    if (p.provider === cfg.llm.provider && (p.provider === "anthropic" || p.baseUrl === cfg.llm.baseUrl)) current = k;
+  }
+  $("llmPreset").value = current;
+  fillModels(current, cfg.llm.model);
+  $("llmBase").value = cfg.llm.baseUrl || "";
+  $("llmKeyState").textContent = cfg.llm.hasKey ? "clave puesta" : "sin clave";
+  $("llmKeyState").className = cfg.llm.hasKey ? "ok" : "bad";
+  $("sttBase").value = cfg.stt.baseUrl;
+  $("sttModel").value = cfg.stt.model;
+  $("sttKeyState").textContent = cfg.stt.hasKey ? "clave puesta" : "sin clave";
+  $("sttKeyState").className = cfg.stt.hasKey ? "ok" : "bad";
+  $("tokenState").textContent = cfg.deviceTokenSet ? "hay un token propio guardado" : "se usa el token del entorno";
+}
+
+function fillModels(presetKey, selected){
+  const p = (cfg.presets || {})[presetKey] || { models: [] };
+  const models = p.models.slice();
+  if (selected && models.indexOf(selected) < 0) models.unshift(selected);
+  $("llmModel").innerHTML = models.map((m) => "<option>" + esc(m) + "</option>").join("");
+  if (selected) $("llmModel").value = selected;
+  $("llmBaseRow").style.display = p.provider === "anthropic" ? "none" : "flex";
+  if (p.provider !== "anthropic" && p.baseUrl) $("llmBase").value = p.baseUrl;
+  if (p.sttBaseUrl && $("sttFollow").checked) {
+    $("sttBase").value = p.sttBaseUrl;
+    $("sttModel").value = (p.sttModels || [])[0] || $("sttModel").value;
   }
 }
 
-// Un solo manejador para todos los botones de las listas.
 document.addEventListener("click", async (ev) => {
+  const nav = ev.target.closest("nav button[data-tab]");
+  if (nav) { showTab(nav.dataset.tab); return; }
   const b = ev.target.closest("button[data-act]");
   if (!b) return;
   const act = b.dataset.act;
@@ -315,16 +416,15 @@ document.addEventListener("click", async (ev) => {
     } else if (act === "place") {
       const r = await api("/api/hub/location", JSON.parse(b.dataset.place));
       $("placeResults").innerHTML = "";
-      // El servidor ya consultó el clima del lugar nuevo: se ve al toque.
       toast(r.weather && r.weather.line ? "Lugar guardado · " + r.weather.line : "Lugar guardado");
     } else return;
     await refresh();
-  } catch (e) { toast("No se pudo"); }
+  } catch (e) { toast("No se pudo: " + e.message); }
 });
 
 async function post(path, body){
   try { await api(path, body); await refresh(); toast("Guardado · sincronizá el aparato"); return true; }
-  catch (e) { toast("No se pudo guardar"); return false; }
+  catch (e) { toast("No se pudo: " + e.message); return false; }
 }
 
 function wire(id, path, build){
@@ -348,27 +448,38 @@ async function searchPlace(ev){
 }
 
 // La foto se manda tal cual y la convierte el servidor (rota por EXIF, escala a
-// 480x800, 4 grises con difuminado). El navegador ya no hace nada: antes armaba
-// el BMP con un canvas y salía apaisado.
+// 480x800, 4 grises con difuminado).
 async function sendPhoto(){
   const input = $("photoInput");
-  const file = input.files && input.files[0];
-  if (!file) { toast("Elegí una foto"); return; }
+  const files = input.files ? Array.from(input.files) : [];
+  if (!files.length) { toast("Elegí una foto"); return; }
   const st = $("photoStatus");
-  st.textContent = "Subiendo " + Math.round(file.size / 1024) + " KB...";
-  try {
-    const r = await fetch("/api/board/photo?name=" + encodeURIComponent(file.name), {
-      method: "POST",
-      headers: { "Authorization": "Bearer " + token, "Content-Type": file.type || "application/octet-stream" },
-      body: file,
-    });
-    const j = await r.json().catch(() => ({}));
-    st.textContent = r.ok ? "Foto lista" : (j.error || "No se pudo subir (" + r.status + ")");
-    input.value = "";
-    await refresh();
-  } catch (e) {
-    st.textContent = "No se pudo subir";
+  let done = 0;
+  for (const file of files) {
+    st.textContent = "Subiendo " + file.name + " (" + Math.round(file.size / 1024) + " KB)...";
+    try {
+      const r = await fetch("/api/board/photo?name=" + encodeURIComponent(file.name), {
+        method: "POST",
+        headers: { "Authorization": "Bearer " + token, "Content-Type": file.type || "application/octet-stream" },
+        body: file,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) { st.textContent = j.error || ("No se pudo subir " + file.name); break; }
+      done++;
+    } catch (e) { st.textContent = "No se pudo subir " + file.name; break; }
   }
+  if (done) st.textContent = done + (done === 1 ? " foto lista" : " fotos listas");
+  input.value = "";
+  await refresh();
+}
+
+async function loadLog(){
+  $("logBox").textContent = "Cargando...";
+  try {
+    const r = await fetch("/api/log", { headers: { "Authorization": "Bearer " + token } });
+    $("logBox").textContent = await r.text();
+    $("logBox").scrollTop = $("logBox").scrollHeight;
+  } catch (e) { $("logBox").textContent = "No se pudo leer el log"; }
 }
 
 function start(){
@@ -387,6 +498,9 @@ function start(){
   $("tokenSave").addEventListener("click", saveToken);
   $("tokenBtn").addEventListener("click", () => gate("Cambiá el token del aparato"));
   $("setVolume").addEventListener("input", () => { $("volumeOut").textContent = $("setVolume").value + " %"; });
+  $("llmPreset").addEventListener("change", () => fillModels($("llmPreset").value, null));
+  $("logReload").addEventListener("click", loadLog);
+
   $("settingsSave").addEventListener("click", async () => {
     await post("/api/board/settings", {
       lang: $("setLang").value,
@@ -395,8 +509,45 @@ function start(){
       translatorLang: $("setTranslator").value,
     });
   });
+
+  $("aiSave").addEventListener("click", async () => {
+    const preset = (cfg.presets || {})[$("llmPreset").value] || {};
+    const body = {
+      llm: { provider: preset.provider, baseUrl: $("llmBase").value, model: $("llmModel").value, key: $("llmKey").value },
+      stt: { baseUrl: $("sttBase").value, model: $("sttModel").value, key: $("sttKey").value },
+    };
+    try {
+      await api("/api/board/config", body);
+      $("llmKey").value = "";
+      $("sttKey").value = "";
+      await loadConfig();
+      toast("Proveedor guardado");
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+
+  $("aiTest").addEventListener("click", async () => {
+    $("aiTestOut").textContent = "Probando...";
+    try {
+      const r = await api("/api/board/config/test", {});
+      $("aiTestOut").textContent = "Modelo: " + r.llm + "\\nTranscripción: " + r.stt;
+    } catch (e) { $("aiTestOut").textContent = "No se pudo probar: " + e.message; }
+  });
+
+  $("tokenChange").addEventListener("click", async () => {
+    const v = $("newToken").value.trim();
+    if (v.length < 8) { toast("Poné un token de al menos 8 caracteres"); return; }
+    if (!confirm("El aparato va a necesitar este token nuevo (web UI del aparato → Servidor). El anterior sigue funcionando. ¿Seguimos?")) return;
+    try {
+      await api("/api/board/config", { deviceToken: v });
+      $("newToken").value = "";
+      await loadConfig();
+      toast("Token guardado");
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+
+  showTab(localStorage.getItem("boardTab") || "pizarra");
   if (!token) { gate("Está en la web UI del aparato → Servidor"); return; }
-  refresh().catch(() => gate("No se pudo conectar: revisá el token"));
+  refresh().catch((e) => gate("No se pudo conectar: " + e.message));
 }
 start();
 `;
@@ -406,7 +557,17 @@ const PAGE = `<!doctype html>
 <title>Pizarra</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23111'/%3E%3Crect x='8' y='9' width='16' height='2.5' fill='%23fff'/%3E%3Crect x='8' y='15' width='16' height='2.5' fill='%23fff'/%3E%3Crect x='8' y='21' width='10' height='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>${STYLE}</style></head><body>
-<header><strong>Pizarra del aparato</strong><span><a href="/board/log" style="margin-right:12px">Log</a><button class="ghost" id="tokenBtn">Token</button></span></header>
+<header><strong>Pizarra del aparato</strong><button id="tokenBtn">Token</button></header>
+<nav id="nav" style="display:none">
+  <button data-tab="pizarra">Pizarra</button>
+  <button data-tab="listas">Listas</button>
+  <button data-tab="notas">Notas</button>
+  <button data-tab="fotos">Fotos</button>
+  <button data-tab="noticias">Noticias</button>
+  <button data-tab="ia">IA</button>
+  <button data-tab="ajustes">Ajustes</button>
+  <button data-tab="log">Log</button>
+</nav>
 
 <div id="gate">
   <h2>Token del aparato</h2>
@@ -416,74 +577,121 @@ const PAGE = `<!doctype html>
 </div>
 
 <main id="app" style="display:none">
-<section><h2>Mensaje para el hub</h2>
-  <form id="formMessage">
-    <input type="text" name="from" placeholder="De" style="max-width:110px">
-    <input type="text" name="text" placeholder="Mensaje" required><button>Dejar</button>
-  </form>
-  <ul id="messages"></ul>
+
+<section class="tab" id="tab-pizarra">
+  <div class="card"><h2>Mensaje para el hub</h2>
+    <form id="formMessage">
+      <input type="text" name="from" placeholder="De" style="max-width:110px">
+      <input type="text" name="text" placeholder="Mensaje" required><button>Dejar</button>
+    </form>
+    <ul id="messages"></ul>
+  </div>
+  <div class="card"><h2>Recordatorios</h2>
+    <form id="formReminder">
+      <input type="text" name="title" placeholder="Qué" required>
+      <input type="date" name="date"><input type="time" name="time">
+      <select name="repeat">
+        <option value="none">Una vez</option><option value="daily">Diario</option>
+        <option value="weekly">Semanal</option><option value="monthly">Mensual</option>
+      </select><button>Guardar</button>
+    </form>
+    <ul id="reminders"></ul>
+  </div>
+  <div class="card"><h2>Memoria del asistente</h2>
+    <p class="muted">Lo que le pediste que recuerde ("acordate que..."). Entra en el prompt cuando le hablás.</p>
+    <ul id="memories"></ul>
+  </div>
 </section>
 
-<section><h2>Recordatorios</h2>
-  <form id="formReminder">
-    <input type="text" name="title" placeholder="Qué" required>
-    <input type="date" name="date"><input type="time" name="time">
-    <select name="repeat">
-      <option value="none">Una vez</option><option value="daily">Diario</option>
-      <option value="weekly">Semanal</option><option value="monthly">Mensual</option>
-    </select><button>Guardar</button>
-  </form>
-  <ul id="reminders"></ul>
+<section class="tab" id="tab-listas">
+  <div class="card"><h2>Listas</h2>
+    <form id="formItem"><select id="listSelect"></select><input type="text" name="text" placeholder="Ítem" required><button>Agregar</button></form>
+    <form id="formList"><input type="text" name="name" placeholder="Lista nueva" required><button>Crear lista</button></form>
+    <div id="listItems"></div>
+  </div>
 </section>
 
-<section><h2>Listas</h2>
-  <form id="formItem"><select id="listSelect"></select><input type="text" name="text" placeholder="Ítem" required><button>Agregar</button></form>
-  <form id="formList"><input type="text" name="name" placeholder="Lista nueva" required><button>Crear lista</button></form>
-  <div id="listItems"></div>
+<section class="tab" id="tab-notas">
+  <div class="card"><h2>Notas</h2>
+    <form id="formNote"><textarea name="text" rows="3" placeholder="Nota" required></textarea><button>Guardar</button></form>
+    <p class="muted">En el aparato también se dictan: Atrás dos veces y decí "nota: ...".</p>
+    <ul id="notes"></ul>
+  </div>
 </section>
 
-<section><h2>Notas</h2>
-  <form id="formNote"><textarea name="text" rows="2" placeholder="Nota" required></textarea><button>Guardar</button></form>
-  <ul id="notes"></ul>
+<section class="tab" id="tab-fotos">
+  <div class="card"><h2>Fotos</h2>
+    <p class="muted">Subilas tal como salen del teléfono: el servidor las rota, las escala a 480x800 y las pasa a 4 grises. Se pueden elegir varias.</p>
+    <div class="row"><input type="file" id="photoInput" accept="image/*" multiple><button type="button" id="photoSend">Subir</button></div>
+    <p class="muted" id="photoStatus"></p>
+    <ul id="photos"></ul>
+  </div>
 </section>
 
-<section><h2>Fotos</h2>
-  <div class="row"><input type="file" id="photoInput" accept="image/*"><button type="button" id="photoSend">Subir</button></div>
-  <p class="muted" id="photoStatus"></p>
-  <ul id="photos"></ul>
+<section class="tab" id="tab-noticias">
+  <div class="card"><h2>Noticias (RSS)</h2>
+    <form id="formFeed"><input type="text" name="name" placeholder="Nombre" style="max-width:130px"><input type="text" name="url" placeholder="https://.../rss" required><button>Agregar</button></form>
+    <ul id="feeds"></ul>
+  </div>
 </section>
 
-<section><h2>Noticias (RSS)</h2>
-  <form id="formFeed"><input type="text" name="name" placeholder="Nombre" style="max-width:130px"><input type="text" name="url" placeholder="https://.../rss" required><button>Agregar</button></form>
-  <ul id="feeds"></ul>
+<section class="tab" id="tab-ia">
+  <div class="card"><h2>Modelo de texto</h2>
+    <p class="muted">Es el que entiende lo que decís, responde preguntas y traduce. Se puede cambiar sin tocar el aparato.</p>
+    <div class="row"><label for="llmPreset">Proveedor</label><select id="llmPreset"></select></div>
+    <div class="row" id="llmBaseRow"><label for="llmBase">URL</label><input type="text" id="llmBase" placeholder="https://api.groq.com/openai/v1"></div>
+    <div class="row"><label for="llmModel">Modelo</label><select id="llmModel"></select></div>
+    <div class="row"><label for="llmKey">Clave</label><input type="password" id="llmKey" placeholder="dejala vacía para no cambiarla" autocomplete="off"><span id="llmKeyState" class="muted"></span></div>
+  </div>
+  <div class="card"><h2>Transcripción de voz</h2>
+    <p class="muted">Lo que pasa tu voz a texto. Groq (whisper-large-v3-turbo) es gratis y el más rápido.</p>
+    <div class="row"><label for="sttBase">URL</label><input type="text" id="sttBase"></div>
+    <div class="row"><label for="sttModel">Modelo</label><input type="text" id="sttModel"></div>
+    <div class="row"><label for="sttKey">Clave</label><input type="password" id="sttKey" placeholder="dejala vacía para no cambiarla" autocomplete="off"><span id="sttKeyState" class="muted"></span></div>
+    <div class="row"><label><input type="checkbox" id="sttFollow" checked> seguir al proveedor</label></div>
+    <div class="row"><button id="aiSave">Guardar</button><button class="ghost" id="aiTest">Probar</button></div>
+    <pre id="aiTestOut" class="muted"></pre>
+  </div>
+  <div class="card"><h2>Token del aparato</h2>
+    <p class="muted" id="tokenState"></p>
+    <div class="row"><input type="text" id="newToken" placeholder="token nuevo"><button class="danger" id="tokenChange">Cambiar</button></div>
+    <p class="muted">El token del entorno sigue valiendo siempre, así que no te podés dejar afuera. Después hay que ponerlo también en la web UI del aparato → Servidor.</p>
+  </div>
 </section>
 
-<section><h2>Memoria del asistente</h2><ul id="memories"></ul></section>
-
-<section><h2>Ajustes</h2>
-  <p class="muted">Lugar del clima: <b id="place">—</b></p>
-  <p class="muted">Clima en el servidor: <span id="weatherNow">—</span></p>
-  <p class="muted" id="lastSync"></p>
-  <form id="formPlace"><input type="text" id="placeQuery" placeholder="Ciudad" required><button>Buscar</button></form>
-  <ul id="placeResults"></ul>
-  <div class="row"><label for="setLang">Idioma</label>
-    <select id="setLang">
-      <option value="es">Español</option><option value="en">English</option><option value="fr">Français</option>
-      <option value="de">Deutsch</option><option value="pt">Português</option><option value="ru">Русский</option>
-    </select></div>
-  <div class="row"><label for="setSpeak">Voz hablada</label>
-    <select id="setSpeak"><option value="none">Nunca</option><option value="short">Respuestas cortas</option><option value="all">Siempre</option></select></div>
-  <div class="row"><label for="setTranslator">Traductor: otro idioma</label>
-    <select id="setTranslator">
-      <option value="en">English</option><option value="es">Español</option><option value="fr">Français</option>
-      <option value="de">Deutsch</option><option value="pt">Português</option><option value="ru">Русский</option>
-    </select></div>
-  <div class="row"><label for="setVolume">Volumen música</label><input type="range" id="setVolume" min="0" max="100" step="5"><span id="volumeOut" class="muted"></span></div>
-  <div class="row"><button id="settingsSave">Guardar ajustes</button></div>
-  <p class="muted">Los ajustes viajan al aparato en la próxima sincronización del hub (mantené Atrás 1,2 s en el hub, o Ajustes → Sincronizar hub). El aparato sincroniza solo cada 3 h.</p>
+<section class="tab" id="tab-ajustes">
+  <div class="card"><h2>Clima</h2>
+    <p class="muted">Lugar: <b id="place">—</b></p>
+    <p class="muted">En el servidor: <span id="weatherNow">—</span></p>
+    <form id="formPlace"><input type="text" id="placeQuery" placeholder="Ciudad" required><button>Buscar</button></form>
+    <ul id="placeResults"></ul>
+  </div>
+  <div class="card"><h2>Aparato</h2>
+    <div class="row"><label for="setLang">Idioma</label>
+      <select id="setLang">
+        <option value="es">Español</option><option value="en">English</option><option value="fr">Français</option>
+        <option value="de">Deutsch</option><option value="pt">Português</option><option value="ru">Русский</option>
+      </select></div>
+    <div class="row"><label for="setSpeak">Voz hablada</label>
+      <select id="setSpeak"><option value="none">Nunca</option><option value="short">Respuestas cortas</option><option value="all">Siempre</option></select></div>
+    <div class="row"><label for="setTranslator">Traductor: otro idioma</label>
+      <select id="setTranslator">
+        <option value="en">English</option><option value="es">Español</option><option value="fr">Français</option>
+        <option value="de">Deutsch</option><option value="pt">Português</option><option value="ru">Русский</option>
+      </select></div>
+    <div class="row"><label for="setVolume">Volumen música</label><input type="range" id="setVolume" min="0" max="100" step="5"><span id="volumeOut" class="muted"></span></div>
+    <div class="row"><button id="settingsSave">Guardar ajustes</button></div>
+    <p class="muted" id="lastSync"></p>
+  </div>
 </section>
 
-<p class="muted">Lo que cargues acá aparece en el aparato en la próxima sincronización.</p>
+<section class="tab" id="tab-log">
+  <div class="card"><h2>Log del aparato</h2>
+    <div class="row"><button class="ghost" id="logReload">Actualizar</button></div>
+    <pre id="logBox"></pre>
+  </div>
+</section>
+
 </main>
 <div class="toast" id="toast"></div>
 <script>${SCRIPT}</script></body></html>`;

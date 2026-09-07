@@ -1,6 +1,6 @@
 // "Preguntarle al libro": el aparato manda el texto del capítulo que está
-// leyendo más una pregunta; acá lo responde Claude. La API key de Anthropic
-// vive solo en Railway (ANTHROPIC_API_KEY): el lector nunca la ve.
+// leyendo más una pregunta y acá la responde el modelo configurado. Las claves
+// viven solo en el servidor: el lector nunca las ve.
 //
 //   POST /api/ask   (Bearer del aparato, lo chequea api.ts)
 //   body: { book, chapter, text, page?, question, lang? }
@@ -14,9 +14,8 @@
 //   200: { ok: true, answer, model, usage: { input, output, cached } }
 //   4xx/5xx: { ok: false, error }
 //
-// Modelo: claude-haiku-4-5 por defecto (el más barato: $1 / $5 por millón de
-// tokens). ASK_MODEL lo cambia; el pedido no usa parámetros específicos de un
-// modelo, así que cualquier ID actual sirve tal cual.
+// Modelo: el elegido en /board -> Ajustes (Claude, Groq, DeepSeek o cualquier
+// API compatible con OpenAI). Ver src/llm.ts y src/config.ts.
 //
 // El capítulo va en el system prompt con cache_control: las preguntas
 // sucesivas sobre el mismo capítulo reusan el prefijo cacheado (~90 % menos
@@ -26,13 +25,11 @@ import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 import { load } from "./store";
+import { chatText, providerLabel, LlmError } from "./llm";
 
-const MODEL = process.env.ASK_MODEL ?? "claude-haiku-4-5";
 const MAX_TEXT = 32_000; // chars; el aparato recorta antes, esto es defensa
 const MAX_PAGE = 8_000;
 const MAX_QUESTION = 500;
-
-const client = new Anthropic();
 
 export const ask = new Hono();
 
@@ -82,52 +79,29 @@ ask.post("/", async (c) => {
   const general = !text;
 
   try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 1024,
-      system: general
-        ? generalPrompt(lang, ((await load()).memories ?? []).slice(-40).map((m) => m.text))
-        : [
-            { type: "text", text: systemPrompt(book, chapter, lang) },
-            {
-              type: "text",
-              text: `<leido_hasta_aca>\n${text}\n</leido_hasta_aca>`,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-      messages: [
-        {
-          role: "user",
-          content: page && !general
+    const answer = (
+      await chatText({
+        system: general
+          ? generalPrompt(lang, ((await load()).memories ?? []).slice(-40).map((m) => m.text))
+          : systemPrompt(book, chapter, lang),
+        cached: general ? undefined : `<leido_hasta_aca>\n${text}\n</leido_hasta_aca>`,
+        user:
+          page && !general
             ? `El lector está en esta página:\n<pagina>\n${page}\n</pagina>\n\nPregunta: ${question}`
             : question,
-        },
-      ],
-    });
-
-    if (response.stop_reason === "refusal") {
-      return c.json({ ok: false, error: "refused" }, 422);
-    }
-    let answer = "";
-    for (const block of response.content) {
-      if (block.type === "text") answer += block.text;
-    }
-    answer = answer.trim();
-    return c.json({
-      ok: true,
-      answer,
-      model: response.model,
-      usage: {
-        input: response.usage.input_tokens,
-        output: response.usage.output_tokens,
-        cached: response.usage.cache_read_input_tokens ?? 0,
-      },
-    });
+        maxTokens: 1024,
+      })
+    ).trim();
+    return c.json({ ok: true, answer, model: await providerLabel() });
   } catch (err) {
+    if (err instanceof LlmError) {
+      console.error("ask llm:", err.message);
+      return c.json({ ok: false, error: err.message }, 502);
+    }
     if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
-    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "bad ANTHROPIC_API_KEY" }, 500);
-    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `claude ${err.status}: ${err.message}` }, 502);
+    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "falta o no sirve la clave del modelo" }, 500);
+    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `modelo ${err.status}: ${err.message}` }, 502);
     console.error("ask:", err);
-    return c.json({ ok: false, error: "internal" }, 500);
+    return c.json({ ok: false, error: String(err).slice(0, 200) }, 500);
   }
 });

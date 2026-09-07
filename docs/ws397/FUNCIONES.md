@@ -120,6 +120,8 @@ de la UI al que se pida (si no se dice: al inglés, o al español si la UI está
 | T.1 | OTA desde el servidor propio, versión estricta | ✅ | |
 | T.2 | Web UI en el aparato: WiFi, servidor y token, libros | ✅ | Se le suman los ajustes del hub |
 | T.3 | Página web en el Hono con el token: mandar mensajes, ver y editar recordatorios y listas, subir imágenes, configurar el aparato | ✅ | 1.5.31. Sustituye a la app del teléfono de Sticky y Note 4 |
+| T.8 | Proveedor de IA configurable desde la web: Anthropic (Claude), Groq (gratis y el más rápido), DeepSeek (muy barato) o cualquier API compatible con OpenAI, con su modelo y su clave; lo mismo para la transcripción de voz. Las claves se guardan en el volumen y no se devuelven nunca. Botón "Probar" que dice si el modelo y la transcripción contestan | ✅ | 1.5.35, `server/src/{config,llm}.ts` |
+| T.9 | Token del aparato editable desde la web (el del entorno sigue valiendo siempre, para no quedar afuera) | ✅ | 1.5.35 |
 | T.6 | Servidor completo en `server/` de este repo (Bun + Hono): OTA, ask, transcribe, hub, voice, store. Railway con Root Directory = `server` | ✅ | 1.5.18, ver `server/README.md` |
 | T.7 | Log del aparato en la SD (`/.crosspoint/device.log`, rota a 64 KB, con hora del RTC): cada línea de LOG_* queda guardada, se sube en cada sincronización —también cuando falla— (`POST /api/log`) y se lee desde el teléfono en `/board/log`, **con el token** (tiene los nombres de las redes WiFi y todo lo que se dicta por voz) | ✅ | 1.5.30; token en 1.5.33 |
 | T.4 | Modo bajo consumo: deep sleep con wake por botón, RTC y sincronización programada | ⬜ | |

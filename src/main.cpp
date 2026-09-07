@@ -300,6 +300,8 @@ static void sleepNow() {
 // arranque después de dormir, así que un temporizador vencido en Notas, Agenda o
 // Ajustes no sonaba nunca. Se dispara sobre las pantallas tranquilas; el lector y
 // las que usan red o audio se dejan en paz (ahí manda el wake por deep sleep).
+constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atrás
+
 static bool isCalmScreen(const char* name) {
   static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather"};
   for (const char* n : CALM) {
@@ -308,19 +310,18 @@ static bool isCalmScreen(const char* name) {
   return false;
 }
 
-// Atajo de voz desde cualquier pantalla tranquila: UP + DOWN juntos. Los cuatro
-// botones de esta placa ya tienen dueño (OK es power, Atrás es sincronizar o
-// volver, UP/DOWN mantenidos pasan de página), así que el combo es lo único libre.
+// Atajo de voz: DOS toques de Atrás seguidos. UP/DOWN es una palanca física
+// (arriba XOR abajo, nunca las dos), OK es el botón de encendido y un Atrás
+// mantenido ya sincroniza o actualiza según la pantalla; el doble toque es lo
+// único que queda libre. Desde cualquier pantalla: el primer toque vuelve al
+// hub y el segundo abre Hablar (en el hub, Atrás no hace nada).
 static void checkVoiceShortcut() {
-  static bool comboActive = false;
-  const bool both = mappedInputManager.isPressed(MappedInputManager::Button::Up) &&
-                    mappedInputManager.isPressed(MappedInputManager::Button::Down);
-  if (!both) {
-    comboActive = false;
-    return;
-  }
-  if (comboActive) return;  // ya se disparó con esta pulsación
-  comboActive = true;
+  static unsigned long lastBackRelease = 0;
+  if (!mappedInputManager.wasReleased(MappedInputManager::Button::Back)) return;
+  const unsigned long now = millis();
+  const bool isDouble = lastBackRelease != 0 && now - lastBackRelease <= DOUBLE_BACK_MS;
+  lastBackRelease = isDouble ? 0 : now;  // el segundo toque cierra la ventana
+  if (!isDouble) return;
   if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
   const char* name = activityManager.currentActivityName();
   if (!isCalmScreen(name)) return;
