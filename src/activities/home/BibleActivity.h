@@ -26,8 +26,8 @@ class BibleActivity final : public Activity {
   bool preventAutoSleep() override { return state == RECORDING || state == CONNECTING || state == LOADING; }
 
  private:
-  enum State { BOOKS, CHAPTERS, READING, RECORDING, CONNECTING, LOADING, PICK_RESULT, FAILED };
-  enum Pending { NONE, LOAD_BOOKS, LOAD_CHAPTER, VOICE };
+  enum State { BOOKS, CHAPTERS, READING, RECORDING, CONNECTING, LOADING, PICK_RESULT, DOWNLOADING, SEARCHING, FAILED };
+  enum Pending { NONE, LOAD_BOOKS, LOAD_CHAPTER, VOICE, DOWNLOAD };
   State state = BOOKS;
   Pending pending = NONE;
   State stateAfterConnect = BOOKS;
@@ -60,7 +60,26 @@ class BibleActivity final : public Activity {
   std::string dayRef;
   std::string dayText;
 
+  // Biblia entera en la SD: un archivo por libro ("#<capítulo>" y los versículos
+  // numerados abajo). Con eso se lee y se busca sin WiFi.
+  int downloadIndex = 0;   // libro que se está bajando
+  int downloadedKb = 0;
+  int searchIndex = 0;     // libro que se está revisando en una búsqueda offline
+  std::string searchQuery;
+  std::vector<std::string> searchWords;  // todas tienen que estar en el versículo
+  bool offlineSearch = false;
+
   std::string cacheDir() const;
+  std::string bookPath(int book) const;
+  bool bookDownloaded(int book) const;
+  bool bibleComplete() const;
+  bool readChapterFromBook(int book, int chapter, std::string& text) const;
+  bool downloadBook(int book);
+  // Referencia hablada ("Juan 3 16") resuelta con los nombres que ya están en la SD.
+  bool parseRefLocal(const std::string& spoken, int& book, int& chapter, int& verse) const;
+  // Un paso de la búsqueda offline: revisa un libro y acumula en hits.
+  void searchStep();
+  void finishSearch();
   bool loadBooksFromCache();
   bool fetchBooks();
   bool chapterCached(int book, int chapter) const;

@@ -6,6 +6,9 @@
 //   GET  /api/bible/books?lang=xx                 -> { ok, books: [{ i, name, chapters }] }
 //   GET  /api/bible/chapter?lang=xx&book=i&chapter=n -> { ok, book, name, chapter, chapters, text }
 //        text = versículos numerados, uno por línea ("16 Porque de tal manera...")
+//   GET  /api/bible/book?lang=xx&book=i           -> text/plain, el libro entero
+//        ("#<capítulo>" y abajo los versículos numerados). Sirve para bajar la
+//        Biblia completa a la SD y buscar sin WiFi.
 //   GET  /api/bible/day?lang=xx                   -> { ok, ref, text }   versículo del día
 //   GET  /api/bible/find?lang=xx&q=texto          -> referencia ("Juan 3 16", "Salmo 23") o búsqueda
 //        -> { ok, kind: "ref", book, chapter, verse } | { ok, kind: "search", results: [{book, name, chapter, verse, text}] }
@@ -105,6 +108,29 @@ bibleApi.get("/chapter", async (c) => {
   if (!b || !(chapter >= 1 && chapter <= b.chapters.length)) return c.json({ ok: false, error: "bad reference" }, 400);
   const text = b.chapters[chapter - 1].map((v, i) => `${i + 1} ${v}`).join("\n");
   return c.json({ ok: true, book, name: BOOK_NAMES[lang][book], chapter, chapters: b.chapters.length, text });
+});
+
+// Un libro entero en texto plano, para bajar la Biblia completa a la SD y
+// leerla (y buscar en ella) sin WiFi. Formato: una línea "#<capítulo>" y abajo
+// los versículos numerados. El libro más grande (Salmos) ronda los 250 KB.
+//
+//   GET /api/bible/book?lang=xx&book=i  -> text/plain
+bibleApi.get("/book", async (c) => {
+  const lang = normalizeLang(c.req.query("lang"));
+  const books = await bible(lang);
+  if (!books) return c.json({ ok: false, error: "bible unavailable" }, 503);
+  const i = Number(c.req.query("book"));
+  const b = books[i];
+  if (!b) return c.json({ ok: false, error: "bad book" }, 400);
+  const parts: string[] = [];
+  for (let ch = 0; ch < b.chapters.length; ch++) {
+    parts.push(`#${ch + 1}`);
+    for (let v = 0; v < b.chapters[ch].length; v++) parts.push(`${v + 1} ${b.chapters[ch][v]}`);
+  }
+  const body = parts.join("\n") + "\n";
+  return new Response(body, {
+    headers: { "Content-Type": "text/plain; charset=utf-8", "Content-Length": String(new TextEncoder().encode(body).length) },
+  });
 });
 
 // Un versículo por día de una lista corta de referencias queridas.
