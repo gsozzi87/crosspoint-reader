@@ -13,13 +13,14 @@
 //   POST /api/board/note     {text}
 //   POST /api/board/feed     {name, url}
 //   POST /api/board/photo?name=      (body: image/bmp de 2 bpp, lo arma el navegador)
+//   POST /api/board/attachment?trip=&name=   (multipart o cuerpo crudo: PDF del vuelo, del hotel...)
 //   POST /api/board/list     {name}          crea una lista
 //   POST /api/board/list/delete {name}       la borra con todo lo que tenga
 //   GET  /api/board/extra    -> {feeds, memories, settings, lists}
 //   POST /api/board/settings {lang, speak, musicVolume, translatorLang}
 //   (leer, tildar y borrar: GET /api/hub, POST /api/hub/done, POST /api/hub/edit)
 import { Hono } from "hono";
-import { load, save, nextId, resolveList, DEFAULT_SETTINGS, type Settings } from "./store";
+import { load, save, nextId, resolveList, upsertReminder, refreshTimeZone, repeatText, DEFAULT_SETTINGS, type Settings } from "./store";
 import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
 import { config, saveConfig, publicConfig, MODEL_PRICES, STT_PRICES, SEARCH_PRICE_ANTHROPIC, QUERY_SHAPE, deepSeekPeak, queryCost, type Config } from "./config";
@@ -27,6 +28,7 @@ import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSear
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
+import { boardAttachment } from "./attachments";
 
 export const boardApi = new Hono();
 
@@ -40,16 +42,21 @@ boardApi.post("/message", async (c) => {
   return c.json({ ok: true });
 });
 
+// Alta y edición (si trae id). La repetición es el objeto nuevo
+// {kind, days, interval, until}; una cadena vieja también entra.
 boardApi.post("/reminder", async (c) => {
+  await refreshTimeZone();
   const b = await readBody(c);
-  const title = (b.title ?? "").toString().trim().slice(0, 200);
-  if (!title) return c.json({ ok: false, error: "title required" }, 400);
-  const dueAt = typeof b.dueAt === "string" && /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(b.dueAt) ? b.dueAt : null;
-  const repeat = ["none", "daily", "weekly", "monthly"].includes(b.repeat) ? b.repeat : "none";
   const store = await load();
-  store.reminders.push({ id: nextId(store), title, dueAt, repeat, done: false, createdAt: new Date().toISOString() });
+  const res = upsertReminder(store, b);
+  if (!res.ok) {
+    return res.error === "not_found"
+      ? c.json({ ok: false, error: "no existe ese recordatorio" }, 404)
+      : c.json({ ok: false, error: "title required" }, 400);
+  }
   await save(store);
-  return c.json({ ok: true });
+  const r = res.reminder;
+  return c.json({ ok: true, reminder: { id: r.id, title: r.title, at: r.dueAt, repeatSpec: r.repeat, repeatText: repeatText(r.repeat, r.dueAt, "es") } });
 });
 
 boardApi.post("/item", async (c) => {
@@ -151,6 +158,11 @@ boardApi.post("/photo", async (c) => {
     return c.json({ ok: false, error: `no se pudo guardar (${String(err).slice(0, 120)})` }, 500);
   }
 });
+
+// Adjuntos de los viajes (attachments.ts): el PDF entra tal como salió del mail
+// y sale convertido a bitmaps que el aparato pinta, con el código de barras
+// vuelto a generar limpio.
+boardApi.route("/attachment", boardAttachment);
 
 boardApi.get("/extra", async (c) => {
   const store = await load();
@@ -355,6 +367,18 @@ pre{white-space:pre-wrap;word-break:break-word;font:12px/1.4 ui-monospace,Menlo,
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;background:#111;color:#fff;padding:11px 18px;border-radius:22px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
 .toast.on{opacity:1}
 #gate{display:none;max-width:420px;margin:60px auto;text-align:center}
+.cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;margin-top:6px}
+.cal .h{font-size:11px;color:var(--muted);text-align:center;padding:2px 0;font-weight:600}
+.cal button.d{display:block;text-align:left;min-height:52px;padding:4px 5px;background:var(--bg);color:var(--ink);border:1px solid transparent;border-radius:8px;font-weight:400;overflow:hidden}
+.cal button.d b{font-size:13px;font-weight:600}
+.cal button.d i{display:block;font-style:normal;font-size:10px;line-height:1.15;color:var(--muted);margin-top:2px;word-break:break-word;max-height:26px;overflow:hidden}
+.cal button.d.off{opacity:.4}
+.cal button.d.today{border-color:var(--muted)}
+.cal button.d.sel{background:var(--accent);color:var(--bg)}
+.cal button.d.sel i{color:var(--bg);opacity:.85}
+.calhead{display:flex;align-items:center;gap:10px;justify-content:space-between}
+.calhead b{font-size:15px}
+label.chk{min-width:0;display:inline-flex;align-items:center;gap:4px;color:var(--ink)}
 `;
 
 // Ojo al editar: esto vive dentro de un template literal, así que un backslash
@@ -408,6 +432,7 @@ function showTab(name){
   document.querySelectorAll("nav button").forEach((b) => b.classList.toggle("on", b.dataset.tab === name));
   localStorage.setItem("boardTab", name);
   if (name === "log") loadLog();
+  if (name === "calendario") loadCalendar().catch((e) => toast("No se pudo cargar el calendario: " + e.message));
   window.scrollTo(0, 0);
 }
 
@@ -429,8 +454,9 @@ async function refresh(){
     row(m.from + ": " + m.text, "", btn("Leído", "done", { kind: "message", id: m.id }))).join("") || empty("Sin mensajes");
 
   $("reminders").innerHTML = d.reminders.map((r) =>
-    row(r.title, r.when || "sin hora",
+    row(r.title, [r.when || "sin hora", r.repeatText].filter(Boolean).join(" · "),
       btn("Hecho", "done", { kind: "reminder", id: r.id }) +
+      btn("Editar", "remedit", { rem: JSON.stringify({ id: r.id, title: r.title, at: r.at, repeat: r.repeatSpec }) }) +
       btn("Borrar", "del", { kind: "reminder", id: r.id }))).join("") || empty("Sin recordatorios");
 
   const names = x.lists.length ? x.lists : d.lists.map((l) => l.name);
@@ -484,6 +510,7 @@ async function refresh(){
 
   await loadConfig();
   loadAssets().catch(() => {});
+  if ($("tab-calendario").classList.contains("on")) loadCalendar().catch(() => {});
 }
 
 async function loadConfig(){
@@ -573,6 +600,208 @@ function fillModels(presetKey, selected){
   }
 }
 
+// ── Repetición: los mismos controles para un evento y para un recordatorio ──
+// El texto de "cada cuánto" lo escribe el servidor (/api/calendar/repeat), que
+// es el mismo que después ve el aparato: una sola fuente para los seis idiomas.
+const DOW_SHORT = ["D", "L", "M", "M", "J", "V", "S"];
+const DOW_LONG = ["Dom", "Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
+const MONTHS = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+const REPEAT_UNIT = { daily: "días", weekly: "semanas", monthly: "meses", yearly: "años" };
+
+function repeatControls(p){
+  const days = [1, 2, 3, 4, 5, 6, 0].map((d) =>
+    "<label class='chk'><input type='checkbox' id='" + p + "Day" + d + "'> " + DOW_LONG[d] + "</label>").join("");
+  return "<div class='row'><label for='" + p + "Kind'>Se repite</label>" +
+    "<select id='" + p + "Kind'>" +
+      "<option value='none'>Una sola vez</option>" +
+      "<option value='daily'>Todos los días</option>" +
+      "<option value='weekdays'>De lunes a viernes</option>" +
+      "<option value='weekly'>Ciertos días de la semana</option>" +
+      "<option value='monthly'>Todos los meses</option>" +
+      "<option value='yearly'>Todos los años</option>" +
+    "</select></div>" +
+    "<div class='row' id='" + p + "DaysRow'>" + days + "</div>" +
+    "<div class='row' id='" + p + "EveryRow'><label for='" + p + "Interval'>Cada</label>" +
+      "<input type='number' id='" + p + "Interval' min='1' max='99' value='1' style='max-width:80px'>" +
+      "<span class='muted' id='" + p + "Unit'></span></div>" +
+    "<div class='row' id='" + p + "UntilRow'><label for='" + p + "Until'>Hasta (opcional)</label><input type='date' id='" + p + "Until'></div>" +
+    "<p class='muted'>Va a sonar: <b id='" + p + "Text'>Una sola vez</b></p>";
+}
+
+function readRepeat(p){
+  const days = [];
+  for (let d = 0; d < 7; d++) if ($(p + "Day" + d).checked) days.push(d);
+  return {
+    kind: $(p + "Kind").value,
+    days: days,
+    interval: Number($(p + "Interval").value) || 1,
+    until: $(p + "Until").value || null,
+  };
+}
+
+function setRepeat(p, rep, untilIso){
+  const r = rep || { kind: "none" };
+  $(p + "Kind").value = r.kind || "none";
+  for (let d = 0; d < 7; d++) $(p + "Day" + d).checked = !!(r.days && r.days.indexOf(d) >= 0);
+  $(p + "Interval").value = r.interval || 1;
+  $(p + "Until").value = untilIso || "";
+}
+
+async function updateRepeatText(p, dateId){
+  const r = readRepeat(p);
+  $(p + "DaysRow").style.display = r.kind === "weekly" ? "flex" : "none";
+  $(p + "EveryRow").style.display = (r.kind === "none" || r.kind === "weekdays") ? "none" : "flex";
+  $(p + "UntilRow").style.display = r.kind === "none" ? "none" : "flex";
+  $(p + "Unit").textContent = REPEAT_UNIT[r.kind] || "";
+  const date = $(dateId) && $(dateId).value ? $(dateId).value : "";
+  const q = "/api/calendar/repeat?lang=es&kind=" + encodeURIComponent(r.kind) +
+    "&days=" + r.days.join(",") + "&interval=" + r.interval +
+    (r.until ? "&until=" + r.until : "") + (date ? "&date=" + date : "");
+  try { $(p + "Text").textContent = (await api(q)).text; } catch (e) {}
+}
+
+function wireRepeat(p, dateId){
+  $(p + "RepeatBox").innerHTML = repeatControls(p);
+  $(p + "RepeatBox").addEventListener("change", () => updateRepeatText(p, dateId));
+  $(p + "RepeatBox").addEventListener("input", () => updateRepeatText(p, dateId));
+  updateRepeatText(p, dateId);
+}
+
+// ── Calendario ──────────────────────────────────────────────────────────────
+let calMonth = "";
+let calDay = "";
+let calData = { events: [], days: [], today: "" };
+
+function monthAdd(first, n){
+  const y = Number(first.slice(0, 4));
+  const m = Number(first.slice(5, 7)) - 1 + n;
+  const yy = y + Math.floor(m / 12);
+  const mm = ((m % 12) + 12) % 12 + 1;
+  return String(yy) + "-" + String(mm).padStart(2, "0") + "-01";
+}
+function monthLast(first){
+  return new Date(Date.UTC(Number(first.slice(0, 4)), Number(first.slice(5, 7)), 0)).getUTCDate();
+}
+function dayAdd(date, n){
+  return new Date(new Date(date + "T00:00:00Z").getTime() + n * 86400000).toISOString().slice(0, 10);
+}
+
+async function loadCalendar(){
+  if (!calMonth) calMonth = new Date().toISOString().slice(0, 8) + "01";
+  const to = calMonth.slice(0, 8) + String(monthLast(calMonth)).padStart(2, "0");
+  calData = await api("/api/calendar?lang=es&from=" + calMonth + "&to=" + to);
+  if (!calDay || calDay < calMonth || calDay > to) calDay = calData.today >= calMonth && calData.today <= to ? calData.today : calMonth;
+  renderMonth();
+  renderDay();
+}
+
+function renderMonth(){
+  $("calTitle").textContent = MONTHS[Number(calMonth.slice(5, 7)) - 1] + " " + calMonth.slice(0, 4);
+  const byDate = {};
+  calData.days.forEach((d) => { byDate[d.date] = d; });
+  let html = [1, 2, 3, 4, 5, 6, 0].map((d) => "<div class='h'>" + DOW_SHORT[d] + "</div>").join("");
+  const firstDow = (new Date(calMonth + "T00:00:00Z").getUTCDay() + 6) % 7;  // la grilla arranca el lunes
+  const start = dayAdd(calMonth, -firstDow);
+  for (let i = 0; i < 42; i++) {
+    const date = dayAdd(start, i);
+    const info = byDate[date];
+    const cls = "d" + (date.slice(0, 7) !== calMonth.slice(0, 7) ? " off" : "") +
+      (date === calDay ? " sel" : "") + (date === calData.today ? " today" : "");
+    html += "<button class='" + cls + "' data-act='calday' data-date='" + date + "'><b>" + Number(date.slice(8, 10)) + "</b>" +
+      (info ? "<i>" + esc(info.firstTitle) + (info.count > 1 ? " +" + (info.count - 1) : "") + "</i>" : "") + "</button>";
+  }
+  $("calGrid").innerHTML = html;
+}
+
+function renderDay(){
+  $("calDayTitle").textContent = calDay ? calDay.slice(8, 10) + "/" + calDay.slice(5, 7) + "/" + calDay.slice(0, 4) : "";
+  const items = (calData.events || []).filter((i) => i.date === calDay);
+  $("calDayList").innerHTML = items.map((i) => {
+    const when = i.allDay ? "todo el día" : i.time + (i.endTime && i.endTime !== i.time ? " a " + i.endTime : "");
+    const tag = i.kind === "reminder" ? "recordatorio" : i.kind === "trip" ? "viaje" : "";
+    const extra = [when, i.place, i.repeatText, tag, i.days > 1 ? "día " + i.dayIndex + " de " + i.days : ""].filter(Boolean).join(" · ");
+    const buttons = i.kind === "reminder"
+      ? btn("Hecho", "done", { kind: "reminder", id: i.id }) + btn("Editar", "remedit", { rem: JSON.stringify({ id: i.id, title: i.title, at: i.startAt, repeat: i.repeat }) })
+      : btn("Editar", "caledit", { key: i.key }) + btn("Borrar", "caldel", { id: i.id });
+    return row(i.title, extra, buttons);
+  }).join("") || empty("Nada este día");
+}
+
+function fillEvent(key){
+  const o = (calData.events || []).filter((i) => i.key === key)[0];
+  if (!o) return;
+  $("evId").value = o.id;
+  $("evTitle").value = o.title;
+  $("evAllDay").checked = o.allDay;
+  $("evDate").value = o.startAt.slice(0, 10);
+  $("evEndDate").value = o.endAt.slice(0, 10);
+  $("evTime").value = o.allDay ? "" : o.startAt.slice(11, 16);
+  $("evEndTime").value = o.allDay ? "" : o.endAt.slice(11, 16);
+  $("evPlace").value = o.place || "";
+  $("evNote").value = o.note || "";
+  setRepeat("ev", o.repeat, o.repeat && o.repeat.until ? new Date(o.repeat.until * 1000).toISOString().slice(0, 10) : "");
+  updateRepeatText("ev", "evDate");
+  $("evFormTitle").textContent = "Editar evento";
+  $("tab-calendario").scrollIntoView ? $("evTitle").scrollIntoView({ block: "center" }) : 0;
+}
+
+function clearEvent(){
+  $("evId").value = "";
+  $("evTitle").value = "";
+  $("evDate").value = calDay || "";
+  $("evEndDate").value = "";
+  $("evTime").value = "";
+  $("evEndTime").value = "";
+  $("evPlace").value = "";
+  $("evNote").value = "";
+  $("evAllDay").checked = false;
+  setRepeat("ev", { kind: "none" }, "");
+  updateRepeatText("ev", "evDate");
+  $("evFormTitle").textContent = "Evento nuevo";
+}
+
+async function saveEvent(){
+  const body = {
+    id: $("evId").value ? Number($("evId").value) : null,
+    title: $("evTitle").value,
+    date: $("evDate").value,
+    endDate: $("evEndDate").value || $("evDate").value,
+    time: $("evAllDay").checked ? "" : $("evTime").value,
+    endTime: $("evAllDay").checked ? "" : $("evEndTime").value,
+    allDay: $("evAllDay").checked,
+    place: $("evPlace").value,
+    note: $("evNote").value,
+    repeat: readRepeat("ev"),
+  };
+  if (!body.title.trim()) { toast("Ponle un título"); return; }
+  if (!body.date) { toast("Elige el día"); return; }
+  try {
+    const r = await api("/api/calendar/event", body);
+    calDay = r.event.start.slice(0, 10);
+    calMonth = calDay.slice(0, 8) + "01";
+    clearEvent();
+    await loadCalendar();
+    toast("Guardado · " + r.repeatText);
+  } catch (e) { toast("No se pudo: " + e.message); }
+}
+
+function fillReminder(r){
+  $("remId").value = r.id || "";
+  $("remTitle").value = r.title || "";
+  $("remDate").value = r.at ? r.at.slice(0, 10) : "";
+  $("remTime").value = r.at && r.at.length > 10 ? r.at.slice(11, 16) : "";
+  setRepeat("rem", r.repeat, r.repeat && r.repeat.until ? new Date(r.repeat.until * 1000).toISOString().slice(0, 10) : "");
+  updateRepeatText("rem", "remDate");
+  $("remFormTitle").textContent = r.id ? "Editando un recordatorio" : "Recordatorios";
+  showTab("pizarra");
+  $("remTitle").scrollIntoView({ block: "center" });
+}
+
+function clearReminder(){
+  fillReminder({ id: "", title: "", at: "", repeat: { kind: "none" } });
+  $("remFormTitle").textContent = "Recordatorios";
+}
+
 document.addEventListener("click", async (ev) => {
   const nav = ev.target.closest("nav button[data-tab]");
   if (nav) { showTab(nav.dataset.tab); return; }
@@ -580,6 +809,19 @@ document.addEventListener("click", async (ev) => {
   if (!b) return;
   const act = b.dataset.act;
   try {
+    if (act === "calday") { calDay = b.dataset.date; renderMonth(); renderDay(); return; }
+    if (act === "calprev" || act === "calnext") { calMonth = monthAdd(calMonth, act === "calnext" ? 1 : -1); await loadCalendar(); return; }
+    if (act === "caltoday") { calMonth = calData.today.slice(0, 8) + "01"; calDay = calData.today; await loadCalendar(); return; }
+    if (act === "caledit") { fillEvent(b.dataset.key); return; }
+    if (act === "calnew") { clearEvent(); return; }
+    if (act === "caldel") {
+      if (!confirm("¿Borrar el evento?")) return;
+      await api("/api/calendar/event/delete", { id: Number(b.dataset.id) });
+      await loadCalendar();
+      toast("Borrado");
+      return;
+    }
+    if (act === "remedit") { fillReminder(JSON.parse(b.dataset.rem)); return; }
     if (act === "done") await api("/api/hub/done", { kind: b.dataset.kind, id: Number(b.dataset.id) });
     else if (act === "del") await api("/api/hub/edit", { kind: b.dataset.kind, id: Number(b.dataset.id), action: "delete" });
     else if (act === "delphoto") await api("/api/photos/delete", { id: b.dataset.id });
@@ -663,11 +905,30 @@ async function loadLog(){
 
 function start(){
   wire("formMessage", "/api/board/message", (f) => ({ from: f.from.value, text: f.text.value }));
-  wire("formReminder", "/api/board/reminder", (f) => ({
-    title: f.title.value,
-    dueAt: f.date.value ? (f.date.value + (f.time.value ? "T" + f.time.value : "")) : null,
-    repeat: f.repeat.value,
-  }));
+  wireRepeat("rem", "remDate");
+  wireRepeat("ev", "evDate");
+  $("formReminder").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const body = {
+      id: $("remId").value ? Number($("remId").value) : null,
+      title: $("remTitle").value,
+      dueAt: $("remDate").value ? ($("remDate").value + ($("remTime").value ? "T" + $("remTime").value : "")) : null,
+      repeat: readRepeat("rem"),
+    };
+    if (!body.title.trim()) { toast("Ponle un título"); return; }
+    try {
+      const r = await api("/api/board/reminder", body);
+      clearReminder();
+      await refresh();
+      toast("Guardado · " + r.reminder.repeatText);
+    } catch (err) { toast("No se pudo: " + err.message); }
+  });
+  $("remClear").addEventListener("click", clearReminder);
+  $("evSave").addEventListener("click", saveEvent);
+  $("evNew").addEventListener("click", clearEvent);
+  $("evAllDay").addEventListener("change", () => {
+    $("evTimeRow").style.display = $("evAllDay").checked ? "none" : "flex";
+  });
   wire("formItem", "/api/board/item", (f) => ({ list: $("listSelect").value, text: f.text.value }));
   wire("formList", "/api/board/list", (f) => ({ name: f.name.value }));
   wire("formNote", "/api/board/note", (f) => ({ text: f.text.value }));
@@ -754,6 +1015,196 @@ function start(){
   refresh().catch((e) => gate("No se pudo conectar: " + e.message));
 }
 start();
+
+// ── Viajes ───────────────────────────────────────────────────────────────────
+// Todo lo de esta pestaña cuelga de sus propios listeners y de data-act que
+// empiezan con "trip-": el delegador de arriba los ignora (cae en su else) y
+// así esta parte no se pisa con el resto de la página.
+let tripId = localStorage.getItem("boardTrip") || "";
+let tripData = null;
+
+const TRIP_KINDS = [
+  ["flight", "Vuelo"], ["train", "Tren"], ["hotel", "Hotel"], ["ticket", "Entrada"],
+  ["meal", "Comida"], ["visit", "Visita"], ["other", "Otro"],
+];
+
+function tripKindName(k){
+  for (const p of TRIP_KINDS) if (p[0] === k) return p[1];
+  return "Otro";
+}
+
+async function tripsLoad(){
+  const r = await api("/api/trips?lang=es");
+  $("tripList").innerHTML = r.trips.map((t) => {
+    const when = t.start + (t.end !== t.start ? " a " + t.end : "");
+    const state = t.state === "now" ? "en curso" : t.state === "past" ? "terminado" : "próximo";
+    return row(t.name + (t.place ? " · " + t.place : ""), when + " · " + t.items + " cosas · " + state,
+      btn(t.id === tripId ? "Abierto" : "Abrir", "trip-open", { id: t.id }, t.id === tripId ? "" : "ghost") +
+      btn("Borrar", "trip-del", { id: t.id }, "ghost"));
+  }).join("") || empty("Todavía no hay viajes");
+  if (tripId && !r.trips.some((t) => t.id === tripId)) tripId = "";
+  await tripShow();
+}
+
+async function tripShow(){
+  const on = !!tripId;
+  for (const id of ["tripCard", "tripDocsCard", "tripPackCard"]) $(id).style.display = on ? "block" : "none";
+  localStorage.setItem("boardTrip", tripId);
+  if (!on) { tripData = null; return; }
+  const r = await api("/api/trip?id=" + encodeURIComponent(tripId) + "&lang=es");
+  tripData = r.trip;
+  $("tripTitle").textContent = tripData.name;
+  $("tripDates").textContent = tripData.start + " a " + tripData.end +
+    (tripData.place ? " · " + tripData.place : "") + " · hoy es " + r.today;
+
+  $("tripItemDate").innerHTML = tripData.days.map((d) =>
+    "<option value='" + esc(d.date) + "'>" + esc(d.date) + "</option>").join("");
+
+  const targets = ["<option value=''>Papeles del viaje</option>"];
+  tripData.days.forEach((d) => d.items.forEach((i) => {
+    targets.push("<option value='" + esc(d.date + "|" + i.id) + "'>" +
+      esc(d.date + " " + (i.at || "") + " " + i.title) + "</option>");
+  }));
+  $("attachTarget").innerHTML = targets.join("");
+
+  $("tripDays").innerHTML = tripData.days.map((d) => {
+    const items = d.items.map((i) => {
+      const head = (i.at || "--:--") + "  " + i.title;
+      const sub = i.kindLabel + (i.place ? " · " + i.place : "") + (i.note ? " · " + i.note : "");
+      const atts = i.attachments.map((a) => tripAttRow(a, d.date, i.id)).join("");
+      return row(head, sub, btn("Borrar", "trip-delitem", { id: i.id, date: d.date }, "ghost")) + atts;
+    }).join("");
+    return "<h3>" + esc(d.date) + " · " + d.items.length + "</h3><ul>" + (items || empty("Nada ese día")) + "</ul>";
+  }).join("");
+
+  $("tripDocs").innerHTML = tripData.docs.map((a) => tripAttRow(a, "", "")).join("") ||
+    empty("Sin papeles sueltos");
+
+  $("tripPacking").innerHTML = tripData.packing.map((p) =>
+    row((p.done ? "OK  " : "") + p.text, "",
+      btn(p.done ? "Desmarcar" : "Listo", "trip-pack", { id: p.id, done: p.done ? "0" : "1" }, "ghost") +
+      btn("Borrar", "trip-packdel", { id: p.id }, "ghost"))).join("") || empty("Nada anotado");
+}
+
+// Una fila de adjunto: lo que se extrajo y si el código sirve de verdad.
+function tripAttRow(a, date, itemId){
+  const bits = [];
+  if (a.codes.length) {
+    const c = a.codes[0];
+    bits.push(c.copy ? "código copiado (puede no escanear)" : c.verified ? c.format + " verificado" : c.format);
+  }
+  bits.push(a.pages + (a.pages === 1 ? " página" : " páginas"));
+  for (const f of a.fields.slice(0, 4)) bits.push(f.label + ": " + f.value);
+  return "<li><span><small>" + esc("[" + a.name + "] " + bits.join(" · ")) + "</small></span>" +
+    btn("Quitar", "trip-unattach", { id: a.id, date: date, item: itemId }, "ghost") +
+    btn("Borrar", "trip-delatt", { id: a.id }, "ghost") + "</li>";
+}
+
+// El archivo se manda tal como salió del mail: lo convierte el servidor.
+async function tripUpload(){
+  const input = $("attachInput");
+  const file = input.files && input.files[0];
+  if (!tripId) { toast("Abre un viaje primero"); return; }
+  if (!file) { toast("Elige un archivo"); return; }
+  const st = $("attachStatus");
+  st.textContent = "Subiendo " + file.name + " (" + Math.round(file.size / 1024) + " KB). El PDF se convierte en el servidor, puede tardar unos segundos.";
+  const form = new FormData();
+  form.append("file", file);
+  try {
+    const r = await fetch("/api/board/attachment?trip=" + encodeURIComponent(tripId), {
+      method: "POST",
+      headers: { "Authorization": "Bearer " + token },
+      body: form,
+    });
+    const j = await r.json();
+    if (!r.ok || !j.ok) { st.textContent = j.error || "No se pudo subir"; return; }
+    const a = j.attachment;
+    const target = $("attachTarget").value;
+    if (target) {
+      const parts = target.split("|");
+      await api("/api/trip/attach", { tripId: tripId, date: parts[0], itemId: parts[1], attachmentId: a.id });
+    } else {
+      await api("/api/trip/attach", { tripId: tripId, attachmentId: a.id });
+    }
+    const lines = [a.pages + " página(s) listas para el aparato"];
+    if (a.codes.length) {
+      const c = a.codes[0];
+      lines.push(c.copy
+        ? "El código no se pudo leer: va como copia de la imagen y PUEDE NO ESCANEAR, lleva también el original."
+        : "Código " + c.format + (c.verified ? " leído y vuelto a generar (verificado)" : " leído"));
+    } else if (a.warn) lines.push(a.warn);
+    for (const f of a.fields) lines.push(f.label + ": " + f.value);
+    st.textContent = lines.join(" · ");
+    input.value = "";
+    await tripShow();
+  } catch (e) { st.textContent = "No se pudo subir: " + e.message; }
+}
+
+document.addEventListener("click", async (ev) => {
+  const tab = ev.target.closest("nav button[data-tab=viajes]");
+  if (tab) { tripsLoad().catch((e) => toast("No se pudo: " + e.message)); return; }
+  const b = ev.target.closest("button[data-act]");
+  if (!b || b.dataset.act.slice(0, 5) !== "trip-") return;
+  const act = b.dataset.act;
+  try {
+    if (act === "trip-open") { tripId = tripId === b.dataset.id ? "" : b.dataset.id; }
+    else if (act === "trip-del") {
+      if (!confirm("Borrar el viaje con sus días y sus papeles?")) return;
+      await api("/api/trip/delete", { id: b.dataset.id });
+      if (tripId === b.dataset.id) tripId = "";
+    }
+    else if (act === "trip-delitem") await api("/api/trip/day/item/delete", { tripId: tripId, date: b.dataset.date, id: b.dataset.id });
+    else if (act === "trip-pack") await api("/api/trip/packing", { tripId: tripId, id: b.dataset.id, done: b.dataset.done === "1" });
+    else if (act === "trip-packdel") await api("/api/trip/packing", { tripId: tripId, id: b.dataset.id, action: "delete" });
+    else if (act === "trip-unattach") await api("/api/trip/attach", { tripId: tripId, date: b.dataset.date, itemId: b.dataset.item, attachmentId: b.dataset.id, action: "remove" });
+    else if (act === "trip-delatt") {
+      if (!confirm("Borrar el adjunto y sus páginas?")) return;
+      await api("/api/attachment/delete", { id: b.dataset.id });
+    }
+    else return;
+    await tripsLoad();
+  } catch (e) { toast("No se pudo: " + e.message); }
+});
+
+function tripStart(){
+  $("formTrip").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    try {
+      const r = await api("/api/trip", { name: f.name.value, place: f.place.value, start: f.start.value, end: f.end.value });
+      tripId = r.id;
+      f.reset();
+      await tripsLoad();
+      toast("Viaje creado");
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+  $("formTripItem").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    try {
+      await api("/api/trip/day/item", {
+        tripId: tripId, date: f.date.value, at: f.at.value,
+        kind: f.kind.value, title: f.title.value, place: f.place.value,
+      });
+      f.title.value = "";
+      f.place.value = "";
+      await tripsLoad();
+      toast("Agregado · sincroniza el aparato");
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+  $("formPacking").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    try {
+      await api("/api/trip/packing", { tripId: tripId, text: f.text.value });
+      f.reset();
+      await tripsLoad();
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+  $("attachSend").addEventListener("click", tripUpload);
+  if (token && localStorage.getItem("boardTab") === "viajes") tripsLoad().catch(() => {});
+}
+tripStart();
 `;
 
 const PAGE = `<!doctype html>
@@ -764,10 +1215,12 @@ const PAGE = `<!doctype html>
 <header><strong>Pizarra del aparato</strong><button id="tokenBtn">Token</button></header>
 <nav id="nav" style="display:none">
   <button data-tab="pizarra">Pizarra</button>
+  <button data-tab="calendario">Calendario</button>
   <button data-tab="listas">Listas</button>
   <button data-tab="notas">Notas</button>
   <button data-tab="fotos">Fotos</button>
   <button data-tab="noticias">Noticias</button>
+  <button data-tab="viajes">Viajes</button>
   <button data-tab="ia">IA</button>
   <button data-tab="ajustes">Ajustes</button>
   <button data-tab="log">Log</button>
@@ -790,15 +1243,16 @@ const PAGE = `<!doctype html>
     </form>
     <ul id="messages"></ul>
   </div>
-  <div class="card"><h2>Recordatorios</h2>
+  <div class="card"><h2 id="remFormTitle">Recordatorios</h2>
     <form id="formReminder">
-      <input type="text" name="title" placeholder="Qué" required>
-      <input type="date" name="date"><input type="time" name="time">
-      <select name="repeat">
-        <option value="none">Una vez</option><option value="daily">Diario</option>
-        <option value="weekly">Semanal</option><option value="monthly">Mensual</option>
-      </select><button>Guardar</button>
+      <input type="hidden" id="remId">
+      <input type="text" id="remTitle" placeholder="Qué" required>
+      <input type="date" id="remDate"><input type="time" id="remTime">
+      <div id="remRepeatBox" style="width:100%"></div>
+      <button>Guardar</button><button type="button" class="ghost" id="remClear">Nuevo</button>
     </form>
+    <p class="muted">"Va a sonar" es exactamente lo que muestra el aparato, así se sabe de antemano
+      qué días te va a despertar. Con "Editar" se cambia uno que ya está.</p>
     <ul id="reminders"></ul>
   </div>
   <div class="card"><h2>Memoria del asistente</h2>
@@ -807,6 +1261,34 @@ const PAGE = `<!doctype html>
       en el hub y leyendo un libro. Si lo corriges ("ya no vivo en México"), reemplaza el dato viejo.
       Guarda hasta 40 datos; borra el que ya no quieras.</p>
     <ul id="memories"></ul>
+  </div>
+</section>
+
+<section class="tab" id="tab-calendario">
+  <div class="card">
+    <div class="calhead">
+      <button class="ghost" data-act="calprev">‹</button>
+      <b id="calTitle">—</b>
+      <span><button class="ghost" data-act="caltoday">Hoy</button></span>
+      <button class="ghost" data-act="calnext">›</button>
+    </div>
+    <div class="cal" id="calGrid"></div>
+    <p class="muted">Salen los eventos que cargues acá, los recordatorios (con su repetición ya
+      resuelta) y los días de viaje.</p>
+  </div>
+  <div class="card"><h2>Día <span id="calDayTitle"></span></h2>
+    <ul id="calDayList"></ul>
+  </div>
+  <div class="card"><h2 id="evFormTitle">Evento nuevo</h2>
+    <input type="hidden" id="evId">
+    <div class="row"><label for="evTitle">Qué</label><input type="text" id="evTitle" placeholder="Título"></div>
+    <div class="row"><label for="evDate">Cuándo</label><input type="date" id="evDate"><span class="muted">a</span><input type="date" id="evEndDate"></div>
+    <div class="row" id="evTimeRow"><label for="evTime">Hora</label><input type="time" id="evTime"><span class="muted">a</span><input type="time" id="evEndTime"></div>
+    <div class="row"><label><input type="checkbox" id="evAllDay"> Todo el día</label></div>
+    <div class="row"><label for="evPlace">Dónde</label><input type="text" id="evPlace" placeholder="Lugar (opcional)"></div>
+    <div class="row"><label for="evNote">Nota</label><input type="text" id="evNote" placeholder="Opcional"></div>
+    <div id="evRepeatBox"></div>
+    <div class="row"><button id="evSave">Guardar</button><button class="ghost" id="evNew">Nuevo</button></div>
   </div>
 </section>
 
@@ -840,6 +1322,59 @@ const PAGE = `<!doctype html>
     <form id="formFeed"><input type="text" name="name" placeholder="Nombre (opcional)" style="max-width:130px"><input type="text" name="url" placeholder="https://.../rss o la página del diario" required><button>Agregar</button></form>
     <p class="muted">Sirve la dirección del feed o la del diario: si es una página web, el servidor busca adentro el feed que declara. Se prueba antes de guardarlo.</p>
     <ul id="feeds"></ul>
+  </div>
+</section>
+
+<section class="tab" id="tab-viajes">
+  <div class="card"><h2>Viajes</h2>
+    <p class="muted">Un viaje son sus días, lo que se hace cada día con su hora, y los papeles.
+      Lo que cargues aquí aparece también en el calendario del aparato.</p>
+    <form id="formTrip">
+      <input type="text" name="name" placeholder="Nombre (Roma, Madrid...)" required>
+      <input type="text" name="place" placeholder="Lugar" style="max-width:130px">
+      <input type="date" name="start" required>
+      <input type="date" name="end" required>
+      <button>Crear</button>
+    </form>
+    <ul id="tripList"></ul>
+  </div>
+
+  <div class="card" id="tripCard" style="display:none">
+    <h2 id="tripTitle">-</h2>
+    <p class="muted" id="tripDates"></p>
+    <form id="formTripItem">
+      <select id="tripItemDate" name="date"></select>
+      <input type="time" name="at" style="max-width:110px">
+      <select name="kind">
+        <option value="flight">Vuelo</option><option value="train">Tren</option>
+        <option value="hotel">Hotel</option><option value="ticket">Entrada</option>
+        <option value="meal">Comida</option><option value="visit">Visita</option>
+        <option value="other" selected>Otro</option>
+      </select>
+      <input type="text" name="title" placeholder="Qué (tren a Termini, entrada al Vaticano...)" required>
+      <input type="text" name="place" placeholder="Dónde" style="max-width:130px">
+      <button>Agregar</button>
+    </form>
+    <div id="tripDays"></div>
+  </div>
+
+  <div class="card" id="tripDocsCard" style="display:none"><h2>Papeles</h2>
+    <p class="muted">Sube el PDF del vuelo, de la reserva o de la entrada tal como te llegó al correo.
+      El servidor lo convierte a páginas que el aparato pinta de una, vuelve a generar el código de barras
+      (PDF417, Aztec o QR) en blanco y negro puro para que escanee, y saca los datos que sirven.
+      Si un código no se puede leer, se avisa aquí: esa copia puede no escanear.</p>
+    <div class="row">
+      <select id="attachTarget"></select>
+      <input type="file" id="attachInput" accept="application/pdf,image/*">
+      <button type="button" id="attachSend">Subir</button>
+    </div>
+    <p class="muted" id="attachStatus"></p>
+    <ul id="tripDocs"></ul>
+  </div>
+
+  <div class="card" id="tripPackCard" style="display:none"><h2>Para llevar</h2>
+    <form id="formPacking"><input type="text" name="text" placeholder="Cosa" required><button>Agregar</button></form>
+    <ul id="tripPacking"></ul>
   </div>
 </section>
 

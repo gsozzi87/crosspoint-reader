@@ -33,7 +33,7 @@ import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 import { VOICES } from "./tts";
 import { metNoForecast, type MetNoData } from "./metno";
-import { load as loadStore, DEFAULT_SETTINGS } from "./store";
+import { load as loadStore, save as saveStore, DEFAULT_SETTINGS, refreshTimeZone, repeatText, whenLabel, upsertReminder, normalizeRepeat, repeatToWire, localToEpoch } from "./store";
 import { agendaConfigured, todayForHub } from "./agenda";
 import { verseOfTheDay } from "./bible";
 
@@ -327,6 +327,8 @@ export async function hubDiagnostics(): Promise<{ place: Place | null; weather: 
 hub.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   lastDeviceFetch = Date.now();
+  // La zona del lugar guardado, antes de armar las horas de los recordatorios.
+  await refreshTimeZone();
   const [w, d, s, ics, verse, store] = await Promise.all([weather(lang), data(), hubSlice(lang), agendaConfigured() ? todayForHub(lang) : Promise.resolve([]), verseOfTheDay(lang), loadStore()]);
   // Recordatorios, listas y mensajes salen del store del asistente (voice.ts);
   // el hub-data.json a mano sigue sirviendo para la agenda y como respaldo.
@@ -359,6 +361,40 @@ hub.post("/edit", async (c) => {
   body = await readBody(c);
   if (!Number.isFinite(Number(body.id))) return c.json({ ok: false, error: "id required" }, 400);
   return c.json({ ok: true, found: await editEntry(body) });
+});
+
+// Alta y EDICIÓN de un recordatorio desde el aparato o desde /board: título,
+// fecha, hora y repetición. Sin `id` es un alta; con `id` se edita el que ya
+// está (hasta ahora un recordatorio solo se podía crear por voz y tildar, y no
+// había forma de ver ni cambiar cada cuánto iba a sonar).
+//   { id?, title, dueAt: "YYYY-MM-DD"|"YYYY-MM-DDTHH:MM"|null,
+//     repeat: { kind, days?, interval?, until? } }
+//   -> { ok, reminder: { id, title, dueAt, at, when, repeat, repeatText }, created }
+hub.post("/reminder", async (c) => {
+  await refreshTimeZone();
+  const lang = normalizeLang(c.req.query("lang"));
+  const body = await readBody(c);
+  const store = await loadStore();
+  const res = upsertReminder(store, body);
+  if (!res.ok) {
+    return res.error === "not_found"
+      ? c.json({ ok: false, error: "no existe ese recordatorio", code: "not_found" }, 404)
+      : c.json({ ok: false, error: "title required" }, 400);
+  }
+  await saveStore(store);
+  const r = res.reminder;
+  console.log(`hub reminder ${res.created ? "nuevo" : "editado"}: ${r.id} "${r.title}" ${r.dueAt ?? "sin fecha"} (${repeatText(r.repeat, r.dueAt, "es")})`);
+  return c.json({
+    ok: true,
+    created: res.created,
+    reminder: {
+      id: r.id, title: r.title, at: r.dueAt, when: whenLabel(r.dueAt, lang),
+      dueAt: localToEpoch(r.dueAt),  // epoch UTC: con esto el aparato arma el wake del deep sleep
+      ...repeatToWire(r.repeat, r.dueAt),          // lo que lee el firmware
+      repeatSpec: normalizeRepeat(r.repeat),       // el objeto entero (para /board)
+      repeatText: repeatText(r.repeat, r.dueAt, lang), done: r.done,
+    },
+  });
 });
 
 // El aparato tilda un recordatorio o un ítem de lista (OK en la pantalla de

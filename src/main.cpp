@@ -310,7 +310,10 @@ static void sleepNow() {
 constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atrás
 
 static bool isCalmScreen(const char* name) {
-  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather"};
+  // Pantallas tranquilas: ahi suenan los recordatorios y el temporizador, y
+  // anda el doble Atras para hablar. Calendar y Trip son listas quietas igual
+  // que Agenda, asi que entran (si no, en el calendario no sonaria una alarma).
+  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather", "Calendar", "Trip"};
   for (const char* n : CALM) {
     if (strcmp(name, n) == 0) return true;
   }

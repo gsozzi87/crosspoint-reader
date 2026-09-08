@@ -16,6 +16,9 @@ import { rss } from "./rss";
 import { photos } from "./photos";
 import { deviceLog } from "./devicelog";
 import { assets } from "./assets";
+import { tripApi, tripsApi } from "./trips";
+import { attachmentApi } from "./attachments";
+import { calendar } from "./calendar";
 
 const ENV_TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -47,5 +50,9 @@ api.route("/board", boardApi);        // POST /api/board/{message,reminder,item,
 api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find} → Biblia por capítulos, versículo del día, búsqueda
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
 api.route("/photos", photos);
+api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete → calendario local
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
+api.route("/trips", tripsApi);       // GET  /api/trips?lang= → lista de viajes
+api.route("/trip", tripApi);         // GET  /api/trip?id= y los POST de días, ítems, para llevar y adjuntos
+api.route("/attachment", attachmentApi);  // GET /api/attachment?id=&page= → el bitmap listo para pintar; /info → texto extraído
 api.route("/log", deviceLog);         // POST /api/log → el aparato sube su log; se lee en /board/log         // GET  /api/photos, /api/photos/file?id= → álbum (BMP 2 bpp ya convertido)

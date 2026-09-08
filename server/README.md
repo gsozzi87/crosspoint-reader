@@ -8,7 +8,7 @@ el store de recordatorios, listas, notas y mensajes.
 
 - **Root Directory**: `server` (Settings → Source → Root Directory). Con eso Railway solo mira esta carpeta.
 - **Build**: hay `Dockerfile` (Railway lo usa solo): Bun + Piper con las seis voces (~400 MB de imagen). Start = `bun run src/index.ts`.
-- **Volumen** montado en `/data` (firmware subido, `store.json`, `hub-settings.json`, `hub-data.json`).
+- **Volumen** montado en `/data` (firmware subido, `store.json`, `calendar.json`, `hub-settings.json`, `hub-data.json`).
 - Variables:
 
 | Variable | Para qué |
@@ -23,6 +23,7 @@ el store de recordatorios, listas, notas y mensajes.
 | `HUB_LAT`, `HUB_LON`, `HUB_TZ` | Respaldo del clima mientras no se elija lugar por voz desde el aparato. |
 | `HUB_LANG` | Idioma cuyo Piper se precalienta al arrancar (default `es`). `TTS_ENABLED=0` apaga la voz. |
 | `HUB_ICS_URL` | Calendario(s) ICS para la agenda del hub (URL secreta iCal de Google, Apple, Outlook...), separados por coma. |
+| `TRIPS_FILE`, `ATTACHMENTS_DIR` | Dónde viven los viajes y los adjuntos (defaults `/data/trips.json` y `/data/attachments`). |
 | `ASSETS_DIR` | Dónde se guarda el paquete de contenido (default `/data/assets`). `ASSETS_BUILD=0` no lo genera al arrancar. |
 | `LUCIDE_VERSION`, `CARD_STROKE` | Versión de los dibujos de las tarjetas y grosor del trazo (defaults `1.43.0` y `1.25`). |
 | `STT_MIN_SECONDS`, `STT_MIN_PEAK`, `STT_MIN_RMS` | Mínimos de audio para considerar que alguien habló (defaults `0.4`, `350`, `90`). Dependen de la ganancia del micrófono. |
@@ -34,7 +35,7 @@ el store de recordatorios, listas, notas y mensajes.
 | `GET /firmware/latest` | aparato (sin token) | JSON con forma de release de GitHub: `tag_name`, `assets[firmware-ws397.bin]`. |
 | `GET /firmware/firmware-ws397.bin` | aparato | El binario. |
 | `PUT /firmware` | `release.sh` (Bearer `OTA_TOKEN`, `X-Version`) | Sube un binario nuevo. |
-| `GET /board` | teléfono | Página web: mensajes para el hub, recordatorios, listas y notas. Pide el token del aparato una vez. |
+| `GET /board` | teléfono | Página web: mensajes para el hub, calendario, recordatorios, listas y notas. Pide el token del aparato una vez. |
 | `POST /api/board/{message,reminder,item,note}` | página web | Altas desde la página. |
 | `GET /api/ping` | aparato | Prueba del token. |
 | `POST /api/ask` | aparato | Pregunta sobre el libro (`text`) o general (sin `text`). `lang` = idioma de la UI. |
@@ -48,8 +49,18 @@ el store de recordatorios, listas, notas y mensajes.
 | `GET /api/photos`, `GET /api/photos/file?id=` | aparato | Álbum: BMP de 2 bpp (4 grises) que el navegador convierte al subirlos desde `/board`. |
 | `GET /api/rss`, `GET /api/rss/article?feed=&item=` | aparato | Noticias de los feeds RSS/Atom cargados en `/board`; artículo limpiado a texto. |
 | `POST /api/translate?from=xx&to=yy` | aparato | Traductor en conversación: WAV en `from` → texto, traducción y voz en `to` (cuerpo binario como `/api/voice`). |
+| `POST /api/hub/reminder` | aparato / web | Alta y **edición** de un recordatorio: título, fecha, hora y repetición. |
+| `GET /api/calendar?from=&to=&lang=` | aparato | Calendario local del rango con las repeticiones expandidas + resumen por día. |
+| `GET /api/calendar/day?date=&lang=` | aparato | El día completo. |
+| `POST /api/calendar/event`, `/event/delete` | aparato / web | Alta, edición y borrado de un evento. |
+| `GET /api/calendar/repeat?...` | web | La repetición en una línea, para mostrarla mientras se edita. |
 | `POST /api/hub/done` | aparato | `{kind: "reminder"\|"item", id, snooze?}` marca hecho o pospone (también desde la cola offline). |
 | `POST /api/hub/edit` | aparato | Mover, poner fecha o borrar un ítem de lista; borrar una nota. |
+| `GET /api/trips?lang=xx`, `GET /api/trip?id=` | aparato | Viajes: la lista, y un viaje entero con sus días, sus ítems y sus adjuntos. |
+| `POST /api/trip*` | aparato / web | Crear y editar viaje, día, ítem, lista de para llevar y adjuntos colgados. |
+| `GET /api/attachment?id=&page=` | aparato | Una página del adjunto ya convertida: BMP de 2 bpp de 480x800 (96 KB), igual que las fotos. |
+| `GET /api/attachment/info?id=` | aparato / web | Qué se extrajo del adjunto: campos, códigos y páginas. |
+| `POST /api/board/attachment?trip=` | teléfono | Sube el PDF del vuelo o del hotel tal como llegó; el servidor lo convierte y contesta qué encontró. |
 | `GET /api/assets/manifest?lang=xx` | aparato | Paquete de contenido: todo lo descargable con su tamaño y su sha. |
 | `GET /api/assets/file?id=` | aparato | Un archivo del paquete, con `Range` para reanudar. |
 | `GET /api/assets/status`, `POST /api/assets/build` | web | Cómo va la generación del paquete y cómo forzarla. |
@@ -96,6 +107,268 @@ obtener respuesta" sin que nada estuviera roto.
 Idiomas soportados (`lang`): `es`, `en`, `fr`, `de`, `pt`, `ru`. El aparato manda el que tiene en Settings;
 la transcripción escucha en ese idioma, las respuestas salen en ese idioma y el traductor traduce desde ese
 idioma al que se pida (si no se dice, al inglés; desde inglés, al español).
+
+## Recordatorios que se repiten y calendario local
+
+El aparato tiene que poder **ver y cambiar** cuándo lo va a despertar un recordatorio ("¿mañana y
+pasado, o de lunes a viernes?"). Para eso la repetición dejó de ser una cadena suelta
+(`"none"|"daily"|"weekly"|"monthly"`) y pasó a ser un objeto, y el servidor manda siempre, además del
+dato, **la repetición escrita en una línea** en el idioma del aparato.
+
+### El modelo (`src/store.ts`)
+
+```ts
+repeat: {
+  kind: "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly",
+  days?: number[],   // 0=domingo .. 6=sábado, solo para weekly
+  interval?: number, // cada N días/semanas/meses/años (default 1)
+  until?: number,    // epoch UTC en segundos, opcional (último día con ocurrencia)
+}
+```
+
+`normalizeRepeat()` acepta cualquier cosa y no rompe nunca: `until` puede llegar como epoch o como
+fecha `YYYY-MM-DD` (lo que manda un formulario o el clasificador de voz), los días repetidos o fuera
+de rango se descartan, y los siete días marcados se guardan como `daily`.
+
+**Migración de lo que ya estaba guardado**: la cadena vieja se sigue aceptando y se convierte al leer
+el `store.json` (`normalizeStore`), sin tocar nada más: `"daily"` → `{kind:"daily",interval:1}`,
+`"weekly"` → `{kind:"weekly",interval:1}` (sin `days`, o sea el mismo día de la semana del `dueAt`,
+exactamente lo que hacía antes), `"monthly"` → `{kind:"monthly",interval:1}`, y cualquier basura →
+`{kind:"none"}`. Probado con un `store.json` del formato viejo: no se pierde ningún recordatorio,
+ninguna nota, ningún mensaje ni ningún ítem de lista.
+
+### `repeatText()`: la repetición en una línea, en los seis idiomas
+
+Es lo que se muestra en el aparato y en `/board` para no tener que interpretar nada:
+
+| Repetición | es | en | ru |
+|---|---|---|---|
+| `{kind:"none"}` | Una sola vez | Once | Один раз |
+| `{kind:"daily"}` | Todos los días | Every day | Каждый день |
+| `{kind:"daily",interval:2}` | Cada 2 días | Every 2 days | Каждые 2 дня |
+| `{kind:"weekdays"}` | De lunes a viernes | Monday to Friday | С понедельника по пятницу |
+| `{kind:"weekly",days:[2,4]}` | Los martes y jueves | Tuesdays and Thursdays | По вторникам и четвергам |
+| `{kind:"weekly",interval:2}` | Cada 2 semanas | Every 2 weeks | Каждые 2 недели |
+| `{kind:"monthly"}` (día 15) | El 15 de cada mes | On the 15th of every month | 15-го числа каждого месяца |
+| `{kind:"yearly"}` (3 de mayo) | Todos los años el 3 de mayo | Every year on May 3 | Каждый год 3 мая |
+| `+ until` | …, hasta el 31 de diciembre de 2026 | …, until December 31, 2026 | …, до 31 декабря 2026 г. |
+
+También están el francés, el alemán y el portugués (los nombres de los días están escritos a mano
+por idioma para que la gramática cierre; la fecha del `yearly` y del `until` sale de `Intl`).
+El texto viaja en `repeatText` en **cada recordatorio de `GET /api/hub`** y en **cada ocurrencia del
+calendario**.
+
+### `POST /api/hub/reminder` — alta y edición
+
+Hasta ahora un recordatorio solo se podía crear por voz y tildar. Ahora:
+
+```
+POST /api/hub/reminder?lang=es
+{ "id": 12,                          // sin id = alta
+  "title": "Sacar la basura",
+  "dueAt": "2026-09-08T21:00",       // o "2026-09-08" (sin hora) o null
+  "repeat": { "kind": "weekly", "days": [2,5] } }
+→ { ok, created, reminder: { id, title, at, when, dueAt (epoch), repeat, repeatText, done } }
+   404 si el id no existe, 400 si no hay título.
+```
+
+Con una repetición semanal la fecha se **alinea al primer día que corresponde** (pedirlo un lunes
+para "los martes y jueves" lo deja el martes, no el lunes). El mismo cuerpo lo acepta
+`POST /api/board/reminder` desde la web.
+
+**El formato plano del aparato.** El firmware (`AgendaActivity`, `HubStore`) no maneja el objeto:
+manda y espera la repetición como un **código suelto** más `weekday` e `interval` aparte, y su día de
+la semana **arranca en lunes** (`0` = lunes … `6` = domingo), al revés del `days` de adentro
+(`0` = domingo). La traducción está en `repeatToWire()` / `repeatFromWire()` (`store.ts`):
+
+| Aparato | Adentro |
+|---|---|
+| `"once"` | `{kind:"none"}` |
+| `"daily"` | `{kind:"daily"}` |
+| `"weekdays"` | `{kind:"weekdays"}` |
+| `"weekly"` + `weekday:0` (lunes) | `{kind:"weekly", days:[1]}` |
+| `"weeks"` + `interval:3` | `{kind:"weekly", interval:3}` |
+| `"monthly"` / `"yearly"` | igual |
+
+Lo que manda el editor del aparato es `{id, date:"YYYY-MM-DD", time:"HH:MM"|"" , repeat, weekday?, interval?}`
+—sin título, que se conserva—, y cada recordatorio de `GET /api/hub` viaja con `repeat`, `weekday`,
+`interval` (lo que lee `HubStore::parseReminders`), `repeatSpec` (el objeto entero, lo usa `/board`,
+que sí puede con varios días) y `repeatText`. Una repetición de varios días le llega al editor con el
+primero; el texto de arriba igual los dice todos.
+
+### Voz
+
+El clasificador (`voice.ts`) entiende las repeticiones al dictar: "los lunes y miércoles a las 8"
+(`weekly` + `days:[1,3]`), "todos los días hábiles" (`weekdays`), "cada dos semanas"
+(`weekly` + `interval:2`), "el 5 de cada mes" (`monthly`), cumpleaños y aniversarios (`yearly`),
+"hasta fin de mes" (`until`). Cuando falta la hora, el servidor la pregunta y devuelve además
+`askRepeat` (el objeto) y `askRepeatText`; el aparato puede devolverlo en el segundo turno como
+`?pendingRepeat=<json>` para no perder el "todos los días" mientras se pregunta la hora.
+
+## Calendario local (`src/calendar.ts`, `/data/calendar.json`)
+
+**Sin Google, sin ICS y sin cuentas de nadie.** Todo vive en el volumen:
+
+```json
+{ "version": 1,
+  "events": [ { "id": 12, "start": "2026-09-15T10:30", "end": "2026-09-15T11:30",
+                "allDay": false, "title": "Dentista", "place": "…", "note": "…",
+                "repeat": { "kind": "monthly" }, "tripId": "trip-7", "tripDay": 1 } ] }
+```
+
+Se lee y se escribe con `writeJsonAtomic`/`readJsonSafe`/`serialize` de `fsjson.ts` (nunca a mano):
+cada modificación es un leer-modificar-escribir **adentro de la misma cola** que usan las escrituras
+atómicas, así el módulo de viajes y este pueden escribir el archivo sin pisarse, y el archivo nunca
+se cachea en memoria por lo mismo. Los campos que escriba otro módulo (vuelos, adjuntos, lo que sea)
+se conservan tal cual; un evento con forma rara se descarta y los demás siguen.
+
+Qué sale en el calendario: los eventos de `calendar.json`, los **recordatorios de `store.json`
+proyectados** (se leen, no se copian: el dueño sigue siendo `store.ts` y se tildan con
+`POST /api/hub/done`) y los ítems de viaje (los eventos con `tripId`).
+
+| Ruta | Qué devuelve |
+|---|---|
+| `GET /api/calendar?from=&to=&lang=` | `{ ok, from, to, tz, today, count, truncated, days:[{date,count,firstTitle}], events:[…] }` con las repeticiones **ya expandidas**, tope de 500 ocurrencias. `days` es lo que pinta el mes y `events` lo que lo deja mirable sin WiFi (los nombres son los que espera `CalendarActivity`). `&summary=1` manda solo el resumen. Sin `from`/`to`: el mes de hoy; máximo 400 días. |
+| `GET /api/calendar/day?date=&lang=` | `{ok, date, tz, count, items:[…]}`, el día completo. |
+| `POST /api/calendar/event` | Alta, o **edición** si trae `id` (404 si no existe). Acepta `{title, date, time, endDate, endTime, allDay, place, note, repeat}` o `{start, end}` ya armados. Devuelve el evento y su `repeatText`. |
+| `POST /api/calendar/event/delete` | `{id}` → `{ok, found}`. |
+| `GET /api/calendar/repeat?kind=&days=&interval=&until=&date=&lang=` | `{ok, repeat, text, first}`: la repetición en una línea y el primer día que corresponde. Lo usa `/board` para mostrar el texto **mientras se edita**. |
+
+Cada ocurrencia (el firmware lee de acá `date`, `time`, `title` y `place`) trae:
+`key` (única, `ev-12@2026-09-15`), `id`, `kind` (`event`/`reminder`/`trip`),
+`date`, `time`, `endTime`, `allDay`, `days` y `dayIndex` (un viaje de cuatro días sale los cuatro
+días, numerado), `startAt`/`endAt` (el arranque de la **serie**, para editarla), `title`, `place`,
+`note`, `repeat`, `repeatText`, `start`/`end` en epoch UTC y `tripId`/`tripDay` si es de un viaje.
+
+### Zona horaria (dónde estaban los bugs)
+
+La mitad de los bugs de calendario salen de mezclar **fechas** con **instantes**. Las reglas acá:
+
+1. **La zona sale del lugar guardado** en `hub-settings.json` (el mismo que eligió el usuario para el
+   clima); `HUB_TZ` es el respaldo. `refreshTimeZone()` la relee (como mucho una vez por minuto)
+   antes de cada pedido del calendario y del hub: antes, un proceso que había arrancado sin lugar se
+   quedaba con la zona vieja hasta el próximo deploy.
+2. **Lo que se guarda es la hora local, nunca un epoch**: `"2026-09-15T10:30"`. Un evento de todo el
+   día se guarda como **fecha sola** (`"2026-09-15"`), porque no es un instante: pasarlo a epoch "a
+   lo bruto" lo corre un día para atrás o para adelante según la zona.
+3. **La cuenta de las repeticiones es sobre fechas civiles** (`expandRepeat` / `nextOccurrence` en
+   `store.ts`), sin epoch en el medio. Por eso un "todos los días a las 8" sigue siendo a las 8
+   después del cambio de horario de verano, en vez de correrse a las 7 o a las 9.
+4. El epoch se calcula **al final** (`localToEpoch`). Para los eventos de todo el día se usa
+   `startOfLocalDay`/`endOfLocalDay`, que buscan la primera hora que **existe** ese día: hay días en
+   los que las 00:00 no existen (Chile adelanta el reloj justo a la medianoche) y ahí la cuenta
+   directa caía en el día anterior — el evento aparecía un día antes.
+5. `end` de un evento de todo el día es el **último día incluido** (no el siguiente, como en ICS).
+6. El 31 y el 29 de febrero **saltean** el mes o el año que no los tiene (igual que Google Calendar y
+   el RFC 5545): "el 31 de cada mes" no se corre solo al 28 de febrero.
+
+### `/board` → Calendario
+
+Vista de mes (la grilla arranca el lunes, con el título del primer evento de cada día y cuántos hay),
+el día elegido abajo con todo lo que cae ahí, y el formulario de alta/edición con la repetición
+elegible de una lista. El texto de la repetición se ve **mientras se edita** y lo escribe el servidor
+(`GET /api/calendar/repeat`), o sea que es exactamente el mismo que después muestra el aparato. Los
+recordatorios de la pestaña Pizarra usan los mismos controles y se pueden editar con "Editar".
+
+## Viajes y adjuntos (`src/trips.ts`, `src/attachments.ts`)
+
+Lo que pidió el usuario: *"para un viaje quiero poder ver en el calendario qué voy a ir haciendo por día
+y poder acceder por ejemplo a los QR de los vuelos o los datos de una reserva o los pdf del hotel"* y
+*"ir viendo en mi viaje a qué hora tomar el tren, a qué hora entrar al hotel, a qué hora son las entradas
+al Vaticano"*.
+
+### El modelo (`/data/trips.json`)
+
+```jsonc
+{ "version": 1, "trips": [{
+  "id": "...", "name": "Roma", "place": "Roma", "start": "2026-10-12", "end": "2026-10-16",
+  "days": [{ "date": "2026-10-13", "note": "", "items": [
+      { "id": "...", "at": "09:30", "title": "Tren a Termini", "kind": "train",
+        "place": "Fiumicino", "note": "", "attachmentIds": ["..."] }] }],
+  "packing": [{ "id": "...", "text": "Adaptador de enchufe", "done": false }],
+  "docs": ["..."]                                  // adjuntos que no cuelgan de ningún ítem
+}]}
+```
+
+`kind` es uno de `flight`, `train`, `hotel`, `ticket`, `meal`, `visit`, `other`; el nombre en los seis
+idiomas lo devuelve el servidor en `kindLabel`. Los días se arman solos entre `start` y `end` y cambiar
+las fechas **no borra** lo que ya estaba cargado (lo que queda afuera del rango se arrastra al final).
+Todas las escrituras pasan por `serialize()` de `fsjson.ts` con lectura y escritura adentro de la misma
+cola: dos pedidos a la vez se ordenan en vez de pisarse.
+
+### Cómo se ve en el calendario
+
+La fuente de verdad de un viaje es **siempre** `trips.json`. `calendar.ts` muestra como `kind: "trip"`
+cualquier evento con `tripId`, así que `syncCalendar()` espeja los ítems adentro de `/data/calendar.json`
+(mismo `serialize()` que usa `calendar.ts`, o sea que las dos escrituras se ordenan): el espejo se rehace
+entero en cada cambio del viaje y nunca se edita a mano. Cada evento espejado lleva `tripId`, `tripDay`
+(qué día del viaje es, 1 = el primero), `tripItem` y `tripKind`. `POST /api/trip/sync` lo reescribe si
+alguien tocó el calendario por afuera. Quien prefiera leer los ítems sin pasar por el archivo tiene
+`tripCalendarEvents(from?, to?)`, que los devuelve calculados.
+
+### Adjuntos: del PDF del correo a algo que el aparato pinte
+
+El aparato tiene e-ink de 480x800 en 4 grises y **no sabe leer PDF**, así que todo el trabajo es del
+servidor. Un adjunto se procesa **una sola vez** al subirlo y queda guardado en
+`/data/attachments/<id>/pN.bmp` (más `index.json` con lo que se extrajo).
+
+1. **Rasterizado**: `mupdf` (wasm, sin dependencias nativas ni fuentes del sistema) abre el PDF, saca el
+   texto y rasteriza cada página. La página se recorta a la caja del contenido (un pase de embarque son
+   cuatro líneas arriba y medio A4 en blanco: recortando el margen el texto entra casi al doble) y se
+   convierte con el mismo `toDeviceBmp` de `photos.ts`: 480x800, 4 grises, Floyd-Steinberg, BMP de 2 bpp.
+2. **Códigos**: `zxing-wasm` busca códigos a 200 dpi y, si no encuentra ninguno, a 400.
+3. **Los códigos se vuelven a generar, no se escalan**. Un pase de embarque casi nunca trae un QR: trae
+   un **PDF417** (IATA BCBP) o un **Aztec** con módulos de menos de un milímetro, y escalar esa imagen a
+   480 px de ancho deja un borrón que el lector del mostrador no engancha. Con el texto que devolvió
+   zxing, `bwip-js` lo dibuja de nuevo en blanco y negro puro, sin grises ni suavizado, lo más grande que
+   entre; después **se vuelve a decodificar el bitmap final** y solo si el texto coincide se marca
+   `verified: true`. Se prefiere la forma y la orientación de siempre mientras el módulo quede en 3 px o
+   más (0,5 mm en esta pantalla, de sobra para cualquier lector); recién si no entra se prueba girado 90°
+   o con menos columnas.
+4. **Si no se puede decodificar**, se recorta la región del código a máxima resolución, se baja con
+   vecino más cercano (sin suavizado) y se umbraliza a blanco y negro: queda `copy: true` con
+   `warn` diciendo que **puede no escanear y hay que llevar el original**. Eso se ve en `/board` al subir
+   el archivo, que es cuando todavía se puede hacer algo, y no en la fila del mostrador.
+5. **Datos útiles** (`extracted` y `fields`): el PDF417 de un pase es de ancho fijo (BCBP), así que
+   `parseBcbp()` saca pasajero, vuelo, trayecto, fecha, asiento, reserva y secuencia sin adivinar nada
+   (y si los campos no tienen la pinta que manda la norma, no dice nada en vez de escupir basura). Del
+   texto salen puerta, terminal, horas de embarque, salida, llegada, check-in y check-out, habitación,
+   coche y dirección. **Sin LLM**: son una docena de expresiones regulares, y tiene que andar aunque no
+   haya proveedor de IA cargado.
+
+Las páginas quedan ordenadas con **los códigos primero** (es lo que se busca corriendo en el aeropuerto)
+y después las páginas del documento; `pageList` dice cuál es cuál.
+
+### Límites
+
+| Qué | Cuánto | Por qué |
+|---|---:|---|
+| Tamaño de una página servida | **96.070 bytes** (480x800 a 2 bpp) | El aparato no soporta `Range` y baja el archivo entero con tope de 512 KB. |
+| Páginas por adjunto | 12 | Un itinerario de 40 páginas no sirve en e-ink y cada página ocupa 96 KB del volumen. |
+| Subida | 20 MB | Un PDF de reserva con fotos entra holgado. |
+| Adjuntos guardados | 200 | Se avisa y no se borra nada del usuario en silencio. |
+| Píxeles al rasterizar | 14 M | Para no reventar la memoria con un A3 a 400 dpi. |
+
+Borrar un viaje borra sus adjuntos (si no, quedan 96 KB por página tirados en el volumen) y le saca los
+eventos al calendario.
+
+### Qué librería se eligió y cuál no
+
+- **`mupdf`** para rasterizar y sacar el texto: es wasm, anda en Bun sin nada instalado y trae las fuentes
+  base adentro. `pdfjs-dist` y `unpdf` necesitan un canvas nativo (`@napi-rs/canvas`) para rasterizar, que
+  es una dependencia binaria más en la imagen de Railway: descartados.
+- **`zxing-wasm`** para decodificar: lee PDF417, Aztec, QR, DataMatrix y los lineales, y trae el `.wasm`
+  adentro del paquete (se carga con `wasmBinary` y no se lo baja de ningún CDN en cada arranque).
+  Ojo: hay que **aplanar sobre blanco** antes de decodificar, porque un PNG con transparencia le llega
+  como una mancha negra y no lee nada.
+- **`bwip-js`** para volver a generar: hace PDF417, Aztec, QR y Code128 con la misma API.
+
+### `/board` → Viajes
+
+Crear el viaje con sus fechas, ver los días, agregar cosas a cada día con hora y tipo, subir los papeles
+(eligiendo si son del viaje o de un ítem) y ver ahí mismo qué se extrajo y si el código quedó verificado
+o es una copia, y la lista de para llevar. Todo lo de la pestaña usa `data-act` que empiezan con `trip-`
+y su propio delegador, así no se pisa con el resto de la página.
 
 ## Paquete de contenido descargable (`/api/assets/*`)
 

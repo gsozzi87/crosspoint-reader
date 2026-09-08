@@ -10,7 +10,16 @@ void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) 
   out.clear();
   for (JsonVariantConst r : doc["reminders"].as<JsonArrayConst>()) {
     if (out.size() >= HubStore::MAX_REMINDERS) break;
-    out.push_back({r["id"] | 0, str(r, "title"), str(r, "when"), static_cast<time_t>(r["dueAt"] | (int64_t)0)});
+    HubStore::Reminder rem;
+    rem.id = r["id"] | 0;
+    rem.title = str(r, "title");
+    rem.when = str(r, "when");
+    rem.dueAt = static_cast<time_t>(r["dueAt"] | (int64_t)0);
+    rem.repeatText = str(r, "repeatText");
+    rem.repeat = str(r, "repeat");
+    rem.weekday = r["weekday"] | -1;
+    rem.interval = r["interval"] | 0;
+    out.push_back(std::move(rem));
   }
 }
 
@@ -53,6 +62,10 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["title"] = r.title;
     o["when"] = r.when;
     o["dueAt"] = static_cast<int64_t>(r.dueAt);
+    o["repeatText"] = r.repeatText;
+    o["repeat"] = r.repeat;
+    o["weekday"] = r.weekday;
+    o["interval"] = r.interval;
   }
   JsonArray ls = doc["lists"].to<JsonArray>();
   for (const List& l : lists) {
