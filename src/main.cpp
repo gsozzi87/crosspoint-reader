@@ -32,6 +32,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "HubStore.h"
+#include "activities/home/PhotosActivity.h"
 #include "activities/home/ReminderAlertActivity.h"
 #include "activities/home/TimerActivity.h"
 #include "activities/home/VoiceActivity.h"
@@ -344,6 +345,23 @@ static void checkTimeAlarms() {
   }
 }
 
+// ws397: fondo de pantalla. La foto que se eligió en Ajustes → Fondo de pantalla
+// se pinta acá, encima de la pantalla de sueño y con la SD todavía montada (más
+// adelante `Storage.prepareForDeepSleep()` la desmonta y `display.deepSleep()`
+// apaga el panel, así que este es el último momento posible). Sin foto elegida,
+// o si el archivo no está o no se puede leer, queda la pantalla de sueño de
+// siempre: nunca se cuelga el sueño por esto.
+static void paintWallpaperForSleep() {
+  if (HUB_STORE.wallpaperPath.empty()) return;
+  if (!Storage.exists(HUB_STORE.wallpaperPath.c_str())) {
+    LOG_ERR("MAIN", "fondo de pantalla: no está %s", HUB_STORE.wallpaperPath.c_str());
+    return;
+  }
+  if (!PhotosActivity::drawFullScreenPhoto(renderer, HUB_STORE.wallpaperPath)) {
+    LOG_ERR("MAIN", "fondo de pantalla: no se pudo pintar %s", HUB_STORE.wallpaperPath.c_str());
+  }
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -370,6 +388,10 @@ void enterDeepSleep(bool fromTimeout = false) {
     // A stale Quick Resume frame must not replace the selected sleep screen during wake.
     Storage.remove(SLEEP_FRAME_FILE);
   }
+
+  // Después de guardar el cuadro de Quick Resume (ese tiene que ser la pantalla
+  // anterior, no el fondo) y antes de apagar el panel.
+  paintWallpaperForSleep();
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.

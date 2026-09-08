@@ -9,10 +9,13 @@
 #include <ServerClient.h>
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 
+#include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -20,7 +23,7 @@
 #include "fontIds.h"
 
 namespace {
-constexpr const char* TAG = "PHOTOS";
+constexpr const char* TAG = "WALLP";
 constexpr const char* DIR = "/Photos";
 constexpr int ROW_H = 40;
 constexpr int SIDE = 20;
@@ -38,11 +41,11 @@ void PhotosActivity::onEnter() {
   scanLocal();
   state = LIST;
   requestUpdate();
-  // Siempre se busca la lista del servidor al entrar (mostrando lo que ya está
-  // en la SD mientras tanto): antes había que saber que Atrás mantenido
-  // actualizaba, y el que subía una foto desde el teléfono entraba acá y veía
-  // "Sin fotos". Si la red falla, queda lo local y se avisa.
-  if (SERVER_STORE.hasToken()) {
+  // La lista del servidor se busca sola solo cuando no hay nada en la SD. Con
+  // fotos ya bajadas, elegir el fondo no necesita red: así salir de acá no
+  // reinicia el aparato (toda pantalla que levanta WiFi hace silentRestart al
+  // salir). Para traer las nuevas está Atrás mantenido.
+  if (photos.empty() && SERVER_STORE.hasToken()) {
     pending = REFRESH;
     ensureConnected();
   }
@@ -63,6 +66,10 @@ void PhotosActivity::fail(StrId why, std::string detail) {
   failureDetail = std::move(detail);
   state = FAILED;
   requestUpdate();
+}
+
+bool PhotosActivity::isWallpaper(const Photo& photo) const {
+  return !HUB_STORE.wallpaperPath.empty() && HUB_STORE.wallpaperPath == photo.path;
 }
 
 // Everything already on the card: what was downloaded before plus anything the
@@ -94,7 +101,7 @@ void PhotosActivity::scanLocal() {
     photos.push_back(std::move(p));
   }
   std::sort(photos.begin(), photos.end(), [](const Photo& a, const Photo& b) { return a.id > b.id; });
-  if (index >= static_cast<int>(photos.size())) index = 0;
+  if (index >= rowCount()) index = 0;
 }
 
 bool PhotosActivity::fetchList() {
@@ -147,14 +154,35 @@ bool PhotosActivity::download(Photo& photo) {
   return true;
 }
 
-void PhotosActivity::openCurrent() {
-  if (photos.empty()) return;
-  if (!photos[index].local) {
+// OK sobre una fila: "Ninguno" saca el fondo en el acto, una foto abre la vista
+// previa (bajándola antes si todavía no está en la SD).
+void PhotosActivity::confirmCurrent() {
+  const int i = photoAt(index);
+  if (i < 0) {
+    setWallpaper(nullptr);
+    return;
+  }
+  if (i >= static_cast<int>(photos.size())) return;
+  if (!photos[i].local) {
     pending = DOWNLOAD;
     ensureConnected();
     return;
   }
-  state = VIEW;
+  state = PREVIEW;
+  requestUpdate();
+}
+
+void PhotosActivity::setWallpaper(const Photo* photo) {
+  if (photo) {
+    HUB_STORE.wallpaperPath = photo->path;
+    HUB_STORE.wallpaperName = photo->name;
+  } else {
+    HUB_STORE.wallpaperPath.clear();
+    HUB_STORE.wallpaperName.clear();
+  }
+  HUB_STORE.saveToFile();
+  LOG_INF(TAG, "fondo: %s", photo ? photo->path.c_str() : "ninguno");
+  state = LIST;
   requestUpdate();
 }
 
@@ -190,20 +218,17 @@ void PhotosActivity::loop() {
         if (!ok) {
           // La lista no se pudo traer: se sigue mostrando lo que hay en la SD.
           LOG_ERR(TAG, "lista: %s", lastError.c_str());
-          state = LIST;
-          requestUpdate();
-          break;
         }
         state = LIST;
         requestUpdate();
-      } else if (p == DOWNLOAD && index < static_cast<int>(photos.size())) {
-        const bool ok = download(photos[index]);
+      } else if (p == DOWNLOAD && photoAt(index) >= 0 && photoAt(index) < static_cast<int>(photos.size())) {
+        const bool ok = download(photos[photoAt(index)]);
         WiFi.setSleep(true);
         if (!ok) {
           fail(StrId::STR_ASK_FAILED, lastError.empty() ? std::string(tr(STR_DOWNLOAD_FAILED)) : lastError);
           break;
         }
-        state = VIEW;
+        state = PREVIEW;
         requestUpdate();
       } else {
         state = LIST;
@@ -212,52 +237,36 @@ void PhotosActivity::loop() {
       break;
     }
     case LIST: {
-      const int count = static_cast<int>(photos.size());
+      const int count = rowCount();
       if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, REFRESH_HOLD_MS)) {
         pending = REFRESH;
         ensureConnected();
         break;
       }
       buttonNavigator.onNext([&] {
-        if (count > 0) index = ButtonNavigator::nextIndex(index, count);
+        index = ButtonNavigator::nextIndex(index, count);
         requestUpdate();
       });
       buttonNavigator.onPrevious([&] {
-        if (count > 0) index = ButtonNavigator::previousIndex(index, count);
+        index = ButtonNavigator::previousIndex(index, count);
         requestUpdate();
       });
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        openCurrent();
+        confirmCurrent();
         break;
       }
-      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) activityManager.goHome();
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
       break;
     }
-    case VIEW: {
-      const int count = static_cast<int>(photos.size());
-      // Mismo guard que la lista: sin fotos, nextIndex/photos[index] leen fuera.
-      buttonNavigator.onNext([&] {
-        if (count <= 0) return;
-        index = ButtonNavigator::nextIndex(index, count);
-        if (!photos[index].local) {
-          pending = DOWNLOAD;
-          ensureConnected();
-        } else {
-          requestUpdate();
-        }
-      });
-      buttonNavigator.onPrevious([&] {
-        if (count <= 0) return;
-        index = ButtonNavigator::previousIndex(index, count);
-        if (!photos[index].local) {
-          pending = DOWNLOAD;
-          ensureConnected();
-        } else {
-          requestUpdate();
-        }
-      });
-      if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
-          mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    case PREVIEW: {
+      // Sin navegación acá: cada foto son dos formas de onda y navegar en la
+      // previa dejaba la pantalla parpadeando. Se elige o se vuelve a la lista.
+      const int i = photoAt(index);
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        setWallpaper(i >= 0 && i < static_cast<int>(photos.size()) ? &photos[i] : nullptr);
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
         state = LIST;
         requestUpdate();
       }
@@ -279,27 +288,21 @@ void PhotosActivity::loop() {
 // en modo BW pinta de negro TODO lo que no sea blanco puro (drawBitmap en BW:
 // negro si val < 3, nada si val == 3), así que una foto difuminada a 4 niveles
 // salía como una mancha negra. Hay que correr el pipeline de gris del SDK:
-// base en blanco y negro + pasada LSB + pasada MSB, igual que el salvapantallas.
-void PhotosActivity::drawPhoto() {
+// base en blanco y negro + plano LSB + plano MSB + displayGrayBuffer.
+bool PhotosActivity::drawFullScreenPhoto(GfxRenderer& renderer, const std::string& path,
+                                         const std::function<void()>& baseOverlay) {
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "<", ">");
 
   HalFile file;
-  if (!Storage.openFileForRead(TAG, photos[index].path, file)) {
-    renderer.clearScreen();
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    return;
+  if (!Storage.openFileForRead(TAG, path, file)) {
+    LOG_ERR(TAG, "no se pudo abrir %s", path.c_str());
+    return false;
   }
   Bitmap bitmap(file, true);
   if (bitmap.parseHeaders() != BmpReaderError::Ok) {
-    renderer.clearScreen();
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2, tr(STR_FILE_OPEN_FAILED));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
-    return;
+    LOG_ERR(TAG, "BMP inválido: %s", path.c_str());
+    return false;
   }
 
   int x = 0, y = 0;
@@ -316,31 +319,100 @@ void PhotosActivity::drawPhoto() {
     y = (pageHeight - bitmap.getHeight()) / 2;
   }
 
-  const bool gray = bitmap.hasGreyscale();
-  renderer.clearScreen();
-  renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
-  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (!bitmap.hasGreyscale()) {
+    renderer.clearScreen();
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+    if (baseOverlay) baseOverlay();
+    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+    return true;
+  }
+
+  // Los tres planos se arman ANTES de tocar la pantalla. Leer y escalar el BMP
+  // desde la SD tarda casi un segundo por pasada, y hacerlo entre el destello
+  // de la base y el empujón de gris dejaba la versión en blanco y negro a la
+  // vista todo ese rato (los "cuatro destellos" que se veían). Con los planos
+  // guardados en PSRAM, la base y el gris salen pegados y se ve una sola
+  // aparición. Si no hay PSRAM para los planos, se cae al orden clásico.
+  const size_t bufferSize = renderer.getBufferSize();
+  uint8_t* frameBuffer = renderer.getFrameBuffer();
+  uint8_t* lsb = static_cast<uint8_t*>(heap_caps_malloc(bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  uint8_t* msb = lsb ? static_cast<uint8_t*>(heap_caps_malloc(bufferSize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)) : nullptr;
+  const bool staged = lsb && msb && frameBuffer;
+
+  // Cada pasada dibuja lo mismo: la foto y lo que le va encima. El overlay tiene
+  // que entrar también en los planos de gris, si no el empujón de gris lo borra
+  // (dibuja TODA la pantalla) y la barra de botones se pierde.
+  const auto drawPass = [&] {
+    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+    if (baseOverlay) baseOverlay();
+  };
+
+  if (staged) {
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
+    drawPass();
+    memcpy(lsb, frameBuffer, bufferSize);
+
+    bitmap.rewindToData();
+    renderer.clearScreen(0x00);
+    renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
+    drawPass();
+    memcpy(msb, frameBuffer, bufferSize);
+
+    bitmap.rewindToData();
+    renderer.setRenderMode(GfxRenderer::BW);
+  }
+
   // La base tiene que ser HALF: la LUT del empujón de gris está calibrada
   // contra el estado que deja esa forma de onda.
-  if (gray) {
-    renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+  renderer.clearScreen();
+  drawPass();
+  renderer.displayGrayscaleBase(HalDisplay::HALF_REFRESH);
+
+  if (staged) {
+    memcpy(frameBuffer, lsb, bufferSize);
+    renderer.copyGrayscaleLsbBuffers();
+    memcpy(frameBuffer, msb, bufferSize);
+    renderer.copyGrayscaleMsbBuffers();
+  } else {
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_LSB);
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+    drawPass();
     renderer.copyGrayscaleLsbBuffers();
 
     bitmap.rewindToData();
     renderer.clearScreen(0x00);
     renderer.setRenderMode(GfxRenderer::GRAYSCALE_MSB);
-    renderer.drawBitmap(bitmap, x, y, pageWidth, pageHeight, 0, 0);
+    drawPass();
     renderer.copyGrayscaleMsbBuffers();
-
-    renderer.displayGrayBuffer();
-    renderer.setRenderMode(GfxRenderer::BW);
-  } else {
-    renderer.displayBuffer(HalDisplay::HALF_REFRESH);
   }
+
+  renderer.displayGrayBuffer();
+  renderer.setRenderMode(GfxRenderer::BW);
+  heap_caps_free(lsb);
+  heap_caps_free(msb);
+  return true;
+}
+
+// Vista previa de la foto marcada: así se va a ver de fondo. El cartel de
+// "Cargando..." tapa la espera (abrir el BMP y armar los tres planos tarda unos
+// segundos) para que no parezca que la pantalla se colgó, y la foto aparece de
+// una sola vez. La barra de botones va como overlay de las tres pasadas: encima
+// del empujón de gris no se puede pintar nada, porque el framebuffer ya no tiene
+// la imagen sino el plano MSB.
+void PhotosActivity::drawPreview() {
+  const int i = photoAt(index);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_WALLPAPER_USE), "", "");
+  const auto hints = [&] { GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4); };
+  if (i >= 0 && i < static_cast<int>(photos.size())) {
+    GUI.drawPopup(renderer, tr(STR_LOADING));
+    if (drawFullScreenPhoto(renderer, photos[i].path, hints)) return;
+  }
+  renderer.clearScreen();
+  renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_FILE_OPEN_FAILED));
+  hints();
+  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
 }
 
 void PhotosActivity::render(RenderLock&&) {
@@ -349,31 +421,45 @@ void PhotosActivity::render(RenderLock&&) {
   const int pageHeight = renderer.getScreenHeight();
   const int mid = pageHeight / 2;
 
-  if (state == VIEW && !photos.empty()) {
-    drawPhoto();  // se encarga de su propio refresco (pipeline de grises)
+  if (state == PREVIEW) {
+    drawPreview();  // se encarga de su propio refresco (pipeline de grises)
     return;
   }
 
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_PHOTOS));
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_WALLPAPER));
   switch (state) {
     case LIST: {
-      const int count = static_cast<int>(photos.size());
-      const int top = metrics.topPadding + metrics.headerHeight + 10;
+      const int count = rowCount();
+      // Qué hay elegido ahora, arriba de todo: es lo primero que se pregunta el
+      // que entra acá.
+      const std::string current =
+          std::string(tr(STR_WALLPAPER_CURRENT)) + ": " +
+          (HUB_STORE.wallpaperPath.empty() ? std::string(tr(STR_NONE_OPT)) : HUB_STORE.wallpaperName);
+      const int currentY = metrics.topPadding + metrics.headerHeight + 6;
+      renderer.drawText(SMALL_FONT_ID, SIDE,
+                        currentY,
+                        renderer.truncatedText(SMALL_FONT_ID, current.c_str(), pageWidth - 2 * SIDE).c_str());
+
+      const int top = currentY + renderer.getLineHeight(SMALL_FONT_ID) + 8;
       const int bottom = pageHeight - metrics.buttonHintsHeight - 30;
       itemsPerPage = std::max(1, (bottom - top) / ROW_H);
-      const int first = count > 0 ? (index / itemsPerPage) * itemsPerPage : 0;
-      if (count == 0) renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, tr(STR_PHOTOS_EMPTY));
+      const int first = (index / itemsPerPage) * itemsPerPage;
       for (int i = first; i < count && i < first + itemsPerPage; ++i) {
         const int y = top + (i - first) * ROW_H;
         const bool sel = i == index;
+        const int photoIndex = photoAt(i);
         if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4, 8, Color::Black);
+        const char* label = photoIndex < 0 ? tr(STR_NONE_OPT) : photos[photoIndex].name.c_str();
         renderer.drawText(UI_12_FONT_ID, SIDE, y + 8,
-                          renderer.truncatedText(UI_12_FONT_ID, photos[i].name.c_str(), pageWidth - 2 * SIDE - 30).c_str(), !sel);
-        if (photos[i].local) renderer.fillRect(pageWidth - SIDE - 6, y + ROW_H / 2 - 5, 6, 6, !sel);
+                          renderer.truncatedText(UI_12_FONT_ID, label, pageWidth - 2 * SIDE - 30).c_str(), !sel);
+        // Punto a la derecha = ésta es la que está de fondo.
+        const bool marked = photoIndex < 0 ? HUB_STORE.wallpaperPath.empty() : isWallpaper(photos[photoIndex]);
+        if (marked) renderer.fillRoundedRect(pageWidth - SIDE - 12, y + ROW_H / 2 - 8, 12, 12, 6, sel ? Color::White : Color::Black);
       }
+      if (photos.empty()) renderer.drawCenteredText(UI_10_FONT_ID, mid + 40, tr(STR_WALLPAPER_EMPTY));
       char pages[16];
-      snprintf(pages, sizeof(pages), "%d/%d", count ? index / itemsPerPage + 1 : 0, (count + itemsPerPage - 1) / itemsPerPage);
+      snprintf(pages, sizeof(pages), "%d/%d", index / itemsPerPage + 1, (count + itemsPerPage - 1) / itemsPerPage);
       renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom + 4, pages);
       renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4, tr(STR_PHOTOS_REFRESH_HINT));
       break;

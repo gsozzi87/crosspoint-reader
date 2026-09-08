@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "activities/home/HubSyncActivity.h"  // FriendlyWifi: conexion sin la pantalla tecnica
 #include "components/OptionPopup.h"
 #include "voice/VoiceRecorder.h"
 
@@ -65,6 +66,8 @@ class AskBookActivity final : public Activity {
   std::string failureDetail;
   bool wifiActivated = false;
   bool requestPending = false;
+  FriendlyWifi wifi;
+  bool wifiPicker = false;  // la pantalla de seleccion tiene el foco
 
   VoiceRecorder recorder;  // 10 s max, keeps the upload small
   bool voiceQuestion = false;
@@ -77,6 +80,7 @@ class AskBookActivity final : public Activity {
   void startRecording();
   void stopRecording();
   void connectThenSend();
+  void pumpConnect();
   void onWifiSelectionComplete(bool connected);
   void performTranscribe();
   void performAsk();

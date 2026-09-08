@@ -29,6 +29,7 @@ enum class SettingAction {
   ServerTest,
   HubSync,
   HubLocation,
+  Wallpaper,
 };
 
 struct SettingInfo {

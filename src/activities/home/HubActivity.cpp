@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <string>
+#include <vector>
 
 #include "CrossPointSettings.h"
 #include "HubStore.h"
@@ -22,7 +24,6 @@
 #include "MusicActivity.h"
 #include "NewsActivity.h"
 #include "activities/games/GamesActivity.h"
-#include "PhotosActivity.h"
 #include "WeatherActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
@@ -39,10 +40,11 @@ namespace {
 constexpr int SIDE = 20;        // left/right margin
 constexpr int GAP = 12;         // between tiles
 constexpr int STATUS_H = 44;    // status line band
-constexpr int TILE_H = 80;
+constexpr int TILE_H = 100;     // 12 mosaicos = 4 filas; entran con iconos de 64 px
 constexpr int TILE_RADIUS = 12;
-constexpr int CONTINUE_H = 60;
-constexpr int INFO_H = 136;
+constexpr int CONTINUE_H = 48;
+constexpr int INFO_H = 148;
+constexpr int HINT_GAP = 30;    // aire entre el aviso del atajo de voz y la barra de botones
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
 constexpr int PARTIALS_BEFORE_CLEAN = 12;         // regla del panel: completo cada 10-15 parciales
 constexpr time_t SYNC_INTERVAL_S = 3 * 3600;      // cache older than this at entry = sync
@@ -66,16 +68,17 @@ struct TileSpec {
   const freeink::Icon* icon;
 };
 
+// El orden manda: tiene que coincidir con el enum Tile del .h.
 const TileSpec TILES[] = {
-    {StrId::STR_HUB_READ, &icon_hub_read_48},           {StrId::STR_HUB_TALK, &icon_hub_ask_48},
-    {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_48},
-    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
-    {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
-    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_HUB_NEWS, &icon_hub_news_48},
-    {StrId::STR_HUB_PHOTOS, &icon_hub_photos_48},       {StrId::STR_HUB_GAMES, &icon_hub_games_48},
-    {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
-    {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
+    {StrId::STR_HUB_READ, &icon_hub_read_64},           {StrId::STR_HUB_TALK, &icon_hub_ask_64},
+    {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_64},
+    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_64}, {StrId::STR_HUB_TIMER, &icon_hub_timer_64},
+    {StrId::STR_HUB_NOTES, &icon_hub_notes_64},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_64},
+    {StrId::STR_HUB_MUSIC, &icon_hub_music_64},         {StrId::STR_HUB_NEWS, &icon_hub_news_64},
+    {StrId::STR_HUB_GAMES, &icon_hub_games_64},         {StrId::STR_WEATHER_TITLE, &icon_hub_weather_64},
+    {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_64},
 };
+static_assert(sizeof(TILES) / sizeof(TILES[0]) == 12, "TILES tiene que seguir a Tile");
 }  // namespace
 
 void HubActivity::onEnter() {
@@ -145,9 +148,6 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_NEWS:
       activityManager.replaceActivity(std::make_unique<NewsActivity>(renderer, mappedInput));
-      break;
-    case TILE_PHOTOS:
-      activityManager.replaceActivity(std::make_unique<PhotosActivity>(renderer, mappedInput));
       break;
     case TILE_WEATHER:
       activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
@@ -270,13 +270,18 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
     clockText = timeBuf;
   }
   renderer.drawText(UI_12_FONT_ID, SIDE, textY, clockText, true, EpdFontFamily::BOLD);
+  // Todo lo que se dibuja de derecha a izquierda tiene que frenar acá: si no,
+  // con un texto largo (el chip del temporizador en ruso, por ejemplo) la x se
+  // iba a negativo y el panel escupía "[GFX] !! Outside range" por cada píxel.
+  const int leftLimit = SIDE + renderer.getTextWidth(UI_12_FONT_ID, clockText, EpdFontFamily::BOLD) + 14;
 
   // Battery (icon + percent), right. WiFi icon before it when a link is up.
   const int percentWidth = renderer.getTextWidth(SMALL_FONT_ID, "100%");
-  const int batteryX = renderer.getScreenWidth() - SIDE - metrics.batteryWidth - 4 - percentWidth;
+  const int batteryX =
+      std::max(leftLimit, renderer.getScreenWidth() - SIDE - metrics.batteryWidth - 4 - percentWidth);
   GUI.drawBatteryLeft(renderer, Rect{batteryX, textY, metrics.batteryWidth, metrics.batteryHeight}, true);
   int rightEdge = batteryX - 12;
-  if (WiFi.status() == WL_CONNECTED) {
+  if (WiFi.status() == WL_CONNECTED && rightEdge - 24 > leftLimit) {
     rightEdge -= 24;
     drawSdkIcon(renderer, icon_wifi_24, rightEdge, y + (height - 24) / 2, true);
     rightEdge -= 12;
@@ -286,19 +291,21 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
   {
     char t[40] = "";
     formatTimeChip(t, sizeof(t));
-    if (t[0]) {
-      const int w = renderer.getTextWidth(UI_10_FONT_ID, t);
+    if (t[0] && rightEdge - leftLimit > 30) {
+      const std::string chip = renderer.truncatedText(UI_10_FONT_ID, t, rightEdge - leftLimit, EpdFontFamily::BOLD);
+      const int w = renderer.getTextWidth(UI_10_FONT_ID, chip.c_str(), EpdFontFamily::BOLD);
       rightEdge -= w;
-      renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, t, true, EpdFontFamily::BOLD);
+      renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, chip.c_str(), true, EpdFontFamily::BOLD);
       rightEdge -= 12;
     }
   }
-  if (!HUB_STORE.messages.empty()) {
+  if (!HUB_STORE.messages.empty() && rightEdge - leftLimit > 40) {
     char count[24];
     snprintf(count, sizeof(count), tr(STR_HUB_MESSAGES_FORMAT), (int)HUB_STORE.messages.size());
-    const int w = renderer.getTextWidth(UI_10_FONT_ID, count);
+    const std::string shown = renderer.truncatedText(UI_10_FONT_ID, count, rightEdge - leftLimit - 28);
+    const int w = renderer.getTextWidth(UI_10_FONT_ID, shown.c_str());
     rightEdge -= w;
-    renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, count);
+    renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, shown.c_str());
     rightEdge -= 24 + 4;
     drawSdkIcon(renderer, icon_hub_message_24, rightEdge, y + (height - 24) / 2, true);
   }
@@ -315,8 +322,24 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
     renderer.drawRoundedRect(x, y, w, h, 2, TILE_RADIUS, true);
   }
   const bool ink = !isSelected;  // white on the selected tile
+
+  // Con el icono de 64 px no entran dos renglones de etiqueta (quedarían por
+  // debajo del borde del mosaico), así que la palabra larga se dibuja con la
+  // fuente chica en vez de mutilarla: "Recordatorios" entero, no "Recordato…".
+  // Truncar sigue siendo el último recurso.
+  const char* label = I18N.get(spec.label);
+  const int textW = w - 8;
+  int labelFont = UI_10_FONT_ID;
+  EpdFontFamily::Style labelStyle = EpdFontFamily::BOLD;
+  if (renderer.getTextWidth(labelFont, label, labelStyle) > textW) {
+    labelFont = SMALL_FONT_ID;
+    labelStyle = EpdFontFamily::REGULAR;
+  }
+  const std::string fitted = renderer.truncatedText(labelFont, label, textW, labelStyle);
+
+  const int block = spec.icon->h + 6 + renderer.getTextHeight(labelFont);
   const int iconX = x + (w - spec.icon->w) / 2;
-  const int iconY = y + (h - spec.icon->h - 22) / 2;
+  const int iconY = y + std::max(2, (h - block) / 2);
   drawSdkIcon(renderer, *spec.icon, iconX, iconY, ink);
 
   // Punto en la esquina del mosaico Tiempo cuando hay algo corriendo o pausado.
@@ -324,11 +347,8 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
     renderer.fillRoundedRect(x + w - 18, y + 10, 8, 8, 4, ink ? Color::Black : Color::White);
   }
 
-  const char* label = I18N.get(spec.label);
-  const std::string shortLabel = renderer.truncatedText(UI_10_FONT_ID, label, w - 10, EpdFontFamily::BOLD);
-  const int labelW = renderer.getTextWidth(UI_10_FONT_ID, shortLabel.c_str(), EpdFontFamily::BOLD);
-  renderer.drawText(UI_10_FONT_ID, x + (w - labelW) / 2, iconY + spec.icon->h + 2, shortLabel.c_str(), ink,
-                    EpdFontFamily::BOLD);
+  const int labelW = renderer.getTextWidth(labelFont, fitted.c_str(), labelStyle);
+  renderer.drawText(labelFont, x + (w - labelW) / 2, iconY + spec.icon->h + 6, fitted.c_str(), ink, labelStyle);
 }
 
 void HubActivity::drawContinueWidget(const int x, const int y, const int w, const int h) const {
@@ -341,27 +361,27 @@ void HubActivity::drawContinueWidget(const int x, const int y, const int w, cons
     return;
   }
   const std::string title = renderer.truncatedText(UI_12_FONT_ID, lastBookTitle.c_str(), textW, EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, textX, y + 6, title.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, textX, y + 4, title.c_str(), true, EpdFontFamily::BOLD);
   const std::string sub = lastBookAuthor.empty() ? tr(STR_CONTINUE_READING) : lastBookAuthor;
-  renderer.drawText(UI_10_FONT_ID, textX, y + 32, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
+  renderer.drawText(SMALL_FONT_ID, textX, y + 28, renderer.truncatedText(SMALL_FONT_ID, sub.c_str(), textW).c_str());
 }
 
-// Weather + next reminder on the first row, today's events (or the quote) on
-// the second. Everything comes from the SD cache; a never-synced hub says so.
+// Clima arriba (fila entera), después el próximo recordatorio y, al final, la
+// agenda de hoy o la frase del día. Todo sale de la caché de la SD; un hub que
+// nunca sincronizó lo dice. El clima ocupa el ancho completo: en media caja la
+// línea del lugar se cortaba en "Iztac…" y no se alcanzaba a leer.
 void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const int h) const {
   const HubStore& hub = HUB_STORE;
   renderer.drawRoundedRect(x, y, w, h, 1, TILE_RADIUS, true);
-  const int colW = w / 2;
   const int pad = 14;
-  const int rowH = 66;
-  renderer.drawLine(x + colW, y + 10, x + colW, y + rowH - 4, true);
-  renderer.drawLine(x + pad, y + rowH, x + w - pad, y + rowH, true);
+  const int tx = x + pad + 24 + 8;  // el texto arranca después del icono de 24
+  const int tw = std::max(20, w - (tx - x) - pad);
+  const int lineStep = renderer.getTextHeight(UI_10_FONT_ID) + 4;
+  const int weatherH = 56;
 
-  // Weather (left)
+  // Clima (fila entera, dos renglones)
   {
-    const int tx = x + pad + 24 + 8;
-    const int tw = colW - pad - 24 - 8 - 8;
-    drawSdkIcon(renderer, icon_hub_weather_24, x + pad, y + 12, true);
+    drawSdkIcon(renderer, icon_hub_weather_24, x + pad, y + 8, true);
     if (hub.weatherLine.empty()) {
       // El motivo concreto en vez de "sin datos": falta el token, falta el lugar,
       // o el servicio del clima falló en el servidor.
@@ -370,38 +390,64 @@ void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const i
                          : hub.weatherNoPlace     ? tr(STR_HUB_NO_PLACE)
                          : !hub.weatherError.empty() ? tr(STR_HUB_WEATHER_ERROR)
                                                      : tr(STR_HUB_NO_WEATHER);
-      renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, none, tw).c_str());
+      int ly = y + 8;
+      for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, none, tw, 2)) {
+        renderer.drawText(UI_10_FONT_ID, tx, ly, renderer.truncatedText(UI_10_FONT_ID, line.c_str(), tw).c_str());
+        ly += lineStep;
+      }
     } else {
-      renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.weatherLine.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
       // La de afuera viene del servidor; la de adentro, del SHTC3 de la placa.
-      std::string detail = hub.weatherDetail;
+      std::string indoor;
       const float inside = shtc3::cachedCelsius();
       if (!std::isnan(inside)) {
         char in[32];
         snprintf(in, sizeof(in), "%s %d°", tr(STR_HUB_INDOOR), static_cast<int>(inside + 0.5f));
-        detail = std::string(in) + (detail.empty() ? "" : "  ·  " + detail);
+        indoor = in;
       }
-      renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), tw).c_str());
+      const std::string title =
+          renderer.truncatedText(UI_12_FONT_ID, hub.weatherLine.c_str(), tw, EpdFontFamily::BOLD);
+      const int titleW = renderer.getTextWidth(UI_12_FONT_ID, title.c_str(), EpdFontFamily::BOLD);
+      std::string detail = hub.weatherDetail;
+      if (!indoor.empty()) {
+        // La interior va al lado del titular si sobra lugar; si no, adelante del
+        // detalle, nunca cortada.
+        if (titleW + 10 + renderer.getTextWidth(SMALL_FONT_ID, indoor.c_str()) <= tw) {
+          renderer.drawText(SMALL_FONT_ID, tx + titleW + 10, y + 10, indoor.c_str());
+        } else {
+          detail = detail.empty() ? indoor : indoor + "  ·  " + detail;
+        }
+      }
+      renderer.drawText(UI_12_FONT_ID, tx, y + 4, title.c_str(), true, EpdFontFamily::BOLD);
+      renderer.drawText(SMALL_FONT_ID, tx, y + 32,
+                        renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), tw).c_str());
     }
   }
-  // Next reminder (right)
+  renderer.drawLine(x + pad, y + weatherH, x + w - pad, y + weatherH, true);
+
+  // Próximo recordatorio (una fila entera: título y cuándo, cada uno truncado)
+  const int ry = y + weatherH + 6;
   {
-    const int ix = x + colW + pad;
-    const int tx = ix + 24 + 8;
-    const int tw = colW - pad - 24 - 8 - pad;
-    drawSdkIcon(renderer, icon_hub_reminder_24, ix, y + 12, true);
+    drawSdkIcon(renderer, icon_hub_reminder_24, x + pad, ry, true);
     if (hub.reminderTitle.empty()) {
-      renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, tr(STR_HUB_NO_REMINDERS), tw).c_str());
+      renderer.drawText(UI_10_FONT_ID, tx, ry + 2,
+                        renderer.truncatedText(UI_10_FONT_ID, tr(STR_HUB_NO_REMINDERS), tw).c_str());
     } else {
-      renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.reminderTitle.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
-      renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, hub.reminderWhen.c_str(), tw).c_str());
+      const std::string when = renderer.truncatedText(SMALL_FONT_ID, hub.reminderWhen.c_str(), tw / 2);
+      const int whenW = when.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, when.c_str());
+      const int titleW = std::max(20, tw - (whenW ? whenW + 12 : 0));
+      renderer.drawText(
+          UI_12_FONT_ID, tx, ry,
+          renderer.truncatedText(UI_12_FONT_ID, hub.reminderTitle.c_str(), titleW, EpdFontFamily::BOLD).c_str(), true,
+          EpdFontFamily::BOLD);
+      if (whenW) renderer.drawText(SMALL_FONT_ID, x + w - pad - whenW, ry + 6, when.c_str());
     }
   }
+
   // Events, or the quote when the day is empty
   {
-    const int ty = y + rowH + 10;
-    const int tx = x + pad + 24 + 8;
-    const int tw = w - (tx - x) - pad;
+    const int ty = ry + 30;
+    // Cuántos renglones entran de verdad en lo que queda de la caja.
+    const int maxLines = std::max(1, (y + h - 6 - ty) / lineStep);
     drawSdkIcon(renderer, icon_hub_calendar_24, x + pad, ty, true);
     if (hub.events.empty()) {
       // No events: the verse of the day on even days, the quote on odd ones.
@@ -410,21 +456,23 @@ void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const i
       const bool useVerse = !hub.verseText.empty() && (verseDay || hub.quote.empty());
       const std::string line = useVerse ? hub.verseText + " (" + hub.verseRef + ")"
                                         : hub.quote.empty() ? std::string(tr(STR_HUB_NO_EVENTS)) : hub.quote;
-      // Two lines max for the quote.
-      const std::string first = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), tw);
-      renderer.drawText(UI_10_FONT_ID, tx, ty + 2, first.c_str());
-      if (first.size() + 3 < line.size() && line.compare(0, first.size() - 3, first, 0, first.size() - 3) == 0) {
-        const std::string rest = line.substr(first.size() - 3);
-        renderer.drawText(UI_10_FONT_ID, tx, ty + 28, renderer.truncatedText(UI_10_FONT_ID, rest.c_str(), tw).c_str());
+      // Corte por palabras, no por caracteres: el truco viejo (truncar y seguir
+      // desde el corte) partía la palabra al medio y encima le metía "…" en el
+      // medio de la frase. wrappedText corta por espacios y deja el "…" solo en
+      // el último renglón que entra.
+      int ey = ty;
+      for (const std::string& part : renderer.wrappedText(UI_10_FONT_ID, line.c_str(), tw, maxLines)) {
+        renderer.drawText(UI_10_FONT_ID, tx, ey, renderer.truncatedText(UI_10_FONT_ID, part.c_str(), tw).c_str());
+        ey += lineStep;
       }
     } else {
-      int ey = ty + 2;
+      int ey = ty;
       int shown = 0;
       for (const HubStore::Event& e : hub.events) {
-        if (shown++ >= 3) break;
+        if (shown++ >= maxLines) break;
         std::string line = e.when.empty() ? e.title : e.when + "  " + e.title;
         renderer.drawText(UI_10_FONT_ID, tx, ey, renderer.truncatedText(UI_10_FONT_ID, line.c_str(), tw).c_str());
-        ey += 24;
+        ey += lineStep;
       }
     }
   }
@@ -444,30 +492,33 @@ void HubActivity::render(RenderLock&&) {
     strncpy(lastClock, timeBuf, sizeof(lastClock));
   }
 
+  // 12 mosaicos = 3 columnas x 4 filas justas, sin fila incompleta que centrar.
   const int tileW = (pageWidth - 2 * SIDE - GAP * (COLUMNS - 1)) / COLUMNS;
   const int rows = (TILE_COUNT + COLUMNS - 1) / COLUMNS;
-  const int gridTop = metrics.topPadding + STATUS_H + 12;
+  const int gridLeft = (pageWidth - (COLUMNS * tileW + (COLUMNS - 1) * GAP)) / 2;
+  const int gridTop = metrics.topPadding + STATUS_H + 8;
   for (int i = 0; i < TILE_COUNT; ++i) {
     const int col = i % COLUMNS;
     const int row = i / COLUMNS;
-    // La última fila puede quedar incompleta (13 mosaicos en 3 columnas): se centra.
-    const int inRow = std::min(COLUMNS, TILE_COUNT - row * COLUMNS);
-    const int rowW = inRow * tileW + (inRow - 1) * GAP;
-    const int rowLeft = (pageWidth - rowW) / 2;
-    drawTile(i, rowLeft + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
+    drawTile(i, gridLeft + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
   }
 
-  int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 10;
+  int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 8;
   const int hintsTop = pageHeight - metrics.buttonHintsHeight;
   drawContinueWidget(SIDE, widgetTop, pageWidth - 2 * SIDE, CONTINUE_H);
   widgetTop += CONTINUE_H + 8;
-  // El aviso del atajo de voz se dibuja en hintsTop - 16, así que los widgets
-  // tienen que terminar antes o le pasan por encima.
-  const int hintLine = hintsTop - 16;
-  const int infoH = std::min(INFO_H, hintLine - 8 - widgetTop);
+  // El aviso del atajo de voz se dibuja arriba de la barra de botones, así que
+  // los widgets tienen que terminar antes o le pasan por encima (y él, a su vez,
+  // tiene que terminar antes del borde de arriba de la barra).
+  const int hintLine = hintsTop - HINT_GAP;
+  const int infoH = std::min(INFO_H, hintLine - 10 - widgetTop);
   if (infoH > 80) drawInfoWidgets(SIDE, widgetTop, pageWidth - 2 * SIDE, infoH);
 
-  renderer.drawCenteredText(SMALL_FONT_ID, hintLine, tr(STR_VOICE_SHORTCUT_HINT));
+  // Centrado, pero truncado contra el ancho útil: un texto más ancho que la
+  // pantalla le deja a drawCenteredText una x negativa y se dibuja fuera del panel.
+  renderer.drawCenteredText(
+      SMALL_FONT_ID, hintLine,
+      renderer.truncatedText(SMALL_FONT_ID, tr(STR_VOICE_SHORTCUT_HINT), pageWidth - 2 * SIDE).c_str());
 
   if (comingSoon) GUI.drawPopup(renderer, tr(STR_HUB_COMING_SOON));
 

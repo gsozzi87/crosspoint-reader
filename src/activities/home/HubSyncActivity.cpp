@@ -7,14 +7,17 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <WiFi.h>
+#include <esp_mac.h>
 
 #include <algorithm>
+#include <utility>
 #include <vector>
 
 #include "CrossPointSettings.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "WifiCredentialStore.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -27,18 +30,266 @@ namespace {
 constexpr const char* TAG = "HUB_SYNC";
 constexpr unsigned long DONE_SCREEN_MS = 1200;
 constexpr long CLOCK_DRIFT_TOLERANCE_S = 120;
+// Conexion amigable: cuanto se espera por red y cuantas redes guardadas se
+// prueban antes de rendirse y pedirle al usuario que elija.
+constexpr unsigned long WIFI_ATTEMPT_MS = 9000;
+constexpr int WIFI_MAX_ATTEMPTS = 5;
+constexpr unsigned long WIFI_TICK_MS = 2500;  // cada cuanto se mueve la barra
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// FriendlyWifi
+// ---------------------------------------------------------------------------
+
+void FriendlyWifi::begin() {
+  currentPhase = Phase::Connecting;
+  attempts = 0;
+  ticks = 0;
+  scanDone = false;
+  tried.clear();
+  candidates.clear();
+  currentSsid.clear();
+  lastTick = millis();
+  bump();
+  if (WiFi.status() == WL_CONNECTED) {
+    currentPhase = Phase::Connected;
+    return;
+  }
+  {
+    RenderLock lock;  // la SD y la pantalla comparten el SPI
+    WIFI_STORE.loadFromFile();
+  }
+  if (WIFI_STORE.getCredentialCount() == 0) {
+    currentPhase = Phase::NeedsPicker;  // no hay nada guardado: hay que elegir
+    bump();
+    return;
+  }
+  WiFi.persistent(false);  // las credenciales las maneja WifiCredentialStore
+  WiFi.mode(WIFI_STA);
+  // El nombre en el router queda igual que con la pantalla de seleccion.
+  uint8_t mac[6] = {};
+  if (esp_read_mac(mac, ESP_MAC_WIFI_STA) == ESP_OK) {
+    char hostname[sizeof("CrossPoint-Reader-") + 12];
+    snprintf(hostname, sizeof(hostname), "CrossPoint-Reader-%02X%02X%02X%02X%02X%02X", mac[0], mac[1], mac[2], mac[3],
+             mac[4], mac[5]);
+    WiFi.setHostname(hostname);
+  }
+  const std::string last = WIFI_STORE.getLastConnectedSsid();
+  if (!last.empty() && tryNetwork(last)) return;  // la ultima que anduvo, primero
+  startScan();
+}
+
+bool FriendlyWifi::tryNetwork(const std::string& ssid) {
+  if (ssid.empty() || attempts >= WIFI_MAX_ATTEMPTS) return false;
+  if (std::find(tried.begin(), tried.end(), ssid) != tried.end()) return false;
+  const auto cred = WIFI_STORE.findCredential(ssid);
+  if (!cred) return false;
+  tried.push_back(ssid);
+  currentSsid = ssid;
+  attempts++;
+  ticks = 0;
+  WiFi.disconnect(true, true);  // corta cualquier intento del SDK y limpia la NVS
+  delay(80);
+  WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+  WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+  if (!cred->password.empty()) {
+    WiFi.begin(ssid.c_str(), cred->password.c_str());
+  } else {
+    WiFi.begin(ssid.c_str());
+  }
+  attemptStartedAt = millis();
+  lastTick = attemptStartedAt;
+  currentPhase = Phase::Connecting;
+  LOG_DBG(TAG, "friendly wifi: saved network attempt %d", attempts);
+  bump();
+  return true;
+}
+
+void FriendlyWifi::startScan() {
+  if (scanDone) {  // ya se escaneo una vez: no hay mas de donde sacar
+    currentPhase = Phase::NeedsPicker;
+    bump();
+    return;
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  WiFi.scanNetworks(true);  // asincronico: el loop sigue vivo
+  currentPhase = Phase::Searching;
+  lastTick = millis();
+  bump();
+}
+
+void FriendlyWifi::collectScanResults(const int found) {
+  scanDone = true;
+  candidates.clear();
+  std::vector<std::pair<int32_t, std::string>> seen;  // (rssi, ssid), solo las guardadas
+  for (int i = 0; i < found; ++i) {
+    const std::string ssid = WiFi.SSID(i).c_str();
+    if (ssid.empty() || !WIFI_STORE.hasSavedCredential(ssid)) continue;
+    const auto it = std::find_if(seen.begin(), seen.end(),
+                                 [&ssid](const std::pair<int32_t, std::string>& e) { return e.second == ssid; });
+    if (it != seen.end()) {
+      it->first = std::max(it->first, static_cast<int32_t>(WiFi.RSSI(i)));
+      continue;
+    }
+    seen.emplace_back(static_cast<int32_t>(WiFi.RSSI(i)), ssid);
+  }
+  std::sort(seen.begin(), seen.end(),
+            [](const std::pair<int32_t, std::string>& a, const std::pair<int32_t, std::string>& b) {
+              return a.first > b.first;  // la de mejor senal primero
+            });
+  for (const auto& entry : seen) candidates.push_back(entry.second);
+  WiFi.scanDelete();
+  LOG_DBG(TAG, "friendly wifi: %u saved networks in range", (unsigned)candidates.size());
+}
+
+void FriendlyWifi::nextCandidate() {
+  WiFi.disconnect();
+  for (const std::string& ssid : candidates) {
+    if (tryNetwork(ssid)) return;
+  }
+  if (!scanDone) {
+    startScan();
+    return;
+  }
+  currentSsid.clear();
+  currentPhase = Phase::NeedsPicker;
+  bump();
+}
+
+void FriendlyWifi::onConnected() {
+  {
+    RenderLock lock;
+    WIFI_STORE.setLastConnectedSsid(currentSsid);
+  }
+  // Igual que la pantalla de seleccion: una sola sincronizacion NTP en la vida
+  // del aparato (el hub despues pone la hora con el reloj del servidor).
+  if (halClock.isAvailable() && !SETTINGS.clockHasBeenSynced) {
+    if (halClock.syncFromNTP()) {
+      SETTINGS.clockHasBeenSynced = 1;
+      SETTINGS.saveToFile();
+    }
+  }
+  currentPhase = Phase::Connected;
+  bump();
+}
+
+FriendlyWifi::Phase FriendlyWifi::pump() {
+  switch (currentPhase) {
+    case Phase::Connecting: {
+      const wl_status_t st = WiFi.status();
+      if (st == WL_CONNECTED) {
+        onConnected();
+        break;
+      }
+      if (st == WL_CONNECT_FAILED || st == WL_NO_SSID_AVAIL || millis() - attemptStartedAt > WIFI_ATTEMPT_MS) {
+        nextCandidate();
+        break;
+      }
+      if (millis() - lastTick >= WIFI_TICK_MS) {  // la barra se mueve, se ve vivo
+        lastTick = millis();
+        ticks++;
+        bump();
+      }
+      break;
+    }
+    case Phase::Searching: {
+      const int16_t found = WiFi.scanComplete();
+      if (found == WIFI_SCAN_RUNNING) {
+        if (millis() - lastTick >= WIFI_TICK_MS) {
+          lastTick = millis();
+          ticks++;
+          bump();
+        }
+        break;
+      }
+      collectScanResults(found > 0 ? found : 0);
+      nextCandidate();
+      break;
+    }
+    default:
+      break;
+  }
+  return currentPhase;
+}
+
+const char* FriendlyWifi::statusText() const {
+  switch (currentPhase) {
+    case Phase::Searching:
+      return tr(STR_NET_SEARCHING);
+    case Phase::Connected:
+      return tr(STR_NET_CONNECTED);
+    case Phase::NeedsPicker:
+      return tr(STR_NET_PICK_HINT);
+    default:
+      return tr(STR_NET_CONNECTING);
+  }
+}
+
+int FriendlyWifi::progressPercent() const {
+  if (currentPhase == Phase::Connected) return 100;
+  const int base = 12 + std::min(attempts, WIFI_MAX_ATTEMPTS) * 14;
+  return std::min(90, base + std::min(ticks, 3) * 6);
+}
+
+void FriendlyWifi::drawStatus(const GfxRenderer& renderer, const FriendlyWifi& wifi, const int centerY) {
+  const int pageWidth = renderer.getScreenWidth();
+  const int textW = pageWidth - 40;
+  renderer.drawCenteredText(
+      UI_12_FONT_ID, centerY - 44,
+      renderer.truncatedText(UI_12_FONT_ID, wifi.statusText(), textW, EpdFontFamily::BOLD).c_str(), true,
+      EpdFontFamily::BOLD);
+  const int barW = std::min(280, pageWidth - 80);
+  const int barX = (pageWidth - barW) / 2;
+  const int barY = centerY;
+  renderer.drawRoundedRect(barX, barY, barW, 14, 1, 7, true);
+  const int fill = (barW - 6) * wifi.progressPercent() / 100;
+  if (fill > 2) renderer.fillRoundedRect(barX + 3, barY + 3, fill, 8, 4, Color::Black);
+  renderer.drawCenteredText(SMALL_FONT_ID, barY + 30,
+                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_NET_WAIT_HINT), textW).c_str());
+}
 
 void HubSyncActivity::onEnter() {
   Activity::onEnter();
+  beginConnect();
+}
+
+// Nada de la pantalla tecnica de redes: se prueban las guardadas solas y el
+// usuario ve el cartel de FriendlyWifi.
+void HubSyncActivity::beginConnect() {
+  wifiPicker = false;
+  wifiFailed = false;
+  wifi.begin();
   state = CONNECTING;
-  WiFi.mode(WIFI_STA);
-  if (WiFi.status() == WL_CONNECTED) {
+  // Si el WiFi ya estaba arriba (o no hay nada guardado) se resuelve sin pintar
+  // el cartel: un repintado de mas en tinta electronica se nota.
+  if (wifi.isDone()) {
+    pumpConnect();
+    return;
+  }
+  requestUpdate();
+}
+
+void HubSyncActivity::pumpConnect() {
+  if (wifiPicker) return;  // la pantalla de seleccion tiene el foco
+  const uint32_t rev = wifi.revision();
+  const FriendlyWifi::Phase phase = wifi.pump();
+  if (phase == FriendlyWifi::Phase::Connected) {
     onWifiSelectionComplete(true);
     return;
   }
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
+  if (phase == FriendlyWifi::Phase::NeedsPicker) {
+    // Ninguna red guardada anduvo: ahora si hace falta que elija una a mano.
+    // autoConnect = false: ya las probamos nosotros, que muestre la lista.
+    wifiPicker = true;
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+                           [this](const ActivityResult& result) {
+                             wifiPicker = false;
+                             onWifiSelectionComplete(!result.isCancelled);
+                           });
+    return;
+  }
+  if (wifi.revision() != rev) requestUpdate();  // solo cuando cambio el cartel
 }
 
 void HubSyncActivity::onExit() {
@@ -54,6 +305,7 @@ void HubSyncActivity::onWifiSelectionComplete(const bool connected) {
   if (!connected) {
     LOG_ERR(TAG, "WiFi connection failed");
     markAttempt(false);
+    wifiFailed = true;
     state = FAILED;
     doneAt = millis();
     requestUpdate();
@@ -219,6 +471,12 @@ void HubSyncActivity::loop() {
       }
       break;
     case CONNECTING:
+      if (!wifiPicker && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        WiFi.disconnect();
+        finish();
+        break;
+      }
+      pumpConnect();
       break;
   }
 }
@@ -232,6 +490,7 @@ void HubSyncActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_SYNC));
   switch (state) {
     case CONNECTING:
+      if (!wifiPicker) FriendlyWifi::drawStatus(renderer, wifi, mid);
       break;
     case SYNCING:
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_HUB_SYNCING), true, EpdFontFamily::BOLD);
@@ -240,14 +499,23 @@ void HubSyncActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_HUB_SYNC_DONE), true, EpdFontFamily::BOLD);
       break;
     case FAILED: {
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, tr(STR_HUB_SYNC_FAILED), true, EpdFontFamily::BOLD);
-      char detail[64];
-      snprintf(detail, sizeof(detail), "%s (%d)", ServerClient::resultName(result), status);
-      renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, detail);
+      // Si lo que fallo fue la red, se dice eso y nada mas: el codigo del
+      // cliente HTTP no le sirve a nadie ahi.
+      const char* headline = wifiFailed ? tr(STR_SERVER_WIFI_FAILED) : tr(STR_HUB_SYNC_FAILED);
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 30,
+                                renderer.truncatedText(UI_12_FONT_ID, headline, pageWidth - 40, EpdFontFamily::BOLD).c_str(),
+                                true, EpdFontFamily::BOLD);
+      if (!wifiFailed) {
+        char detail[64];
+        snprintf(detail, sizeof(detail), "%s (%d)", ServerClient::resultName(result), status);
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10,
+                                  renderer.truncatedText(UI_10_FONT_ID, detail, pageWidth - 40).c_str());
+      }
       break;
     }
   }
-  const auto labels = mappedInput.mapLabels(state == FAILED ? tr(STR_BACK) : "", "", "", "");
+  const auto labels =
+      mappedInput.mapLabels(state == FAILED || (state == CONNECTING && !wifiPicker) ? tr(STR_BACK) : "", "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

@@ -136,33 +136,44 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
   renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
 }
 
-// Centre a button-hint label inside its box. A label that fits is drawn on the
-// single baseline it always was; one too wide used to overflow the button border
-// and run into the neighbouring hint, and now wraps to at most two centred lines
-// (wrappedText() ellipsises anything that still doesn't fit). Shared so every
-// theme's drawButtonHints() gets the same behaviour.
+// Centre a button-hint label inside its box. La etiqueta que entra se centra
+// vertical y horizontalmente en el recuadro; la que no entra se parte en dos
+// renglones (wrappedText() le pone "…" a lo que sigue sin entrar) y NUNCA sale
+// del recuadro, así dos ayudas vecinas no se pisan. Compartida: todos los temas
+// dibujan las ayudas igual.
 void BaseTheme::drawHintLabel(GfxRenderer& renderer, const int fontId, const char* label, const int x,
                               const int boxWidth, const int boxTop, const int boxHeight, const int singleLineYOffset) {
-  constexpr int textPadding = 4;  // keeps a wrapped label off the button's border
-  const int maxTextWidth = boxWidth - (textPadding * 2);
+  // Aire a los costados: con 4 px el texto queda pegado al borde del recuadro.
+  // En los recuadros angostos (Lyra usa 80 px) se deja el margen viejo, si no
+  // "Selecc." dejaría de entrar y se partiría sin necesidad.
+  const int textPadding = boxWidth >= 96 ? 8 : 4;
+  const int maxTextWidth = std::max(1, boxWidth - textPadding * 2);
+  const int glyphHeight = renderer.getTextHeight(fontId);
 
   const int textWidth = renderer.getTextWidth(fontId, label);
   if (textWidth <= maxTextWidth) {
-    renderer.drawText(fontId, x + (boxWidth - 1 - textWidth) / 2, boxTop + singleLineYOffset, label);
+    // Centrado vertical de verdad: el offset fijo dejaba el texto arrimado al
+    // borde de arriba y el recuadro con todo el aire abajo.
+    const int lineY = boxTop + std::max(singleLineYOffset, (boxHeight - glyphHeight) / 2);
+    renderer.drawText(fontId, x + (boxWidth - textWidth) / 2, lineY, label);
     return;
   }
 
   // Spaced by the glyph height, not getLineHeight() — that returns the font's
   // full advanceY (leading included), which stacks two lines taller than the
   // button and clips the second one.
-  constexpr int lineGap = 2;
-  const int step = renderer.getTextHeight(fontId) + lineGap;
+  constexpr int lineGap = 3;
+  const int step = glyphHeight + lineGap;
   const auto lines = renderer.wrappedText(fontId, label, maxTextWidth, 2);
   const int block = static_cast<int>(lines.size()) * step - lineGap;
-  int lineY = boxTop + std::max(1, (boxHeight - block) / 2);
+  int lineY = boxTop + std::max(2, (boxHeight - block) / 2);
   for (const auto& line : lines) {
-    const int lineWidth = renderer.getTextWidth(fontId, line.c_str());
-    renderer.drawText(fontId, x + (boxWidth - 1 - lineWidth) / 2, lineY, line.c_str());
+    // Cada renglón se vuelve a medir y a truncar contra el ancho útil: si el
+    // wrap devolviera algo más ancho (una palabra sola sin cortes), el texto
+    // se saldría del recuadro y se metería en el de al lado.
+    const std::string fitted = renderer.truncatedText(fontId, line.c_str(), maxTextWidth);
+    const int lineWidth = renderer.getTextWidth(fontId, fitted.c_str());
+    renderer.drawText(fontId, x + (boxWidth - lineWidth) / 2, lineY, fitted.c_str());
     lineY += step;
   }
 }
@@ -176,26 +187,28 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
+  const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  constexpr int buttonWidth = 106;
-  constexpr int buttonHeight = BaseMetrics::values.buttonHintsHeight;
-  constexpr int buttonY = BaseMetrics::values.buttonHintsHeight;  // Distance from bottom
-  constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
-  // Keyed to the portrait panel width: the 528-wide X3 gets more spacing than
-  // the 480-wide boards (X4, X4 Pro, and the other 800x480 panels).
-  constexpr int narrowButtonPositions[] = {25, 130, 245, 350};
-  constexpr int wideButtonPositions[] = {38, 154, 268, 384};
-  const int* buttonPositions = renderer.getScreenWidth() >= 528 ? wideButtonPositions : narrowButtonPositions;
+  constexpr int bandHeight = BaseMetrics::values.buttonHintsHeight;
+  constexpr int bottomMargin = 6;                          // el recuadro no toca el borde de la pantalla
+  constexpr int buttonHeight = bandHeight - bottomMargin;  // alto del recuadro
+  constexpr int textYOffset = 5;                           // mínimo entre el borde de arriba y el texto
+  // Repartidos sobre el ancho real de la pantalla en vez de una tabla fija: las
+  // posiciones viejas (25/130/245/350 con recuadros de 106) se pisaban por 1 px
+  // y dejaban los cuatro textos pegados entre sí.
+  constexpr int sidePadding = 12;
+  constexpr int buttonGap = 10;
+  const int buttonWidth = std::max(40, (pageWidth - sidePadding * 2 - buttonGap * 3) / 4);
+  const int boxTop = pageHeight - bandHeight;
   const char* labels[] = {btn1, btn2, btn3, btn4};
 
   for (int i = 0; i < 4; i++) {
     // Only draw if the label is non-empty
     if (labels[i] != nullptr && labels[i][0] != '\0') {
-      const int x = buttonPositions[i];
-      renderer.fillRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, false);
-      renderer.drawRect(x, pageHeight - buttonY, buttonWidth, buttonHeight);
-      drawHintLabel(renderer, UI_10_FONT_ID, labels[i], x, buttonWidth, pageHeight - buttonY, buttonHeight,
-                    textYOffset);
+      const int x = sidePadding + i * (buttonWidth + buttonGap);
+      renderer.fillRect(x, boxTop, buttonWidth, buttonHeight, false);
+      renderer.drawRect(x, boxTop, buttonWidth, buttonHeight);
+      drawHintLabel(renderer, UI_10_FONT_ID, labels[i], x, buttonWidth, boxTop, buttonHeight, textYOffset);
     }
   }
 

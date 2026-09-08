@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "HubSyncActivity.h"  // FriendlyWifi: conexion sin la pantalla tecnica
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "voice/SpeechOut.h"
@@ -44,11 +45,15 @@ class TranslatorActivity final : public Activity {
   std::string failureDetail;
   bool wifiActivated = false;
   bool requestPending = false;
+  FriendlyWifi wifi;
+  bool wifiPicker = false;  // la pantalla de seleccion tiene el foco
   int partialCount = 0;  // parciales desde el último refresco limpio
 
   void showLanguagePicker();
   void startRecording(bool me);
   void stopRecording();
+  void beginConnect();
+  void pumpConnect();
   void onWifiSelectionComplete(bool connected);
   void performRequest();
   void fail(StrId why, std::string detail = "");

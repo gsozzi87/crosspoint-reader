@@ -17,9 +17,23 @@ export type LlmConfig = {
 };
 export type SttConfig = { baseUrl: string; model: string; key: string };
 
+// Búsqueda en internet para contestar cosas actuales. Con Anthropic la hace el
+// propio modelo (herramienta del lado del servidor de Anthropic, ~USD 10 por
+// cada 1000 búsquedas más los tokens de los resultados). Con un proveedor
+// compatible con OpenAI esa herramienta no existe, así que busca el servidor y
+// le pasa los resultados al modelo en el prompt: sin clave usa Google Noticias
+// y DuckDuckGo (gratis), y con clave puede usar Tavily o Brave.
+export type SearchConfig = {
+  enabled: boolean;
+  maxUses: number;                        // tope de búsquedas por respuesta (Anthropic)
+  provider: "free" | "tavily" | "brave";  // buscador para los proveedores compatibles con OpenAI
+  key: string;                            // clave del buscador; vacía = gratis, sin clave
+};
+
 export type Config = {
   llm: LlmConfig;
   stt: SttConfig;
+  search: SearchConfig;
   deviceToken: string;  // vacío = solo vale el DEVICE_TOKEN del entorno
 };
 
@@ -68,6 +82,12 @@ function defaults(): Config {
       model: process.env.STT_MODEL ?? "whisper-1",
       key: process.env.STT_API_KEY ?? process.env.OPENAI_API_KEY ?? "",
     },
+    search: {
+      enabled: (process.env.WEB_SEARCH ?? "1") !== "0",
+      maxUses: Math.max(1, Math.min(10, Number(process.env.WEB_SEARCH_MAX_USES ?? 3) || 3)),
+      provider: (process.env.SEARCH_PROVIDER as SearchConfig["provider"]) ?? "free",
+      key: process.env.SEARCH_API_KEY ?? "",
+    },
     deviceToken: "",
   };
 }
@@ -78,11 +98,15 @@ function merge(saved: Partial<Config> | null): Config {
   const out: Config = {
     llm: { ...base.llm, ...obj<LlmConfig>(saved?.llm) },
     stt: { ...base.stt, ...obj<SttConfig>(saved?.stt) },
+    search: { ...base.search, ...obj<SearchConfig>(saved?.search) },
     deviceToken: typeof saved?.deviceToken === "string" ? saved.deviceToken : "",
   };
   // Una clave vacía en el archivo no pisa la del entorno.
   if (!out.llm.key) out.llm.key = base.llm.key;
   if (!out.stt.key) out.stt.key = base.stt.key;
+  if (!out.search.key) out.search.key = base.search.key;
+  if (!["free", "tavily", "brave"].includes(out.search.provider)) out.search.provider = "free";
+  out.search.maxUses = Math.max(1, Math.min(10, Math.round(Number(out.search.maxUses) || 3)));
   return out;
 }
 
@@ -112,6 +136,7 @@ export async function publicConfig() {
   return {
     llm: { provider: c.llm.provider, baseUrl: c.llm.baseUrl, model: c.llm.model, hasKey: !!c.llm.key },
     stt: { baseUrl: c.stt.baseUrl, model: c.stt.model, hasKey: !!c.stt.key },
+    search: { enabled: c.search.enabled, maxUses: c.search.maxUses, provider: c.search.provider, hasKey: !!c.search.key },
     deviceTokenSet: !!c.deviceToken,
     presets: PRESETS,
   };

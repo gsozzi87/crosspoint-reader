@@ -128,15 +128,39 @@ void AskBookActivity::stopRecording() {
   connectThenSend();
 }
 
+// Conexion amigable: se prueban las redes guardadas mostrando un cartel propio
+// ("Conectando al WiFi..."); la pantalla tecnica de seleccion aparece solo si
+// ninguna red guardada anda, que es cuando el usuario tiene que elegir.
 void AskBookActivity::connectThenSend() {
   wifiActivated = true;
-  if (WiFi.status() == WL_CONNECTED) {
+  wifiPicker = false;
+  wifi.begin();
+  state = CONNECTING;
+  if (wifi.isDone()) {  // ya conectado o sin redes guardadas: sin cartel de mas
+    pumpConnect();
+    return;
+  }
+  requestUpdate();
+}
+
+void AskBookActivity::pumpConnect() {
+  if (wifiPicker) return;
+  const uint32_t rev = wifi.revision();
+  const FriendlyWifi::Phase phase = wifi.pump();
+  if (phase == FriendlyWifi::Phase::Connected) {
     onWifiSelectionComplete(true);
     return;
   }
-  state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
+  if (phase == FriendlyWifi::Phase::NeedsPicker) {
+    wifiPicker = true;
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+                           [this](const ActivityResult& result) {
+                             wifiPicker = false;
+                             onWifiSelectionComplete(!result.isCancelled);
+                           });
+    return;
+  }
+  if (wifi.revision() != rev) requestUpdate();
 }
 
 void AskBookActivity::onWifiSelectionComplete(const bool connected) {
@@ -254,6 +278,13 @@ void AskBookActivity::loop() {
       }
       break;
     case CONNECTING:
+      if (!wifiPicker && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        WiFi.disconnect();
+        returnToReader();
+        break;
+      }
+      pumpConnect();
+      break;
     case ANSWER:
       break;  // a sub-activity owns input
   }
@@ -298,6 +329,8 @@ void AskBookActivity::render(RenderLock&&) {
       if (!failureDetail.empty()) renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, failureDetail.c_str());
       break;
     case CONNECTING:
+      if (!wifiPicker) FriendlyWifi::drawStatus(renderer, wifi, mid);
+      break;
     case ANSWER:
       break;
   }

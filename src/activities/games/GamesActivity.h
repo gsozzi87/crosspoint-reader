@@ -16,6 +16,10 @@ class GamesActivity final : public Activity {
   void render(RenderLock&&) override;
 
  private:
+  static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
+
   int selected = 0;
+  int partialCount = 0;
+  bool forceClean = true;
   ButtonNavigator buttonNavigator;
 };

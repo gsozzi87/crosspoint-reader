@@ -65,6 +65,10 @@ class HubStore : public PersistableStore<HubStore> {
   int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
   int bibleChapter = 0;
   int musicVolume = 70;  // MP3 player volume, 0-100
+  // Fondo de pantalla: la foto que se pinta al suspenderse (Ajustes → Fondo de
+  // pantalla, `PhotosActivity`). Vacío = pantalla de sueño de siempre.
+  std::string wallpaperPath;  // "/Photos/<id>.bmp" en la SD
+  std::string wallpaperName;  // nombre para mostrar en la lista
   // Temporizador / pomodoro / cronómetro: sobreviven al sueño (el aparato se
   // despierta para el temporizador) y se ven en el hub. Salir con Atrás NO los
   // cancela: siguen corriendo hasta que suenan o se cancelan con Atrás largo.

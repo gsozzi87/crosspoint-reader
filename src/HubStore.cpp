@@ -92,6 +92,8 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["bibleBook"] = bibleBook;
   doc["bibleChapter"] = bibleChapter;
   doc["musicVolume"] = musicVolume;
+  doc["wallpaperPath"] = wallpaperPath;
+  doc["wallpaperName"] = wallpaperName;
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
   doc["timerTotal"] = timerTotal;
   doc["timerMode"] = timerMode;
@@ -134,6 +136,8 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   bibleBook = doc["bibleBook"] | 0;
   bibleChapter = doc["bibleChapter"] | 0;
   musicVolume = doc["musicVolume"] | 70;
+  wallpaperPath = str(doc, "wallpaperPath");
+  wallpaperName = str(doc, "wallpaperName");
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);
   timerTotal = doc["timerTotal"] | 0;
   timerMode = doc["timerMode"] | 0;

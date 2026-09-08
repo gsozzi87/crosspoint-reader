@@ -691,7 +691,7 @@ void MathActivity::render(RenderLock&&) {
 
   switch (state) {
     case State::READY: {
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_GAME_NEW), "", "");
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_NEW), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;
     }
@@ -701,12 +701,12 @@ void MathActivity::render(RenderLock&&) {
       break;
     }
     case State::FEEDBACK: {
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_GAME_CONTINUE), "", "");
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_CONTINUE), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;
     }
     default: {
-      const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
       break;
     }

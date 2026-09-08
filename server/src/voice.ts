@@ -25,7 +25,8 @@ import { transcribeWav, toWav } from "./transcribe";
 import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
-import { chatJson, chatText, LlmError } from "./llm";
+import { chatJson, chatText, chatSearch, LlmError } from "./llm";
+import { sourcesLine } from "./websearch";
 import { redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
@@ -45,7 +46,7 @@ function framed(json: object, audio: Uint8Array | null): Response {
 const SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["intent", "reply", "actions"],
+  required: ["intent", "reply", "needsWeb", "actions"],
   properties: {
     intent: {
       type: "string",
@@ -56,6 +57,11 @@ const SCHEMA = {
       type: "string",
       description:
         "Texto para la pantalla: la respuesta si es pregunta o traducción, o una confirmación de una línea de lo guardado. Texto plano, sin markdown.",
+    },
+    needsWeb: {
+      type: "boolean",
+      description:
+        "true SOLO si para contestar bien hace falta información actual de internet (resultados deportivos, precios y cotizaciones, noticias, quién ocupa un cargo hoy, estrenos, versiones, algo posterior a tu entrenamiento). false para todo lo demás, incluidas las órdenes y las preguntas de conocimiento general estable.",
     },
     actions: {
       type: "array",
@@ -100,6 +106,9 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang,
     memories.length
       ? `Cosas que el usuario te pidió que recuerdes (usalas si vienen al caso): ${memories.map((m) => `«${m}»`).join(" ")}`
       : "",
+    "needsWeb va en true SOLO cuando la respuesta dependa de datos de ahora (resultado de un partido, precio o cotización,",
+    "noticias, quién ocupa un cargo hoy, un estreno, una versión): en ese caso el servidor vuelve a preguntar con búsqueda",
+    "en internet y esa respuesta pisa la tuya. En todo lo demás va false.",
     `'Traducí', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
     "y reply la contesta con conocimiento general, corta y directa. Si la frase trae una acción y una pregunta, guardá la",
     "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task en Entrada y decilo.",
@@ -166,7 +175,7 @@ async function parseTimeReply(text: string, lang: Lang, baseDate = ""): Promise<
 }
 
 type Action = { kind: string; text: string; list: string | null; dueAt: string | null; repeat: "none" | "daily" | "weekly" | "monthly"; seconds: number | null };
-type Parsed = { intent: string; reply: string; actions: Action[] };
+type Parsed = { intent: string; reply: string; needsWeb: boolean; actions: Action[] };
 
 async function classify(text: string, lang: Lang): Promise<Parsed> {
   const store = await load();
@@ -184,8 +193,43 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
   return {
     intent: typeof raw.intent === "string" ? raw.intent : "question",
     reply: typeof raw.reply === "string" ? raw.reply : "",
+    needsWeb: raw.needsWeb === true,
     actions: Array.isArray(raw.actions) ? raw.actions : [],
   };
+}
+
+// Segunda vuelta para las preguntas de actualidad: el clasificador ya dijo que
+// hace falta internet, así que acá se contesta de nuevo con búsqueda (con
+// Anthropic la hace el modelo; con las compatibles busca el servidor). Cuesta
+// una llamada más, por eso solo se hace cuando el modelo lo pidió.
+async function answerWithSearch(question: string, lang: Lang): Promise<{ screen: string; spoken: string } | null> {
+  try {
+    const memories = ((await load()).memories ?? []).slice(-40).map((m) => m.text);
+    const hoy = new Date().toLocaleDateString("es-AR", { timeZone: TZ, day: "2-digit", month: "long", year: "numeric" });
+    const r = await chatSearch({
+      system: [
+        `Hoy es ${hoy}.`,
+        memories.length ? `Cosas que el usuario te pidió que recuerdes: ${memories.map((m) => `«${m}»`).join(" ")}` : "",
+        "Sos el asistente por voz de un aparato de tinta electrónica. La pregunta es sobre algo actual:",
+        "buscá en internet antes de contestar en vez de responder de memoria y decí de cuándo es el dato.",
+        "La pregunta llega transcripta de voz: puede traer errores; interpretala con sentido común.",
+        `Idioma: ${LANGUAGE_NAME[lang]}. Texto plano, sin markdown ni listas. Máximo 90 palabras.`,
+      ].filter(Boolean).join(" "),
+      user: question,
+      maxTokens: 800,
+      search: "force",
+      lang,
+    });
+    const spoken = r.text.trim();
+    if (!spoken) return null;
+    // Las fuentes van a la pantalla, no al parlante: nadie quiere escuchar
+    // "punto com" al final de cada respuesta.
+    const line = r.searched ? sourcesLine(r.sources, lang) : "";
+    return { screen: [spoken, line].filter(Boolean).join("\n\n"), spoken };
+  } catch (err) {
+    console.error("voice búsqueda:", err);
+    return null;
+  }
 }
 
 async function execute(parsed: Parsed, spoken: string, lang: Lang) {
@@ -294,6 +338,15 @@ voice.post("/", async (c) => {
         audio,
       );
     }
+    // Pregunta de actualidad: se vuelve a contestar con búsqueda.
+    let spokenReply = parsed.reply;
+    if (parsed.intent === "question" && parsed.needsWeb && !(parsed.actions ?? []).length) {
+      const better = await answerWithSearch(text, lang);
+      if (better) {
+        parsed.reply = better.screen;
+        spokenReply = better.spoken;
+      }
+    }
     const saved = await execute(parsed, text, lang);
     // Temporizador y alarma corren en el aparato: segundos hasta que suene.
     let timerSeconds = 0;
@@ -304,8 +357,8 @@ voice.post("/", async (c) => {
     // si es corta (el resto se lee en pantalla). Máximo 8 s para que el aparato
     // la baje en menos de medio segundo.
     const tLlm = Date.now();
-    const speakable = speak !== "none" && (speak === "all" || parsed.intent !== "question" || parsed.reply.length <= 220);
-    const audio = speakable ? await synthesize(parsed.reply, lang, speak === "all" ? 15 : 8) : null;
+    const speakable = speak !== "none" && (speak === "all" || parsed.intent !== "question" || spokenReply.length <= 220);
+    const audio = speakable ? await synthesize(spokenReply, lang, speak === "all" ? 15 : 8) : null;
     const ms = { stt: tStt - t0, llm: tLlm - tStt, tts: Date.now() - tLlm, total: Date.now() - t0 };
     console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
     return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0, ms }, audio);

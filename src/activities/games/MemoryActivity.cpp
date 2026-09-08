@@ -10,42 +10,40 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "memoryIcons.h"
 
 namespace {
 // Nivel -> forma de la grilla. 8, 10 y 15 parejas.
 constexpr int COLS[] = {4, 4, 5};
 constexpr int ROWS[] = {4, 5, 6};
 
-enum Figure {
-  FIG_CIRCLE = 0,
-  FIG_SQUARE,
-  FIG_TRIANGLE,
-  FIG_PLUS,
-  FIG_DIAMOND,
-  FIG_STAR,
-  FIG_MOON,
-  FIG_HOURGLASS,
-  FIG_CHECKER,
-  FIG_SPIRAL,
-  FIG_RING,
-  FIG_XCROSS,
-  FIG_ARROW,
-  FIG_SUN,
-  FIG_BOXES,
-  FIG_HASH
+// Las dieciséis figuras, en los dos tamaños de `memoryIcons.h`. Son iconos
+// Lucide de verdad: se reconocen de un vistazo y no hay dos que se confundan.
+const freeink::Icon* const FIGURES_SMALL[] = {
+    &icon_heart_48, &icon_star_48,   &icon_sun_48,    &icon_moon_48,
+    &icon_cloud_48, &icon_umbrella_48, &icon_anchor_48, &icon_key_48,
+    &icon_gift_48,  &icon_fish_48,   &icon_bird_48,   &icon_cat_48,
+    &icon_rocket_48, &icon_ghost_48, &icon_crown_48,  &icon_flame_48,
 };
+const freeink::Icon* const FIGURES_BIG[] = {
+    &icon_heart_64, &icon_star_64,   &icon_sun_64,    &icon_moon_64,
+    &icon_cloud_64, &icon_umbrella_64, &icon_anchor_64, &icon_key_64,
+    &icon_gift_64,  &icon_fish_64,   &icon_bird_64,   &icon_cat_64,
+    &icon_rocket_64, &icon_ghost_64, &icon_crown_64,  &icon_flame_64,
+};
+constexpr int FIGURES_IN_TABLE = sizeof(FIGURES_SMALL) / sizeof(FIGURES_SMALL[0]);
 
-// Estrella de cinco puntas: puntas y valles alternados, en milésimas del radio.
-constexpr int STAR_X[10] = {0, 225, 951, 363, 588, 0, -588, -363, -951, -225};
-constexpr int STAR_Y[10] = {-1000, -309, -309, 118, 809, 382, 809, 118, -309, -309};
-
-// Ocho rayos del sol, en milésimas.
-constexpr int RAY_X[8] = {1000, 707, 0, -707, -1000, -707, 0, 707};
-constexpr int RAY_Y[8] = {0, 707, 1000, 707, 0, -707, -1000, -707};
-
-// Espiral cuadrada: derecha, abajo, izquierda, arriba.
-constexpr int SPIRAL_DX[4] = {1, 0, -1, 0};
-constexpr int SPIRAL_DY[4] = {0, 1, 0, -1};
+// El icono se dibuja pixel por pixel a través del renderer, así queda bien en
+// cualquier orientación y se puede invertir sobre la carta emparejada.
+void blitIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y, const bool ink) {
+  const int stride = (icon.w + 7) / 8;
+  for (int row = 0; row < icon.h; ++row) {
+    const uint8_t* line = icon.bits + row * stride;
+    for (int col = 0; col < icon.w; ++col) {
+      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, ink);
+    }
+  }
+}
 }  // namespace
 
 std::array<uint16_t, 3> MemoryActivity::bestMoves{};
@@ -238,176 +236,81 @@ void MemoryActivity::loop() {
 
 // ------------------------------------------------------------------ dibujo --
 
-void MemoryActivity::fillCircle(const int cx, const int cy, const int r, const bool ink) const {
-  if (r <= 0) return;
-  for (int dy = -r; dy <= r; ++dy) {
-    int dx = 0;
-    while ((dx + 1) * (dx + 1) + dy * dy <= r * r) ++dx;
-    renderer.fillRect(cx - dx, cy + dy, 2 * dx + 1, 1, ink);
-  }
-}
-
-void MemoryActivity::fillDiamond(const int cx, const int cy, const int r, const bool ink) const {
-  for (int dy = -r; dy <= r; ++dy) {
-    const int w = r - (dy < 0 ? -dy : dy);
-    renderer.fillRect(cx - w, cy + dy, 2 * w + 1, 1, ink);
-  }
-}
-
-void MemoryActivity::fillTriangle(const int x1, const int y1, const int x2, const int y2, const int x3, const int y3,
-                                  const bool ink) const {
-  const int xs[3] = {x1, x2, x3};
-  const int ys[3] = {y1, y2, y3};
-  renderer.fillPolygon(xs, ys, 3, ink);
-}
-
-// Cada figura entra en un cuadrado de lado 2r centrado en (cx, cy). `ink` es el
-// color de la figura: negro sobre carta blanca, blanco sobre carta emparejada.
-void MemoryActivity::drawFigure(const int figure, const int cx, const int cy, const int r, const bool ink) const {
-  switch (figure) {
-    case FIG_CIRCLE: fillCircle(cx, cy, r, ink); break;
-
-    case FIG_SQUARE: renderer.fillRect(cx - r, cy - r, 2 * r + 1, 2 * r + 1, ink); break;
-
-    case FIG_TRIANGLE: fillTriangle(cx, cy - r, cx + r, cy + r, cx - r, cy + r, ink); break;
-
-    case FIG_PLUS: {
-      const int t = r / 2 > 4 ? r / 2 : 4;
-      renderer.fillRect(cx - t / 2, cy - r, t, 2 * r + 1, ink);
-      renderer.fillRect(cx - r, cy - t / 2, 2 * r + 1, t, ink);
-      break;
-    }
-
-    case FIG_DIAMOND: fillDiamond(cx, cy, r, ink); break;
-
-    case FIG_STAR: {
-      int xs[10];
-      int ys[10];
-      for (int i = 0; i < 10; ++i) {
-        xs[i] = cx + STAR_X[i] * r / 1000;
-        ys[i] = cy + STAR_Y[i] * r / 1000;
-      }
-      renderer.fillPolygon(xs, ys, 10, ink);
-      break;
-    }
-
-    case FIG_MOON:
-      // Disco lleno al que se le come un mordisco con el color de la carta.
-      fillCircle(cx, cy, r, ink);
-      fillCircle(cx + r * 38 / 100, cy, r * 78 / 100, !ink);
-      break;
-
-    case FIG_HOURGLASS: {
-      fillTriangle(cx - r, cy - r, cx + r, cy - r, cx, cy, ink);
-      fillTriangle(cx - r, cy + r, cx + r, cy + r, cx, cy, ink);
-      renderer.fillRect(cx - r, cy - r, 2 * r + 1, 4, ink);
-      renderer.fillRect(cx - r, cy + r - 3, 2 * r + 1, 4, ink);
-      break;
-    }
-
-    case FIG_CHECKER: {
-      const int cell = (2 * r) / 4;
-      for (int row = 0; row < 4; ++row) {
-        for (int col = 0; col < 4; ++col) {
-          if ((row + col) % 2 != 0) continue;
-          renderer.fillRect(cx - r + col * cell, cy - r + row * cell, cell, cell, ink);
-        }
-      }
-      break;
-    }
-
-    case FIG_SPIRAL: {
-      const int step = r / 2 > 4 ? r / 2 : 4;
-      int x = cx - step / 2;
-      int y = cy - step / 2;
-      int len = step;
-      for (int i = 0; i < 6; ++i) {
-        const int nx = x + SPIRAL_DX[i % 4] * len;
-        const int ny = y + SPIRAL_DY[i % 4] * len;
-        renderer.drawLine(x, y, nx, ny, 3, ink);
-        x = nx;
-        y = ny;
-        if (i % 2 == 1) len += step;
-      }
-      break;
-    }
-
-    case FIG_RING:
-      fillCircle(cx, cy, r, ink);
-      fillCircle(cx, cy, r * 55 / 100, !ink);
-      break;
-
-    case FIG_XCROSS:
-      renderer.drawLine(cx - r, cy - r, cx + r, cy + r, 5, ink);
-      renderer.drawLine(cx - r, cy + r, cx + r, cy - r, 5, ink);
-      break;
-
-    case FIG_ARROW: {
-      fillTriangle(cx, cy - r, cx + r * 3 / 4, cy, cx - r * 3 / 4, cy, ink);
-      const int t = r / 2 > 4 ? r / 2 : 4;
-      renderer.fillRect(cx - t / 2, cy, t, r, ink);
-      break;
-    }
-
-    case FIG_SUN: {
-      fillCircle(cx, cy, r / 2, ink);
-      for (int i = 0; i < 8; ++i) {
-        const int x1 = cx + RAY_X[i] * (r * 68 / 100) / 1000;
-        const int y1 = cy + RAY_Y[i] * (r * 68 / 100) / 1000;
-        const int x2 = cx + RAY_X[i] * r / 1000;
-        const int y2 = cy + RAY_Y[i] * r / 1000;
-        renderer.drawLine(x1, y1, x2, y2, 3, ink);
-      }
-      break;
-    }
-
-    case FIG_BOXES:
-      renderer.drawRect(cx - r, cy - r, 2 * r + 1, 2 * r + 1, 3, ink);
-      renderer.drawRect(cx - r * 6 / 10, cy - r * 6 / 10, r * 12 / 10, r * 12 / 10, 3, ink);
-      renderer.fillRect(cx - r / 4, cy - r / 4, r / 2, r / 2, ink);
-      break;
-
-    case FIG_HASH:
-    default: {
-      const int off = r * 2 / 5;
-      renderer.fillRect(cx - off - 2, cy - r, 4, 2 * r + 1, ink);
-      renderer.fillRect(cx + off - 2, cy - r, 4, 2 * r + 1, ink);
-      renderer.fillRect(cx - r, cy - off - 2, 2 * r + 1, 4, ink);
-      renderer.fillRect(cx - r, cy + off - 2, 2 * r + 1, 4, ink);
-      break;
-    }
-  }
+void MemoryActivity::drawFigure(const int figure, const int cx, const int cy, const bool big,
+                                const bool ink) const {
+  const int idx = figure >= 0 && figure < FIGURES_IN_TABLE ? figure : 0;
+  const freeink::Icon& icon = *(big ? FIGURES_BIG[idx] : FIGURES_SMALL[idx]);
+  blitIcon(renderer, icon, cx - icon.w / 2, cy - icon.h / 2, ink);
 }
 
 void MemoryActivity::drawCard(const int idx, const int x, const int y, const int w, const int h) const {
   const uint8_t st = status[static_cast<size_t>(idx)];
   const int cx = x + w / 2;
   const int cy = y + h / 2;
-  int r = (w < h ? w : h) / 2 - 12;
-  if (r < 8) r = 8;
+  // El icono grande (64 px) solo si la carta le deja aire alrededor.
+  const bool big = w >= 84 && h >= 84;
 
   if (st == 2) {
     // Emparejada: queda destapada en negativo, bien distinta de la recién dada vuelta.
     renderer.fillRoundedRect(x, y, w, h, 10, Color::Black);
-    drawFigure(figures[static_cast<size_t>(idx)], cx, cy, r, false);
+    drawFigure(figures[static_cast<size_t>(idx)], cx, cy, big, false);
     return;
   }
 
-  renderer.drawRoundedRect(x, y, w, h, 2, 10, true);
   if (st == 1) {
-    drawFigure(figures[static_cast<size_t>(idx)], cx, cy, r, true);
+    // Recién dada vuelta: marco doble para que se vea de una cuál se acaba de tocar.
+    renderer.fillRoundedRect(x, y, w, h, 10, Color::White);
+    renderer.drawRoundedRect(x, y, w, h, 3, 10, true);
+    renderer.drawRoundedRect(x + 6, y + 6, w - 12, h - 12, 1, 7, true);
+    drawFigure(figures[static_cast<size_t>(idx)], cx, cy, big, true);
   } else {
-    // Dorso: rayitas en diagonal, siempre adentro del recuadro.
-    for (int py = y + 12; py < y + h - 16; py += 12) {
-      for (int px = x + 12; px < x + w - 16; px += 12) {
-        renderer.drawLine(px, py + 7, px + 7, py, 1, true);
-      }
-    }
+    drawCardBack(x, y, w, h);
   }
 
-  if (state == State::PLAY && idx == cursor) {
-    renderer.drawRoundedRect(x - 3, y - 3, w + 6, h + 6, 3, 12, true);
+  if (state == State::PLAY && idx == cursor) drawCursor(x, y, w, h);
+}
+
+// Dorso: marco fino y una red de rombos adentro, recortada a mano contra el
+// rectángulo interior (drawLine no recorta sola).
+void MemoryActivity::drawCardBack(const int x, const int y, const int w, const int h) const {
+  renderer.fillRoundedRect(x, y, w, h, 10, Color::White);
+  renderer.drawRoundedRect(x, y, w, h, 2, 10, true);
+  const int ix = x + 8;
+  const int iy = y + 8;
+  const int iw = w - 16;
+  const int ih = h - 16;
+  if (iw <= 4 || ih <= 4) return;
+  renderer.drawRect(ix, iy, iw, ih, 1, true);
+  constexpr int STEP = 9;
+  for (int d = -ih; d < iw; d += STEP) {
+    const int t0 = d < 0 ? -d : 0;
+    const int t1 = iw - d < ih ? iw - d : ih;
+    if (t1 > t0) renderer.drawLine(ix + d + t0, iy + t0, ix + d + t1, iy + t1, true);
   }
+  for (int d = 0; d <= iw + ih; d += STEP) {
+    const int t0 = d - iw > 0 ? d - iw : 0;
+    const int t1 = d < ih ? d : ih;
+    if (t1 > t0) renderer.drawLine(ix + d - t0, iy + t0, ix + d - t1, iy + t1, true);
+  }
+}
+
+// Cursor: marco por fuera de la carta (nunca encima, así no tapa el dibujo) con
+// las cuatro esquinas engrosadas. Se ve igual de claro sobre el dorso rayado que
+// sobre una carta blanca.
+void MemoryActivity::drawCursor(const int x, const int y, const int w, const int h) const {
+  const int o = 4;  // cuánto se sale del borde de la carta
+  renderer.drawRoundedRect(x - o, y - o, w + 2 * o, h + 2 * o, 3, 13, true);
+  const int arm = (w < h ? w : h) / 3;
+  const int t = 4;  // grosor de las escuadras
+  // Arriba y abajo de las cuatro esquinas, siempre dentro de la banda del marco.
+  renderer.fillRect(x - o, y - o, arm, t, true);
+  renderer.fillRect(x + w + o - arm, y - o, arm, t, true);
+  renderer.fillRect(x - o, y + h + o - t, arm, t, true);
+  renderer.fillRect(x + w + o - arm, y + h + o - t, arm, t, true);
+  renderer.fillRect(x - o, y - o, t, arm, true);
+  renderer.fillRect(x + w + o - t, y - o, t, arm, true);
+  renderer.fillRect(x - o, y + h + o - arm, t, arm, true);
+  renderer.fillRect(x + w + o - t, y + h + o - arm, t, arm, true);
 }
 
 void MemoryActivity::drawInfoBar(const int y) const {
@@ -526,15 +429,29 @@ void MemoryActivity::render(RenderLock&&) {
     default: drawBoard(top, bottom); break;
   }
 
-  if (state == State::LEVEL) {
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_GAME_NEW), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  } else if (state == State::WON) {
-    const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_NEW), "", "");
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  } else {
-    const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
-    GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  // Las ayudas dicen siempre qué hace cada botón AHORA. Con dos cartas a la
+  // vista la palanca no mueve nada y OK las tapa: no se anuncian flechas.
+  switch (state) {
+    case State::LEVEL: {
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_NEW), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      break;
+    }
+    case State::WON: {
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_NEW), "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      break;
+    }
+    case State::PEEK: {
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_CONTINUE), "", "");
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      break;
+    }
+    default: {
+      const auto labels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+      GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+      break;
+    }
   }
 
   // Regla del panel: parcial rápido para cada carta y uno limpio cada tantos,

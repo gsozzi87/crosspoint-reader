@@ -8,12 +8,41 @@
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "cardIcons.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-// Índice de la carta (el 0 es el as, el 12 la K).
-const char* const RANKS[13] = {"A", "2", "3", "4", "5", "6", "7", "8", "9", "10", "J", "Q", "K"};
+// Valores de la carta, en el orden del mazo (el 0 es el as, el 12 la K). Son
+// bitmaps y no texto: hay que poder darlos vuelta en la esquina de abajo.
+const freeink::Icon* const RANK_ICONS[13] = {
+    &icon_rank_A_24, &icon_rank_2_24, &icon_rank_3_24, &icon_rank_4_24, &icon_rank_5_24,
+    &icon_rank_6_24, &icon_rank_7_24, &icon_rank_8_24, &icon_rank_9_24, &icon_rank_T_24,
+    &icon_rank_J_24, &icon_rank_Q_24, &icon_rank_K_24};
+
+// Palo (0 pica, 1 corazón, 2 diamante, 3 trébol) en los dos tamaños.
+const freeink::Icon* const SUIT_BIG[4] = {&icon_suit_spade_40, &icon_suit_heart_40, &icon_suit_diamond_40,
+                                          &icon_suit_club_40};
+const freeink::Icon* const SUIT_SMALL[4] = {&icon_suit_spade_16, &icon_suit_heart_16, &icon_suit_diamond_16,
+                                            &icon_suit_club_16};
+
+// Los bitmaps se pintan pixel por pixel por el renderer, así salen bien en
+// cualquier orientación. `rotated` los da vuelta 180 grados (esquina de abajo).
+void blitIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y, const bool rotated,
+              const bool ink = true) {
+  const int stride = (icon.w + 7) / 8;
+  for (int row = 0; row < icon.h; ++row) {
+    const uint8_t* line = icon.bits + row * stride;
+    for (int col = 0; col < icon.w; ++col) {
+      if ((line[col / 8] & (0x80 >> (col % 8))) != 0) continue;
+      if (rotated) {
+        renderer.drawPixel(x + icon.w - 1 - col, y + icon.h - 1 - row, ink);
+      } else {
+        renderer.drawPixel(x + col, y + row, ink);
+      }
+    }
+  }
+}
 }  // namespace
 
 // ---------------------------------------------------------------- mazo ------
@@ -58,8 +87,6 @@ int BlackjackActivity::handTotal(const Hand& hand) {
 }
 
 bool BlackjackActivity::isNatural(const Hand& hand) { return hand.count == 2 && handTotal(hand) == BLACKJACK; }
-
-const char* BlackjackActivity::rankLabel(const uint8_t card) { return RANKS[rankOf(card)]; }
 
 // -------------------------------------------------------------- partida ----
 
@@ -339,88 +366,41 @@ void BlackjackActivity::fillDisc(const int cx, const int cy, const int r, const 
   }
 }
 
-// Los cuatro palos, con `size` como medio ancho. En blanco y negro no hay rojo
-// ni negro: lo que los distingue es la silueta.
-void BlackjackActivity::drawSuit(const int cx, const int cy, const int size, const int suit) const {
-  const int s = size < 4 ? 4 : size;
-  int xs[4];
-  int ys[4];
-  switch (suit) {
-    case 0: {  // pica: punta arriba, dos lóbulos abajo y pie
-      xs[0] = cx;
-      ys[0] = cy - (s * 115) / 100;
-      xs[1] = cx - s;
-      ys[1] = cy + (s * 25) / 100;
-      xs[2] = cx + s;
-      ys[2] = cy + (s * 25) / 100;
-      renderer.fillPolygon(xs, ys, 3, true);
-      fillDisc(cx - (s * 50) / 100, cy + (s * 20) / 100, (s * 55) / 100, true);
-      fillDisc(cx + (s * 50) / 100, cy + (s * 20) / 100, (s * 55) / 100, true);
-      xs[0] = cx - (s * 45) / 100;
-      ys[0] = cy + (s * 115) / 100;
-      xs[1] = cx + (s * 45) / 100;
-      ys[1] = cy + (s * 115) / 100;
-      xs[2] = cx + (s * 14) / 100;
-      ys[2] = cy + (s * 45) / 100;
-      xs[3] = cx - (s * 14) / 100;
-      ys[3] = cy + (s * 45) / 100;
-      renderer.fillPolygon(xs, ys, 4, true);
-      break;
-    }
-    case 1: {  // corazón: dos lóbulos arriba y punta abajo
-      fillDisc(cx - (s * 50) / 100, cy - (s * 45) / 100, (s * 55) / 100, true);
-      fillDisc(cx + (s * 50) / 100, cy - (s * 45) / 100, (s * 55) / 100, true);
-      xs[0] = cx - (s * 102) / 100;
-      ys[0] = cy - (s * 48) / 100;
-      xs[1] = cx + (s * 102) / 100;
-      ys[1] = cy - (s * 48) / 100;
-      xs[2] = cx;
-      ys[2] = cy + (s * 110) / 100;
-      renderer.fillPolygon(xs, ys, 3, true);
-      break;
-    }
-    case 2: {  // diamante: rombo
-      xs[0] = cx;
-      ys[0] = cy - (s * 118) / 100;
-      xs[1] = cx + (s * 85) / 100;
-      ys[1] = cy;
-      xs[2] = cx;
-      ys[2] = cy + (s * 118) / 100;
-      xs[3] = cx - (s * 85) / 100;
-      ys[3] = cy;
-      renderer.fillPolygon(xs, ys, 4, true);
-      break;
-    }
-    default: {  // trébol: tres círculos y pie
-      fillDisc(cx, cy - (s * 55) / 100, (s * 52) / 100, true);
-      fillDisc(cx - (s * 62) / 100, cy + (s * 28) / 100, (s * 52) / 100, true);
-      fillDisc(cx + (s * 62) / 100, cy + (s * 28) / 100, (s * 52) / 100, true);
-      xs[0] = cx - (s * 45) / 100;
-      ys[0] = cy + (s * 118) / 100;
-      xs[1] = cx + (s * 45) / 100;
-      ys[1] = cy + (s * 118) / 100;
-      xs[2] = cx + (s * 14) / 100;
-      ys[2] = cy + (s * 40) / 100;
-      xs[3] = cx - (s * 14) / 100;
-      ys[3] = cy + (s * 40) / 100;
-      renderer.fillPolygon(xs, ys, 4, true);
-      break;
-    }
-  }
+// Los cuatro palos, macizos y centrados en (cx, cy). En blanco y negro no hay
+// rojo ni negro: lo que los distingue es la silueta.
+void BlackjackActivity::drawSuitIcon(const int cx, const int cy, const int suit, const bool big) const {
+  const int idx = suit >= 0 && suit < 4 ? suit : 0;
+  const freeink::Icon& icon = *(big ? SUIT_BIG[idx] : SUIT_SMALL[idx]);
+  blitIcon(renderer, icon, cx - icon.w / 2, cy - icon.h / 2, false);
 }
 
+// El valor en la esquina. Con `rotated`, (x, y) sigue siendo la esquina de
+// arriba a la izquierda de la caja: el dibujo va girado adentro.
+void BlackjackActivity::drawRankGlyph(const int x, const int y, const uint8_t card, const bool rotated) const {
+  const freeink::Icon& icon = *RANK_ICONS[rankOf(card)];
+  blitIcon(renderer, icon, x, y, rotated);
+}
+
+// Carta de verdad: sombra abajo a la derecha, cuerpo blanco con borde
+// redondeado, el valor arriba a la izquierda y repetido dado vuelta abajo a la
+// derecha, y el palo grande en el medio.
 void BlackjackActivity::drawCardFace(const int x, const int y, const uint8_t card) const {
-  // El relleno blanco tapa la carta de abajo: así el abanico se ve escalonado.
-  renderer.fillRoundedRect(x, y, CARD_W, CARD_H, 8, Color::White);
-  renderer.drawRoundedRect(x, y, CARD_W, CARD_H, 2, 8, true);
-  renderer.drawText(UI_10_FONT_ID, x + 7, y + 5, rankLabel(card), true, EpdFontFamily::BOLD);
-  drawSuit(x + 14, y + 34, 8, suitOf(card));
-  drawSuit(x + CARD_W / 2, y + CARD_H / 2 + 16, 17, suitOf(card));
+  renderer.fillRoundedRect(x + CARD_SHADOW, y + CARD_SHADOW, CARD_W, CARD_H, 9, Color::Black);
+  // El relleno blanco tapa la sombra propia y la carta de abajo: así el abanico
+  // se ve escalonado.
+  renderer.fillRoundedRect(x, y, CARD_W, CARD_H, 9, Color::White);
+  renderer.drawRoundedRect(x, y, CARD_W, CARD_H, 2, 9, true);
+
+  const freeink::Icon& rank = *RANK_ICONS[rankOf(card)];
+  drawRankGlyph(x + CARD_PAD, y + CARD_PAD, card, false);
+  drawRankGlyph(x + CARD_W - CARD_PAD - rank.w, y + CARD_H - CARD_PAD - rank.h, card, true);
+  drawSuitIcon(x + CARD_W / 2, y + CARD_H / 2, suitOf(card), true);
 }
 
 void BlackjackActivity::drawCardBack(const int x, const int y) const {
-  renderer.fillRoundedRect(x, y, CARD_W, CARD_H, 8, Color::White);
-  renderer.drawRoundedRect(x, y, CARD_W, CARD_H, 2, 8, true);
+  renderer.fillRoundedRect(x + CARD_SHADOW, y + CARD_SHADOW, CARD_W, CARD_H, 9, Color::Black);
+  renderer.fillRoundedRect(x, y, CARD_W, CARD_H, 9, Color::White);
+  renderer.drawRoundedRect(x, y, CARD_W, CARD_H, 2, 9, true);
   // Rombos del dorso: dos familias de diagonales recortadas a mano contra el
   // rectángulo interior (drawLine no recorta por sí solo).
   const int ix = x + 7;
@@ -438,18 +418,31 @@ void BlackjackActivity::drawCardBack(const int x, const int y) const {
     const int t1 = d < ih ? d : ih;
     if (t1 > t0) renderer.drawLine(ix + d - t0, iy + t0, ix + d - t1, iy + t1, true);
   }
+  // Escudo del medio: los cuatro palos chicos sobre un óvalo blanco, como en un
+  // dorso de verdad. Además rompe la trama, que sola cansa la vista.
+  constexpr int EMBLEM = 48;
+  const int ex = x + (CARD_W - EMBLEM) / 2;
+  const int ey = y + (CARD_H - EMBLEM) / 2;
+  renderer.fillRoundedRect(ex, ey, EMBLEM, EMBLEM, 10, Color::White);
+  renderer.drawRoundedRect(ex, ey, EMBLEM, EMBLEM, 2, 10, true);
+  const int q = EMBLEM / 4;
+  for (int i = 0; i < 4; ++i) {
+    drawSuitIcon(ex + q + (i % 2) * 2 * q, ey + q + (i / 2) * 2 * q, i, false);
+  }
 }
 
-// Mano centrada en abanico. Con muchas cartas se superponen, pero el índice de
-// arriba a la izquierda de cada una queda siempre a la vista.
+// Mano centrada en abanico. Con muchas cartas se superponen, pero el valor de
+// arriba a la izquierda de cada una queda siempre a la vista (por eso el paso
+// nunca baja del ancho de ese valor más su margen).
 void BlackjackActivity::drawHand(const Hand& hand, const int y, const bool hideSecond) const {
   if (hand.count == 0) return;
   const int pageWidth = renderer.getScreenWidth();
   const int maxWidth = pageWidth - 2 * SIDE;
+  constexpr int MIN_STRIDE = 34;  // ancho del valor más ancho ("10") más el margen
   int stride = CARD_W + 10;
   if (hand.count > 1 && CARD_W + (hand.count - 1) * stride > maxWidth) {
     stride = (maxWidth - CARD_W) / (hand.count - 1);
-    if (stride < 22) stride = 22;
+    if (stride < MIN_STRIDE) stride = MIN_STRIDE;
   }
   const int totalWidth = CARD_W + (hand.count - 1) * stride;
   int x = (pageWidth - totalWidth) / 2;
@@ -629,9 +622,13 @@ void BlackjackActivity::render(RenderLock&&) {
     renderer.drawCenteredText(UI_10_FONT_ID, messageCenter + 2, detail);
   }
 
-  const auto labels = state == State::DEALER
-                          ? mappedInput.mapLabels(tr(STR_BACK), "", "", "")
-                          : mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // Atrás sale del juego en cualquier estado; mientras reparte la banca no hay
+  // nada que elegir, así que la palanca y OK no anuncian nada.
+  const auto labels = state == State::DEALER || actionCount == 0
+                          ? mappedInput.mapLabels(tr(STR_GAME_QUIT), "", "", "")
+                          : mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_SELECT),
+                                                  actionCount > 1 ? tr(STR_DIR_UP) : "",
+                                                  actionCount > 1 ? tr(STR_DIR_DOWN) : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Casi todo parcial; uno limpio en los cambios grandes y cada tantos, que si
