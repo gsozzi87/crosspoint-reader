@@ -200,11 +200,20 @@ llegue el hardware.
   sobre `SETTINGS.language`. El lugar del clima también se elige ahí (buscador → `POST /api/hub/location`); sin lugar
   guardado ni `HUB_LAT`/`HUB_LON`, el clima llega vacío.
 - Ajuste Voz hablada (Settings → Sistema, `HubStore::speakMode`): `&speak=none|short|all` en `/api/voice`.
-- Biblia (`BibleActivity`, mosaico Biblia): `GET /api/bible/books|chapter|find|day?lang=` (`server/src/bible.ts`,
+- Biblia (`BibleActivity`, mosaico Biblia): `GET /api/bible/books|chapter|book|find|day?lang=` (`server/src/bible.ts`,
   JSON de thiagobodruk/bible bajado en el Dockerfile a `/opt/bible`, nombres de libros por idioma en
-  `bibleNames.ts`); capítulos cacheados en `/.crosspoint/bible/<lang>/<libro>-<cap>.txt`, último lugar en
+  `bibleNames.ts`); capítulos sueltos cacheados en `/.crosspoint/bible/<lang>/<libro>-<cap>.txt`, último lugar en
   `HubStore::bibleBook/bibleChapter`; Atrás largo graba y `find` resuelve referencia o búsqueda de texto.
-- Música (`MusicActivity`, mosaico Música): MP3 de `/Music/<carpeta>/` en la SD. `src/music/Mp3Source` decodifica con
+- Biblia entera en la SD: la última fila de la lista de libros la baja completa (`GET /api/bible/book`, un archivo
+  por libro en `/.crosspoint/bible/<lang>/bNN.txt` con "#<capítulo>" y los versículos numerados; 3,8 MB en español,
+  un libro por pasada del loop para que la pantalla siga viva). Con eso, leer y **buscar** funcionan sin WiFi:
+  `parseRefLocal()` resuelve la cita ("primera de Juan 4 8") con los nombres que ya están en la SD y `searchStep()`
+  busca todas las palabras en cada versículo, un libro por pasada. Lo único que sigue necesitando el servidor es
+  pasar la voz a texto. Lógica probada de escritorio con `g++` contra el archivo real de Juan.
+- Música (`MusicActivity`, mosaico Música), con pinta de Winamp pero al tamaño de esta pantalla (480x800): título y
+  artista grandes, contador de 7 segmentos de 68 px, barra de posición gruesa, botones de transporte de 56x38 y
+  volumen con número; la playlist va en filas de 38 px. La versión anterior copiaba las proporciones de la skin
+  original (275x116) y en el aparato quedaba todo minúsculo. MP3 de `/Music/<carpeta>/` en la SD. `src/music/Mp3Source` decodifica con
   Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una `AudioManager::WavSource` con cabecera WAV
   sintética, así el SDK no cambia; tags ID3v2/v1; volumen en `HubStore::musicVolume`. Pausa = volumen 0.
 - Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se

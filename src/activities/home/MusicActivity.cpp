@@ -267,80 +267,123 @@ void MusicActivity::loop() {
   }
 }
 
+// Ventana principal, con la pinta del Winamp pero al tamaño de esta pantalla:
+// 480x800 de tinta electrónica. La versión anterior copiaba las proporciones de
+// la skin original (275x116) y en el aparato quedaba todo minúsculo.
 void MusicActivity::drawMainWindow(const int x, const int y, const int w, const int h) const {
   bevel(renderer, x, y, w, h);
-  // Title bar
-  renderer.fillRect(x + 3, y + 3, w - 6, 18, true);
-  renderer.drawText(SMALL_FONT_ID, x + 10, y + 5, "WS397AMP", false);
-  // Time counter: mm:ss with 7-segment digits
+  // Barra de título
+  renderer.fillRect(x + 3, y + 3, w - 6, 22, true);
+  renderer.drawText(SMALL_FONT_ID, x + 12, y + 7, "WS397AMP", false);
+  const char* state = !playing ? tr(STR_MUSIC_STOPPED) : paused ? tr(STR_MUSIC_PAUSED) : tr(STR_MUSIC_PLAYING);
+  renderer.drawText(SMALL_FONT_ID, x + w - 12 - renderer.getTextWidth(SMALL_FONT_ID, state), y + 7, state, false);
+
+  // Título y artista, grandes: es lo que uno mira.
+  int ty = y + 34;
+  const int textW = w - 24;
+  const std::string title = playing ? (source.title().empty() ? trackNames[playingIndex] : source.title())
+                                    : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
+  renderer.drawText(UI_12_FONT_ID, x + 12, ty,
+                    renderer.truncatedText(UI_12_FONT_ID, title.c_str(), textW, EpdFontFamily::BOLD).c_str(), true,
+                    EpdFontFamily::BOLD);
+  ty += 30;
+  const std::string sub = playing ? source.artist() : folderName;
+  if (!sub.empty()) {
+    renderer.drawText(UI_10_FONT_ID, x + 12, ty, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
+  }
+  ty += 30;
+
+  // Contador grande de 7 segmentos + duración total al lado.
   const int sec = playing ? source.positionSeconds() : 0;
-  const int mm = sec / 60, ss = sec % 60;
-  const int dw = 26, dh = 46, t = 6, gap = 6;
-  int cx = x + 16, cy = y + 34;
-  drawDigit(renderer, (mm / 10) % 10, cx, cy, dw, dh, t, true); cx += dw + gap;
-  drawDigit(renderer, mm % 10, cx, cy, dw, dh, t, true); cx += dw + gap;
-  renderer.fillRect(cx + 2, cy + 13, t, t, true);
-  renderer.fillRect(cx + 2, cy + 29, t, t, true);
-  cx += t + 8;
-  drawDigit(renderer, ss / 10, cx, cy, dw, dh, t, true); cx += dw + gap;
-  drawDigit(renderer, ss % 10, cx, cy, dw, dh, t, true);
-  // Marquee: "artist - title", then kbps / kHz / mode
-  const int textX = cx + dw + 16;
-  const int textW = x + w - 12 - textX;
-  std::string line = playing ? (source.artist().empty() ? source.title() : source.artist() + " - " + source.title())
-                             : std::string(tr(STR_MUSIC_STOPPED));
-  if (playing && playingIndex >= 0) line = std::to_string(playingIndex + 1) + ". " + line;
-  renderer.drawRect(textX - 4, cy - 2, textW + 8, 26, true);
-  renderer.drawText(UI_10_FONT_ID, textX, cy + 2, renderer.truncatedText(UI_10_FONT_ID, line.c_str(), textW, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
+  const int total = playing ? source.durationSeconds() : 0;
+  const int dw = 40, dh = 68, t = 9, gap = 9;
+  int cx = x + 12;
+  const int cy = ty;
+  drawDigit(renderer, (sec / 60 / 10) % 10, cx, cy, dw, dh, t, true); cx += dw + gap;
+  drawDigit(renderer, (sec / 60) % 10, cx, cy, dw, dh, t, true); cx += dw + gap;
+  renderer.fillRect(cx + 2, cy + 20, t, t, true);
+  renderer.fillRect(cx + 2, cy + 44, t, t, true);
+  cx += t + 12;
+  drawDigit(renderer, (sec % 60) / 10, cx, cy, dw, dh, t, true); cx += dw + gap;
+  drawDigit(renderer, sec % 10, cx, cy, dw, dh, t, true);
+  cx += dw + 16;
+
   char info[64];
   if (playing) {
-    snprintf(info, sizeof(info), "%d kbps  %d kHz  %s", source.bitrateKbps(), source.sampleRate() / 1000,
-             source.channels() == 2 ? "stereo" : "mono");
-  } else {
-    snprintf(info, sizeof(info), "%s", folderName.c_str());
+    snprintf(info, sizeof(info), "%d:%02d", total / 60, total % 60);
+    renderer.drawText(UI_10_FONT_ID, cx, cy + 6, info, true, EpdFontFamily::BOLD);
+    snprintf(info, sizeof(info), "%d kbps", source.bitrateKbps());
+    renderer.drawText(SMALL_FONT_ID, cx, cy + 30, info);
+    snprintf(info, sizeof(info), "%d kHz %s", source.sampleRate() / 1000, source.channels() == 2 ? "st" : "mono");
+    renderer.drawText(SMALL_FONT_ID, cx, cy + 48, info);
   }
-  renderer.drawText(SMALL_FONT_ID, textX, cy + 30, renderer.truncatedText(SMALL_FONT_ID, info, textW).c_str());
-  // Status flags
-  const int flagsY = cy + 30;
-  const int flagX = x + w - 12 - 70;
-  renderer.drawText(SMALL_FONT_ID, flagX, flagsY, "SHUF", shuffle);
-  if (shuffle) renderer.fillRect(flagX - 3, flagsY - 1, 34, 14, true), renderer.drawText(SMALL_FONT_ID, flagX, flagsY, "SHUF", false);
-  renderer.drawText(SMALL_FONT_ID, flagX + 40, flagsY, "REP", true);
-  if (repeat) renderer.fillRect(flagX + 37, flagsY - 1, 28, 14, true), renderer.drawText(SMALL_FONT_ID, flagX + 40, flagsY, "REP", false);
-  // Position bar
-  const int barY = y + 92, barX = x + 16, barW = w - 32;
-  renderer.drawRect(barX, barY, barW, 10, true);
-  if (playing && source.durationSeconds() > 0) {
-    const int fill = std::min(barW - 4, (barW - 4) * sec / source.durationSeconds());
-    renderer.fillRect(barX + 2, barY + 2, std::max(fill, 4), 6, true);
-  }
-  // Transport row: |<  >  ||  []  >|  and volume
-  const int ty = y + 112;
-  int bx = x + 16;
-  auto button = [&](bool pressed) {
-    renderer.drawRect(bx, ty, 34, 24, true);
-    if (pressed) renderer.fillRect(bx + 1, ty + 1, 32, 22, true);
+  // Banderas
+  const int flagW = 46;
+  const int flagX = x + w - 12 - flagW * 2 - 6;
+  auto flag = [&](int fx, const char* label, bool on) {
+    if (on) renderer.fillRect(fx, cy + 4, flagW, 20, true);
+    else renderer.drawRect(fx, cy + 4, flagW, 20, true);
+    const int lw = renderer.getTextWidth(SMALL_FONT_ID, label);
+    renderer.drawText(SMALL_FONT_ID, fx + (flagW - lw) / 2, cy + 7, label, !on);
   };
-  button(false); renderer.fillRect(bx + 8, ty + 6, 3, 12, true); triangle(renderer, bx + 12, ty + 6, 6, false, true); bx += 38;
-  button(playing && !paused); triangle(renderer, bx + 12, ty + 6, 6, true, !(playing && !paused)); bx += 38;
-  button(paused); renderer.fillRect(bx + 11, ty + 6, 4, 12, !paused); renderer.fillRect(bx + 19, ty + 6, 4, 12, !paused); bx += 38;
-  button(!playing); renderer.fillRect(bx + 11, ty + 6, 12, 12, playing); bx += 38;
-  button(false); triangle(renderer, bx + 8, ty + 6, 6, true, true); renderer.fillRect(bx + 22, ty + 6, 3, 12, true); bx += 46;
-  // Volume slider
-  const int vx = bx, vw = x + w - 16 - vx;
-  renderer.drawRect(vx, ty + 9, vw, 6, true);
-  renderer.fillRect(vx + (vw - 8) * volume / 100, ty + 4, 8, 16, true);
-  renderer.drawText(SMALL_FONT_ID, vx, ty + 24, "VOL");
+  flag(flagX, "SHUF", shuffle);
+  flag(flagX + flagW + 6, "REP", repeat);
+
+  // Barra de posición, gruesa y con el tiempo que falta.
+  const int barY = cy + dh + 16, barX = x + 12, barW = w - 24;
+  renderer.drawRect(barX, barY, barW, 16, true);
+  if (playing && total > 0) {
+    const int fill = std::min(barW - 4, (barW - 4) * sec / total);
+    renderer.fillRect(barX + 2, barY + 2, std::max(fill, 4), 12, true);
+  }
+
+  // Transporte: botones grandes de verdad (los de antes eran de 34x24).
+  const int ty2 = barY + 26;
+  const int bw = 56, bh = 38;
+  int bx = x + 12;
+  auto box = [&](bool pressed) {
+    renderer.drawRect(bx, ty2, bw, bh, true);
+    if (pressed) renderer.fillRect(bx + 2, ty2 + 2, bw - 4, bh - 4, true);
+  };
+  const bool sounding = playing && !paused;
+  box(false);  // anterior
+  renderer.fillRect(bx + 14, ty2 + 11, 4, 16, true);
+  triangle(renderer, bx + 20, ty2 + 11, 8, false, true);
+  bx += bw + 8;
+  box(sounding);  // play
+  triangle(renderer, bx + 22, ty2 + 11, 8, true, !sounding);
+  bx += bw + 8;
+  box(paused);  // pausa
+  renderer.fillRect(bx + 19, ty2 + 11, 5, 16, !paused);
+  renderer.fillRect(bx + 31, ty2 + 11, 5, 16, !paused);
+  bx += bw + 8;
+  box(!playing);  // stop
+  renderer.fillRect(bx + 20, ty2 + 12, 15, 15, playing);
+  bx += bw + 8;
+  box(false);  // siguiente
+  triangle(renderer, bx + 16, ty2 + 11, 8, true, true);
+  renderer.fillRect(bx + 36, ty2 + 11, 4, 16, true);
+  bx += bw + 12;
+
+  // Volumen con su número: el aparato no tiene rueda, así que hay que verlo.
+  const int vx = bx, vw = x + w - 12 - vx;
+  if (vw > 60) {
+    renderer.drawRect(vx, ty2 + 12, vw, 14, true);
+    renderer.fillRect(vx + 2, ty2 + 14, std::max(4, (vw - 4) * volume / 100), 10, true);
+    char vol[16];
+    snprintf(vol, sizeof(vol), "VOL %d", volume);
+    renderer.drawText(SMALL_FONT_ID, vx, ty2 - 4, vol);
+  }
 }
 
 void MusicActivity::drawPlaylist(const int x, const int y, const int w, const int h) const {
   bevel(renderer, x, y, w, h);
-  renderer.fillRect(x + 3, y + 3, w - 6, 18, true);
+  renderer.fillRect(x + 3, y + 3, w - 6, 22, true);
   const bool inFolders = level == FOLDERS;
-  renderer.drawText(SMALL_FONT_ID, x + 10, y + 5, inFolders ? tr(STR_MUSIC_FOLDERS) : "PLAYLIST", false);
-  const int rowH = 26;
-  const int top = y + 26;
-  const int rows = std::max(1, (h - 32) / rowH);
+  renderer.drawText(SMALL_FONT_ID, x + 12, y + 7, inFolders ? tr(STR_MUSIC_FOLDERS) : "PLAYLIST", false);
+  const int rowH = 38;
+  const int top = y + 30;
+  const int rows = std::max(1, (h - 38) / rowH);
   const int count = inFolders ? static_cast<int>(folders.size()) : static_cast<int>(tracks.size());
   const int selected = inFolders ? folderIndex : trackIndex;
   const int first = count > 0 ? (selected / rows) * rows : 0;
@@ -350,7 +393,7 @@ void MusicActivity::drawPlaylist(const int x, const int y, const int w, const in
   for (int i = first; i < count && i < first + rows; ++i) {
     const int ry = top + (i - first) * rowH;
     const bool sel = i == selected;
-    if (sel) renderer.fillRect(x + 6, ry, w - 12, rowH - 2, true);
+    if (sel) renderer.fillRect(x + 6, ry, w - 12, rowH - 4, true);
     std::string label;
     if (inFolders) {
       const std::string& p = folders[i];
@@ -359,9 +402,10 @@ void MusicActivity::drawPlaylist(const int x, const int y, const int w, const in
       label = std::to_string(i + 1) + ". " + trackNames[i];
     }
     const bool isPlaying = !inFolders && i == playingIndex && playing;
-    const int tx = x + 12 + (isPlaying ? 14 : 0);
-    if (isPlaying) triangle(renderer, x + 12, ry + 6, 5, true, !sel);
-    renderer.drawText(UI_10_FONT_ID, tx, ry + 4, renderer.truncatedText(UI_10_FONT_ID, label.c_str(), x + w - 16 - tx).c_str(), !sel);
+    const int tx = x + 14 + (isPlaying ? 18 : 0);
+    if (isPlaying) triangle(renderer, x + 14, ry + 8, 7, true, !sel);
+    renderer.drawText(UI_12_FONT_ID, tx, ry + 6,
+                      renderer.truncatedText(UI_12_FONT_ID, label.c_str(), x + w - 18 - tx).c_str(), !sel);
   }
   if (count > rows) {
     char pages[16];
@@ -378,7 +422,7 @@ void MusicActivity::render(RenderLock&&) {
   renderer.clearScreen();
   const int side = 12;
   const int top = metrics.topPadding + 6;
-  const int mainH = 150;
+  const int mainH = 300;  // el título, el contador y los botones tienen que leerse de lejos
   drawMainWindow(side, top, pageWidth - 2 * side, mainH);
   const int listTop = top + mainH + 8;
   const int listH = pageHeight - metrics.buttonHintsHeight - 8 - listTop;
