@@ -35,7 +35,7 @@ class HubLocationActivity final : public Activity {
     std::string timezone;
   };
 
-  VoiceRecorder recorder{6};
+  VoiceRecorder recorder{10};  // 10 s: 6 cortaba nombres de lugar largos
   std::string spoken;
   std::vector<Candidate> candidates;
   std::vector<std::string> candidateLabels;

@@ -107,9 +107,10 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "'Acordate que', 'tené presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
     "Si está corrigiendo algo que ya sabés de él ('ya no vivo en México', 'ahora trabajo en otro lado'), también es memory:",
     "escribí el dato NUEVO completo en text y el servidor pisa el viejo.",
-    "needsWeb va en true SOLO cuando la respuesta dependa de datos de ahora (resultado de un partido, precio o cotización,",
-    "noticias, quién ocupa un cargo hoy, un estreno, una versión): en ese caso el servidor vuelve a preguntar con búsqueda",
-    "en internet y esa respuesta pisa la tuya. En todo lo demás va false.",
+    "needsWeb va en true SOLO si el usuario PIDIO EXPRESAMENTE que busque en internet",
+    "(busca, busca en internet, fijate en internet, averigua). Que la pregunta sea de actualidad NO alcanza:",
+    "si no pidio buscar, contesta con lo que sabes y aclara que el dato puede estar desactualizado.",
+    "Buscar cuesta plata y el usuario pidio decidirlo el. En todo lo demas va false.",
     `'Traducí', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
     "y reply la contesta con conocimiento general, corta y directa. Si la frase trae una acción y una pregunta, guardá la",
     "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task en Entrada y decilo.",
@@ -374,7 +375,10 @@ voice.post("/", async (c) => {
     // la baje en menos de medio segundo.
     const tLlm = Date.now();
     const speakable = speak !== "none" && (speak === "all" || parsed.intent !== "question" || spokenReply.length <= 220);
-    const audio = speakable ? await synthesize(spokenReply, lang, speak === "all" ? 15 : 8) : null;
+    const audio = speakable ? await synthesize(spokenReply, lang, speak === "all" ? 45 : 20) : null;
+    // 45 s con "leer siempre": con 15 se cortaba a mitad de la primera pantalla.
+    // No mas, porque el aparato se guarda el audio ENTERO en memoria antes de
+    // reproducirlo (45 s de ADPCM son ~360 KB) y no sabe reproducir mientras baja.
     const ms = { stt: tStt - t0, llm: tLlm - tStt, tts: Date.now() - tLlm, total: Date.now() - t0 };
     console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
     return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0, ms }, audio);

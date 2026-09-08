@@ -25,7 +25,10 @@
 namespace {
 constexpr const char* TAG = "VOICE_ACT";
 constexpr uint32_t VOICE_TIMEOUT_MS = 90000;  // Whisper + Claude on one request
-constexpr unsigned long SPEAK_MAX_MS = 15000;  // tope por si el audio no termina nunca
+// Tope de seguridad por si el audio nunca termina, NO el largo esperado de la
+// lectura: quien decide que termino es !speech.isPlaying(). Con 15 s el modo
+// "leer siempre" cortaba a la mitad cualquier respuesta larga.
+constexpr unsigned long SPEAK_MAX_MS = 300000;
 constexpr int SIDE = 16;
 
 // Todo lo que el servidor sabe clasificar (server/src/voice.ts: question,
@@ -299,9 +302,21 @@ void VoiceActivity::loop() {
       if (!recorder.pump()) fail(StrId::STR_AUDIO_CAPTURE_FAILED);
       break;
     case SENDING:
+      // Atrás cancela la espera: si el servidor tarda, el usuario no queda preso.
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        leave();
+        break;
+      }
       if (requestPending) performRequest();
       break;
     case SPEAKING: {
+      // Atrás corta la lectura y sale. Sin esto, con "leer siempre" y un texto
+      // largo el aparato se quedaba hablando y no había forma de salir.
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        speech.stop();
+        leave();
+        break;
+      }
       // 400 ms de gracia: la tarea de audio tarda un toque en arrancar y
       // isPlaying() sería false justo después de pedir la reproducción.
       const unsigned long spoken = millis() - speakStartedAt;

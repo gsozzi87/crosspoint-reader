@@ -65,6 +65,46 @@ export function needsFreshInfo(text: string, lang: Lang): boolean {
   return new RegExp(`(^|\\W)(${FRESH[lang]})(\\W|$)`).test(t) || new RegExp(`(^|\\W)(${FRESH.en})(\\W|$)`).test(t);
 }
 
+// ── Pedido EXPLÍCITO ──────────────────────────────────────────────────────────
+// El usuario pidió (1.5.41): "quiero que sólo use el modelo de búsqueda en
+// internet si le digo expresamente que busque" y "que sólo use el modelo de
+// razonamiento si le digo expresamente que razone". Antes se adivinaba con
+// needsFreshInfo() y buscaba solo; ahora hay que decírselo. Buscar cuesta plata
+// (con Anthropic, más que la respuesta entera) y razonar cuesta tiempo.
+const ASK_SEARCH: Record<Lang, string> = {
+  es: "busca|buscar|busque|busques|buscame|googlea|googlear|fijate en internet|mira en internet|averigua|averiguar|en internet|en la web",
+  en: "search|look up|google|find out|check online|on the internet|on the web",
+  fr: "cherche|chercher|recherche|google|regarde sur internet|sur internet|sur le web",
+  de: "such|suche|suchen|google|schau im internet|im internet|im netz|recherchier",
+  pt: "busca|buscar|procura|procurar|pesquisa|pesquisar|google|na internet|na web",
+  ru: "найди|найти|поищи|поискать|погугли|в интернете|в сети",
+};
+
+const ASK_REASON: Record<Lang, string> = {
+  es: "razona|razonar|razoná|piensa bien|pensa bien|analiza|analizar|analiza bien|con calma|paso a paso|detalladamente",
+  en: "reason|think hard|think carefully|analyze|analyse|step by step|in detail",
+  fr: "raisonne|raisonner|reflechis bien|analyse|etape par etape|en detail",
+  de: "denk nach|denke nach|ueberlege|analysiere|schritt fuer schritt|ausfuehrlich",
+  pt: "raciocina|raciocinar|pensa bem|analisa|analisar|passo a passo|em detalhe",
+  ru: "подумай|рассуди|проанализируй|шаг за шагом|подробно",
+};
+
+function asksFor(table: Record<Lang, string>, text: string, lang: Lang): boolean {
+  const t = fold(text);
+  const one = (pattern: string) => new RegExp(`(^|\\W)(${fold(pattern)})(\\W|$)`).test(t);
+  return one(table[lang]) || one(table.en);
+}
+
+/** ¿Pidió explícitamente que busque en internet? */
+export function asksForSearch(text: string, lang: Lang): boolean {
+  return asksFor(ASK_SEARCH, text, lang);
+}
+
+/** ¿Pidió explícitamente que razone? */
+export function asksForReasoning(text: string, lang: Lang): boolean {
+  return asksFor(ASK_REASON, text, lang);
+}
+
 async function tavily(query: string, key: string, limit: number): Promise<SearchResult[]> {
   const res = await safeFetch(
     "https://api.tavily.com/search",

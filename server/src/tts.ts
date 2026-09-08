@@ -15,13 +15,16 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir, readFile, unlink } from "node:fs/promises";
 import { existsSync, statSync } from "node:fs";
 import { normalizeLang, type Lang } from "./lang";
+import { speakable } from "./speakable";
 
 const PIPER_BIN = process.env.PIPER_BIN ?? "/opt/piper/piper";
 const VOICES_DIR = process.env.PIPER_VOICES ?? "/opt/piper/voices";
 const OUT_DIR = process.env.PIPER_OUT ?? "/tmp/piper-out";
 const ENABLED = process.env.TTS_ENABLED !== "0";
 export const TARGET_RATE = 16000;
-const MAX_CHARS = 400;
+// Tope de lo que se sintetiza de una. Con 400 el modo "leer siempre" cortaba
+// cualquier respuesta larga a mitad de la primera pantalla (reportado en 1.5.40).
+const MAX_CHARS = 4000;
 const PIPER_TIMEOUT_MS = 60_000;
 // Tope duro de lo que se acepta decodificar: dos minutos de audio.
 const MAX_DECODE_SAMPLES = TARGET_RATE * 120;
@@ -234,9 +237,12 @@ export function decodeAdpcm(data: Uint8Array): Int16Array {
 const shortCache = new Map<string, Uint8Array>();
 const SHORT_CACHE_MAX = 40;
 
-export async function synthesize(text: string, lang: Lang, maxSeconds = 12): Promise<Uint8Array | null> {
+export async function synthesize(text: string, lang: Lang, maxSeconds = 180): Promise<Uint8Array | null> {
   if (!ttsAvailable(lang)) return null;
-  const clean = text.replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
+  // speakable() junta los separadores de miles, pasa los números a palabras y
+  // estira las unidades: si no, Piper lee "384 000 km" como "trescientos ochenta
+  // y cuatro cero cero cero ka eme".
+  const clean = speakable(text, lang).replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
   if (!clean) return null;
   const key = `${lang}|${VOICES[lang]}|${clean}`;
   const cached = clean.length <= 60 ? shortCache.get(key) : undefined;
