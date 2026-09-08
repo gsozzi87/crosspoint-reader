@@ -6,8 +6,19 @@ import { board } from "./board";
 import { logPage } from "./devicelog";
 import { warmUp } from "./tts";
 import { normalizeLang } from "./lang";
+import { redactSecrets } from "./net";
 
 const app = new Hono();
+
+// Sin esto, cualquier excepción sale como el "Internal Server Error" en texto
+// plano de Hono y el aparato revienta al parsearlo como JSON.
+app.onError((err, c) => {
+  console.error(`error en ${c.req.method} ${c.req.path}:`, err);
+  const msg = redactSecrets(err instanceof Error ? err.message : String(err)).slice(0, 200);
+  return c.json({ ok: false, error: msg || "internal", code: "internal" }, 500);
+});
+
+app.notFound((c) => c.json({ ok: false, error: "not found", code: "not_found" }, 404));
 
 app.get("/", (c) => c.text("ws397 server ok"));
 app.route("/firmware", firmware);

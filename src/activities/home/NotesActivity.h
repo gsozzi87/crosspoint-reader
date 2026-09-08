@@ -23,6 +23,7 @@ class NotesActivity final : public Activity {
   ButtonNavigator buttonNavigator;
   int index = 0;
   int perPage = 1;
+  int partialCount = 0;  // parciales desde el último refresco limpio
   OptionPopup confirm;
   bool confirming = false;
   std::vector<std::string> confirmOptions;

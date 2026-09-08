@@ -20,7 +20,7 @@ constexpr const char* MUSIC_ROOT = "/Music";
 constexpr int MAX_TRACKS = 200;
 constexpr unsigned long MENU_HOLD_MS = 1200;
 constexpr int COUNTER_TICK_S = 5;   // partial refresh of the counter
-constexpr int PARTIALS_BEFORE_CLEAN = 24;
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 
 bool endsWithMp3(const char* name) {
   const size_t len = strlen(name);
@@ -119,21 +119,43 @@ void MusicActivity::openFolder(const int index) {
   requestUpdate();
 }
 
-bool MusicActivity::play(const int index) {
+// Arranca una pista de la carpeta que se está mirando: primero se copia esa
+// carpeta a la lista que suena, así explorar otra no toca lo que se reproduce.
+bool MusicActivity::playSelected(const int index) {
   if (index < 0 || index >= static_cast<int>(tracks.size())) return false;
+  playTracks = tracks;
+  playTrackNames = trackNames;
+  playFolderName = folderName;
+  playFolderIndex = folderIndex;
+  return play(index);
+}
+
+bool MusicActivity::play(const int index) {
+  if (index < 0 || index >= static_cast<int>(playTracks.size())) return false;
   audio.stop();
-  if (!source.open(tracks[index])) {
-    LOG_ERR(TAG, "cannot open %s", tracks[index].c_str());
+  playing = false;
+  paused = false;
+  if (!source.open(playTracks[index])) {
+    LOG_ERR(TAG, "cannot open %s", playTracks[index].c_str());
+    playingIndex = -1;
     return false;
   }
-  if (!audio.begin()) return false;
+  // Todo camino de error cierra la fuente: si no, quedan colgados el handle del
+  // MP3 y los buffers del decodificador, y `playing` en true hacía que el loop
+  // entrara en el ciclo "terminó la pista -> next()".
+  if (!audio.begin()) {
+    source.close();
+    playingIndex = -1;
+    return false;
+  }
   audio.setVolume(volume);
   if (!audio.play(source.wavSource(), false)) {
     source.close();
+    playingIndex = -1;
     return false;
   }
   playingIndex = index;
-  trackIndex = index;
+  if (folderIndex == playFolderIndex) trackIndex = index;  // la lista a la vista es la que suena
   playing = true;
   paused = false;
   lastShownSecond = -1;
@@ -148,6 +170,10 @@ void MusicActivity::stop() {
   playing = false;
   paused = false;
   playingIndex = -1;
+  playFolderIndex = -1;
+  playTracks.clear();
+  playTrackNames.clear();
+  playFolderName.clear();
 }
 
 // The SDK has no pause: stopping and replaying restarts the track, so pause
@@ -159,16 +185,17 @@ void MusicActivity::togglePause() {
   requestUpdate();
 }
 
+// Siempre sobre la carpeta que suena, no sobre la que se está explorando.
 void MusicActivity::next(const bool fromEnd) {
-  if (tracks.empty()) return;
+  if (playTracks.empty()) return;
   int idx;
-  if (shuffle && tracks.size() > 1) {
+  if (shuffle && playTracks.size() > 1) {
     do {
-      idx = static_cast<int>(esp_random() % tracks.size());
+      idx = static_cast<int>(esp_random() % playTracks.size());
     } while (idx == playingIndex);
   } else {
     idx = playingIndex + 1;
-    if (idx >= static_cast<int>(tracks.size())) {
+    if (idx >= static_cast<int>(playTracks.size())) {
       if (!repeat && fromEnd) {
         stop();
         requestUpdate();
@@ -181,9 +208,9 @@ void MusicActivity::next(const bool fromEnd) {
 }
 
 void MusicActivity::previous() {
-  if (tracks.empty()) return;
+  if (playTracks.empty()) return;
   int idx = playingIndex - 1;
-  if (idx < 0) idx = static_cast<int>(tracks.size()) - 1;
+  if (idx < 0) idx = static_cast<int>(playTracks.size()) - 1;
   play(idx);
 }
 
@@ -250,10 +277,10 @@ void MusicActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (level == FOLDERS) {
       openFolder(folderIndex);
-    } else if (playing && trackIndex == playingIndex) {
+    } else if (isSelectedPlaying()) {
       togglePause();
     } else {
-      play(trackIndex);
+      playSelected(trackIndex);
     }
     return;
   }
@@ -281,13 +308,16 @@ void MusicActivity::drawMainWindow(const int x, const int y, const int w, const 
   // Título y artista, grandes: es lo que uno mira.
   int ty = y + 34;
   const int textW = w - 24;
-  const std::string title = playing ? (source.title().empty() ? trackNames[playingIndex] : source.title())
+  const bool named = playing && playingIndex >= 0 && playingIndex < static_cast<int>(playTrackNames.size());
+  const std::string title = playing ? (!source.title().empty() ? source.title()
+                                       : named                 ? playTrackNames[playingIndex]
+                                                               : std::string())
                                     : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
   renderer.drawText(UI_12_FONT_ID, x + 12, ty,
                     renderer.truncatedText(UI_12_FONT_ID, title.c_str(), textW, EpdFontFamily::BOLD).c_str(), true,
                     EpdFontFamily::BOLD);
   ty += 30;
-  const std::string sub = playing ? source.artist() : folderName;
+  const std::string sub = playing ? (source.artist().empty() ? playFolderName : source.artist()) : folderName;
   if (!sub.empty()) {
     renderer.drawText(UI_10_FONT_ID, x + 12, ty, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), textW).c_str());
   }
@@ -401,7 +431,7 @@ void MusicActivity::drawPlaylist(const int x, const int y, const int w, const in
     } else {
       label = std::to_string(i + 1) + ". " + trackNames[i];
     }
-    const bool isPlaying = !inFolders && i == playingIndex && playing;
+    const bool isPlaying = !inFolders && playing && folderIndex == playFolderIndex && i == playingIndex;
     const int tx = x + 14 + (isPlaying ? 18 : 0);
     if (isPlaying) triangle(renderer, x + 14, ry + 8, 7, true, !sel);
     renderer.drawText(UI_12_FONT_ID, tx, ry + 6,
@@ -425,11 +455,13 @@ void MusicActivity::render(RenderLock&&) {
   const int mainH = 300;  // el título, el contador y los botones tienen que leerse de lejos
   drawMainWindow(side, top, pageWidth - 2 * side, mainH);
   const int listTop = top + mainH + 8;
-  const int listH = pageHeight - metrics.buttonHintsHeight - 8 - listTop;
+  const int listH = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - listTop;
   drawPlaylist(side, listTop, pageWidth - 2 * side, listH);
 
   if (menuOpen && menu.processRender(renderer, mappedInput)) return;
-  const char* confirm = level == FOLDERS ? tr(STR_SELECT) : (playing && trackIndex == playingIndex) ? (paused ? tr(STR_MUSIC_PLAY) : tr(STR_MUSIC_PAUSE)) : tr(STR_MUSIC_PLAY);
+  const char* confirm = level == FOLDERS ? tr(STR_SELECT)
+                        : isSelectedPlaying() ? (paused ? tr(STR_MUSIC_PLAY) : tr(STR_MUSIC_PAUSE))
+                                              : tr(STR_MUSIC_PLAY);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirm, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 

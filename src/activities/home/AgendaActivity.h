@@ -33,6 +33,7 @@ class AgendaActivity final : public Activity {
   int sectionIndex = 0;
   int itemIndex = 0;
   int itemsPerPage = 1;
+  int partialCount = 0;  // parciales desde el último refresco limpio
   OptionPopup menu;                   // Move / Date / Delete, then the sub-choice
   enum MenuStep { NONE, MAIN, MOVE, DATE };
   MenuStep menuStep = NONE;

@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -22,6 +23,7 @@ constexpr const char* CACHE = "/.crosspoint/rss/feeds.json";
 constexpr int ROW_H = 44;
 constexpr int SIDE = 20;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 }  // namespace
 
 void NewsActivity::onEnter() {
@@ -188,7 +190,8 @@ void NewsActivity::loop() {
         const bool ok = fetchArticle(feeds[feedIndex].id, feeds[feedIndex].items[itemIndex].id, title, text);
         WiFi.setSleep(true);
         if (!ok) {
-          fail(StrId::STR_ASK_FAILED, "article");
+          // El detalle se pinta en pantalla: el titular del feed en vez de un "article" en inglés.
+          fail(StrId::STR_ASK_FAILED, feeds[feedIndex].items[itemIndex].title);
           break;
         }
         showArticle(title, text);
@@ -307,7 +310,10 @@ void NewsActivity::render(RenderLock&&) {
       break;
     case FAILED:
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);
-      if (!failureDetail.empty()) renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, failureDetail.c_str());
+      if (!failureDetail.empty()) {
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10,
+                                  renderer.truncatedText(UI_10_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
+      }
       break;
     case CONNECTING:
     case READING:
@@ -315,5 +321,8 @@ void NewsActivity::render(RenderLock&&) {
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
+  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) partialCount = 0;
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <ServerClient.h>
@@ -19,6 +20,7 @@
 namespace {
 constexpr const char* TAG = "TRANSL";
 constexpr uint32_t TRANSLATE_TIMEOUT_MS = 60000;
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 struct LangInfo {
   const char* code;
   const char* name;
@@ -135,7 +137,6 @@ void TranslatorActivity::showLanguagePicker() {
 
 void TranslatorActivity::startRecording(const bool me) {
   speech.stop();  // el parlante y el micrófono comparten el I2S: si sigue hablando, la captura falla
-  speech.stop();
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder.start(why)) {
     fail(why);
@@ -350,5 +351,8 @@ void TranslatorActivity::render(RenderLock&&) {
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), state == RECORDING ? tr(STR_SELECT) : tr(STR_TRANSLATOR_ME),
                                             tr(STR_TRANSLATOR_OTHER), tr(STR_TRANSLATOR_LANG));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
+  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) partialCount = 0;
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

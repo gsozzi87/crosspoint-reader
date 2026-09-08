@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <I18n.h>
 #include <Logging.h>
 #include <HalClock.h>
@@ -19,6 +20,8 @@ constexpr const char* TAG = "AGENDA";
 constexpr int ROW_H = 44;
 constexpr int SIDE = 20;
 constexpr unsigned long MENU_HOLD_MS = 1200;
+constexpr int PAGER_H = 18;               // franja del indicador "p/N", debajo de las filas
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 
 std::string dateOffset(int days) {
   time_t now = 0;
@@ -253,8 +256,14 @@ void AgendaActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
   const int top = metrics.topPadding + metrics.headerHeight + 12;
-  const int bottom = pageHeight - metrics.buttonHintsHeight - 8;
-  itemsPerPage = std::max(1, (bottom - top) / ROW_H);
+  // El margen de abajo lleva verticalSpacing además del alto de los hints (misma
+  // cuenta que SettingsActivity): con un 8 fijo la última fila quedaba pegada a la
+  // barra de botones (verticalSpacing es 16 en Lyra, no 8).
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  // El indicador "p/N" tiene su propia franja abajo: si las filas llegaran hasta
+  // `bottom` se le encimarían.
+  const int rowsBottom = bottom - PAGER_H;
+  itemsPerPage = std::max(1, (rowsBottom - top) / ROW_H);
   const int count = level == SECTIONS ? sectionCount() : itemCount();
   const int selected = level == SECTIONS ? sectionIndex : itemIndex;
   const int page = count > 0 ? selected / itemsPerPage : 0;
@@ -300,5 +309,8 @@ void AgendaActivity::render(RenderLock&&) {
   const char* okLabel = level == SECTIONS ? tr(STR_SELECT) : current().kind == MESSAGES ? tr(STR_AGENDA_READ) : tr(STR_AGENDA_DONE);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // Regla del panel: refresco limpio cada 10-15 parciales o la lista fantasmea.
+  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) partialCount = 0;
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

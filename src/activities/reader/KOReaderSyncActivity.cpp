@@ -441,8 +441,12 @@ void KOReaderSyncActivity::buildResultScreen(UiScreen& screen) {
   // Side padding is 0 here (like the other FreeInkApp screens): the action list
   // supplies its own theme side padding, and the raw comparison text is indented
   // to line up with the list rows below (see labelIndent).
-  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
-                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  // El margen de abajo lleva verticalSpacing además del alto de los hints (misma
+  // cuenta que SettingsActivity): con el hueco justo, la última fila terminaba
+  // pegada a la barra de botones y parecía tapada por ella.
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                  static_cast<int16_t>(metrics.buttonHintsHeight + metrics.verticalSpacing), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   if (state == SHOWING_RESULT) {

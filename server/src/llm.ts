@@ -12,9 +12,14 @@
 // más el esquema escrito alcanza para lo que pedimos.
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config";
+import { checkUrl, redactSecrets } from "./net";
+
+// `code` es para el aparato: "no_key" se muestra distinto que un fallo del
+// proveedor, aunque los dos lleguen como texto.
+export type LlmCode = "no_key" | "provider_error" | "refused" | "bad_answer";
 
 export class LlmError extends Error {
-  constructor(message: string, readonly status = 502) {
+  constructor(message: string, readonly status = 502, readonly code: LlmCode = "provider_error") {
     super(message);
   }
 }
@@ -31,7 +36,10 @@ export async function currentModel(): Promise<string> {
 
 async function anthropicText(o: Options, schema?: object): Promise<string> {
   const c = (await config()).llm;
-  const client = new Anthropic({ apiKey: c.key });
+  if (!c.key) throw new LlmError("falta la clave del proveedor (web → Ajustes)", 500, "no_key");
+  // Sin timeout el SDK espera ~10 minutos y el aparato queda colgado en
+  // "Pensando..." hasta que se le acaba la paciencia (o la batería).
+  const client = new Anthropic({ apiKey: c.key, timeout: 90_000, maxRetries: 1 });
   const res = await client.messages.create({
     model: c.model,
     max_tokens: o.maxTokens ?? 1024,
@@ -46,7 +54,7 @@ async function anthropicText(o: Options, schema?: object): Promise<string> {
     // común, así que se pasa tal cual.
     ...(schema ? ({ output_config: { format: { type: "json_schema", schema } } } as never) : {}),
   });
-  if (res.stop_reason === "refusal") throw new LlmError("el modelo se negó a responder", 400);
+  if (res.stop_reason === "refusal") throw new LlmError("el modelo se negó a responder", 400, "refused");
   let out = "";
   for (const block of res.content) if (block.type === "text") out += block.text;
   return out;
@@ -54,11 +62,15 @@ async function anthropicText(o: Options, schema?: object): Promise<string> {
 
 async function openAiText(o: Options, schema?: object): Promise<string> {
   const c = (await config()).llm;
-  if (!c.key) throw new LlmError("falta la clave del proveedor (web → Ajustes)", 500);
+  if (!c.key) throw new LlmError("falta la clave del proveedor (web → Ajustes)", 500, "no_key");
   const base = o.cached ? `${o.system}\n\n${o.cached}` : o.system;
   const system = schema
     ? `${base}\n\nRespondé SOLO con un objeto JSON que cumpla este esquema, sin texto alrededor y sin bloques de código:\n${JSON.stringify(schema)}`
     : base;
+  // Se revalida acá y no solo al guardar: un config.json viejo (o editado a
+  // mano) no tiene que poder mandar el Bearer a la red interna.
+  const url = checkUrl(c.baseUrl, { allowLocal: true });
+  if (!url.ok) throw new LlmError(`la URL del proveedor no sirve: ${url.error}`, 500, "no_key");
   const res = await fetch(`${c.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${c.key}` },
@@ -73,13 +85,21 @@ async function openAiText(o: Options, schema?: object): Promise<string> {
     }),
     signal: AbortSignal.timeout(60_000),
   });
-  const body = await res.text();
-  if (!res.ok) throw new LlmError(`${new URL(c.baseUrl).host} ${res.status}: ${body.slice(0, 200)}`, res.status === 401 ? 500 : 502);
+  // El cuerpo del proveedor vuelve al aparato y a la web: algunos repiten la
+  // clave que les mandaste en el error de auth, así que se tacha primero.
+  const body = redactSecrets(await res.text(), c.key);
+  if (!res.ok) {
+    throw new LlmError(
+      `${url.url.host} ${res.status}: ${body.slice(0, 200)}`,
+      res.status === 401 ? 500 : 502,
+      res.status === 401 ? "no_key" : "provider_error",
+    );
+  }
   let data: { choices?: { message?: { content?: string } }[] };
   try {
     data = JSON.parse(body);
   } catch {
-    throw new LlmError(`respuesta ilegible del proveedor: ${body.slice(0, 120)}`);
+    throw new LlmError(`respuesta ilegible del proveedor: ${body.slice(0, 120)}`, 502, "bad_answer");
   }
   return data.choices?.[0]?.message?.content ?? "";
 }
@@ -92,7 +112,9 @@ export async function chatText(o: Options): Promise<string> {
 // Nombre del proveedor para mostrar (logs, /api/ask).
 export async function providerLabel(): Promise<string> {
   const c = (await config()).llm;
-  return c.provider === "anthropic" ? `anthropic/${c.model}` : `${new URL(c.baseUrl).host}/${c.model}`;
+  if (c.provider === "anthropic") return `anthropic/${c.model}`;
+  const u = checkUrl(c.baseUrl, { allowLocal: true });
+  return `${u.ok ? u.url.host : "?"}/${c.model}`;
 }
 
 export async function chatJson<T>(o: Options, schema: object): Promise<T> {
@@ -102,10 +124,10 @@ export async function chatJson<T>(o: Options, schema: object): Promise<T> {
   const clean = raw.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
   const start = clean.indexOf("{");
   const end = clean.lastIndexOf("}");
-  if (start < 0 || end <= start) throw new LlmError(`el modelo no devolvió JSON: ${clean.slice(0, 120)}`);
+  if (start < 0 || end <= start) throw new LlmError(`el modelo no devolvió JSON: ${clean.slice(0, 120)}`, 502, "bad_answer");
   try {
     return JSON.parse(clean.slice(start, end + 1)) as T;
   } catch (err) {
-    throw new LlmError(`JSON inválido del modelo: ${String(err).slice(0, 120)}`);
+    throw new LlmError(`JSON inválido del modelo: ${String(err).slice(0, 120)}`, 502, "bad_answer");
   }
 }

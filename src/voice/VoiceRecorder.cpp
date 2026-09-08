@@ -28,13 +28,17 @@ bool VoiceRecorder::start(StrId& why) {
     return false;
   }
   recorded = 0;
+  // Los dos caminos de error liberan la toma: son cientos de KB de PSRAM
+  // (VoiceRecorder{12} pide 384 KB) y quedaban vivos hasta el próximo start().
   if (!audio.begin()) {
+    release();
     why = StrId::STR_AUDIO_CAPTURE_FAILED;
     return false;
   }
   blip(1200, 90);
   if (!audio.beginCapture(SAMPLE_RATE)) {
     audio.end();
+    release();
     why = StrId::STR_AUDIO_CAPTURE_FAILED;
     return false;
   }
@@ -100,7 +104,10 @@ const uint8_t* VoiceRecorder::adpcm() {
   return packed;
 }
 
-size_t VoiceRecorder::adpcmBytes() const { return buffer ? adpcm::encodedSize(recorded) : 0; }
+// Solo el tamaño de lo que realmente se codificó: si el malloc de `packed`
+// falló, adpcm() devuelve nullptr y el que sube no puede postear N bytes de un
+// puntero nulo.
+size_t VoiceRecorder::adpcmBytes() const { return packed ? adpcm::encodedSize(recorded) : 0; }
 
 size_t VoiceRecorder::wavBytes() const { return buffer ? wav::HEADER_BYTES + recorded * sizeof(int16_t) : 0; }
 

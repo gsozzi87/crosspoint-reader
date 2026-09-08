@@ -21,6 +21,7 @@
 #include "BibleActivity.h"
 #include "MusicActivity.h"
 #include "NewsActivity.h"
+#include "activities/games/GamesActivity.h"
 #include "PhotosActivity.h"
 #include "WeatherActivity.h"
 #include "NotesActivity.h"
@@ -43,6 +44,7 @@ constexpr int TILE_RADIUS = 12;
 constexpr int CONTINUE_H = 60;
 constexpr int INFO_H = 136;
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
+constexpr int PARTIALS_BEFORE_CLEAN = 12;         // regla del panel: completo cada 10-15 parciales
 constexpr time_t SYNC_INTERVAL_S = 3 * 3600;      // cache older than this at entry = sync
                                                   // (3 h: lo que se carga desde /board tarda menos en llegar)
 constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
@@ -70,7 +72,8 @@ const TileSpec TILES[] = {
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
     {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
     {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_HUB_NEWS, &icon_hub_news_48},
-    {StrId::STR_HUB_PHOTOS, &icon_hub_photos_48},       {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
+    {StrId::STR_HUB_PHOTOS, &icon_hub_photos_48},       {StrId::STR_HUB_GAMES, &icon_hub_games_48},
+    {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
     {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
 }  // namespace
@@ -148,6 +151,9 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_WEATHER:
       activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
+      break;
+    case TILE_GAMES:
+      activityManager.replaceActivity(std::make_unique<GamesActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
@@ -444,17 +450,24 @@ void HubActivity::render(RenderLock&&) {
   for (int i = 0; i < TILE_COUNT; ++i) {
     const int col = i % COLUMNS;
     const int row = i / COLUMNS;
-    drawTile(i, SIDE + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
+    // La última fila puede quedar incompleta (13 mosaicos en 3 columnas): se centra.
+    const int inRow = std::min(COLUMNS, TILE_COUNT - row * COLUMNS);
+    const int rowW = inRow * tileW + (inRow - 1) * GAP;
+    const int rowLeft = (pageWidth - rowW) / 2;
+    drawTile(i, rowLeft + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
   }
 
   int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 10;
   const int hintsTop = pageHeight - metrics.buttonHintsHeight;
   drawContinueWidget(SIDE, widgetTop, pageWidth - 2 * SIDE, CONTINUE_H);
   widgetTop += CONTINUE_H + 8;
-  const int infoH = std::min(INFO_H, hintsTop - 8 - widgetTop);
+  // El aviso del atajo de voz se dibuja en hintsTop - 16, así que los widgets
+  // tienen que terminar antes o le pasan por encima.
+  const int hintLine = hintsTop - 16;
+  const int infoH = std::min(INFO_H, hintLine - 8 - widgetTop);
   if (infoH > 80) drawInfoWidgets(SIDE, widgetTop, pageWidth - 2 * SIDE, infoH);
 
-  renderer.drawCenteredText(SMALL_FONT_ID, hintsTop - 16, tr(STR_VOICE_SHORTCUT_HINT));
+  renderer.drawCenteredText(SMALL_FONT_ID, hintLine, tr(STR_VOICE_SHORTCUT_HINT));
 
   if (comingSoon) GUI.drawPopup(renderer, tr(STR_HUB_COMING_SOON));
 
@@ -462,6 +475,9 @@ void HubActivity::render(RenderLock&&) {
                                             tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  renderer.displayBuffer(cleanInitialRefresh && !firstRenderDone ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  const bool clean = (cleanInitialRefresh && !firstRenderDone) || partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) partialCount = 0;
+  else ++partialCount;
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
   firstRenderDone = true;
 }

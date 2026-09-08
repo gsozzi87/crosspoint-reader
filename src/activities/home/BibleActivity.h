@@ -41,6 +41,7 @@ class BibleActivity final : public Activity {
   int chapterIndex = 0;  // 0-based
   int wantedVerse = 0;
   int itemsPerPage = 1;
+  int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
 
   VoiceRecorder recorder{8};

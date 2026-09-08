@@ -3,25 +3,28 @@
 // el asset firmware-ws397.bin. release.sh / release.ps1 suben el binario con
 // PUT /firmware (Bearer OTA_TOKEN, header X-Version). Todo vive en el volumen.
 import { Hono } from "hono";
-import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, writeFile } from "node:fs/promises";
+import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 
 const TOKEN = process.env.OTA_TOKEN ?? "";
 const DIR = process.env.FIRMWARE_DIR ?? "/data/firmware";
 const ASSET = "firmware-ws397.bin";
 const BIN = `${DIR}/${ASSET}`;
 const META = `${DIR}/version.json`;
+// De dónde baja el aparato el .bin. Fijo por configuración: /firmware/latest es
+// público y armar la URL con el Host del cliente deja que cualquiera le sirva
+// al aparato un binario desde otro lado.
+const PUBLIC_BASE = (process.env.PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
 
 type Meta = { version: string; size: number; uploadedAt: string };
 
 async function meta(): Promise<Meta | null> {
-  try {
-    return JSON.parse(await readFile(META, "utf8")) as Meta;
-  } catch {
-    return null;
-  }
+  const m = await readJsonSafe<Partial<Meta> | null>(META, null);
+  return m && typeof m.version === "string" ? { version: m.version, size: Number(m.size) || 0, uploadedAt: String(m.uploadedAt ?? "") } : null;
 }
 
 function origin(c: { req: { header: (n: string) => string | undefined; url: string } }): string {
+  if (PUBLIC_BASE) return PUBLIC_BASE;
   const proto = c.req.header("x-forwarded-proto") ?? new URL(c.req.url).protocol.replace(":", "");
   const host = c.req.header("x-forwarded-host") ?? c.req.header("host") ?? new URL(c.req.url).host;
   return `${proto}://${host}`;
@@ -64,7 +67,7 @@ firmware.put("/", async (c) => {
   await writeFile(`${BIN}.tmp`, body);
   await rename(`${BIN}.tmp`, BIN);
   const m: Meta = { version, size: body.byteLength, uploadedAt: new Date().toISOString() };
-  await writeFile(META, JSON.stringify(m, null, 2));
+  await writeJsonAtomic(META, m);  // el .bin ya iba con .tmp+rename; el version.json quedaba a medias
   console.log(`firmware ${version} uploaded (${m.size} bytes)`);
   return c.json({ ok: true, version, size: m.size });
 });

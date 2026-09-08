@@ -32,6 +32,13 @@ bool SpeechOut::playAdpcm(const uint8_t* data, const size_t len, const uint8_t v
   }
   audio.setVolume(volume ? volume : deviceVolume());
   started = audio.playBuffer(wav, bytes, false);
+  if (!started) {
+    // El I2S es uno solo: si esta rama no soltaba el AudioManager, el pitido de
+    // AlertBeep que viene después se lo encontraba tomado.
+    LOG_ERR(TAG, "playback refused (%u bytes)", (unsigned)bytes);
+    stop();
+    return false;
+  }
   LOG_DBG(TAG, "playing %u samples", (unsigned)adpcm::sampleCount(data, len));
   return started;
 }

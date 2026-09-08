@@ -2,8 +2,8 @@
 // (`POST /api/log`, texto plano) y acá queda guardado con la fecha; se lee en
 // el navegador desde /board/log, sin cable ni monitor serie.
 import { Hono } from "hono";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readFile } from "node:fs/promises";
+import { serialize, writeAtomicNow } from "./fsjson";
 
 const FILE = process.env.DEVICE_LOG_FILE ?? "/data/device.log";
 const MAX_BYTES = 512 * 1024;
@@ -24,17 +24,21 @@ deviceLog.get("/", async (c) => {
 deviceLog.post("/", async (c) => {
   const text = await c.req.text();
   if (!text.trim()) return c.json({ ok: false, error: "empty" }, 400);
-  let previous = "";
-  try {
-    previous = await readFile(FILE, "utf8");
-  } catch {}
-  const stamp = `\n===== ${new Date().toISOString()} =====\n`;
-  let out = previous + stamp + text.slice(-MAX_BYTES);
-  if (out.length > MAX_BYTES) out = out.slice(-MAX_BYTES);
-  await mkdir(dirname(FILE), { recursive: true });
-  await writeFile(FILE, out);
+  // Leer y escribir dentro de la misma cola: dos subidas juntas leían las dos
+  // el archivo viejo y la segunda se comía el log de la primera.
+  const size = await serialize(FILE, async () => {
+    let previous = "";
+    try {
+      previous = await readFile(FILE, "utf8");
+    } catch {}
+    const stamp = `\n===== ${new Date().toISOString()} =====\n`;
+    let out = previous + stamp + text.slice(-MAX_BYTES);
+    if (out.length > MAX_BYTES) out = out.slice(-MAX_BYTES);
+    await writeAtomicNow(FILE, out);
+    return out.length;
+  });
   console.log(`device log: +${text.length} bytes`);
-  return c.json({ ok: true, size: out.length });
+  return c.json({ ok: true, size });
 });
 
 // La página en sí no lleva datos: pide el log con el token guardado en el

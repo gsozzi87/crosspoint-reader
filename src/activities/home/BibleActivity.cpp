@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -27,6 +28,7 @@ constexpr const char* TAG = "BIBLE";
 constexpr int ROW_H = 40;
 constexpr int SIDE = 20;
 constexpr unsigned long VOICE_HOLD_MS = 1200;
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 }  // namespace
 
 std::string BibleActivity::cacheDir() const { return std::string("/.crosspoint/bible/") + lang; }
@@ -559,7 +561,9 @@ void BibleActivity::loop() {
       }
       const int book = downloadIndex++;
       if (!bookDownloaded(book) && !downloadBook(book)) {
-        fail(StrId::STR_ASK_FAILED, "libro " + std::to_string(book));
+        // El detalle se pinta en pantalla: el nombre del libro (ya viene en el idioma
+        // del aparato) en vez de un "libro N" en español fijo.
+        fail(StrId::STR_ASK_FAILED, books[book].name);
         break;
       }
       requestUpdate();  // una pasada por libro: la pantalla sigue viva
@@ -755,5 +759,8 @@ void BibleActivity::render(RenderLock&&) {
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
+  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) partialCount = 0;
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

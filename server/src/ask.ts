@@ -26,6 +26,8 @@ import Anthropic from "@anthropic-ai/sdk";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 import { load } from "./store";
 import { chatText, providerLabel, LlmError } from "./llm";
+import { readBody, redactSecrets } from "./net";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const MAX_TEXT = 32_000; // chars; el aparato recorta antes, esto es defensa
 const MAX_PAGE = 8_000;
@@ -63,12 +65,10 @@ function generalPrompt(lang: string, memories: string[]): string {
 }
 
 ask.post("/", async (c) => {
+  // readBody: un cuerpo literal "null" pasaba el catch y reventaba en la
+  // primera propiedad que se leía.
   let body: { book?: string; chapter?: string; text?: string; page?: string; question?: string; lang?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "invalid json" }, 400);
-  }
+  body = await readBody(c);
   const book = (body.book ?? "").toString().slice(0, 200);
   const chapter = (body.chapter ?? "").toString().slice(0, 200);
   const text = (body.text ?? "").toString().slice(0, MAX_TEXT);
@@ -94,14 +94,16 @@ ask.post("/", async (c) => {
     ).trim();
     return c.json({ ok: true, answer, model: await providerLabel() });
   } catch (err) {
+    // El status y el code del LlmError viajan tal cual: "falta la clave" no es
+    // lo mismo que "el proveedor está caído", y antes los dos llegaban como 502.
     if (err instanceof LlmError) {
       console.error("ask llm:", err.message);
-      return c.json({ ok: false, error: err.message }, 502);
+      return c.json({ ok: false, error: err.message, code: err.code }, err.status as ContentfulStatusCode);
     }
-    if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
-    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "falta o no sirve la clave del modelo" }, 500);
-    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `modelo ${err.status}: ${err.message}` }, 502);
+    if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited", code: "rate_limited" }, 429);
+    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "falta o no sirve la clave del modelo", code: "no_key" }, 500);
+    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `modelo ${err.status}: ${redactSecrets(err.message)}`, code: "provider_error" }, 502);
     console.error("ask:", err);
-    return c.json({ ok: false, error: String(err).slice(0, 200) }, 500);
+    return c.json({ ok: false, error: redactSecrets(String(err)).slice(0, 200), code: "internal" }, 500);
   }
 });

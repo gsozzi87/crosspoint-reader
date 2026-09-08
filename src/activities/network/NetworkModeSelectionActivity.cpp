@@ -65,8 +65,12 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   // Content below the GUI.drawHeader band, above the button hints.
-  screen.setContentMarginFromScreen(fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
-                                                static_cast<int16_t>(metrics.buttonHintsHeight), 0});
+  // El margen de abajo lleva verticalSpacing además del alto de los hints (misma
+  // cuenta que SettingsActivity): con el hueco justo, la última fila terminaba
+  // pegada a la barra de botones y parecía tapada por ella.
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), 0,
+                  static_cast<int16_t>(metrics.buttonHintsHeight + metrics.verticalSpacing), 0});
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 
   // rowItems_ was built once in the constructor and is reused here on every
