@@ -8,6 +8,10 @@ Idiomas del producto: español, inglés, francés, alemán, portugués y ruso (c
 va en los yaml de esos idiomas; el aparato manda
 `lang` (`src/voice/Lang.h`) y el servidor escucha, contesta y traduce según ese idioma (`server/src/lang.ts`).
 
+REGLA FIJA: los strings que ve el usuario en el aparato y en la web van en **español neutro**, no rioplatense:
+"elige" y no "elegí", "presiona" y no "apretá", "puedes" y no "podés", "encuentra" y no "encontrá". El voseo es
+solo para hablar con el usuario en el chat, nunca para el producto.
+
 Idioma con el usuario: español rioplatense/mexicano, informal y directo. Respuestas cortas. Él prueba en hardware
 y devuelve correcciones puntuales; no pedir que especifique todo de antemano.
 
