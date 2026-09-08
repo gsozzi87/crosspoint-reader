@@ -24,6 +24,17 @@ class HubStore : public PersistableStore<HubStore> {
     std::string title;
     std::string when;
     time_t dueAt = 0;  // UTC epoch, 0 = no time
+    // Repeticion, tal como la manda el servidor en GET /api/hub:
+    //   repeatText: la frase ya armada y traducida ("De lunes a viernes",
+    //               "Cada 2 semanas"), que es lo que se muestra debajo del titulo;
+    //   repeat:     el codigo con el que se edita ("once", "daily", "weekdays",
+    //               "weekly", "weeks", "monthly", "yearly"), vacio = una sola vez;
+    //   weekday:    0 = lunes .. 6 = domingo, solo con repeat "weekly";
+    //   interval:   cada cuantas semanas, solo con repeat "weeks".
+    std::string repeatText;
+    std::string repeat;
+    int weekday = -1;
+    int interval = 0;
   };
   struct ListItem {
     int id = 0;

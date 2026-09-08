@@ -59,7 +59,11 @@ export const CARD_PX = 320;
 // Lucide dibuja a 24 px con trazo 2; escalado a 320 el trazo quedaría de 27 px y
 // el dibujo sería una mancha. 1,25 da un trazo de ~17 px: grueso, redondo y
 // clarísimo en tinta electrónica, que es justo lo que sirve para un bebé.
-const STROKE = process.env.CARD_STROKE ?? "1.25";
+// Grosor del trazo del dibujo de la tarjeta. Se AGRANDA respecto del 2 que trae
+// Lucide, no se achica: a 320 px en blanco y negro puro (sin grises), un trazo
+// fino se lee lavado y de lejos no se distingue. Comparado renderizando las dos
+// versiones y mirandolas: 1.25 quedaba debil, 2.6 se lee de lejos.
+const STROKE = process.env.CARD_STROKE ?? "2.6";
 // Un gris por debajo de esto cuenta como negro (mismo umbral que gen_icons.py).
 const THRESHOLD = 110;
 
@@ -69,17 +73,18 @@ export type AssetEntry = { id: string; kind: AssetKind; path: string; bytes: num
 // El índice se guarda en el volumen: un reinicio del contenedor no tiene que
 // volver a generar 239 dibujos y 478 clips de voz.
 type Index = { lucide: string; entries: Record<string, AssetEntry> };
+// La marca lleva el grosor: al cambiarlo, las tarjetas viejas se descartan solas.
 const indexFile = (lang: Lang) => `${DIR}/index-${lang}.json`;
 const indexes = new Map<Lang, Index>();
 
 async function loadIndex(lang: Lang): Promise<Index> {
   const have = indexes.get(lang);
   if (have) return have;
-  const idx = await readJsonSafe<Index>(indexFile(lang), { lucide: LUCIDE, entries: {} });
+  const idx = await readJsonSafe<Index>(indexFile(lang), { lucide: `${LUCIDE}/${STROKE}`, entries: {} });
   // Si cambió la versión de Lucide, los dibujos se rehacen (el sha va a cambiar
   // igual, pero así no se sirven archivos viejos con el sha nuevo).
-  if (idx.lucide !== LUCIDE) idx.entries = Object.fromEntries(Object.entries(idx.entries ?? {}).filter(([, e]) => e.kind !== "cards"));
-  idx.lucide = LUCIDE;
+  if (idx.lucide !== `${LUCIDE}/${STROKE}`) idx.entries = Object.fromEntries(Object.entries(idx.entries ?? {}).filter(([, e]) => e.kind !== "cards"));
+  idx.lucide = `${LUCIDE}/${STROKE}`;
   idx.entries ??= {};
   indexes.set(lang, idx);
   return idx;
@@ -198,7 +203,7 @@ async function iconSvg(icon: string): Promise<string> {
 // sharp ya está instalado para las fotos): sin Python, sin rsvg-convert.
 export async function renderCard(card: Card): Promise<Uint8Array> {
   let svg = await iconSvg(card.icon);
-  // El trazo se afina ANTES de escalar (ver STROKE).
+  // El trazo se engrosa ANTES de escalar (ver STROKE).
   svg = svg.replace(/stroke-width\s*=\s*"[^"]*"/g, `stroke-width="${STROKE}"`);
   const { data, info } = await sharp(Buffer.from(svg), { density: 384 })
     .resize(CARD_PX, CARD_PX, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })

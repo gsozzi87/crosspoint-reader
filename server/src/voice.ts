@@ -22,7 +22,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
-import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, memoryLines, rememberFact, DEFAULT_LISTS } from "./store";
+import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, DEFAULT_LISTS, type Repeat } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
@@ -78,7 +78,34 @@ const SCHEMA = {
             type: ["string", "null"],
             description: "Fecha y hora local del recordatorio o vencimiento como YYYY-MM-DDTHH:MM, o YYYY-MM-DD si no dijo hora; null si no tiene.",
           },
-          repeat: { type: "string", enum: ["none", "daily", "weekly", "monthly"] },
+          repeat: {
+            type: "object",
+            additionalProperties: false,
+            required: ["kind", "days", "interval", "until"],
+            description: "Cada cuánto se repite. Si el usuario no dice nada de repetir, kind = none.",
+            properties: {
+              kind: {
+                type: "string",
+                enum: ["none", "daily", "weekdays", "weekly", "monthly", "yearly"],
+                description:
+                  "none = una sola vez. daily = todos los días. weekdays = de lunes a viernes (días hábiles). " +
+                  "weekly = uno o varios días de la semana. monthly = el mismo día de cada mes. yearly = una vez al año.",
+              },
+              days: {
+                type: ["array", "null"],
+                items: { type: "integer" },
+                description: "Solo para weekly: días de la semana, 0=domingo, 1=lunes ... 6=sábado. null si no nombró días.",
+              },
+              interval: {
+                type: ["integer", "null"],
+                description: "Cada cuántos días/semanas/meses/años ('cada dos semanas' = 2). null o 1 si no dijo.",
+              },
+              until: {
+                type: ["string", "null"],
+                description: "Hasta cuándo se repite, YYYY-MM-DD, si el usuario lo dijo ('hasta fin de mes'); null si no.",
+              },
+            },
+          },
           seconds: { type: ["integer", "null"], description: "Duración en segundos para timer; null si no aplica." },
         },
       },
@@ -103,7 +130,13 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
     "OJO con la unidad: `seconds` va SIEMPRE en SEGUNDOS. '20 segundos' → 20 (no 1200). '10 minutos' → 600. " +
     "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repetí en la reply la misma unidad que dijo el usuario.",
-    "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora; repeat daily si dice 'todos los días') y reply corta.",
+    "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
+    "REPETICIONES: 'todos los días' → {kind:daily}. 'todos los días hábiles', 'de lunes a viernes', 'entre semana' →",
+    "{kind:weekdays}. 'los lunes y miércoles', 'cada martes' → {kind:weekly, days:[1,3]} (0=domingo, 1=lunes ... 6=sábado).",
+    "'cada dos semanas' → {kind:weekly, interval:2}; 'un día sí y uno no', 'cada dos días' → {kind:daily, interval:2}.",
+    "'todos los meses', 'el 5 de cada mes' → {kind:monthly}; 'todos los años', cumpleaños y aniversarios → {kind:yearly}.",
+    "'hasta fin de mes', 'hasta el viernes' → until con la fecha absoluta YYYY-MM-DD. Si no dice nada de repetir, kind = none.",
+    "Con una repetición semanal poné en dueAt el PRIMER día que corresponde (el próximo de esos días) con la hora dicha.",
     "'Acordate que', 'tené presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
     "Si está corrigiendo algo que ya sabés de él ('ya no vivo en México', 'ahora trabajo en otro lado'), también es memory:",
     "escribí el dato NUEVO completo en text y el servidor pisa el viejo.",
@@ -176,7 +209,16 @@ async function parseTimeReply(text: string, lang: Lang, baseDate = ""): Promise<
   }
 }
 
-type Action = { kind: string; text: string; list: string | null; dueAt: string | null; repeat: "none" | "daily" | "weekly" | "monthly"; seconds: number | null };
+type RepeatAction = { kind?: string; days?: number[] | null; interval?: number | null; until?: string | null };
+type Action = { kind: string; text: string; list: string | null; dueAt: string | null; repeat: RepeatAction | string | null; seconds: number | null };
+
+// Lo que devuelve el modelo -> Repeat del store. El `until` viene como fecha
+// ("hasta fin de mes") y el store lo guarda en epoch, así que se convierte acá.
+export function repeatFromAction(raw: Action["repeat"]): Repeat {
+  if (!raw || typeof raw === "string") return normalizeRepeat(raw);
+  const until = typeof raw.until === "string" && /^\d{4}-\d{2}-\d{2}$/.test(raw.until) ? localToEpoch(raw.until + "T23:59") : 0;
+  return normalizeRepeat({ kind: raw.kind, days: raw.days ?? undefined, interval: raw.interval ?? undefined, until: until || undefined });
+}
 type Parsed = { intent: string; reply: string; needsWeb: boolean; actions: Action[] };
 
 async function classify(text: string, lang: Lang): Promise<Parsed> {
@@ -235,7 +277,7 @@ async function answerWithSearch(question: string, lang: Lang): Promise<{ screen:
 
 async function execute(parsed: Parsed, spoken: string, lang: Lang) {
   const store = await load();
-  const saved: { kind: string; list?: string; title: string; when?: string }[] = [];
+  const saved: { kind: string; list?: string; title: string; when?: string; repeatText?: string }[] = [];
   const stamp = new Date().toISOString();
   for (const a of parsed.actions ?? []) {
     const title = (a.text ?? "").trim().slice(0, 200);
@@ -243,8 +285,11 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
     switch (a.kind) {
       case "reminder": {
         const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}/.test(a.dueAt) ? a.dueAt : null;
-        store.reminders.push({ id: nextId(store), title, dueAt, repeat: normalizeRepeat(a.repeat), done: false, createdAt: stamp });
-        saved.push({ kind: "reminder", title, when: whenLabel(dueAt, lang) });
+        const repeat = repeatFromAction(a.repeat);
+        // "Los martes y jueves" dicho un lunes arranca el martes.
+        const aligned = dueAt ? alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10) : null;
+        store.reminders.push({ id: nextId(store), title, dueAt: aligned, repeat, done: false, createdAt: stamp });
+        saved.push({ kind: "reminder", title, when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
         break;
       }
       case "task": {
@@ -280,8 +325,10 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
         // deep sleep y suena aunque esté dormido.
         const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}T/.test(a.dueAt) ? a.dueAt : null;
         if (!dueAt) break;
-        store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt, repeat: normalizeRepeat(a.repeat), done: false, createdAt: stamp });
-        saved.push({ kind: "reminder", title: title || "Alarma", when: whenLabel(dueAt, lang) });
+        const repeat = repeatFromAction(a.repeat);
+        const aligned = alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10);
+        store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt: aligned, repeat, done: false, createdAt: stamp });
+        saved.push({ kind: "reminder", title: title || "Alarma", when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
         break;
       }
       default:
@@ -302,6 +349,12 @@ voice.post("/", async (c) => {
   // Día que ya había dicho el usuario en el primer turno ("mañana"), si lo dijo.
   const pendingDateRaw = (c.req.query("pendingDate") ?? "").slice(0, 10);
   const pendingDate = /^\d{4}-\d{2}-\d{2}$/.test(pendingDateRaw) ? pendingDateRaw : "";
+  // Repetición que ya se había entendido en el primer turno, como JSON.
+  let pendingRepeat = NO_REPEAT;
+  try {
+    const raw = c.req.query("pendingRepeat");
+    if (raw) pendingRepeat = normalizeRepeat(JSON.parse(raw));
+  } catch { /* lo que no parsea es "sin repetición" */ }
   const t0 = Date.now();
   let text: string;
   try {
@@ -329,13 +382,15 @@ voice.post("/", async (c) => {
     if (pending) {
       const dueAt = await parseTimeReply(text, lang, pendingDate);
       const store = await load();
-      store.reminders.push({ id: nextId(store), title: pending, dueAt, repeat: "none", done: false, createdAt: new Date().toISOString() });
+      const aligned = dueAt ? alignToRepeat(dueAt.slice(0, 10), pendingRepeat) + dueAt.slice(10) : null;
+      store.reminders.push({ id: nextId(store), title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });
       await save(store);
-      const label = whenLabel(dueAt, lang);
-      const reply = dueAt ? `${pending} — ${label}` : pending;
+      const label = whenLabel(aligned, lang);
+      const repText = repeatText(pendingRepeat, aligned, lang);
+      const reply = aligned ? `${pending} — ${label}` : pending;
       const audio = speak !== "none" ? await synthesize(reply, lang, 8) : null;
-      console.log(`voice: hora de "${pending}" -> ${dueAt}`);
-      return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", title: pending, when: label }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
+      console.log(`voice: hora de "${pending}" -> ${aligned} (${repText})`);
+      return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", title: pending, when: label, repeatText: repText }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
     }
     const parsed = await classify(text, lang);
     // Recordatorio sin hora (con día o sin día): se pregunta en vez de inventarla,
@@ -348,9 +403,14 @@ voice.post("/", async (c) => {
       const reply = ASK_TIME[lang];
       const audio = speak !== "none" ? await synthesize(reply, lang, 6) : null;
       const day = needsTime.dueAt ? needsTime.dueAt.slice(0, 10) : "";
+      // La repetición viaja en la respuesta para que el aparato la devuelva en
+      // el segundo turno (?pendingRepeat=): si no, "recordame todos los días
+      // sacar la basura" perdía el "todos los días" al preguntar la hora.
+      const askRepeat = repeatFromAction(needsTime.repeat);
       console.log(`voice: falta la hora de "${needsTime.text}"${day ? ` (${day})` : ""}`);
       return framed(
         { ok: true, text, intent: "reminder", reply, askTime: needsTime.text, askDate: day, saved: [], timerSeconds: 0,
+          askRepeat, askRepeatText: repeatText(askRepeat, needsTime.dueAt, lang),
           audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } },
         audio,
       );
@@ -402,7 +462,21 @@ voice.post("/", async (c) => {
 export async function hubSlice(lang: Lang) {
   const store = await load();
   return {
-    reminders: pendingReminders(store).slice(0, 20).map((r) => ({ id: r.id, title: r.title, when: whenLabel(r.dueAt, lang), dueAt: localToEpoch(r.dueAt) })),
+    // La repetición va de dos formas: `repeat`/`weekday`/`interval` es lo que
+    // lee y edita el firmware (HubStore::Reminder), `repeatSpec` es el objeto
+    // completo (lo usa /board, que sí puede con varios días), y `repeatText` es
+    // la frase ya traducida que se muestra debajo del título — es lo que
+    // contesta "¿me despierta mañana o de lunes a viernes?" sin interpretar nada.
+    reminders: pendingReminders(store).slice(0, 20).map((r) => ({
+      id: r.id,
+      title: r.title,
+      when: whenLabel(r.dueAt, lang),
+      dueAt: localToEpoch(r.dueAt),
+      at: r.dueAt,
+      ...repeatToWire(r.repeat, r.dueAt),
+      repeatSpec: normalizeRepeat(r.repeat),
+      repeatText: repeatText(r.repeat, r.dueAt, lang),
+    })),
     lists: Object.entries(store.lists).map(([name, items]) => ({
       name,
       items: items.filter((i) => !i.done).slice(0, 30).map((i) => ({ id: i.id, text: i.text })),

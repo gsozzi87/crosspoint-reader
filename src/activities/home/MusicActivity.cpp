@@ -17,7 +17,12 @@
 
 namespace {
 constexpr const char* TAG = "MUSIC";
-constexpr const char* MUSIC_ROOT = "/Music";
+// El usuario puede haber creado la carpeta con cualquier mayuscula: en la SD de
+// este aparato "/music" y "/Music" NO son lo mismo. Se prueban las variantes
+// habituales y se usa la que exista (reportado en 1.5.41: tenia "/music" y el
+// aparato decia "no hay MP3").
+constexpr const char* MUSIC_ROOT_CANDIDATES[] = {"/Music", "/music", "/MUSIC", "/Musica", "/musica"};
+std::string musicRoot;  // la que se encontro; vacia = todavia no se busco
 constexpr int MAX_TRACKS = 200;
 constexpr int COUNTER_TICK_S = 5;              // refresco parcial del contador
 constexpr int PARTIALS_BEFORE_CLEAN = 12;      // regla del panel: refresco limpio cada 10-15 parciales
@@ -85,9 +90,26 @@ int MusicActivity::listCount() const {
   return level == FOLDERS ? static_cast<int>(folders.size()) : static_cast<int>(tracks.size());
 }
 
+// Devuelve la carpeta de musica que exista de verdad en la tarjeta.
+static const std::string& resolveMusicRoot() {
+  if (!musicRoot.empty()) return musicRoot;
+  for (const char* candidate : MUSIC_ROOT_CANDIDATES) {
+    auto dir = Storage.open(candidate);
+    if (dir && dir.isDirectory()) {
+      musicRoot = candidate;
+      LOG_DBG("MUSIC", "carpeta de musica: %s", candidate);
+      return musicRoot;
+    }
+  }
+  musicRoot = MUSIC_ROOT_CANDIDATES[0];  // no hay ninguna: se muestra la sugerida
+  return musicRoot;
+}
+
 void MusicActivity::scanFolders() {
   folders.clear();
-  auto root = Storage.open(MUSIC_ROOT);
+  musicRoot.clear();  // volver a buscarla: pueden haber puesto la tarjeta recien
+  const std::string& rootPath = resolveMusicRoot();
+  auto root = Storage.open(rootPath.c_str());
   if (!root || !root.isDirectory()) return;
   root.rewindDirectory();
   char name[128];
@@ -95,11 +117,11 @@ void MusicActivity::scanFolders() {
   for (auto entry = root.openNextFile(); entry; entry = root.openNextFile()) {
     entry.getName(name, sizeof(name));
     if (name[0] == '.') continue;
-    if (entry.isDirectory()) folders.push_back(std::string(MUSIC_ROOT) + "/" + name);
+    if (entry.isDirectory()) folders.push_back(rootPath + "/" + name);
     else if (endsWithMp3(name)) rootHasMp3 = true;
   }
   std::sort(folders.begin(), folders.end());
-  if (rootHasMp3) folders.insert(folders.begin(), MUSIC_ROOT);
+  if (rootHasMp3) folders.insert(folders.begin(), rootPath);
 }
 
 void MusicActivity::openFolder(const int index) {
@@ -107,7 +129,7 @@ void MusicActivity::openFolder(const int index) {
   tracks.clear();
   trackNames.clear();
   const std::string& path = folders[index];
-  folderName = path == MUSIC_ROOT ? std::string("/") : path.substr(path.find_last_of('/') + 1);
+  folderName = path == resolveMusicRoot() ? std::string("/") : path.substr(path.find_last_of('/') + 1);
   auto dir = Storage.open(path.c_str());
   if (!dir || !dir.isDirectory()) return;
   dir.rewindDirectory();
@@ -536,7 +558,7 @@ void MusicActivity::drawList(const int x, const int y, const int w, const int h)
     std::string label;
     if (inFolders) {
       const std::string& p = folders[i];
-      label = p == MUSIC_ROOT ? std::string("/") : p.substr(p.find_last_of('/') + 1);
+      label = p == resolveMusicRoot() ? std::string("/") : p.substr(p.find_last_of('/') + 1);
     } else {
       label = std::to_string(i + 1) + ". " + trackNames[i];
     }
