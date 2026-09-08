@@ -5,8 +5,7 @@
 // Las claves se guardan acá y NO se devuelven nunca por la API: el board solo
 // ve si hay clave puesta o no. Las variables de entorno siguen sirviendo como
 // valor por defecto (y como red de seguridad si el archivo se pierde).
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 
 const FILE = process.env.CONFIG_FILE ?? "/data/config.json";
 
@@ -73,31 +72,38 @@ function defaults(): Config {
   };
 }
 
-let cache: Config | null = null;
-
-export async function config(): Promise<Config> {
-  if (cache) return cache;
+function merge(saved: Partial<Config> | null): Config {
   const base = defaults();
-  try {
-    const saved = JSON.parse(await readFile(FILE, "utf8")) as Partial<Config>;
-    cache = {
-      llm: { ...base.llm, ...(saved.llm ?? {}) },
-      stt: { ...base.stt, ...(saved.stt ?? {}) },
-      deviceToken: saved.deviceToken ?? "",
-    };
-    // Una clave vacía en el archivo no pisa la del entorno.
-    if (!cache.llm.key) cache.llm.key = base.llm.key;
-    if (!cache.stt.key) cache.stt.key = base.stt.key;
-  } catch {
-    cache = base;
-  }
-  return cache;
+  const obj = <T>(v: unknown): Partial<T> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Partial<T>) : {});
+  const out: Config = {
+    llm: { ...base.llm, ...obj<LlmConfig>(saved?.llm) },
+    stt: { ...base.stt, ...obj<SttConfig>(saved?.stt) },
+    deviceToken: typeof saved?.deviceToken === "string" ? saved.deviceToken : "",
+  };
+  // Una clave vacía en el archivo no pisa la del entorno.
+  if (!out.llm.key) out.llm.key = base.llm.key;
+  if (!out.stt.key) out.stt.key = base.stt.key;
+  return out;
+}
+
+let cache: Config | null = null;
+let loading: Promise<Config> | null = null;
+
+export function config(): Promise<Config> {
+  if (cache) return Promise.resolve(cache);
+  // Igual que el store: se cachea la promesa, así dos pedidos juntos no leen el
+  // archivo dos veces ni se quedan con dos copias distintas de las claves.
+  loading ??= readJsonSafe<Partial<Config> | null>(FILE, null).then((saved) => {
+    cache = merge(saved);
+    loading = null;
+    return cache;
+  });
+  return loading;
 }
 
 export async function saveConfig(next: Config): Promise<void> {
   cache = next;
-  await mkdir(dirname(FILE), { recursive: true });
-  await writeFile(FILE, JSON.stringify(next, null, 2));
+  await writeJsonAtomic(FILE, next);
 }
 
 // Lo que puede ver la web: todo menos las claves (solo si están puestas).

@@ -6,9 +6,11 @@
 //   GET /api/rss?lang=xx                  -> { ok, feeds: [{ id, name, items: [{ id, title, when, link }] }] }
 //   GET /api/rss/article?feed=id&item=id  -> { ok, title, text }   (o la descripción del feed si la página no da texto)
 import { Hono } from "hono";
-import { load, save, nextId } from "./store";
+import { load } from "./store";
+import { safeFetch, textCapped } from "./net";
 
 const TTL_MS = 30 * 60 * 1000;
+const MAX_DOWNLOAD = 2_000_000;  // un feed o una nota no pasan de esto; el resto se corta
 const MAX_ITEMS = 15;
 const MAX_TEXT = 30_000;
 
@@ -75,18 +77,24 @@ function parseFeed(xml: string): Item[] {
   return items;
 }
 
-async function fetchFeed(id: number, url: string): Promise<Item[]> {
+// Devuelve también el error: un feed caído daba lista vacía con ok:true y en el
+// aparato parecía que el diario no publicó nada.
+async function fetchFeed(id: number, url: string): Promise<{ items: Item[]; error?: string }> {
   const c = cache.get(id);
-  if (c && Date.now() - c.at < TTL_MS) return c.items;
+  if (c && Date.now() - c.at < TTL_MS) return { items: c.items };
   try {
-    const res = await fetch(url, { headers: { "User-Agent": "ws397-hub/1.0", Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml" } });
+    const res = await safeFetch(
+      url,
+      { headers: { "User-Agent": "ws397-hub/1.0", Accept: "application/rss+xml, application/atom+xml, application/xml, text/xml" } },
+      { timeoutMs: 10_000 },
+    );
     if (!res.ok) throw new Error(`feed ${res.status}`);
-    const items = parseFeed(await res.text());
+    const items = parseFeed(await textCapped(res, MAX_DOWNLOAD));
     cache.set(id, { at: Date.now(), items });
-    return items;
+    return { items };
   } catch (err) {
     console.error("rss:", url.slice(0, 50), err);
-    return c?.items ?? [];
+    return { items: c?.items ?? [], error: String(err instanceof Error ? err.message : err).slice(0, 120) };
   }
 }
 
@@ -121,11 +129,19 @@ export const rss = new Hono();
 rss.get("/", async (c) => {
   const store = await load();
   const feeds = store.feeds ?? [];
-  const out = [];
-  for (const f of feeds) {
-    const items = await fetchFeed(f.id, f.url);
-    out.push({ id: f.id, name: f.name, items: items.map(({ id, title, when, link }) => ({ id, title, when, link })) });
-  }
+  // En serie, cinco feeds lentos eran cinco esperas sumadas y el aparato se
+  // quedaba mirando "Cargando".
+  const results = await Promise.allSettled(feeds.map((f) => fetchFeed(f.id, f.url)));
+  const out = feeds.map((f, i) => {
+    const r = results[i];
+    const got = r.status === "fulfilled" ? r.value : { items: [] as Item[], error: String(r.reason).slice(0, 120) };
+    return {
+      id: f.id,
+      name: f.name,
+      error: got.error,
+      items: got.items.map(({ id, title, when, link }) => ({ id, title, when, link })),
+    };
+  });
   return c.json({ ok: true, feeds: out });
 });
 
@@ -135,16 +151,22 @@ rss.get("/article", async (c) => {
   const store = await load();
   const feed = (store.feeds ?? []).find((f) => f.id === feedId);
   if (!feed) return c.json({ ok: false, error: "unknown feed" }, 404);
-  const items = await fetchFeed(feed.id, feed.url);
+  const { items } = await fetchFeed(feed.id, feed.url);
   const item = items.find((i) => i.id === itemId);
   if (!item) return c.json({ ok: false, error: "unknown item" }, 404);
   let text = "";
   let title = item.title;
   if (item.link) {
     try {
-      const res = await fetch(item.link, { headers: { "User-Agent": "Mozilla/5.0 (compatible; ws397-hub/1.0)", Accept: "text/html" }, redirect: "follow" });
+      // Redirecciones a mano (safeFetch): un link público puede rebotar a la
+      // red interna de Railway y con redirect:"follow" el fetch va igual.
+      const res = await safeFetch(
+        item.link,
+        { headers: { "User-Agent": "Mozilla/5.0 (compatible; ws397-hub/1.0)", Accept: "text/html" } },
+        { timeoutMs: 12_000, maxHops: 3 },
+      );
       if (res.ok) {
-        const a = extractArticle(await res.text());
+        const a = extractArticle(await textCapped(res, MAX_DOWNLOAD));
         text = a.text;
         if (a.title && a.title.length > 10) title = a.title;
       }

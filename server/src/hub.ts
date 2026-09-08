@@ -27,8 +27,8 @@
 // (volumen de Railway) con la misma forma que la respuesta; la Fase 2 los
 // reemplaza por las tablas de verdad. Si el archivo no existe, van vacíos.
 import { Hono } from "hono";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readJsonSafe, writeJsonAtomic } from "./fsjson";
+import { readBody } from "./net";
 import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 import { VOICES } from "./tts";
@@ -63,19 +63,33 @@ let forecastCache: { at: number; lang: Lang; value: object } | null = null;
 // Ojo: el "no hay lugar" NO se cachea. Si se cacheara, un proceso que arrancó
 // antes de que se guardara el lugar no volvería a leer el archivo nunca más y el
 // clima quedaría vacío para siempre aunque el lugar ya esté cargado.
+// Un archivo a medias (o de otra versión) no puede dar un lugar con lat/lon
+// NaN: con eso Open-Meteo contesta 400 y el clima queda roto sin explicación.
+function validPlace(raw: unknown): Place | null {
+  const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, any>;
+  const lat = Number(r.lat), lon = Number(r.lon);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return {
+    name: String(r.name ?? "").slice(0, 80),
+    label: String(r.label ?? "").slice(0, 160),
+    lat,
+    lon,
+    timezone: String(r.timezone || TZ).slice(0, 64),
+  };
+}
+
 async function place(): Promise<Place | null> {
   if (placeCache) return placeCache;
-  try {
-    placeCache = JSON.parse(await readFile(SETTINGS_FILE, "utf8")) as Place;
-    return placeCache;
-  } catch {
-    return LAT && LON ? { name: "", label: "", lat: Number(LAT), lon: Number(LON), timezone: TZ } : null;
-  }
+  const fromEnv = LAT && LON ? validPlace({ lat: LAT, lon: LON, timezone: TZ }) : null;
+  const saved = validPlace(await readJsonSafe<unknown>(SETTINGS_FILE, null));
+  if (!saved) return fromEnv;
+  placeCache = saved;
+  return placeCache;
 }
 
 async function savePlace(p: Place): Promise<void> {
-  await mkdir(dirname(SETTINGS_FILE), { recursive: true });
-  await writeFile(SETTINGS_FILE, JSON.stringify(p, null, 2));
+  await writeJsonAtomic(SETTINGS_FILE, p);
   placeCache = p;
   weatherCache = null;
   forecastCache = null;  // el pronóstico cacheado era del lugar viejo
@@ -151,11 +165,17 @@ type HubData = {
 };
 
 async function data(): Promise<HubData> {
-  try {
-    return JSON.parse(await readFile(DATA_FILE, "utf8")) as HubData;
-  } catch {
-    return {};
-  }
+  const raw = await readJsonSafe<unknown>(DATA_FILE, {});
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, any>;
+  // Lo que no sea array se ignora: este archivo se edita a mano y un campo
+  // suelto no tiene que tirar abajo la sincronización entera del aparato.
+  const arr = <T>(v: unknown): T[] | undefined => (Array.isArray(v) ? (v as T[]) : undefined);
+  return {
+    reminders: arr(r.reminders),
+    events: arr(r.events),
+    messages: arr(r.messages),
+    quote: typeof r.quote === "string" ? r.quote : undefined,
+  };
 }
 
 function quoteOfTheDay(lang: Lang): string {
@@ -199,12 +219,9 @@ hub.get("/location/search", async (c) => {
 });
 
 hub.post("/location", async (c) => {
-  let body: Partial<Place>;
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "invalid json" }, 400);
-  }
+  // readBody y no c.req.json(): un cuerpo literal "null" pasaba el catch y
+  // reventaba en la primera propiedad que se leía.
+  const body: Partial<Place> = await readBody(c);
   const lat = Number(body.lat), lon = Number(body.lon);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return c.json({ ok: false, error: "lat/lon required" }, 400);
   const p: Place = {
@@ -214,7 +231,13 @@ hub.post("/location", async (c) => {
     lon,
     timezone: (body.timezone ?? TZ).toString().slice(0, 64),
   };
-  await savePlace(p);
+  try {
+    await savePlace(p);
+  } catch (err) {
+    // Sin volumen montado esto tiraba un 500 pelado y el aparato decía "error".
+    console.error("hub place:", err);
+    return c.json({ ok: false, error: "no se pudo guardar el lugar", code: "storage" }, 500);
+  }
   console.log("hub place:", p.label || `${lat},${lon}`);
   // Se consulta el clima ahí mismo: así /board muestra enseguida si el lugar
   // nuevo anda, sin esperar a que el aparato sincronice.
@@ -330,12 +353,10 @@ hub.get("/", async (c) => {
 //   { kind: "item", id, action: "move", list } | { kind: "item", id, action: "date", dueDate: "YYYY-MM-DD" | null }
 //   { kind: "item", id, action: "delete" } | { kind: "note", id, action: "delete" }
 hub.post("/edit", async (c) => {
+  // readBody: un cuerpo literal "null" pasaba el catch y reventaba en la
+  // primera propiedad que se leía.
   let body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "invalid json" }, 400);
-  }
+  body = await readBody(c);
   if (!Number.isFinite(Number(body.id))) return c.json({ ok: false, error: "id required" }, 400);
   return c.json({ ok: true, found: await editEntry(body) });
 });
@@ -343,12 +364,10 @@ hub.post("/edit", async (c) => {
 // El aparato tilda un recordatorio o un ítem de lista (OK en la pantalla de
 // Recordatorios). Llega también desde la cola offline, por eso es idempotente.
 hub.post("/done", async (c) => {
+  // readBody: un cuerpo literal "null" pasaba el catch y reventaba en la
+  // primera propiedad que se leía.
   let body: { kind?: string; id?: number; snooze?: number };
-  try {
-    body = await c.req.json();
-  } catch {
-    return c.json({ ok: false, error: "invalid json" }, 400);
-  }
+  body = await readBody(c);
   const id = Number(body.id);
   if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item" && body.kind !== "message")) {
     return c.json({ ok: false, error: "kind (reminder|item|message) and id required" }, 400);

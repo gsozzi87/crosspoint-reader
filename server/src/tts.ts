@@ -22,6 +22,9 @@ const OUT_DIR = process.env.PIPER_OUT ?? "/tmp/piper-out";
 const ENABLED = process.env.TTS_ENABLED !== "0";
 export const TARGET_RATE = 16000;
 const MAX_CHARS = 400;
+const PIPER_TIMEOUT_MS = 60_000;
+// Tope duro de lo que se acepta decodificar: dos minutos de audio.
+const MAX_DECODE_SAMPLES = TARGET_RATE * 120;
 
 export const VOICES: Record<Lang, string> = {
   es: "es_MX-claude-high",  // femenina, español neutro latino
@@ -53,6 +56,9 @@ function worker(lang: Lang): Worker {
     stdio: ["pipe", "pipe", "ignore"],
   });
   const w: Worker = { proc, queue: [], buffer: "" };
+  // Sin este handler, un Piper muerto convierte el write en un EPIPE que no
+  // atrapa nadie y se lleva puesto el proceso entero.
+  proc.stdin!.on("error", (err) => console.error("tts stdin:", err));
   proc.stdout!.setEncoding("utf8");
   proc.stdout!.on("data", (chunk: string) => {
     w.buffer += chunk;
@@ -79,8 +85,27 @@ async function piperWav(text: string, lang: Lang): Promise<Buffer | null> {
   await mkdir(OUT_DIR, { recursive: true });
   const w = worker(lang);
   const path = await new Promise<string>((resolve) => {
-    w.queue.push(resolve);
-    w.proc.stdin!.write(JSON.stringify({ text }) + "\n");
+    let done = false;
+    const finish = (line: string) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(line);
+    };
+    // Piper colgado dejaba el pedido esperando para siempre (y con él la voz
+    // del aparato): se lo mata y el worker se rearma en la frase siguiente.
+    const timer = setTimeout(() => {
+      console.error(`tts: piper ${lang} no contestó en ${PIPER_TIMEOUT_MS} ms, lo reinicio`);
+      w.queue = w.queue.filter((r) => r !== finish);
+      w.proc.kill("SIGKILL");
+      finish("");
+    }, PIPER_TIMEOUT_MS);
+    w.queue.push(finish);
+    try {
+      w.proc.stdin!.write(JSON.stringify({ text }) + "\n", (err) => { if (err) finish(""); });
+    } catch {
+      finish("");
+    }
   });
   if (!path) return null;
   try {
@@ -174,7 +199,12 @@ export function encodeAdpcm(pcm: Int16Array): Uint8Array {
 
 // Para probar el codec del lado del servidor (mismo algoritmo que Adpcm.cpp del firmware).
 export function decodeAdpcm(data: Uint8Array): Int16Array {
-  const samples = new DataView(data.buffer, data.byteOffset).getUint32(4, true);
+  if (data.byteLength < 8) return new Int16Array(0);
+  // El largo lo dice la cabecera, que la manda el cliente: un cuerpo de 12
+  // bytes pedía 1,8 GB y volteaba el contenedor. Manda lo que de verdad entra
+  // en el payload (dos muestras por byte), con un tope absoluto arriba.
+  const declared = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(4, true);
+  const samples = Math.min(declared, (data.byteLength - 8) * 2, MAX_DECODE_SAMPLES);
   const out = new Int16Array(samples);
   let predictor = 0, index = 0, step = STEP_TABLE[0];
   for (let i = 0; i < samples; i++) {

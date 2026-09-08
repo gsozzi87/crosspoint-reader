@@ -28,10 +28,16 @@ bool AlertBeep::start(const uint8_t volume) {
     pcm[i] = on ? static_cast<int16_t>(12000 * std::sin(2 * M_PI * 880 * t)) : 0;
   }
   wav::writeHeader(wav, RATE, samples * sizeof(int16_t));
-  if (!audio.begin()) return false;
+  // Todo camino de error suelta el patrón (~51 KB de PSRAM) y el AudioManager:
+  // antes quedaban vivos hasta el próximo stop() que nadie iba a llamar.
+  if (!audio.begin()) {
+    stop();
+    return false;
+  }
   const int stored = HUB_STORE.musicVolume;
   audio.setVolume(volume ? volume : static_cast<uint8_t>(stored < 0 ? 0 : stored > 100 ? 100 : stored));
   playing = audio.playBuffer(wav, bytes, true);
+  if (!playing) stop();
   return playing;
 }
 

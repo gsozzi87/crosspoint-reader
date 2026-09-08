@@ -14,8 +14,10 @@
 //        -> { ok, kind: "ref", book, chapter, verse } | { ok, kind: "search", results: [{book, name, chapter, verse, text}] }
 //        Sin LLM: parser de referencias con los nombres del idioma y búsqueda de texto normalizado.
 import { Hono } from "hono";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { writeTextAtomic } from "./fsjson";
+import { textCapped } from "./net";
 import { normalizeLang, type Lang } from "./lang";
 import { BOOK_NAMES } from "./bibleNames";
 
@@ -34,27 +36,42 @@ async function bible(lang: Lang): Promise<Book[] | null> {
   if (have) return have;
   const file = `${SOURCES[lang]}.json`;
   let raw: string | null = null;
+  let from: string | null = null;
   for (const p of [`${DIR}/${file}`, `${CACHE_DIR}/${file}`]) {
     if (existsSync(p)) {
-      raw = await readFile(p, "utf8");
+      try {
+        raw = await readFile(p, "utf8");
+        from = p;
+      } catch (err) {
+        console.error("bible:", p, err);
+      }
       break;
     }
   }
   if (raw === null) {
     try {
-      const res = await fetch(`${RAW}/${file}`);
+      const res = await fetch(`${RAW}/${file}`, { signal: AbortSignal.timeout(60_000) });
       if (!res.ok) throw new Error(`bible ${res.status}`);
-      raw = await res.text();
-      await mkdir(CACHE_DIR, { recursive: true });
-      await writeFile(`${CACHE_DIR}/${file}`, raw);
+      raw = await textCapped(res, 8_000_000);
+      // Sin .tmp + rename, una descarga cortada dejaba media Biblia en la caché.
+      await writeTextAtomic(`${CACHE_DIR}/${file}`, raw);
     } catch (err) {
       console.error("bible:", err);
       return null;
     }
   }
-  const books = JSON.parse(raw.replace(/^﻿/, "")) as Book[];
-  loaded.set(lang, books);
-  return books;
+  // El parse estaba afuera del try: con el archivo truncado, existsSync seguía
+  // dando true y toda petición de Biblia tiraba 500 para siempre.
+  try {
+    const books = JSON.parse(raw.replace(/^﻿/, "")) as Book[];
+    if (!Array.isArray(books) || !books.length) throw new Error("formato inesperado");
+    loaded.set(lang, books);
+    return books;
+  } catch (err) {
+    console.error("bible: json roto en", from ?? file, err);
+    if (from && from.startsWith(CACHE_DIR)) await rename(from, `${from}.corrupt-${Date.now()}`).catch(() => {});
+    return null;
+  }
 }
 
 function norm(s: string): string {

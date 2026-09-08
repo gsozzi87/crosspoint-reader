@@ -499,6 +499,15 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            [](const SettingInfo& s) { return s.nameId == StrId::STR_SHOW_READER_MENU; }),
             v.end());
   }
+  // En la ws397 OK es confirm + power compartidos: mantenerlo apaga el aparato, así que
+  // la acción de "OK largo" no se dispara nunca (EpubReaderActivity la deja apagada) y
+  // esta placa tampoco tiene Home key para la ruta alternativa. Se esconde el ajuste en
+  // vez de ofrecer algo que no hace nada.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
+    v.erase(std::remove_if(v.begin(), v.end(),
+                           [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
+            v.end());
+  }
   if (BoardConfig::hasTouch()) {
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) {

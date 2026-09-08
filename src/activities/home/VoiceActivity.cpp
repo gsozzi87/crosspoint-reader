@@ -101,6 +101,14 @@ void VoiceActivity::performRequest() {
   WiFi.setSleep(false);
   const uint8_t* body = recorder.adpcm();
   const size_t bytes = recorder.adpcmBytes();
+  // adpcm() devuelve nullptr si no pudo reservar la PSRAM: sin esto se posteaba
+  // un puntero nulo con el tamaño calculado.
+  if (!body || bytes == 0) {
+    WiFi.setSleep(true);
+    recorder.release();
+    fail(StrId::STR_AUDIO_NO_MEMORY);
+    return;
+  }
   LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)bytes);
   std::string path = std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam();
   if (!pendingTitle.empty()) path += "&pending=" + urlEncode(pendingTitle);
@@ -128,7 +136,7 @@ void VoiceActivity::performRequest() {
       framed ? deserializeJson(doc, raw.data() + 4, jsonLen) : deserializeJson(doc, raw);
   if (jsonErr != DeserializationError::Ok) {
     WiFi.setSleep(true);
-    fail(StrId::STR_ASK_FAILED, "bad json");
+    fail(StrId::STR_ASK_FAILED, tr(STR_VOICE_BAD_REPLY));
     return;
   }
   heard = doc["text"] | "";
@@ -143,7 +151,7 @@ void VoiceActivity::performRequest() {
   }
   if (reply.empty()) {
     WiFi.setSleep(true);
-    fail(StrId::STR_ASK_FAILED, doc["error"] | "empty reply");
+    fail(StrId::STR_ASK_FAILED, doc["error"] | tr(STR_VOICE_EMPTY_REPLY));
     return;
   }
   if (askTime[0]) {

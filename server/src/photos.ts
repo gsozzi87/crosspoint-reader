@@ -9,8 +9,10 @@
 //   GET  /api/photos/file?id=...     -> image/bmp
 //   POST /api/photos/delete {id}     -> { ok }
 import { Hono } from "hono";
-import { mkdir, readdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import sharp from "sharp";
+import { writeBytesAtomic, writeTextAtomic } from "./fsjson";
+import { readBody } from "./net";
 
 const DIR = process.env.PHOTOS_DIR ?? "/data/photos";
 const MAX_BYTES = 400_000;
@@ -111,8 +113,10 @@ export async function toDeviceBmp(input: Uint8Array): Promise<Uint8Array> {
 export async function savePhoto(name: string, bytes: Uint8Array): Promise<string> {
   await mkdir(DIR, { recursive: true });
   const id = Date.now().toString(36);
-  await writeFile(`${DIR}/${id}.bmp`, bytes);
-  await writeFile(`${DIR}/${id}.txt`, name.slice(0, 80));
+  // .tmp + rename: si se corta a la mitad, el aparato bajaba un BMP truncado y
+  // dibujaba basura.
+  await writeBytesAtomic(`${DIR}/${id}.bmp`, bytes);
+  await writeTextAtomic(`${DIR}/${id}.txt`, name.slice(0, 80));
   // Keep the album bounded: drop the oldest beyond MAX_PHOTOS.
   const all = await index();
   for (const old of all.slice(MAX_PHOTOS)) {
@@ -138,7 +142,7 @@ photos.get("/file", async (c) => {
 });
 
 photos.post("/delete", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const id = (b.id ?? "").toString().replace(/[^a-z0-9]/gi, "");
   if (!id) return c.json({ ok: false, error: "id required" }, 400);
   await unlink(`${DIR}/${id}.bmp`).catch(() => {});

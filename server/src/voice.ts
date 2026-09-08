@@ -22,10 +22,12 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav } from "./transcribe";
-import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, DEFAULT_LISTS } from "./store";
+import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, LlmError } from "./llm";
+import { redactSecrets } from "./net";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
 
@@ -173,10 +175,17 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
   const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ });
   const lists = Array.from(new Set([...DEFAULT_LISTS, ...Object.keys(store.lists)]));
   const memories = (store.memories ?? []).slice(-40).map((m) => m.text);
-  return chatJson<Parsed>(
+  const raw = await chatJson<Partial<Parsed>>(
     { system: systemPrompt(local, weekday, lists, lang, memories), user: text, maxTokens: 1024 },
     SCHEMA,
   );
+  // El esquema no obliga a nadie: un modelo compatible puede volver sin reply
+  // (y `parsed.reply.length` era un 500) o con actions que no son array.
+  return {
+    intent: typeof raw.intent === "string" ? raw.intent : "question",
+    reply: typeof raw.reply === "string" ? raw.reply : "",
+    actions: Array.isArray(raw.actions) ? raw.actions : [],
+  };
 }
 
 async function execute(parsed: Parsed, spoken: string, lang: Lang) {
@@ -189,7 +198,7 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
     switch (a.kind) {
       case "reminder": {
         const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}/.test(a.dueAt) ? a.dueAt : null;
-        store.reminders.push({ id: nextId(store), title, dueAt, repeat: a.repeat ?? "none", done: false, createdAt: stamp });
+        store.reminders.push({ id: nextId(store), title, dueAt, repeat: normalizeRepeat(a.repeat), done: false, createdAt: stamp });
         saved.push({ kind: "reminder", title, when: whenLabel(dueAt, lang) });
         break;
       }
@@ -224,7 +233,7 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
         // deep sleep y suena aunque esté dormido.
         const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}T/.test(a.dueAt) ? a.dueAt : null;
         if (!dueAt) break;
-        store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt, repeat: a.repeat ?? "none", done: false, createdAt: stamp });
+        store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt, repeat: normalizeRepeat(a.repeat), done: false, createdAt: stamp });
         saved.push({ kind: "reminder", title: title || "Alarma", when: whenLabel(dueAt, lang) });
         break;
       }
@@ -301,15 +310,17 @@ voice.post("/", async (c) => {
     console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
     return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0, ms }, audio);
   } catch (err) {
+    // Igual que en ask.ts: el aparato tiene que poder distinguir "falta la
+    // clave" de "el proveedor falló".
     if (err instanceof LlmError) {
       console.error("voice llm:", err.message);
-      return c.json({ ok: false, error: err.message }, 502);
+      return c.json({ ok: false, error: err.message, code: err.code }, err.status as ContentfulStatusCode);
     }
-    if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
-    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "falta o no sirve la clave del modelo" }, 500);
-    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `modelo ${err.status}: ${err.message}` }, 502);
+    if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited", code: "rate_limited" }, 429);
+    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "falta o no sirve la clave del modelo", code: "no_key" }, 500);
+    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `modelo ${err.status}: ${redactSecrets(err.message)}`, code: "provider_error" }, 502);
     console.error("voice:", err);
-    return c.json({ ok: false, error: String(err).slice(0, 200) }, 500);
+    return c.json({ ok: false, error: redactSecrets(String(err)).slice(0, 200), code: "internal" }, 500);
   }
 });
 

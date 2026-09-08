@@ -7,16 +7,15 @@
 //        El ADPCM es la traducción dicha por Piper en el idioma `to`.
 //   4xx/5xx: { ok: false, error }
 //
-// Transcribe en `from`, traduce con Claude (solo la traducción, sin comentarios)
-// y sintetiza en `to`. Modelo: VOICE_MODEL / ASK_MODEL, default claude-haiku-4-5.
+// Transcribe en `from`, traduce con el proveedor elegido en /board -> Ajustes
+// (el mismo que usa todo lo demás) y sintetiza en `to`.
 import { Hono } from "hono";
-import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav } from "./transcribe";
 import { synthesize } from "./tts";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
-
-const MODEL = process.env.VOICE_MODEL ?? process.env.ASK_MODEL ?? "claude-haiku-4-5";
-const client = new Anthropic();
+import { chatText, LlmError } from "./llm";
+import { redactSecrets } from "./net";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 export const translate = new Hono();
 
@@ -39,30 +38,31 @@ translate.post("/", async (c) => {
     return c.json({ ok: false, error: msg }, msg.startsWith("stt ") ? 502 : 400);
   }
   try {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 400,
-      system: [
-        `Sos un traductor de conversación. Traducí del ${LANGUAGE_NAME[from]} al ${LANGUAGE_NAME[to]} lo que dice el usuario,`,
-        "tal cual, con el mismo registro y sin agregar nada: ni comentarios, ni comillas, ni explicaciones.",
-        "El texto llega transcripto de voz y puede traer errores de reconocimiento: interpretalo con sentido común.",
-        "Respondé solo con la traducción, en texto plano.",
-      ].join(" "),
-      messages: [{ role: "user", content: text }],
-    });
-    if (response.stop_reason === "refusal") return c.json({ ok: false, error: "refused" }, 422);
-    let translation = "";
-    for (const block of response.content) if (block.type === "text") translation += block.text;
-    translation = translation.trim();
-    if (!translation) return c.json({ ok: false, error: "empty translation" }, 502);
+    // Antes acá había un cliente de Anthropic propio con la clave del entorno:
+    // el traductor le seguía pegando a Claude aunque en /board estuviera elegido
+    // Groq o DeepSeek, y fallaba con "bad ANTHROPIC_API_KEY" sin explicar nada.
+    const translation = (
+      await chatText({
+        system: [
+          `Sos un traductor de conversación. Traducí del ${LANGUAGE_NAME[from]} al ${LANGUAGE_NAME[to]} lo que dice el usuario,`,
+          "tal cual, con el mismo registro y sin agregar nada: ni comentarios, ni comillas, ni explicaciones.",
+          "El texto llega transcripto de voz y puede traer errores de reconocimiento: interpretalo con sentido común.",
+          "Respondé solo con la traducción, en texto plano.",
+        ].join(" "),
+        user: text,
+        maxTokens: 400,
+      })
+    ).trim();
+    if (!translation) return c.json({ ok: false, error: "empty translation", code: "bad_answer" }, 502);
     console.log(`translate ${from}->${to}: "${text}" -> "${translation}"`);
     const audio = await synthesize(translation, to, 12);
     return framed({ ok: true, text, translation, from, to, audio: audio?.length ?? 0 }, audio);
   } catch (err) {
-    if (err instanceof Anthropic.RateLimitError) return c.json({ ok: false, error: "rate limited" }, 429);
-    if (err instanceof Anthropic.AuthenticationError) return c.json({ ok: false, error: "bad ANTHROPIC_API_KEY" }, 500);
-    if (err instanceof Anthropic.APIError) return c.json({ ok: false, error: `claude ${err.status}: ${err.message}` }, 502);
+    if (err instanceof LlmError) {
+      console.error("translate llm:", err.message);
+      return c.json({ ok: false, error: err.message, code: err.code }, err.status as ContentfulStatusCode);
+    }
     console.error("translate:", err);
-    return c.json({ ok: false, error: "internal" }, 500);
+    return c.json({ ok: false, error: redactSecrets(String(err)).slice(0, 200), code: "internal" }, 500);
   }
 });

@@ -33,7 +33,10 @@ void ReminderAlertActivity::onEnter() {
   // "Reminder: <title>" from the SD (cached at sync), then the beeps.
   const std::string clip = speechcache::clipPath(std::string(tr(STR_HUB_REMINDERS)) + ": " + title);
   spoken = !speech.playFile(clip.c_str());
-  if (spoken) beep.start();
+  if (spoken) {
+    speech.stop();  // el I2S es uno solo: soltarlo antes de que lo abra el pitido
+    beep.start();
+  }
   requestUpdate();
 }
 

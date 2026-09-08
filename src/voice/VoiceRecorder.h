@@ -36,9 +36,13 @@ class VoiceRecorder {
   float seconds() const { return recorded / static_cast<float>(SAMPLE_RATE); }
   const uint8_t* wav() const { return buffer; }
   size_t wavBytes() const;
-  // Same take as ADPCM (4x smaller): what actually gets uploaded. Encoded in
-  // place over the WAV buffer's tail, valid until the next start()/release().
+  // Same take as ADPCM (4x smaller): what actually gets uploaded. It is NOT
+  // encoded in place: a second PSRAM buffer holds it, so the WAV take and the
+  // ADPCM copy are alive at the same time (that peak is what has to fit).
+  // Null if that allocation failed; release() frees both.
   const uint8_t* adpcm();
+  // 0 until adpcm() has actually produced the buffer, so no caller can post a
+  // size that goes with a null pointer.
   size_t adpcmBytes() const;
 
  private:

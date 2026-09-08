@@ -44,6 +44,7 @@ class TranslatorActivity final : public Activity {
   std::string failureDetail;
   bool wifiActivated = false;
   bool requestPending = false;
+  int partialCount = 0;  // parciales desde el último refresco limpio
 
   void showLanguagePicker();
   void startRecording(bool me);

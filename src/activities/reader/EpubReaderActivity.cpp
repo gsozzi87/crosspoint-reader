@@ -1,5 +1,6 @@
 #include "EpubReaderActivity.h"
 
+#include <BoardConfig.h>
 #include <Epub/Page.h>
 #include <Epub/blocks/TextBlock.h>
 #include <FontCacheManager.h>
@@ -915,6 +916,11 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
+  // En la ws397 OK es confirm + power compartidos: mantenerlo apaga el aparato, así
+  // que wasLongPressed(Confirm, ...) nunca puede dar true. Devolver 0 deja la rama de
+  // "OK largo" apagada (la lógica upstream queda intacta para las demás placas) y en
+  // SettingsList el ajuste ni se ofrece.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) return 0;
   switch (SETTINGS.longPressMenuFunction) {
     case CrossPointSettings::LP_MENU_BOOKMARK:
     case CrossPointSettings::LP_MENU_DICTIONARY:

@@ -1,6 +1,7 @@
 #include "SpeechToText.h"
 
 #include <ArduinoJson.h>
+#include <I18n.h>
 #include <Logging.h>
 #include <ServerClient.h>
 #include <WiFi.h>
@@ -19,6 +20,13 @@ bool SpeechToText::transcribe(const VoiceRecorder& take, std::string& text, std:
   WiFi.setSleep(false);
   const uint8_t* body = const_cast<VoiceRecorder&>(take).adpcm();
   const size_t bytes = take.adpcmBytes();
+  // adpcm() devuelve nullptr si no pudo reservar la PSRAM: sin esto se posteaba
+  // un puntero nulo con el tamaño calculado.
+  if (!body || bytes == 0) {
+    WiFi.setSleep(true);
+    detail = tr(STR_AUDIO_NO_MEMORY);
+    return false;
+  }
   LOG_DBG(TAG, "POST /api/transcribe: %u bytes", (unsigned)bytes);
   ServerClient::Response resp;
   const ServerClient::Result r = SERVER_CLIENT.postBytes(std::string("/api/transcribe?lang=") + uiLanguageCode(),
@@ -33,13 +41,13 @@ bool SpeechToText::transcribe(const VoiceRecorder& take, std::string& text, std:
   JsonDocument doc;
   if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
     WiFi.setSleep(true);
-    detail = "bad json";
+    detail = tr(STR_VOICE_BAD_REPLY);
     return false;
   }
   text = doc["text"] | "";
   if (text.empty()) {
     WiFi.setSleep(true);
-    detail = doc["error"] | "empty";
+    detail = doc["error"] | tr(STR_VOICE_EMPTY_REPLY);
     return false;
   }
   LOG_DBG(TAG, "\"%s\"", text.c_str());

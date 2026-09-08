@@ -134,9 +134,14 @@ void UsbDriveActivity::buildDriveScreen(UiScreen& screen) const {
   }
 
   const auto& metrics = UITheme::getInstance().getMetrics();
-  screen.setContentMarginFromScreen(fui::Insets{
-      static_cast<int16_t>(metrics.topPadding + metrics.headerHeight), static_cast<int16_t>(metrics.contentSidePadding),
-      static_cast<int16_t>(metrics.buttonHintsHeight), static_cast<int16_t>(metrics.contentSidePadding)});
+  // El margen de abajo lleva verticalSpacing además del alto de los hints (misma
+  // cuenta que SettingsActivity): con el hueco justo, la última fila terminaba
+  // pegada a la barra de botones y parecía tapada por ella.
+  screen.setContentMarginFromScreen(
+      fui::Insets{static_cast<int16_t>(metrics.topPadding + metrics.headerHeight),
+                  static_cast<int16_t>(metrics.contentSidePadding),
+                  static_cast<int16_t>(metrics.buttonHintsHeight + metrics.verticalSpacing),
+                  static_cast<int16_t>(metrics.contentSidePadding)});
 
   auto messageStyle = screen.theme().smallText;
   messageStyle.align = fui::TextAlign::Center;

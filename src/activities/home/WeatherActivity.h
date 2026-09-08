@@ -51,6 +51,7 @@ class WeatherActivity final : public Activity {
   std::vector<Hour> hours;
   std::vector<Day> days;
   bool wifiActivated = false;
+  int partialCount = 0;  // parciales desde el último refresco limpio
   StrId failureId = StrId::STR_ASK_FAILED;
 
   bool parse(const std::string& json);

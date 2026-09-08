@@ -200,7 +200,7 @@ void PhotosActivity::loop() {
         const bool ok = download(photos[index]);
         WiFi.setSleep(true);
         if (!ok) {
-          fail(StrId::STR_ASK_FAILED, lastError.empty() ? "download" : lastError);
+          fail(StrId::STR_ASK_FAILED, lastError.empty() ? std::string(tr(STR_DOWNLOAD_FAILED)) : lastError);
           break;
         }
         state = VIEW;
@@ -235,7 +235,9 @@ void PhotosActivity::loop() {
     }
     case VIEW: {
       const int count = static_cast<int>(photos.size());
+      // Mismo guard que la lista: sin fotos, nextIndex/photos[index] leen fuera.
       buttonNavigator.onNext([&] {
+        if (count <= 0) return;
         index = ButtonNavigator::nextIndex(index, count);
         if (!photos[index].local) {
           pending = DOWNLOAD;
@@ -245,6 +247,7 @@ void PhotosActivity::loop() {
         }
       });
       buttonNavigator.onPrevious([&] {
+        if (count <= 0) return;
         index = ButtonNavigator::previousIndex(index, count);
         if (!photos[index].local) {
           pending = DOWNLOAD;

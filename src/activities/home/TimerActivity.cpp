@@ -183,8 +183,9 @@ void TimerActivity::showDurationPicker() {
   pickingDuration = true;
   pickerOptions.clear();
   for (int i = 0; i < DURATION_COUNT; ++i) {
-    char buf[16];
-    snprintf(buf, sizeof(buf), "%d min", DURATIONS_MIN[i]);
+    char buf[24];
+    // Se reusa el "%u min" que ya está traducido en los siete idiomas.
+    snprintf(buf, sizeof(buf), tr(STR_SLEEP_TIMER_VALUE_FORMAT), static_cast<unsigned>(DURATIONS_MIN[i]));
     pickerOptions.emplace_back(buf);
   }
   picker.show(StrId::STR_TIMER_COUNTDOWN, pickerOptions, 3, [this](int idx) {
@@ -226,7 +227,10 @@ void TimerActivity::ring() {
   HUB_STORE.clearTimer();
   HUB_STORE.saveToFile();
   spoken = !speech.playFile(speechcache::clipPath(tr(STR_TIMER_DONE)).c_str());
-  if (spoken) beep.start();
+  if (spoken) {
+    speech.stop();  // el I2S es uno solo: soltarlo antes de que lo abra el pitido
+    beep.start();
+  }
   requestUpdate();
 }
 

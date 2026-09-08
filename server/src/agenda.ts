@@ -9,6 +9,7 @@
 // está el aparato) y de día entero. Repeticiones (RRULE) diarias y semanales se
 // expanden dentro de la ventana; el resto se ignora. Caché de 30 minutos.
 import { LABELS, type Lang } from "./lang";
+import { safeFetch, textCapped } from "./net";
 
 const URLS = (process.env.HUB_ICS_URL ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
@@ -98,14 +99,18 @@ export async function loadEvents(): Promise<Event[]> {
   const windowStart = now - 86_400_000;
   const windowEnd = now + 8 * 86_400_000;
   const events: Event[] = [];
-  for (const url of URLS) {
-    try {
-      const res = await fetch(url, { headers: { "User-Agent": "ws397-hub" } });
+  // Con timeout y en paralelo: esto se llama dentro del Promise.all de /api/hub,
+  // así que un ICS lento colgaba la sincronización entera del aparato.
+  const got = await Promise.allSettled(
+    URLS.map(async (url) => {
+      const res = await safeFetch(url, { headers: { "User-Agent": "ws397-hub" } }, { timeoutMs: 10_000 });
       if (!res.ok) throw new Error(`ics ${res.status}`);
-      events.push(...parseIcs(await res.text(), windowStart, windowEnd));
-    } catch (err) {
-      console.error("agenda:", url.slice(0, 40), err);
-    }
+      return parseIcs(await textCapped(res, 4_000_000), windowStart, windowEnd);
+    }),
+  );
+  for (const [i, r] of got.entries()) {
+    if (r.status === "fulfilled") events.push(...r.value);
+    else console.error("agenda:", URLS[i].slice(0, 40), r.reason);
   }
   events.sort((a, b) => a.start - b.start);
   cache = { at: now, events };

@@ -24,11 +24,12 @@ import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
 import { config, saveConfig, publicConfig, type Config } from "./config";
 import { chatText, providerLabel } from "./llm";
+import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 
 export const boardApi = new Hono();
 
 boardApi.post("/message", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const text = (b.text ?? "").toString().trim().slice(0, 300);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const store = await load();
@@ -38,7 +39,7 @@ boardApi.post("/message", async (c) => {
 });
 
 boardApi.post("/reminder", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const title = (b.title ?? "").toString().trim().slice(0, 200);
   if (!title) return c.json({ ok: false, error: "title required" }, 400);
   const dueAt = typeof b.dueAt === "string" && /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2})?$/.test(b.dueAt) ? b.dueAt : null;
@@ -50,7 +51,7 @@ boardApi.post("/reminder", async (c) => {
 });
 
 boardApi.post("/item", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const text = (b.text ?? "").toString().trim().slice(0, 200);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const store = await load();
@@ -61,7 +62,7 @@ boardApi.post("/item", async (c) => {
 });
 
 boardApi.post("/list", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const name = (b.name ?? "").toString().trim().slice(0, 40);
   if (!name) return c.json({ ok: false, error: "name required" }, 400);
   const store = await load();
@@ -71,7 +72,7 @@ boardApi.post("/list", async (c) => {
 });
 
 boardApi.post("/list/delete", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const name = (b.name ?? "").toString();
   const store = await load();
   if (!(name in store.lists)) return c.json({ ok: false, error: "not found" }, 404);
@@ -81,9 +82,11 @@ boardApi.post("/list/delete", async (c) => {
 });
 
 boardApi.post("/feed", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const url = (b.url ?? "").toString().trim().slice(0, 500);
-  if (!/^https?:\/\//.test(url)) return c.json({ ok: false, error: "url required" }, 400);
+  // El servidor es el que va a buscar el feed, y está adentro de la red privada
+  // de Railway: un "feed" apuntando ahí adentro es SSRF.
+  if (!isSafeRemoteUrl(url)) return c.json({ ok: false, error: "la URL del feed no sirve (tiene que ser http(s) a un host público)" }, 400);
   const store = await load();
   store.feeds ??= [];
   const name = (b.name ?? "").toString().trim().slice(0, 40) || new URL(url).hostname.replace(/^www\./, "");
@@ -112,8 +115,13 @@ boardApi.post("/photo", async (c) => {
       return c.json({ ok: false, error: `no se pudo convertir (${String(err).slice(0, 120)})` }, 400);
     }
   }
-  const id = await savePhoto(name, out);
-  return c.json({ ok: true, id });
+  try {
+    const id = await savePhoto(name, out);
+    return c.json({ ok: true, id });
+  } catch (err) {
+    console.error("photo save:", err);
+    return c.json({ ok: false, error: `no se pudo guardar (${String(err).slice(0, 120)})` }, 500);
+  }
 });
 
 boardApi.get("/extra", async (c) => {
@@ -131,7 +139,7 @@ boardApi.get("/extra", async (c) => {
 // Ajustes del aparato. Cada cambio sube `rev`; el aparato los aplica en la
 // próxima sincronización solo si la revisión es mayor a la que ya tenía.
 boardApi.post("/settings", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const store = await load();
   const s: Settings = { ...DEFAULT_SETTINGS, ...(store.settings ?? {}) };
   if (typeof b.lang === "string" && /^[a-z]{2}$/.test(b.lang)) s.lang = b.lang;
@@ -149,17 +157,46 @@ boardApi.post("/settings", async (c) => {
 boardApi.get("/config", async (c) => c.json({ ok: true, config: await publicConfig() }));
 
 boardApi.post("/config", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const cfg = await config();
   const next: Config = { llm: { ...cfg.llm }, stt: { ...cfg.stt }, deviceToken: cfg.deviceToken };
+  // La clave del proveedor viaja como Bearer a este baseUrl: si se acepta
+  // cualquier URL, cambiarla es exfiltrar la clave. Solo https a un host
+  // público (o http a localhost, para un modelo corriendo en la misma máquina).
+  const cleanUrl = (raw: string): { url: string } | { error: string } => {
+    const trimmed = raw.trim().replace(/\/+$/, "");
+    const r = checkUrl(trimmed, { allowLocal: true });
+    return r.ok ? { url: trimmed } : { error: r.error };
+  };
+  // Cambiar de host sin cargar clave nueva NO reusa la vieja: se borra y hay
+  // que volver a cargarla, en vez de mandársela a otro servidor.
+  const hostOf = (raw: string): string => {
+    try {
+      return new URL(raw).host;
+    } catch {
+      return "";
+    }
+  };
   if (b.llm) {
     if (b.llm.provider === "anthropic" || b.llm.provider === "openai") next.llm.provider = b.llm.provider;
-    if (typeof b.llm.baseUrl === "string") next.llm.baseUrl = b.llm.baseUrl.trim().replace(/\/+$/, "");
+    if (typeof b.llm.baseUrl === "string" && b.llm.baseUrl.trim()) {
+      const r = cleanUrl(b.llm.baseUrl);
+      if ("error" in r) return c.json({ ok: false, error: `URL del proveedor: ${r.error}` }, 400);
+      if (hostOf(r.url) !== hostOf(next.llm.baseUrl)) next.llm.key = "";
+      next.llm.baseUrl = r.url;
+    } else if (typeof b.llm.baseUrl === "string") {
+      next.llm.baseUrl = "";  // Anthropic no usa baseUrl
+    }
     if (typeof b.llm.model === "string" && b.llm.model.trim()) next.llm.model = b.llm.model.trim();
     if (typeof b.llm.key === "string" && b.llm.key.trim()) next.llm.key = b.llm.key.trim();
   }
   if (b.stt) {
-    if (typeof b.stt.baseUrl === "string" && b.stt.baseUrl.trim()) next.stt.baseUrl = b.stt.baseUrl.trim().replace(/\/+$/, "");
+    if (typeof b.stt.baseUrl === "string" && b.stt.baseUrl.trim()) {
+      const r = cleanUrl(b.stt.baseUrl);
+      if ("error" in r) return c.json({ ok: false, error: `URL de transcripción: ${r.error}` }, 400);
+      if (hostOf(r.url) !== hostOf(next.stt.baseUrl)) next.stt.key = "";
+      next.stt.baseUrl = r.url;
+    }
     if (typeof b.stt.model === "string" && b.stt.model.trim()) next.stt.model = b.stt.model.trim();
     if (typeof b.stt.key === "string" && b.stt.key.trim()) next.stt.key = b.stt.key.trim();
   }
@@ -187,7 +224,7 @@ boardApi.post("/config/test", async (c) => {
 });
 
 boardApi.post("/note", async (c) => {
-  const b = await c.req.json().catch(() => ({}));
+  const b = await readBody(c);
   const text = (b.text ?? "").toString().trim().slice(0, 2000);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const store = await load();

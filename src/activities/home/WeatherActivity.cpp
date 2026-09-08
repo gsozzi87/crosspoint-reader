@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -23,6 +24,7 @@ constexpr const char* CACHE = "/.crosspoint/forecast.json";
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 constexpr time_t CACHE_MAX_AGE_S = 3600;  // más viejo que esto: refrescar al entrar
 constexpr int SIDE = 20;
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 
 void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y, bool ink = true) {
   const int stride = (icon.w + 7) / 8;
@@ -295,5 +297,8 @@ void WeatherActivity::render(RenderLock&&) {
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
+  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) partialCount = 0;
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

@@ -2,8 +2,7 @@
 // recordatorios, listas de tareas (varias, por nombre), notas y la pizarra de
 // mensajes. Alcanza para un usuario y una casa; si crece, se cambia por SQLite
 // sin tocar a quien lo usa (voice.ts, hub.ts).
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname } from "node:path";
+import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 import { LABELS, type Lang } from "./lang";
 
 const FILE = process.env.STORE_FILE ?? "/data/store.json";
@@ -51,26 +50,66 @@ export type Store = {
 
 export const DEFAULT_LISTS = ["Entrada", "Casa", "Trabajo", "Administrativo", "Compras"];
 
-let cache: Store | null = null;
+export const REPEATS = ["none", "daily", "weekly", "monthly"] as const;
 
-export async function load(): Promise<Store> {
-  if (cache) return cache;
-  try {
-    cache = JSON.parse(await readFile(FILE, "utf8")) as Store;
-  } catch {
-    cache = { nextId: 1, reminders: [], lists: {}, notes: [], messages: [] };
-  }
-  for (const name of DEFAULT_LISTS) cache.lists[name] ??= [];
-  cache.settings = { ...DEFAULT_SETTINGS, ...(cache.settings ?? {}) };
-  cache.memories ??= [];
-  cache.feeds ??= [];
-  return cache;
+// Lo que diga el modelo (o la web) no manda: cualquier otra cosa es "none".
+// Antes una cadena rara caía en el else de advanceRepeat y quedaba mensual.
+export function normalizeRepeat(v: unknown): Reminder["repeat"] {
+  return (REPEATS as readonly string[]).includes(v as string) ? (v as Reminder["repeat"]) : "none";
+}
+
+function emptyStore(): Store {
+  return { nextId: 1, reminders: [], lists: {}, notes: [], messages: [] };
+}
+
+// El archivo puede venir de una versión vieja o quedar a medias: se acepta solo
+// lo que tenga la forma esperada y el resto vuelve al default, así una lista que
+// dejó de ser array no tira un 500 en cada pedido.
+function normalizeStore(raw: unknown): Store {
+  const base = emptyStore();
+  const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, any>;
+  const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
+  const store: Store = {
+    nextId: Number.isFinite(Number(r.nextId)) && Number(r.nextId) > 0 ? Math.floor(Number(r.nextId)) : base.nextId,
+    reminders: arr<Reminder>(r.reminders),
+    lists: {},
+    notes: arr<Note>(r.notes),
+    messages: arr<Message>(r.messages),
+    memories: arr<Memory>(r.memories),
+    feeds: arr<Feed>(r.feeds),
+  };
+  for (const rem of store.reminders) rem.repeat = normalizeRepeat(rem.repeat);
+  const lists = r.lists && typeof r.lists === "object" && !Array.isArray(r.lists) ? r.lists : {};
+  for (const [name, items] of Object.entries(lists)) if (Array.isArray(items)) store.lists[name] = items as Item[];
+  for (const name of DEFAULT_LISTS) store.lists[name] ??= [];
+  store.settings = { ...DEFAULT_SETTINGS, ...(r.settings && typeof r.settings === "object" ? r.settings : {}) };
+  // El nextId tiene que quedar arriba de todo lo que ya existe: si el archivo
+  // vino truncado, repetir ids mezcla ítems de listas distintas.
+  const ids = [...store.reminders, ...store.notes, ...store.messages, ...(store.memories ?? []), ...(store.feeds ?? []), ...Object.values(store.lists).flat()]
+    .map((e: { id?: number }) => Number(e?.id) || 0);
+  store.nextId = Math.max(store.nextId, ...ids.map((i) => i + 1), 1);
+  return store;
+}
+
+let cache: Store | null = null;
+let loading: Promise<Store> | null = null;
+
+export function load(): Promise<Store> {
+  if (cache) return Promise.resolve(cache);
+  // La promesa se cachea, no el resultado: dos pedidos juntos leían el archivo
+  // dos veces y se quedaban con dos objetos distintos (lo que guardaba uno lo
+  // pisaba el otro).
+  loading ??= readJsonSafe<unknown>(FILE, null).then((raw) => {
+    cache = normalizeStore(raw);
+    loading = null;
+    return cache;
+  });
+  return loading;
 }
 
 export async function save(store: Store): Promise<void> {
   cache = store;
-  await mkdir(dirname(FILE), { recursive: true });
-  await writeFile(FILE, JSON.stringify(store, null, 2));
+  await writeJsonAtomic(FILE, store);
 }
 
 export function nextId(store: Store): number {
@@ -135,11 +174,12 @@ export function epochToLocal(epoch: number): string {
 
 // Recordatorio con repetición: corre la fecha al próximo ciclo (mantiene la hora).
 export function advanceRepeat(r: Reminder): boolean {
-  if (r.repeat === "none" || !r.dueAt) return false;
+  const repeat = normalizeRepeat(r.repeat);
+  if (repeat === "none" || !r.dueAt) return false;
   const [date, time] = r.dueAt.split("T");
   const d = new Date(date + "T00:00:00Z");
-  if (r.repeat === "daily") d.setUTCDate(d.getUTCDate() + 1);
-  else if (r.repeat === "weekly") d.setUTCDate(d.getUTCDate() + 7);
+  if (repeat === "daily") d.setUTCDate(d.getUTCDate() + 1);
+  else if (repeat === "weekly") d.setUTCDate(d.getUTCDate() + 7);
   else d.setUTCMonth(d.getUTCMonth() + 1);
   r.dueAt = d.toISOString().slice(0, 10) + (time ? "T" + time : "");
   return true;

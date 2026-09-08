@@ -16,6 +16,7 @@ import { Hono } from "hono";
 import { normalizeLang, type Lang } from "./lang";
 import { decodeAdpcm, TARGET_RATE } from "./tts";
 import { config } from "./config";
+import { checkUrl, redactSecrets } from "./net";
 
 // El servicio de transcripción se elige desde /board -> Ajustes (Groq es gratis
 // y el más rápido); las variables de entorno quedan como valor por defecto.
@@ -27,6 +28,10 @@ export const transcribe = new Hono();
 // El aparato sube ADPCM (una cuarta parte de un WAV, que es lo que más tarda
 // en la subida): acá se vuelve a PCM y se le pone cabecera WAV para el STT.
 export function adpcmToWav(data: Uint8Array): ArrayBuffer {
+  // El tope se mira sobre lo que llegó, no sobre lo expandido: el ADPCM ocupa
+  // un cuarto, así que 2 MB de cuerpo son 8 MB de PCM reservados antes de que
+  // nadie chequee nada.
+  if (data.byteLength > MAX_BYTES / 4) throw new Error("audio too large");
   const pcm = decodeAdpcm(data);
   const bytes = pcm.length * 2;
   const out = new ArrayBuffer(44 + bytes);
@@ -43,6 +48,7 @@ export function adpcmToWav(data: Uint8Array): ArrayBuffer {
 
 // Acepta WAV o ADPCM (por el content-type o la firma "ADPC").
 export function toWav(body: ArrayBuffer, contentType?: string | null): ArrayBuffer {
+  if (body.byteLength > MAX_BYTES) throw new Error("audio too large");
   const head = new Uint8Array(body.slice(0, 4));
   const isAdpcm = (contentType ?? "").includes("adpcm") ||
     (head.length === 4 && head[0] === 0x41 && head[1] === 0x44 && head[2] === 0x50 && head[3] === 0x43);
@@ -52,6 +58,8 @@ export function toWav(body: ArrayBuffer, contentType?: string | null): ArrayBuff
 export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Promise<string> {
   const stt = (await config()).stt;
   if (!stt.key) throw new Error("falta la clave de transcripción (web → Ajustes)");
+  const url = checkUrl(stt.baseUrl, { allowLocal: true });
+  if (!url.ok) throw new Error(`la URL de transcripción no sirve: ${url.error}`);
   if (audio.byteLength < 1_000) throw new Error("audio too short");
   if (audio.byteLength > MAX_BYTES) throw new Error("audio too large");
   const form = new FormData();
@@ -66,7 +74,9 @@ export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Prom
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
-    const detail = (await res.text()).slice(0, 300);
+    // El error del servicio vuelve al aparato y al log: sin tachar la clave,
+    // un 401 de algunos proveedores la escupe entera.
+    const detail = redactSecrets(await res.text(), stt.key).slice(0, 300);
     console.error("transcribe:", res.status, detail);
     throw new Error(`stt ${res.status}: ${detail.slice(0, 120)}`);
   }
