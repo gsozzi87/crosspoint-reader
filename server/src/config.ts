@@ -38,6 +38,11 @@ export type Config = {
 };
 
 // Combos conocidos, para elegir de una lista en la web en vez de escribir URLs.
+// Catálogos y precios revisados el 2026-09-08. Los modelos viejos de Groq
+// (llama-3.3-70b-versatile, llama-3.1-8b-instant) pasaron a Enterprise / Contact
+// Sales, así que con una cuenta normal de desarrollador ya no responden: los
+// reemplazan los gpt-oss, que están abiertos. En DeepSeek, deepseek-chat y
+// deepseek-reasoner quedaron atrás: hoy la familia es v4.
 export const PRESETS: Record<string, { label: string; provider: "anthropic" | "openai"; baseUrl: string; models: string[]; sttBaseUrl?: string; sttModels?: string[] }> = {
   anthropic: {
     label: "Anthropic (Claude)",
@@ -46,18 +51,23 @@ export const PRESETS: Record<string, { label: string; provider: "anthropic" | "o
     models: ["claude-haiku-4-5", "claude-sonnet-4-5"],
   },
   groq: {
-    label: "Groq (gratis, muy rápido)",
+    label: "Groq (el más rápido y el más barato)",
     provider: "openai",
     baseUrl: "https://api.groq.com/openai/v1",
-    models: ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-120b"],
+    // groq/compound y groq/compound-mini son "sistemas": traen búsqueda en
+    // internet y ejecución de código del lado de Groq. Los gpt-oss traen su
+    // propia búsqueda (browser_search). Ver llm.ts → providerSearchKind.
+    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "groq/compound", "groq/compound-mini"],
     sttBaseUrl: "https://api.groq.com/openai/v1",
     sttModels: ["whisper-large-v3-turbo", "whisper-large-v3"],
   },
   deepseek: {
-    label: "DeepSeek (muy barato)",
+    label: "DeepSeek (muy barato, más barato aún fuera de hora pico)",
+    // También aceptan https://api.deepseek.com/v1 y, en formato Anthropic,
+    // https://api.deepseek.com/anthropic.
     provider: "openai",
-    baseUrl: "https://api.deepseek.com/v1",
-    models: ["deepseek-chat", "deepseek-reasoner"],
+    baseUrl: "https://api.deepseek.com",
+    models: ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"],
   },
   openai: {
     label: "OpenAI",
@@ -68,6 +78,70 @@ export const PRESETS: Record<string, { label: string; provider: "anthropic" | "o
     sttModels: ["whisper-1", "gpt-4o-mini-transcribe"],
   },
 };
+
+// ── Cuánto sale cada consulta ───────────────────────────────────────────────
+// El aparato se va a vender en volumen, así que el costo por consulta manda.
+// Precios en dólares por millón de tokens (revisados el 2026-09-08). `offPeak`
+// solo lo tiene DeepSeek, que cobra la mitad fuera de las horas pico.
+export type ModelPrice = { in: number; out: number; offPeakIn?: number; offPeakOut?: number; note?: string };
+
+export const MODEL_PRICES: Record<string, ModelPrice> = {
+  "claude-haiku-4-5": { in: 1, out: 5 },
+  "claude-sonnet-4-5": { in: 3, out: 15 },
+  "openai/gpt-oss-120b": { in: 0.15, out: 0.6, note: "~500 tokens/s, trae búsqueda propia" },
+  "openai/gpt-oss-20b": { in: 0.075, out: 0.3, note: "~1000 tokens/s, trae búsqueda propia" },
+  "groq/compound": { in: 0.15, out: 0.6, note: "se cobran los modelos que use por dentro; búsqueda incluida" },
+  "groq/compound-mini": { in: 0.15, out: 0.6, note: "una sola herramienta por pedido, 3x más rápido" },
+  "deepseek-v4-flash": { in: 0.44, out: 1.32, offPeakIn: 0.22, offPeakOut: 0.66, note: "1M de contexto" },
+  "deepseek-v4-pro": { in: 1.32, out: 3.96, offPeakIn: 0.66, offPeakOut: 1.98 },
+  "deepseek-v4-flash-vision-exp": { in: 0.44, out: 1.32, offPeakIn: 0.22, offPeakOut: 0.66, note: "experimental, acepta imágenes" },
+  "gpt-4o-mini": { in: 0.15, out: 0.6 },
+  "gpt-4o": { in: 2.5, out: 10 },
+};
+
+// Transcripción: dólares por HORA de audio.
+export const STT_PRICES: Record<string, number> = {
+  "whisper-large-v3-turbo": 0.04,
+  "whisper-large-v3": 0.111,
+  "whisper-1": 0.36,            // OpenAI cobra USD 0,006 por minuto
+  "gpt-4o-mini-transcribe": 0.18,
+};
+
+// Búsqueda en internet: dólares por búsqueda. En Anthropic es una herramienta
+// aparte y sale MÁS que la respuesta entera (USD 10 por cada 1000 búsquedas);
+// en Groq viene adentro del precio de los tokens.
+export const SEARCH_PRICE_ANTHROPIC = 0.01;
+
+// Horas pico de DeepSeek: 01:00-04:00 y 06:00-10:00 UTC de lunes a viernes.
+// Fuera de eso sale la mitad.
+export function deepSeekPeak(at: Date = new Date()): boolean {
+  const day = at.getUTCDay();
+  if (day === 0 || day === 6) return false;
+  const h = at.getUTCHours();
+  return (h >= 1 && h < 4) || (h >= 6 && h < 10);
+}
+
+// Costo de UNA consulta de voz: 5 s de audio, ~1500 tokens de entrada y 300 de
+// salida. Es lo que hay que mirar para elegir proveedor.
+export const QUERY_SHAPE = { seconds: 5, inTokens: 1500, outTokens: 300 };
+
+export function queryCost(model: string, sttModel: string, at: Date = new Date()) {
+  const p = MODEL_PRICES[model];
+  const peak = deepSeekPeak(at);
+  const inRate = p ? (!peak && p.offPeakIn !== undefined ? p.offPeakIn : p.in) : 0;
+  const outRate = p ? (!peak && p.offPeakOut !== undefined ? p.offPeakOut : p.out) : 0;
+  const llm = ((QUERY_SHAPE.inTokens * inRate) + (QUERY_SHAPE.outTokens * outRate)) / 1_000_000;
+  const perHour = STT_PRICES[sttModel] ?? 0;
+  const stt = (perHour * QUERY_SHAPE.seconds) / 3600;
+  return {
+    known: !!p,
+    llm,
+    stt,
+    total: llm + stt,
+    peak: p?.offPeakIn !== undefined ? peak : null,  // null = a este proveedor no le importa la hora
+    note: p?.note ?? "",
+  };
+}
 
 function defaults(): Config {
   return {

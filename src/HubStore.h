@@ -98,6 +98,13 @@ class HubStore : public PersistableStore<HubStore> {
     stopwatchStartAt = 0;
     stopwatchAccumS = 0;
   }
+  // Paquete de contenido (`AssetSyncActivity`): los dibujos y los audios de las
+  // tarjetas, los sonidos, la Biblia entera y los íconos viven en el servidor y
+  // se bajan de una sola vez después de actualizar el firmware.
+  std::string assetsVersion;   // versión del paquete que hay en la tarjeta ("" = no se bajó nada)
+  std::string assetsLang;      // idioma con el que se bajó (los audios cambian con el idioma)
+  int assetsFiles = 0;         // archivos del paquete guardados en la tarjeta
+  bool assetsPending = false;  // se instalo firmware nuevo: falta bajar el contenido
   uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
   // Ajustes cargados en /board. El servidor manda `settings.rev`; solo se
   // aplican cuando esa revisión es mayor a la última aplicada, así lo que se

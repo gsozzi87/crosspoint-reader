@@ -101,6 +101,10 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["timerRound"] = timerRound;
   doc["stopwatchStartAt"] = static_cast<int64_t>(stopwatchStartAt);
   doc["stopwatchAccumS"] = stopwatchAccumS;
+  doc["assetsVersion"] = assetsVersion;
+  doc["assetsLang"] = assetsLang;
+  doc["assetsFiles"] = assetsFiles;
+  doc["assetsPending"] = assetsPending;
   doc["settingsRev"] = settingsRev;
   doc["uiLang"] = uiLang;
   doc["ttsVoice"] = ttsVoice;
@@ -145,6 +149,10 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   timerRound = doc["timerRound"] | 1;
   stopwatchStartAt = static_cast<time_t>(doc["stopwatchStartAt"] | (int64_t)0);
   stopwatchAccumS = doc["stopwatchAccumS"] | 0;
+  assetsVersion = str(doc, "assetsVersion");
+  assetsLang = str(doc, "assetsLang");
+  assetsFiles = doc["assetsFiles"] | 0;
+  assetsPending = doc["assetsPending"] | false;
   settingsRev = doc["settingsRev"] | 0;
   uiLang = str(doc, "uiLang");
   ttsVoice = str(doc, "ttsVoice");

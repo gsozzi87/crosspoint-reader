@@ -15,6 +15,7 @@ import { bibleApi } from "./bible";
 import { rss } from "./rss";
 import { photos } from "./photos";
 import { deviceLog } from "./devicelog";
+import { assets } from "./assets";
 
 const ENV_TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -46,4 +47,5 @@ api.route("/board", boardApi);        // POST /api/board/{message,reminder,item,
 api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find} → Biblia por capítulos, versículo del día, búsqueda
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
 api.route("/photos", photos);
+api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
 api.route("/log", deviceLog);         // POST /api/log → el aparato sube su log; se lee en /board/log         // GET  /api/photos, /api/photos/file?id= → álbum (BMP 2 bpp ya convertido)

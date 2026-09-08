@@ -1,0 +1,42 @@
+# Manifest de src/components/icons/buttonIcons.h (iconos de los botones fisicos, 24 px).
+# Regenerar con:
+#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
+#     --manifest src/components/icons/buttonIcons.manifest \
+#     --svgdir <carpeta con los SVG de abajo> --sizes 24 --out src/components/icons/buttonIcons.h
+# En la nube no hay rsvg-convert: se rasteriza con resvg_py (mismo empaquetado).
+#
+# Estos cuatro NO son de Lucide tal cual: son dibujos propios (btn_up/btn_down son
+# arrow-up/arrow-down y btn_ok es arrow-right-to-line, todos con el trazo engrosado a
+# 2.6 para que no se pierdan en tinta electronica; btn_back es propio). El SVG de cada
+# uno queda copiado aca abajo para poder regenerarlos sin buscar nada.
+
+btn_up = btn_up
+btn_down = btn_down
+btn_ok = btn_ok
+btn_back = btn_back
+
+# --- btn_up.svg ---
+# <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+#   <path d="m4.5 11.5 7.5-7.5 7.5 7.5" />
+#   <path d="M12 20V4.5" />
+# </svg>
+#
+# --- btn_down.svg ---
+# <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+#   <path d="M12 4v15.5" />
+#   <path d="m19.5 12.5-7.5 7.5-7.5-7.5" />
+# </svg>
+#
+# --- btn_ok.svg ---
+# <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+#   <path d="M15 12H3" />
+#   <path d="m9.5 18 6-6-6-6" />
+#   <path d="M20 4.5v15" />
+# </svg>
+#
+# --- btn_back.svg ---
+# <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+#   <rect x="3.2" y="2.6" width="13" height="18.8" rx="2.4" />
+#   <rect x="17.6" y="8.4" width="3.6" height="7.2" rx="1.6" fill="#000" stroke="none" />
+# </svg>
+#

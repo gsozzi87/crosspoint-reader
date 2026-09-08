@@ -5,6 +5,7 @@ import { firmware } from "./firmware";
 import { board } from "./board";
 import { logPage } from "./devicelog";
 import { warmUp } from "./tts";
+import { warmAssets } from "./assets";
 import { normalizeLang } from "./lang";
 import { redactSecrets } from "./net";
 
@@ -26,7 +27,9 @@ app.route("/board", board);
 app.route("/board/log", logPage);  // log del aparato, texto plano  // página web para el teléfono (pide el token del aparato)
 app.route("/api", api);
 
-warmUp(normalizeLang(process.env.HUB_LANG ?? "es"));  // Piper carga el modelo una vez
+const hubLang = normalizeLang(process.env.HUB_LANG ?? "es");
+warmUp(hubLang);       // Piper carga el modelo una vez
+warmAssets(hubLang);   // genera el paquete de contenido si falta (una sola vez, queda en /data)
 
 const port = Number(process.env.PORT ?? 3000);
 console.log(`ws397 server on :${port}`);

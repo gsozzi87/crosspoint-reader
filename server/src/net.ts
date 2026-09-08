@@ -104,9 +104,9 @@ export async function safeFetch(
 
 // El cuerpo remoto se corta antes de tenerlo entero en memoria: un "feed" de
 // 500 MB no tiene que voltear el contenedor.
-export async function textCapped(res: Response, maxBytes: number): Promise<string> {
+export async function bytesCapped(res: Response, maxBytes: number): Promise<Uint8Array> {
   const body = res.body;
-  if (!body) return "";
+  if (!body) return new Uint8Array(0);
   const reader = body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
@@ -125,7 +125,145 @@ export async function textCapped(res: Response, maxBytes: number): Promise<strin
     buf.set(ch, off);
     off += ch.byteLength;
   }
-  return new TextDecoder().decode(buf.subarray(0, maxBytes));
+  return buf.subarray(0, maxBytes);
+}
+
+// Tablas de los juegos de caracteres de un byte que el TextDecoder de Bun NO
+// trae (solo tiene utf-8, utf-16, windows-1252 y unos pocos más). Cada string
+// son los 128 caracteres de la mitad alta (0x80..0xFF).
+const HIGH_HALF: Record<string, string> = {
+  "iso-8859-2":
+    "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0Ą˘Ł¤ĽŚ§¨ŠŞŤŹ\u00adŽŻ°ą˛ł´ľśˇ¸šşťź˝žżŔÁÂĂÄĹĆÇČÉĘËĚÍÎĎĐŃŇÓÔŐÖ×ŘŮÚŰÜÝŢßŕáâăäĺćçčéęëěíîďđńňóôőö÷řůúűüýţ˙",
+  "iso-8859-5":
+    "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0ЁЂЃЄЅІЇЈЉЊЋЌ\u00adЎЏАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя№ёђѓєѕіїјљњћќ§ўџ",
+  "iso-8859-7":
+    "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0‘’£€₯¦§¨©ͺ«¬\u00ad\ufffd―°±²³΄΅Ά·ΈΉΊ»Ό½ΎΏΐΑΒΓΔΕΖΗΘΙΚΛΜΝΞΟΠΡ\ufffdΣΤΥΦΧΨΩΪΫάέήίΰαβγδεζηθικλμνξοπρςστυφχψωϊϋόύώ\ufffd",
+  "iso-8859-9":
+    "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0¡¢£¤¥¦§¨©ª«¬\u00ad®¯°±²³´µ¶·¸¹º»¼½¾¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏĞÑÒÓÔÕÖ×ØÙÚÛÜİŞßàáâãäåæçèéêëìíîïğñòóôõö÷øùúûüışÿ",
+  "iso-8859-15":
+    "\u0080\u0081\u0082\u0083\u0084\u0085\u0086\u0087\u0088\u0089\u008a\u008b\u008c\u008d\u008e\u008f\u0090\u0091\u0092\u0093\u0094\u0095\u0096\u0097\u0098\u0099\u009a\u009b\u009c\u009d\u009e\u009f\u00a0¡¢£€¥Š§š©ª«¬\u00ad®¯°±²³Žµ¶·ž¹º»ŒœŸ¿ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ×ØÙÚÛÜÝÞßàáâãäåæçèéêëìíîïðñòóôõö÷øùúûüýþÿ",
+  "windows-1250":
+    "€\ufffd‚\ufffd„…†‡\ufffd‰Š‹ŚŤŽŹ\ufffd‘’“”•–—\ufffd™š›śťžź\u00adˇ˘Ł¤Ą¦§¨©Ş«¬\u00ad®Ż°±˛ł´µ¶·¸ąş»Ľ˝ľżŔÁÂĂÄĹĆÇČÉĘËĚÍÎĎĐŃŇÓÔŐÖ×ŘŮÚŰÜÝŢßŕáâăäĺćçčéęëěíîďđńňóôőö÷řůúűüýţ˙",
+  "windows-1251":
+    "ЂЃ‚ѓ„…†‡€‰Љ‹ЊЌЋЏђ‘’“”•–—\ufffd™љ›њќћџ\u00a0ЎўЈ¤Ґ¦§Ё©Є«¬\u00ad®Ї°±Ііґµ¶·ё№є»јЅѕїАБВГДЕЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдежзийклмнопрстуфхцчшщъыьэюя",
+  "koi8-r":
+    "─│┌┐└┘├┤┬┴┼▀▄█▌▐░▒▓⌠■∙√≈≤≥\u00a0⌡°²·÷═║╒ё╓╔╕╖╗╘╙╚╛╜╝╞╟╠╡Ё╢╣╤╥╦╧╨╩╪╫╬©юабцдефгхийклмнопярстужвьызшэщчъЮАБЦДЕФГХИЙКЛМНОПЯРСТУЖВЬЫЗШЭЩЧЪ",
+};
+
+// Nombre normalizado: "ISO-8859-1", "iso8859-1", "latin1", "utf8" -> el mismo.
+function canonCharset(raw: string): string {
+  const s = raw.trim().toLowerCase().replace(/^["']|["']$/g, "").replace(/[_\s]/g, "-");
+  const alias: Record<string, string> = {
+    "utf8": "utf-8", "utf-8": "utf-8", "usascii": "utf-8", "us-ascii": "utf-8", "ascii": "utf-8",
+    "latin1": "windows-1252", "latin-1": "windows-1252", "l1": "windows-1252",
+    "iso88591": "windows-1252", "iso-8859-1": "windows-1252", "iso8859-1": "windows-1252",
+    "cp1252": "windows-1252", "win-1252": "windows-1252",
+    "iso885915": "iso-8859-15", "iso8859-15": "iso-8859-15", "latin9": "iso-8859-15",
+    "iso88592": "iso-8859-2", "iso8859-2": "iso-8859-2",
+    "iso88595": "iso-8859-5", "iso8859-5": "iso-8859-5",
+    "iso88597": "iso-8859-7", "iso8859-7": "iso-8859-7",
+    "iso88599": "iso-8859-9", "iso8859-9": "iso-8859-9",
+    "cp1250": "windows-1250", "cp1251": "windows-1251", "koi8r": "koi8-r", "koi8-u": "koi8-r",
+  };
+  return alias[s] ?? s;
+}
+
+// Decodifica con el juego que digan; si el TextDecoder de Bun no lo conoce,
+// con la tabla de arriba; y si tampoco está, utf-8.
+function decodeWith(bytes: Uint8Array, charset: string): string {
+  const cs = canonCharset(charset);
+  const table = HIGH_HALF[cs];
+  if (table) {
+    let out = "";
+    // De a pedazos: armar un string de 4 MB con += byte a byte es lentísimo.
+    const CHUNK = 8192;
+    for (let i = 0; i < bytes.length; i += CHUNK) {
+      const part = bytes.subarray(i, Math.min(i + CHUNK, bytes.length));
+      let s = "";
+      for (let j = 0; j < part.length; j++) {
+        const b = part[j];
+        s += b < 0x80 ? String.fromCharCode(b) : table[b - 0x80];
+      }
+      out += s;
+    }
+    return out;
+  }
+  try {
+    return new TextDecoder(cs).decode(bytes);
+  } catch {
+    return new TextDecoder("utf-8").decode(bytes);
+  }
+}
+
+// ¿Los bytes son UTF-8 legal? Sirve de desempate: un feed que dice utf-8 y no
+// lo es (o que no dice nada) se decodifica como windows-1252 en vez de perder
+// todas las tildes.
+export function looksUtf8(bytes: Uint8Array): boolean {
+  const n = Math.min(bytes.length, 65536);
+  let i = 0;
+  let sawMultibyte = false;
+  while (i < n) {
+    const b = bytes[i];
+    if (b < 0x80) { i++; continue; }
+    let extra = 0;
+    if (b >= 0xc2 && b <= 0xdf) extra = 1;
+    else if (b >= 0xe0 && b <= 0xef) extra = 2;
+    else if (b >= 0xf0 && b <= 0xf4) extra = 3;
+    else return false;
+    if (i + extra >= n) break;  // cortado por el tope: no cuenta como error
+    for (let k = 1; k <= extra; k++) {
+      const c = bytes[i + k];
+      if (c < 0x80 || c > 0xbf) return false;
+    }
+    sawMultibyte = true;
+    i += extra + 1;
+  }
+  return sawMultibyte || true;
+}
+
+// El juego de caracteres declarado adentro del documento: <?xml encoding="...">,
+// <meta charset="..."> o <meta http-equiv="Content-Type" content="...charset=...">.
+// Se mira solo el principio, que es donde la declaración tiene que estar.
+export function charsetFromBody(bytes: Uint8Array): string {
+  let head = "";
+  const n = Math.min(bytes.length, 2048);
+  for (let i = 0; i < n; i++) head += String.fromCharCode(bytes[i]);
+  const xml = /<\?xml[^>]*\bencoding\s*=\s*["']([\w.:-]+)["']/i.exec(head);
+  if (xml) return xml[1];
+  const meta = /<meta[^>]*\bcharset\s*=\s*["']?([\w.:-]+)/i.exec(head);
+  if (meta) return meta[1];
+  const http = /<meta[^>]*content\s*=\s*["'][^"']*charset\s*=\s*([\w.:-]+)/i.exec(head);
+  if (http) return http[1];
+  return "";
+}
+
+// Bytes -> texto, eligiendo el juego de caracteres como manda el mundo real:
+// BOM, luego el charset del Content-Type, luego la declaración del documento y
+// al final utf-8. Por qué existe: `res.text()` asume utf-8 SIEMPRE, y medio
+// diario latinoamericano todavía sirve el RSS en iso-8859-1; los bytes
+// inválidos se tiraban y "México" llegaba al aparato como "Mxico".
+export function decodeBody(bytes: Uint8Array, contentType?: string | null): string {
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) {
+    return new TextDecoder("utf-8").decode(bytes.subarray(3));
+  }
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return decodeWith(bytes.subarray(2), "utf-16le");
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return decodeWith(bytes.subarray(2), "utf-16be");
+  const fromHeader = /charset\s*=\s*["']?([\w.:-]+)/i.exec(contentType ?? "")?.[1] ?? "";
+  const declared = canonCharset(fromHeader || charsetFromBody(bytes));
+  if (declared && declared !== "utf-8") return decodeWith(bytes, declared);
+  // Dice utf-8 (o no dice nada) pero no lo es: casi siempre es windows-1252.
+  if (!looksUtf8(bytes)) return decodeWith(bytes, "windows-1252");
+  return new TextDecoder("utf-8").decode(bytes);
+}
+
+// Igual que antes para quien solo quiere texto utf-8 (ICS, JSON, la Biblia).
+export async function textCapped(res: Response, maxBytes: number): Promise<string> {
+  return new TextDecoder().decode(await bytesCapped(res, maxBytes));
+}
+
+// Cuerpo remoto respetando el juego de caracteres que declara (feeds y páginas).
+export async function textCappedSmart(res: Response, maxBytes: number): Promise<string> {
+  return decodeBody(await bytesCapped(res, maxBytes), res.headers.get("content-type"));
 }
 
 // Algunos proveedores repiten la clave que les mandaste en el error de auth, y

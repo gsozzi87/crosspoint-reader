@@ -22,6 +22,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
+#include "activities/home/AssetSyncActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "ServerTestActivity.h"
@@ -53,6 +54,14 @@ void SettingsActivity::rebuildSettingsLists() {
   controlsSettings.clear();
   systemSettings.clear();
 
+  // En la ws397 buena parte del menú de upstream no tiene con qué funcionar: no
+  // hay teclado (todo entra por voz), no se sincroniza con KOReader, no se
+  // navegan servidores OPDS, el firmware entra por OTA desde nuestro servidor
+  // (nunca desde la SD) y la prueba de servidor la reemplazó la sincronización
+  // del hub. Nada de eso se borra: se esconde acá, en la lista del aparato, así
+  // el código upstream y la API web siguen intactos.
+  const bool isWs397 = BoardConfig::ACTIVE.board == BoardConfig::Board::WS397;
+
   // Pick up any fonts uploaded/deleted over the web server since the last
   // reader activity ran — otherwise the font-family picker shows stale list.
   sdFontSystem.refreshIfDirty();
@@ -82,6 +91,15 @@ void SettingsActivity::rebuildSettingsLists() {
           SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::FOOTNOTES) {
         continue;
       }
+      // OK es confirmar y encender a la vez (DigitalConfirmPowerHold): elegir
+      // "Dormir" acá dejaba al aparato sin botón de confirmar, y las demás
+      // opciones dependen de que el pulso corto emita Power, que solo pasa con
+      // "Dormir". Se esconde el ajuste (y el de las notas al pie que cuelga de
+      // él); en la web sigue estando por si hay que rescatarlo.
+      if (isWs397 && (setting.valuePtr == &CrossPointSettings::shortPwrBtn ||
+                      setting.valuePtr == &CrossPointSettings::pwrBtnFootnoteBack)) {
+        continue;
+      }
       controlsSettings.push_back(setting);
     } else if (setting.category == StrId::STR_CAT_SYSTEM) {
       systemSettings.push_back(setting);
@@ -94,22 +112,39 @@ void SettingsActivity::rebuildSettingsLists() {
                             SettingInfo::Action(StrId::STR_REMAP_FRONT_BUTTONS, SettingAction::RemapFrontButtons));
   }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_WIFI_NETWORKS, SettingAction::Network));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+  if (!isWs397) {
+    // Sincronización de KOReader y servidores OPDS: nada de eso se usa acá.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
+  }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
   // OTA fetches this board's own release asset (see OtaUpdater); boards whose
   // asset isn't published yet just report no update available.
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  // ws397: el "botón de bajar adjuntos". Todo lo pesado (dibujos y audios de las
+  // tarjetas, sonidos, la Biblia entera) vive en el servidor y se baja acá, o
+  // solo, detrás de la actualización de firmware.
+  if (isWs397) {
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_ASSETS_MENU, SettingAction::DownloadAssets));
+  }
+  // Actualizar por SD: en la ws397 el firmware entra por OTA desde el servidor
+  // propio, así que la entrada solo confunde.
+  if (!isWs397) {
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_SD_FIRMWARE_UPDATE, SettingAction::SdFirmwareUpdate));
+  }
   systemSettings.push_back(SettingInfo::Action(StrId::STR_LANGUAGE, SettingAction::Language));
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
+  // Distribuciones de teclado: este aparato nunca tiene teclado, todo entra por voz.
+  if (!isWs397) {
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
+  }
   // Speaker/mic diagnostic: only boards with an audio path (ws397: ES8311).
   if (BoardConfig::hasAudio()) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_AUDIO_TEST, SettingAction::AudioTest));
   }
-  // Own-server diagnostic (ServerClient): reachability, device token, offline queue.
-  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_SERVER_TEST, SettingAction::ServerTest));
+  if (isWs397) {
+    // "Prueba de servidor" era un diagnóstico de desarrollo: lo mismo lo dice
+    // Sincronizar hub, que además sirve para algo. Queda ServerTestActivity en
+    // el código por si hay que volver a colgarla de algún lado.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
     // Fondo de pantalla: elegir qué foto queda pintada cuando el aparato se suspende.
@@ -387,6 +422,9 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::CheckForUpdates:
         startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::DownloadAssets:
+        startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput), resultHandler);
+        break;
       case SettingAction::SdFirmwareUpdate:
         startActivityForResult(std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -549,7 +587,23 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.labelText = screen.theme().smallText;
   props.labelText.maxLines = 2;
   syncTabListViewport(screen, props);
+
+  // Una etiqueta que envuelve en dos renglones hace crecer SU fila, así que en
+  // la pantalla entran menos filas que las que estima la cuenta de alto fijo
+  // (listVisibleRows). Sin avisarle eso al nav, list() cortaba antes de dibujar
+  // la última fila y el ítem de abajo parecía tapado por la barra de botones:
+  // nunca se dibujaba. Con props.nav, list() informa lo que dibujó de verdad
+  // (ListNav::onListRendered), corrige el viewport y pide otra pasada; render()
+  // la hace. El ring guarda la posición 0 para la barra de pestañas, así que
+  // durante el build el nav lleva el índice de fila que la corrección espera.
+  auto& listNav = activeNav();
+  const int ring = listNav.selected;
+  listNav.selected = ring - 1;       // -1 = pestañas enfocadas, 0..N-1 = filas
+  listNav.followPending = ring > 0;  // solo hay que perseguir una fila seleccionada
+  props.nav = &listNav;
   screen.list(props);
+  listNav.selected = ring;
+  listNav.followPending = false;
 }
 
 void SettingsActivity::render(RenderLock&&) {
@@ -568,6 +622,17 @@ void SettingsActivity::render(RenderLock&&) {
                  CROSSPOINT_VERSION);
 
   renderUi();
+  // Filas que envuelven: list() avisó cuántas entraron de verdad y el nav movió
+  // el viewport para que la fila seleccionada se dibuje entera. Se repite el
+  // dibujo con el viewport corregido (acotado: cada pasada acerca el tope a la
+  // selección). Sin esto, la última fila de la lista quedaba invisible debajo
+  // de la barra de botones.
+  for (int pass = 0; activeNav().consumeRebuildNeeded() && pass < 8; ++pass) {
+    renderer.clearScreen();
+    GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_SETTINGS_TITLE),
+                   CROSSPOINT_VERSION);
+    renderUi();
+  }
 
   const int ring = ringPos();
   const auto confirmLabel =

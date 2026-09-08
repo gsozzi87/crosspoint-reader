@@ -19,7 +19,11 @@ class GamesActivity final : public Activity {
   static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
 
   int selected = 0;
+  int scroll = 0;  // primera fila visible: hay más juegos de los que entran
   int partialCount = 0;
   bool forceClean = true;
   ButtonNavigator buttonNavigator;
+
+  int visibleRows() const;
+  void clampScroll();
 };

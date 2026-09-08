@@ -1,12 +1,14 @@
 #include "OtaUpdateActivity.h"
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/home/AssetSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -35,6 +37,9 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     {
       RenderLock lock(*this);
       state = NO_UPDATE;
+      // ws397: sin firmware nuevo, toca el contenido. Las otras placas no
+      // tienen servidor propio, así que ahí no hay nada que encadenar.
+      assetsNext = BoardConfig::ACTIVE.board == BoardConfig::Board::WS397;
     }
     return;
   }
@@ -52,6 +57,9 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     {
       RenderLock lock(*this);
       state = NO_UPDATE;
+      // El firmware ya está al día: lo que puede faltar es el contenido (solo
+      // la ws397, que es la que tiene servidor propio).
+      assetsNext = BoardConfig::ACTIVE.board == BoardConfig::Board::WS397;
     }
     return;
   }
@@ -196,6 +204,10 @@ void OtaUpdateActivity::runUpdateInstall() {
     return;
   }
 
+  // El contenido se baja con la versión nueva ya corriendo: acá solo queda
+  // anotado que falta (`AssetSyncActivity::isPending()`), y la próxima pasada
+  // por esta pantalla lo baja.
+  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) AssetSyncActivity::markPending();
   {
     RenderLock lock(*this);
     state = FINISHED;
@@ -227,6 +239,16 @@ void OtaUpdateActivity::loop() {
   }
 
   if (state == NO_UPDATE) {
+    // ws397: con el firmware al día se sigue con el paquete de contenido, con el
+    // WiFi que ya levantamos. Al volver, esta pantalla se cierra (y su onExit
+    // reinicia, que es lo que hace toda pantalla con WiFi).
+    if (assetsNext) {
+      assetsNext = false;
+      state = ASSETS;
+      startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput, /*wifiReady=*/true),
+                             [this](const ActivityResult&) { finish(); });
+      return;
+    }
     int x = 0;
     int y = 0;
     if (mappedInput.wasPressed(MappedInputManager::Button::Back) || mappedInput.wasScreenTapped(x, y)) {

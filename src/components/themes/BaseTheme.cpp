@@ -10,7 +10,9 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <string>
+#include <vector>
 
 #include "I18n.h"
 #include "RecentBooksStore.h"
@@ -19,6 +21,7 @@
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "components/icons/bookmark.h"
+#include "components/icons/buttonIcons.h"
 #include "fontIds.h"
 
 // Internal constants
@@ -136,47 +139,56 @@ void BaseTheme::drawProgressBar(const GfxRenderer& renderer, Rect rect, const si
   renderer.drawCenteredText(UI_10_FONT_ID, rect.y + rect.height + 15, percentText.c_str());
 }
 
-// Centre a button-hint label inside its box. La etiqueta que entra se centra
-// vertical y horizontalmente en el recuadro; la que no entra se parte en dos
-// renglones (wrappedText() le pone "…" a lo que sigue sin entrar) y NUNCA sale
-// del recuadro, así dos ayudas vecinas no se pisan. Compartida: todos los temas
-// dibujan las ayudas igual.
-void BaseTheme::drawHintLabel(GfxRenderer& renderer, const int fontId, const char* label, const int x,
-                              const int boxWidth, const int boxTop, const int boxHeight, const int singleLineYOffset) {
-  // Aire a los costados: con 4 px el texto queda pegado al borde del recuadro.
-  // En los recuadros angostos (Lyra usa 80 px) se deja el margen viejo, si no
-  // "Selecc." dejaría de entrar y se partiría sin necesidad.
-  const int textPadding = boxWidth >= 96 ? 8 : 4;
-  const int maxTextWidth = std::max(1, boxWidth - textPadding * 2);
-  const int glyphHeight = renderer.getTextHeight(fontId);
+// La barra de ayudas de abajo: un icono del botón físico + qué hace ese botón.
+// Antes eran cuatro recuadros con texto suelto y no se entendía cuál era cuál.
+// Compartida por todos los temas; lo único que cambia por tema es el recuadro
+// (metrics.buttonHintsBoxRadius).
+namespace {
+constexpr int hintIconSize = 24;
+constexpr int hintIconTextGap = 6;
+constexpr int hintSidePadding = 8;   // margen de la barra contra el borde
+constexpr int hintCellGap = 6;       // aire entre una ayuda y la de al lado
+constexpr int hintBoxMarginTop = 2;  // el recuadro no toca el borde de la banda
+constexpr int hintBoxMarginBottom = 5;
 
-  const int textWidth = renderer.getTextWidth(fontId, label);
-  if (textWidth <= maxTextWidth) {
-    // Centrado vertical de verdad: el offset fijo dejaba el texto arrimado al
-    // borde de arriba y el recuadro con todo el aire abajo.
-    const int lineY = boxTop + std::max(singleLineYOffset, (boxHeight - glyphHeight) / 2);
-    renderer.drawText(fontId, x + (boxWidth - textWidth) / 2, lineY, label);
-    return;
+// "« Atrás" -> "Atrás": con el icono del botón al lado los adornos de flecha
+// sobran y solo comen ancho. Se sacan al dibujar, no en los yaml, así los temas
+// sin iconos (y cualquier otro uso de la etiqueta) siguen igual.
+std::string cleanHintLabel(const char* label) {
+  if (label == nullptr) return {};
+  std::string text = label;
+  const auto trim = [](std::string& value) {
+    while (!value.empty() && value.front() == ' ') value.erase(0, 1);
+    while (!value.empty() && value.back() == ' ') value.pop_back();
+  };
+  trim(text);
+  std::string stripped = text;
+  static const char* const decorations[] = {"\xc2\xab", "\xc2\xbb", "\xe2\x80\xb9", "\xe2\x80\xba", "<", ">"};
+  for (const char* decoration : decorations) {
+    const size_t len = strlen(decoration);
+    while (stripped.size() >= len && stripped.compare(0, len, decoration) == 0) stripped.erase(0, len);
+    while (stripped.size() >= len && stripped.compare(stripped.size() - len, len, decoration) == 0) {
+      stripped.erase(stripped.size() - len);
+    }
   }
+  trim(stripped);
+  // Hay pantallas cuya etiqueta ES la flecha sola ("<" y ">" en el visor del
+  // diccionario y en el Tetris): ahí no hay nada que sacar, se deja como vino.
+  return stripped.empty() ? text : stripped;
+}
 
-  // Spaced by the glyph height, not getLineHeight() — that returns the font's
-  // full advanceY (leading included), which stacks two lines taller than the
-  // button and clips the second one.
-  constexpr int lineGap = 3;
-  const int step = glyphHeight + lineGap;
-  const auto lines = renderer.wrappedText(fontId, label, maxTextWidth, 2);
-  const int block = static_cast<int>(lines.size()) * step - lineGap;
-  int lineY = boxTop + std::max(2, (boxHeight - block) / 2);
-  for (const auto& line : lines) {
-    // Cada renglón se vuelve a medir y a truncar contra el ancho útil: si el
-    // wrap devolviera algo más ancho (una palabra sola sin cortes), el texto
-    // se saldría del recuadro y se metería en el de al lado.
-    const std::string fitted = renderer.truncatedText(fontId, line.c_str(), maxTextWidth);
-    const int lineWidth = renderer.getTextWidth(fontId, fitted.c_str());
-    renderer.drawText(fontId, x + (boxWidth - lineWidth) / 2, lineY, fitted.c_str());
-    lineY += step;
+// Los iconos del SDK (freeink::Icon) son 1 bpp con el bit en 0 = tinta, y van
+// por drawPixel para que salgan bien en cualquier orientación.
+void drawHintIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y) {
+  const int stride = (icon.w + 7) / 8;
+  for (int row = 0; row < icon.h; ++row) {
+    const uint8_t* line = icon.bits + row * stride;
+    for (int col = 0; col < icon.w; ++col) {
+      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, true);
+    }
   }
 }
+}  // namespace
 
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const {
@@ -187,28 +199,80 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
   renderer.setOrientation(GfxRenderer::Orientation::Portrait);
 
+  const ThemeMetrics& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  constexpr int bandHeight = BaseMetrics::values.buttonHintsHeight;
-  constexpr int bottomMargin = 6;                          // el recuadro no toca el borde de la pantalla
-  constexpr int buttonHeight = bandHeight - bottomMargin;  // alto del recuadro
-  constexpr int textYOffset = 5;                           // mínimo entre el borde de arriba y el texto
-  // Repartidos sobre el ancho real de la pantalla en vez de una tabla fija: las
-  // posiciones viejas (25/130/245/350 con recuadros de 106) se pisaban por 1 px
-  // y dejaban los cuatro textos pegados entre sí.
-  constexpr int sidePadding = 12;
-  constexpr int buttonGap = 10;
-  const int buttonWidth = std::max(40, (pageWidth - sidePadding * 2 - buttonGap * 3) / 4);
-  const int boxTop = pageHeight - bandHeight;
-  const char* labels[] = {btn1, btn2, btn3, btn4};
+  const int bandHeight = metrics.buttonHintsHeight;
+
+  // Las etiquetas llegan SIEMPRE en el mismo orden de hardware
+  // (MappedInputManager::mapFrontLabels): btn1 = Atrás, btn2 = OK, btn3 = el
+  // botón "anterior" (en la ws397, la palanca hacia arriba), btn4 = "siguiente"
+  // (palanca hacia abajo). En pantalla van en el orden en que el usuario los
+  // piensa: arriba, abajo, OK, Atrás.
+  struct Hint {
+    const freeink::Icon* icon;
+    std::string label;
+  };
+  const Hint hints[4] = {{&icon_btn_up_24, cleanHintLabel(btn3)},
+                         {&icon_btn_down_24, cleanHintLabel(btn4)},
+                         {&icon_btn_ok_24, cleanHintLabel(btn2)},
+                         {&icon_btn_back_24, cleanHintLabel(btn1)}};
+
+  const int boxRadius = metrics.buttonHintsBoxRadius;
+  const bool hasBox = boxRadius >= 0;
+  const int cellWidth = std::max(48, (pageWidth - hintSidePadding * 2 - hintCellGap * 3) / 4);
+  const int boxTop = pageHeight - bandHeight + hintBoxMarginTop;
+  const int boxHeight = bandHeight - hintBoxMarginTop - hintBoxMarginBottom;
+  const int innerPadding = hasBox ? 6 : 2;
+  const int fontId = UI_10_FONT_ID;
+  const int textHeight = renderer.getTextHeight(fontId);
+
+  // Con el texto al lado del icono se lee mejor, pero solo entra si TODAS las
+  // etiquetas entran: si una sola no, van todas debajo del icono (que da casi
+  // el ancho entero de la celda) y la barra no queda mitad y mitad.
+  const int sideRoom = cellWidth - innerPadding * 2 - hintIconSize - hintIconTextGap;
+  const int stackRoom = cellWidth - innerPadding * 2;
+  bool sideBySide = sideRoom > 24;
+  for (const auto& hint : hints) {
+    if (!hint.label.empty() && renderer.getTextWidth(fontId, hint.label.c_str()) > sideRoom) sideBySide = false;
+  }
 
   for (int i = 0; i < 4; i++) {
-    // Only draw if the label is non-empty
-    if (labels[i] != nullptr && labels[i][0] != '\0') {
-      const int x = sidePadding + i * (buttonWidth + buttonGap);
-      renderer.fillRect(x, boxTop, buttonWidth, buttonHeight, false);
-      renderer.drawRect(x, boxTop, buttonWidth, buttonHeight);
-      drawHintLabel(renderer, UI_10_FONT_ID, labels[i], x, buttonWidth, boxTop, buttonHeight, textYOffset);
+    if (hints[i].label.empty()) continue;
+    const int x = hintSidePadding + i * (cellWidth + hintCellGap);
+
+    // Fondo blanco propio: la barra siempre gana, aunque algo se haya dibujado
+    // encima de esta franja.
+    if (hasBox) {
+      if (boxRadius > 0) {
+        renderer.fillRoundedRect(x, boxTop, cellWidth, boxHeight, boxRadius, Color::White);
+        renderer.drawRoundedRect(x, boxTop, cellWidth, boxHeight, 1, boxRadius, true);
+      } else {
+        renderer.fillRect(x, boxTop, cellWidth, boxHeight, false);
+        renderer.drawRect(x, boxTop, cellWidth, boxHeight);
+      }
+    } else {
+      renderer.fillRect(x, boxTop, cellWidth, boxHeight, false);
+    }
+
+    const int maxTextWidth = std::max(1, sideBySide ? sideRoom : stackRoom);
+    const std::string label = renderer.truncatedText(fontId, hints[i].label.c_str(), maxTextWidth);
+    const int textWidth = renderer.getTextWidth(fontId, label.c_str());
+
+    if (sideBySide) {
+      const int groupWidth = hintIconSize + hintIconTextGap + textWidth;
+      const int groupX = x + (cellWidth - groupWidth) / 2;
+      const int centerY = boxTop + boxHeight / 2;
+      // opticalCenterY es la fila del centro de masa del dibujo: alineándola con
+      // el centro del texto, la flecha no queda ni alta ni baja.
+      drawHintIcon(renderer, *hints[i].icon, groupX, centerY - hints[i].icon->opticalCenterY);
+      renderer.drawText(fontId, groupX + hintIconSize + hintIconTextGap, centerY - textHeight / 2, label.c_str());
+    } else {
+      constexpr int stackGap = 1;
+      const int blockHeight = hintIconSize + stackGap + textHeight;
+      const int top = boxTop + (boxHeight - blockHeight) / 2;
+      drawHintIcon(renderer, *hints[i].icon, x + (cellWidth - hintIconSize) / 2, top);
+      renderer.drawText(fontId, x + (cellWidth - textWidth) / 2, top + hintIconSize + stackGap, label.c_str());
     }
   }
 
@@ -665,7 +729,11 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
                         rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
     }
 
-    std::string labelStr = buttonLabel(i);
+    // Truncado contra el ancho del mosaico: centrar un texto más ancho que la
+    // fila lo saca de la pantalla por los dos costados.
+    const std::string labelStr = renderer.truncatedText(
+        UI_10_FONT_ID, buttonLabel(i).c_str(),
+        rect.width - BaseMetrics::values.contentSidePadding * 2 - BaseMetrics::values.verticalSpacing * 2);
     const char* label = labelStr.c_str();
     const int textWidth = renderer.getTextWidth(UI_10_FONT_ID, label);
     const int textX = rect.x + (rect.width - textWidth) / 2;
@@ -685,11 +753,32 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) cons
   const EpdFontFamily::Style popupFontFamily = metrics.popupTextBold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
   // Scale y position proportionally to screen height
   const int y = static_cast<int>(renderer.getScreenHeight() * metrics.popupTopOffsetRatio);
-  const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, message, popupFontFamily);
-  const int textHeight = renderer.getLineHeight(UI_12_FONT_ID);
-  const int w = textWidth + marginX * 2;
-  const int h = textHeight + marginY * 2;
-  const int x = (renderer.getScreenWidth() - w) / 2;
+  const int screenWidth = renderer.getScreenWidth();
+  // El cartel NUNCA puede pasarse de la pantalla: antes se medía el mensaje
+  // entero y, si era más ancho que los 480 px, el recuadro empezaba en una x
+  // negativa y el texto se salía por los dos costados (ráfagas de
+  // "[GFX] !! Outside range" en el log). Ahora se acota el ancho y el mensaje
+  // largo se parte en hasta tres renglones.
+  const int maxBoxWidth = std::max(80, screenWidth - metrics.contentSidePadding * 2 - frameThickness * 2);
+  const int maxTextWidth = std::max(1, maxBoxWidth - marginX * 2);
+  const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
+  constexpr int maxPopupLines = 3;
+
+  std::vector<std::string> lines;
+  if (renderer.getTextWidth(UI_12_FONT_ID, message, popupFontFamily) <= maxTextWidth) {
+    lines.emplace_back(message ? message : "");
+  } else {
+    lines = renderer.wrappedText(UI_12_FONT_ID, message, maxTextWidth, maxPopupLines, popupFontFamily);
+  }
+  if (lines.empty()) lines.emplace_back("");
+
+  int textWidth = 0;
+  for (const auto& line : lines) {
+    textWidth = std::max(textWidth, renderer.getTextWidth(UI_12_FONT_ID, line.c_str(), popupFontFamily));
+  }
+  const int w = std::min(maxBoxWidth, textWidth + marginX * 2);
+  const int h = lineHeight * static_cast<int>(lines.size()) + marginY * 2;
+  const int x = (screenWidth - w) / 2;
 
   const bool useRoundedPopup = metrics.popupCornerRadius > 0;
   if (useRoundedPopup) {
@@ -701,9 +790,13 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) cons
     renderer.fillRect(x, y, w, h, false);
   }
 
-  const int textX = x + (w - textWidth) / 2;
-  const int textY = y + marginY + metrics.popupTextBaselineOffsetY;
-  renderer.drawText(UI_12_FONT_ID, textX, textY, message, metrics.popupTextInverted, popupFontFamily);
+  int textY = y + marginY + metrics.popupTextBaselineOffsetY;
+  for (const auto& line : lines) {
+    const int lineWidth = renderer.getTextWidth(UI_12_FONT_ID, line.c_str(), popupFontFamily);
+    renderer.drawText(UI_12_FONT_ID, x + (w - lineWidth) / 2, textY, line.c_str(), metrics.popupTextInverted,
+                      popupFontFamily);
+    textY += lineHeight;
+  }
   renderer.displayBuffer();
   return Rect{x, y, w, h};
 }

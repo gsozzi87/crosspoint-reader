@@ -22,8 +22,8 @@ import { Hono } from "hono";
 import { load, save, nextId, resolveList, DEFAULT_SETTINGS, type Settings } from "./store";
 import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
-import { config, saveConfig, publicConfig, type Config } from "./config";
-import { chatText, providerLabel, searchToolLabel } from "./llm";
+import { config, saveConfig, publicConfig, MODEL_PRICES, STT_PRICES, SEARCH_PRICE_ANTHROPIC, QUERY_SHAPE, deepSeekPeak, queryCost, type Config } from "./config";
+import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSearchKind } from "./llm";
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
@@ -258,7 +258,8 @@ boardApi.post("/config/test", async (c) => {
   // La búsqueda: con Claude la hace él (no hay nada que probar acá); con las
   // compatibles la hace el servidor y sí se puede probar de verdad.
   if (!conf.search.enabled) out.search = "apagada";
-  else if (conf.llm.provider === "anthropic") out.search = `la hace Claude solo (${searchToolLabel(conf.llm.model)}, hasta ${conf.search.maxUses} por respuesta)`;
+  else if (conf.llm.provider === "anthropic") out.search = `la hace Claude solo (${searchToolLabel(conf.llm.model)}, hasta ${conf.search.maxUses} por respuesta, USD 0,01 cada una)`;
+  else if (providerSearchKind(conf.llm.baseUrl, conf.llm.model) !== "none") out.search = await searchKindLabel();
   else {
     const t1 = Date.now();
     const r = await searchWeb("noticias de hoy", "es", 3);
@@ -267,6 +268,38 @@ boardApi.post("/config/test", async (c) => {
       : `${r.provider}: ${r.results.length} resultados en ${Date.now() - t1} ms · "${(r.results[0]?.title ?? "").slice(0, 60)}"`;
   }
   return c.json({ ok: true, ...out });
+});
+
+// Cuánto sale cada consulta con cada modelo. El aparato se vende en volumen: el
+// costo por consulta es lo que decide el proveedor, así que se muestra en la
+// web al lado del selector en vez de quedar en una planilla aparte.
+boardApi.get("/costs", async (c) => {
+  const conf = await config();
+  const now = new Date();
+  const rows = Object.entries(MODEL_PRICES).map(([model, p]) => {
+    const q = queryCost(model, conf.stt.model, now);
+    return {
+      model,
+      in: q.peak === false && p.offPeakIn !== undefined ? p.offPeakIn : p.in,
+      out: q.peak === false && p.offPeakOut !== undefined ? p.offPeakOut : p.out,
+      llm: q.llm,
+      stt: q.stt,
+      total: q.total,
+      peak: q.peak,
+      note: p.note ?? "",
+      current: model === conf.llm.model,
+    };
+  });
+  rows.sort((a, b) => a.total - b.total);
+  return c.json({
+    ok: true,
+    shape: QUERY_SHAPE,
+    stt: conf.stt.model,
+    sttPerHour: STT_PRICES[conf.stt.model] ?? null,
+    searchAnthropic: SEARCH_PRICE_ANTHROPIC,
+    deepSeekPeakNow: deepSeekPeak(now),
+    rows,
+  });
 });
 
 boardApi.post("/note", async (c) => {
@@ -297,6 +330,11 @@ section.tab.on{display:block}
 .card{background:var(--card);border-radius:14px;padding:14px;margin:0 0 12px;box-shadow:0 1px 2px #0000000d}
 h2{margin:0 0 10px;font-size:16px}
 h3{margin:14px 0 4px;font-size:14px;color:var(--muted);font-weight:600}
+table.costs{border-collapse:collapse;width:100%;font-size:13px}
+table.costs th,table.costs td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);white-space:nowrap}
+table.costs th{color:var(--muted);font-weight:600}
+table.costs td.num{text-align:right;font-variant-numeric:tabular-nums}
+table.costs tr.on td{font-weight:700}
 form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px;align-items:center}
 input,select,textarea,button{font:inherit;padding:9px 11px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:var(--ink)}
 input[type=text],input[type=password],textarea{flex:1;min-width:150px}
@@ -445,6 +483,7 @@ async function refresh(){
     : "El aparato sincronizó hace " + Math.max(0, Math.round((Date.now() - last) / 60000)) + " min. Para que se lleve lo que cambiaste: mantené Atrás 1,2 s en el hub.";
 
   await loadConfig();
+  loadAssets().catch(() => {});
 }
 
 async function loadConfig(){
@@ -475,6 +514,49 @@ async function loadConfig(){
   $("searchKeyState").textContent = se.hasKey ? "clave puesta" : "sin clave (usa los buscadores gratis)";
   $("searchKeyState").className = se.hasKey ? "ok" : "muted";
   $("tokenState").textContent = cfg.deviceTokenSet ? "hay un token propio guardado" : "se usa el token del entorno";
+  loadCosts().catch(() => {});
+}
+
+// Paquete de contenido: qué hay generado y cuánto pesa.
+async function loadAssets(){
+  const r = await api("/api/assets/status");
+  const mb = (b) => (b / 1048576).toFixed(1) + " MB";
+  const langs = r.langs || [];
+  $("assetsState").textContent = langs.length
+    ? "Lucide " + r.lucide + " · " + r.cards + " tarjetas."
+    : "Todavía no se generó nada. Tocá \u201cGenerar lo que falte\u201d.";
+  $("assetsTable").innerHTML = !langs.length ? "" :
+    "<tr><th>Idioma</th><th>Versión</th><th>Archivos</th><th>Tamaño</th><th>Por tipo</th><th>Estado</th></tr>" +
+    langs.map((l) =>
+      "<tr><td>" + esc(l.lang) + "</td><td>" + esc(l.version) + "</td>" +
+      "<td class='num'>" + l.files + "</td><td class='num'>" + mb(l.bytes) + "</td>" +
+      "<td>" + Object.keys(l.byKind || {}).map((k) => k + " " + l.byKind[k].count + " (" + mb(l.byKind[k].bytes) + ")").join(", ") + "</td>" +
+      "<td>" + (l.building ? "generando " + l.done + "/" + l.total : "listo") + (l.error ? " · " + esc(l.error) : "") + "</td></tr>").join("");
+}
+
+// Precio por consulta. El número que importa es el total: es lo que se paga
+// cada vez que alguien aprieta Hablar.
+async function loadCosts(){
+  const r = await api("/api/board/costs");
+  const usd = (v) => "US$ " + v.toFixed(4).replace(".", ",");
+  $("costShape").textContent = r.shape.seconds + " s de audio, " + r.shape.inTokens +
+    " tokens de entrada y " + r.shape.outTokens + " de salida";
+  $("costs").innerHTML =
+    "<tr><th>Modelo</th><th>Entrada</th><th>Salida</th><th>Modelo</th><th>Voz a texto</th><th>Total</th><th></th></tr>" +
+    r.rows.map((x) =>
+      "<tr class='" + (x.current ? "on" : "") + "'>" +
+      "<td>" + esc(x.model) + (x.current ? " ←" : "") + "</td>" +
+      "<td class='num'>" + x.in + "</td><td class='num'>" + x.out + "</td>" +
+      "<td class='num'>" + usd(x.llm) + "</td><td class='num'>" + usd(x.stt) + "</td>" +
+      "<td class='num'>" + usd(x.total) + "</td>" +
+      "<td class='muted'>" + esc(x.note) + "</td></tr>").join("");
+  $("costNote").innerHTML =
+    "Entrada y salida en dólares por millón de tokens. Transcripción: <b>" + esc(r.stt) + "</b>" +
+    (r.sttPerHour !== null ? " (US$ " + r.sttPerHour + " la hora de audio)" : " (precio desconocido)") + ". " +
+    "DeepSeek cobra el doble en hora pico (01:00-04:00 y 06:00-10:00 UTC de lunes a viernes): ahora está " +
+    (r.deepSeekPeakNow ? "<b>en hora pico</b>" : "<b>fuera de pico</b>") + ". " +
+    "Una búsqueda en internet con Claude suma US$ " + String(r.searchAnthropic).replace(".", ",") +
+    " — más que la respuesta entera, por eso solo se busca cuando hace falta. Con Groq la búsqueda va incluida en los tokens.";
 }
 
 function fillModels(presetKey, selected){
@@ -641,6 +723,12 @@ function start(){
     } catch (e) { toast("No se pudo: " + e.message); }
   });
 
+  $("assetsReload").addEventListener("click", () => loadAssets().catch((e) => toast(e.message)));
+  $("assetsBuild").addEventListener("click", async () => {
+    await api("/api/assets/build", {});
+    toast("Generando");
+    setTimeout(() => loadAssets().catch(() => {}), 1500);
+  });
   $("aiTest").addEventListener("click", async () => {
     $("aiTestOut").textContent = "Probando...";
     try {
@@ -714,7 +802,10 @@ const PAGE = `<!doctype html>
     <ul id="reminders"></ul>
   </div>
   <div class="card"><h2>Memoria del asistente</h2>
-    <p class="muted">Lo que le pediste que recuerde ("acordate que..."). Entra en el prompt cuando le hablás.</p>
+    <p class="muted">Lo que el aparato recuerda de ti y usa para contestarte mejor. Dile
+      "recuerda que soy vegetariano" o "mi hija se llama Ana" y entra en cada pregunta que le hagas,
+      en el hub y leyendo un libro. Si lo corriges ("ya no vivo en México"), reemplaza el dato viejo.
+      Guarda hasta 40 datos; borra el que ya no quieras.</p>
     <ul id="memories"></ul>
   </div>
 </section>
@@ -783,6 +874,12 @@ const PAGE = `<!doctype html>
     <div class="row"><button id="aiSave">Guardar</button><button class="ghost" id="aiTest">Probar</button></div>
     <pre id="aiTestOut" class="muted"></pre>
   </div>
+  <div class="card"><h2>Cuánto sale cada consulta</h2>
+    <p class="muted">Una consulta de voz típica: <span id="costShape">5 s de audio, 1500 tokens de entrada y 300 de salida</span>.
+      Incluye la transcripción con el modelo que tengas elegido. Precios revisados el 08/09/2026.</p>
+    <div style="overflow-x:auto"><table id="costs" class="costs"></table></div>
+    <p class="muted" id="costNote"></p>
+  </div>
   <div class="card"><h2>Token del aparato</h2>
     <p class="muted" id="tokenState"></p>
     <div class="row"><input type="text" id="newToken" placeholder="token nuevo"><button class="danger" id="tokenChange">Cambiar</button></div>
@@ -813,6 +910,14 @@ const PAGE = `<!doctype html>
     <div class="row"><label for="setVolume">Volumen (voz y música)</label><input type="range" id="setVolume" min="0" max="100" step="5"><span id="volumeOut" class="muted"></span></div>
     <div class="row"><button id="settingsSave">Guardar ajustes</button></div>
     <p class="muted" id="lastSync"></p>
+  </div>
+  <div class="card"><h2>Paquete de contenido</h2>
+    <p class="muted">Todo lo pesado (la Biblia entera, los dibujos y la voz de las tarjetas de bebé, los sonidos)
+      se genera una sola vez en el servidor y el aparato se lo baja completo después de actualizar el firmware.
+      Por eso ya no hay un botón para bajar la Biblia por separado.</p>
+    <p class="muted" id="assetsState">—</p>
+    <div class="row"><button class="ghost" id="assetsReload">Actualizar</button><button class="ghost" id="assetsBuild">Generar lo que falte</button></div>
+    <div style="overflow-x:auto"><table id="assetsTable" class="costs"></table></div>
   </div>
 </section>
 

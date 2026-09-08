@@ -10,7 +10,7 @@
 // Transcribe en `from`, traduce con el proveedor elegido en /board -> Ajustes
 // (el mismo que usa todo lo demás) y sintetiza en `to`.
 import { Hono } from "hono";
-import { transcribeWav, toWav } from "./transcribe";
+import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
 import { synthesize } from "./tts";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 import { chatText, LlmError } from "./llm";
@@ -34,6 +34,13 @@ translate.post("/", async (c) => {
   try {
     text = await transcribeWav(toWav(await c.req.arrayBuffer(), c.req.header("content-type")), from);
   } catch (err) {
+    // Silencio: se avisa en el idioma del que habla y no se traduce nada
+    // (traducir "Gracias por ver el video" no le sirve a nadie).
+    if (err instanceof NoSpeechError) {
+      const reply = NO_SPEECH_MSG[from];
+      const audio = await synthesize(reply, from, 6);
+      return framed({ ok: true, text: "", translation: reply, from, to, code: NO_SPEECH, audio: audio?.length ?? 0 }, audio);
+    }
     const msg = err instanceof Error ? err.message : "internal";
     return c.json({ ok: false, error: msg }, msg.startsWith("stt ") ? 502 : 400);
   }

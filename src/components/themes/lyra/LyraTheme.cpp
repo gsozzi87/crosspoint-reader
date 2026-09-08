@@ -69,14 +69,16 @@ void LyraTheme::fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t
     renderer.fillRect(rect.x + 2, rect.y + 2, rect.width - 5, rect.height - 4);
     drawBatteryLightningBolt(renderer, rect.x + 4, rect.y + 2);
   } else {
-    if (percentage > 10) {
-      renderer.fillRect(rect.x + 2, rect.y + 2, 3, rect.height - 4);
-    }
-    if (percentage > 40) {
-      renderer.fillRect(rect.x + 6, rect.y + 2, 3, rect.height - 4);
-    }
-    if (percentage > 70) {
-      renderer.fillRect(rect.x + 10, rect.y + 2, 3, rect.height - 4);
+    // Tres barritas repartidas sobre el ancho del dibujo (antes estaban clavadas
+    // en x+2/x+6/x+10 y al agrandar el icono quedaba medio vacio).
+    const int usable = rect.width - 5;
+    const int barWidth = std::max(2, (usable - 2 * 2) / 3);
+    const int step = barWidth + 2;
+    const int thresholds[] = {10, 40, 70};
+    for (int i = 0; i < 3; i++) {
+      if (percentage > thresholds[i]) {
+        renderer.fillRect(rect.x + 2 + i * step, rect.y + 2, barWidth, rect.height - 4);
+      }
     }
   }
 }
@@ -100,49 +102,6 @@ void LyraTheme::drawSubHeader(const GfxRenderer& renderer, Rect rect, const char
   }
 
   renderer.drawLine(rect.x, rect.y + rect.height - 1, rect.x + rect.width - 1, rect.y + rect.height - 1, true);
-}
-
-void LyraTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                                const char* btn4) const {
-  if (gpio.hasTouch()) {
-    return;
-  }
-
-  const GfxRenderer::Orientation orig_orientation = renderer.getOrientation();
-  renderer.setOrientation(GfxRenderer::Orientation::Portrait);
-
-  const int pageHeight = renderer.getScreenHeight();
-  constexpr int buttonWidth = 80;
-  constexpr int smallButtonHeight = 15;
-  constexpr int buttonHeight = LyraMetrics::values.buttonHintsHeight;
-  constexpr int buttonY = LyraMetrics::values.buttonHintsHeight;  // Distance from bottom
-  constexpr int textYOffset = 7;                                  // Distance from top of button to text baseline
-  // Keyed to the portrait panel width: the 528-wide X3 gets more spacing than
-  // the 480-wide boards (X4, X4 Pro, and the other 800x480 panels).
-  constexpr int narrowButtonPositions[] = {58, 146, 254, 342};
-  constexpr int wideButtonPositions[] = {65, 157, 291, 383};
-  const int* buttonPositions = renderer.getScreenWidth() >= 528 ? wideButtonPositions : narrowButtonPositions;
-  const char* labels[] = {btn1, btn2, btn3, btn4};
-
-  for (int i = 0; i < 4; i++) {
-    const int x = buttonPositions[i];
-    if (labels[i] != nullptr && labels[i][0] != '\0') {
-      // Draw the filled background and border for a FULL-sized button
-      renderer.fillRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, cornerRadius, Color::White);
-      renderer.drawRoundedRect(x, pageHeight - buttonY, buttonWidth, buttonHeight, 1, cornerRadius, true, true, false,
-                               false, true);
-      drawHintLabel(renderer, SMALL_FONT_ID, labels[i], x, buttonWidth, pageHeight - buttonY, buttonHeight,
-                    textYOffset);
-    } else {
-      // Draw the filled background and border for a SMALL-sized button
-      renderer.fillRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, cornerRadius,
-                               Color::White);
-      renderer.drawRoundedRect(x, pageHeight - smallButtonHeight, buttonWidth, smallButtonHeight, 1, cornerRadius, true,
-                               true, false, false, true);
-    }
-  }
-
-  renderer.setOrientation(orig_orientation);
 }
 
 void LyraTheme::drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const {
@@ -318,7 +277,6 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     }
 
     std::string labelStr = buttonLabel(i);
-    const char* label = labelStr.c_str();
     int textX = tileRect.x + 16;
     const int lineHeight = renderer.getLineHeight(UI_12_FONT_ID);
     const int textY = tileRect.y + (LyraMetrics::values.menuRowHeight - lineHeight) / 2;
@@ -332,6 +290,9 @@ void LyraTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
       }
     }
 
-    renderer.drawText(UI_12_FONT_ID, textX, textY, label, true);
+    // Lo que no entra en el mosaico se corta acá, si no se sale por la derecha.
+    const std::string fitted =
+        renderer.truncatedText(UI_12_FONT_ID, labelStr.c_str(), tileRect.x + tileRect.width - 16 - textX);
+    renderer.drawText(UI_12_FONT_ID, textX, textY, fitted.c_str(), true);
   }
 }

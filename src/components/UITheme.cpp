@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <memory>
+#include <string>
 
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
@@ -142,11 +143,23 @@ int UITheme::getProgressBarHeight() {
   return sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0;
 }
 
-// Centered text implementation that takes the safe area into account
+// Centered text implementation that takes the safe area into account.
+// El texto se recorta contra el ancho real antes de centrarlo: si es más ancho
+// que el área, `(width - textW) / 2` da una x negativa y el renderer termina
+// dibujando fuera de la pantalla (ráfagas de "[GFX] !! Outside range" en el log
+// del aparato, un renglón por pixel). Este es el único lugar por donde pasan
+// todos los que centran contra el área segura, así que se arregla acá.
 void UITheme::drawCenteredText(const GfxRenderer& renderer, Rect screen, int fontId, int y, const char* text,
                                bool black, EpdFontFamily::Style style) {
-  const int x = screen.x + (screen.width - renderer.getTextWidth(fontId, text, style)) / 2;
-  renderer.drawText(fontId, x, y, text, black, style);
+  if (text == nullptr || *text == '\0' || screen.width <= 0) return;
+  int textWidth = renderer.getTextWidth(fontId, text, style);
+  if (textWidth <= screen.width) {
+    renderer.drawText(fontId, screen.x + (screen.width - textWidth) / 2, y, text, black, style);
+    return;
+  }
+  const std::string fitted = renderer.truncatedText(fontId, text, screen.width, style);
+  textWidth = renderer.getTextWidth(fontId, fitted.c_str(), style);
+  renderer.drawText(fontId, screen.x + std::max(0, (screen.width - textWidth) / 2), y, fitted.c_str(), black, style);
 }
 
 void UITheme::drawCenteredWrappedText(const GfxRenderer& renderer, Rect bounds, int fontId, const char* text,

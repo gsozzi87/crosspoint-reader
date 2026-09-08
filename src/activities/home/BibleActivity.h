@@ -26,8 +26,8 @@ class BibleActivity final : public Activity {
   bool preventAutoSleep() override { return state == RECORDING || state == CONNECTING || state == LOADING; }
 
  private:
-  enum State { BOOKS, CHAPTERS, READING, RECORDING, CONNECTING, LOADING, PICK_RESULT, DOWNLOADING, SEARCHING, FAILED };
-  enum Pending { NONE, LOAD_BOOKS, LOAD_CHAPTER, VOICE, DOWNLOAD };
+  enum State { BOOKS, CHAPTERS, READING, RECORDING, CONNECTING, LOADING, PICK_RESULT, SEARCHING, FAILED };
+  enum Pending { NONE, LOAD_BOOKS, LOAD_CHAPTER, VOICE };
   State state = BOOKS;
   Pending pending = NONE;
   State stateAfterConnect = BOOKS;
@@ -40,10 +40,6 @@ class BibleActivity final : public Activity {
   int bookIndex = 0;
   int chapterIndex = 0;  // 0-based
   int wantedVerse = 0;
-  // Fila elegida en la lista de libros: 0 = descargar la Biblia entera,
-  // i >= 1 = el libro i - 1. La primera fila mide más (título y explicación),
-  // así que la ventana visible se calcula a mano en vez de por páginas fijas.
-  int bookRow = 1;
   int listTop = 0;  // primera fila visible de la lista
   int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
@@ -66,11 +62,11 @@ class BibleActivity final : public Activity {
   std::string dayText;
 
   // Biblia entera en la SD: un archivo por libro ("#<capítulo>" y los versículos
-  // numerados abajo). Con eso se lee y se busca sin WiFi.
-  int downloadIndex = 0;   // libro que se está bajando
-  int downloadedKb = 0;
+  // numerados abajo). Con eso se lee y se busca sin WiFi. Ya NO se baja desde
+  // acá: viene en el paquete de contenido (`AssetSyncActivity`), que lo deja en
+  // el mismo lugar.
   int booksOnCard = 0;     // libros ya bajados (se recuenta, no se mira la SD en cada dibujo)
-  bool forceDownload = false;  // volver a bajar lo que ya está
+  bool offerAssets = false;  // el error se arregla bajando el paquete: se ofrece ir
   int searchIndex = 0;     // libro que se está revisando en una búsqueda offline
   std::string searchQuery;
   std::vector<std::string> searchWords;  // todas tienen que estar en el versículo
@@ -83,7 +79,6 @@ class BibleActivity final : public Activity {
   // Recuenta los libros que hay en la tarjeta (una pasada por la SD).
   void refreshCardCount();
   bool readChapterFromBook(int book, int chapter, std::string& text) const;
-  bool downloadBook(int book);
   // Referencia hablada ("Juan 3 16") resuelta con los nombres que ya están en la SD.
   bool parseRefLocal(const std::string& spoken, int& book, int& chapter, int& verse) const;
   // Un paso de la búsqueda offline: revisa un libro y acumula en hits.

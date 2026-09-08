@@ -190,3 +190,92 @@ export function pendingReminders(store: Store): Reminder[] {
     .filter((r) => !r.done)
     .sort((a, b) => (a.dueAt ?? "9999").localeCompare(b.dueAt ?? "9999"));
 }
+
+// ── Memoria del asistente ───────────────────────────────────────────────────
+// "Acordate que soy vegetariano", "mi hija se llama Ana": datos sobre el usuario
+// que entran en el system prompt de TODA pregunta (ask.ts y voice.ts). Hasta
+// ahora se guardaban y no los leía nadie.
+//
+// Topes: 40 hechos o 2 KB, lo que se cumpla primero, quedándose con los más
+// nuevos. Es un bloque estable entre consultas, así que va con cache_control en
+// Anthropic y al principio del system en las compatibles con OpenAI (ver
+// llm.ts): sin eso se pagan esos tokens enteros en cada consulta.
+export const MEMORY_MAX = 40;
+export const MEMORY_BYTES = 2048;
+
+export function memoryLines(store: Store): string[] {
+  const all = (store.memories ?? []).map((m) => m.text.trim()).filter(Boolean);
+  const out: string[] = [];
+  let bytes = 0;
+  // De atrás para adelante: si hay que recortar, se van los más viejos.
+  for (let i = all.length - 1; i >= 0 && out.length < MEMORY_MAX; i--) {
+    const b = new TextEncoder().encode(all[i]).length + 3;
+    if (bytes + b > MEMORY_BYTES) break;
+    bytes += b;
+    out.push(all[i]);
+  }
+  return out.reverse();
+}
+
+function foldFact(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{Letter}\p{Number}\s]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Palabras sin contenido: si no se sacan, "mi hija se llama Ana" y "mi perro se
+// llama Ana" parecen la misma memoria.
+const STOP = new Set([
+  "el", "la", "los", "las", "un", "una", "de", "del", "que", "y", "o", "a", "en", "es", "son", "mi", "mis",
+  "me", "se", "su", "sus", "por", "para", "con", "no", "si", "lo", "al", "yo", "soy", "esta", "este",
+  "the", "a", "an", "of", "to", "in", "is", "am", "my", "i", "and", "for", "with", "not",
+]);
+
+function words(s: string): string[] {
+  return foldFact(s).split(" ").filter((w) => w.length > 1 && !STOP.has(w));
+}
+
+// Parecido por palabras (Jaccard). Alcanza para "vivo en México" contra "ya no
+// vivo en México": lo importante es que la nueva pise a la vieja en vez de
+// dejar dos memorias que se contradicen.
+export function factSimilarity(a: string, b: string): number {
+  const A = new Set(words(a));
+  const B = new Set(words(b));
+  if (!A.size || !B.size) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  const union = A.size + B.size - inter;
+  const jaccard = union ? inter / union : 0;
+  // Una memoria nueva que contiene entera a la vieja ("vivo en México" ->
+  // "ya no vivo en México, ahora en Chile") también la reemplaza.
+  const contained = inter / Math.min(A.size, B.size);
+  return Math.max(jaccard, contained >= 1 ? 0.8 : 0);
+}
+
+// Guarda un hecho nuevo. Si ya hay uno parecido, lo REEMPLAZA (el usuario está
+// corrigiendo, no acumulando: "ya no vivo en México" no puede convivir con
+// "vivo en México"). Devuelve si pisó algo.
+export function rememberFact(store: Store, text: string): { replaced: string | null } {
+  store.memories ??= [];
+  const fact = text.trim();
+  if (!fact) return { replaced: null };
+  let bestIdx = -1;
+  let best = 0;
+  for (let i = 0; i < store.memories.length; i++) {
+    const sim = factSimilarity(fact, store.memories[i].text);
+    if (sim > best) { best = sim; bestIdx = i; }
+  }
+  if (bestIdx >= 0 && best >= 0.5) {
+    const replaced = store.memories[bestIdx].text;
+    store.memories.splice(bestIdx, 1);
+    store.memories.push({ id: nextId(store), text: fact, createdAt: new Date().toISOString() });
+    return { replaced };
+  }
+  store.memories.push({ id: nextId(store), text: fact, createdAt: new Date().toISOString() });
+  while (store.memories.length > 100) store.memories.shift();
+  return { replaced: null };
+}

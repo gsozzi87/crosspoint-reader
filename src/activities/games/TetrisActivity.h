@@ -9,8 +9,9 @@
 #include "util/ButtonNavigator.h"
 
 // Bloques que caen (tipo Tetris) para la ws397. Pozo clásico de 10 columnas por
-// 20 filas, con el casillero CHICO (28 px como mucho) para que entren las veinte
-// filas y el campo siga ocupando bien la pantalla; las siete piezas con sus
+// 20 filas, con el casillero de 20 px: el pozo queda de 200x400 en una pantalla
+// de 480x800, centrado y con marco, y lo que sobra a la derecha es la columna de
+// datos (lo que viene, puntaje, nivel, líneas y el mejor); las siete piezas con sus
 // rotaciones, líneas que se completan y desaparecen, puntaje, nivel que acelera
 // la caída y fin de partida cuando ya no entra la pieza nueva. Al costado va lo
 // que viene, el puntaje, el nivel, las líneas y el mejor puntaje de la sesión.
@@ -55,7 +56,9 @@ class TetrisActivity final : public Activity {
   static constexpr int COLS = 10;
   static constexpr int ROWS = 20;   // pozo clásico
   static constexpr int PIECES = 7;
-  static constexpr int MAX_CELL = 28;  // tope del casillero: bloques chicos
+  // Tope del casillero. 28 px se veían enormes: con 20 el pozo entero mide
+  // 200x400 y queda lugar de sobra al costado para los datos.
+  static constexpr int MAX_CELL = 20;
 
   static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel
   static constexpr unsigned long DROP_HOLD_MS = 1000;
@@ -125,6 +128,6 @@ class TetrisActivity final : public Activity {
   void drawSidebar(int x, int y, int w, int h, int cell) const;
   void drawMiniPiece(int shapePiece, int boxX, int boxY, int boxW, int boxH, int cell) const;
   void drawStat(int x, int y, int w, const char* label, long value) const;
-  void drawDropHint(int y) const;
+  void drawDropHint(int wellX, int wellW, int y) const;
   void drawOverlay() const;
 };
