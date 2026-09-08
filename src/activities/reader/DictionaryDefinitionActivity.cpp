@@ -12,6 +12,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/DictHtmlPages.h"
+#include "util/GrayText.h"
 #include "util/HtmlToPlainText.h"
 
 namespace {
@@ -41,6 +42,9 @@ void DictionaryDefinitionActivity::onEnter() {
     definition = htmlToPlainText(definition);
     wrapText();
   }
+  // Se entra desde otra pantalla completamente distinta: el primer dibujo va
+  // con refresco limpio para no arrastrar lo que había antes.
+  partialCount = GrayText::PARTIALS_BEFORE_CLEAN - 1;
   requestUpdate();
 }
 
@@ -285,14 +289,19 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   // of one on-demand overflow read per character on every page turn.
   const int fontId = SETTINGS.getReaderFontId();
   const int bodyStartY = contentY + metrics.topPadding + metrics.headerHeight;
+  const int bodyX = contentX + SIDE_PADDING;
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);  // scan pass: records codepoints only
+  drawBody(fontId, bodyX, bodyStartY);  // scan pass: records codepoints only
   scope.endScanAndPrewarm();
-  drawBody(fontId, contentX + SIDE_PADDING, bodyStartY);
+  drawBody(fontId, bodyX, bodyStartY);
 
   const auto labels =
       mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? "<" : ""), (currentPage + 1 < totalPages ? ">" : ""));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+  // Esta pantalla es para leer (capítulos de la Biblia, respuestas, noticias),
+  // así que el texto sale por el pipeline de grises igual que en el lector: la
+  // base en blanco y negro y encima las dos pasadas de suavizado. Solo se
+  // vuelve a dibujar el cuerpo; el encabezado y los botones quedan de la base.
+  GrayText::displayPage(renderer, partialCount, [&] { drawBody(fontId, bodyX, bodyStartY); });
 }

@@ -1,6 +1,7 @@
 #include "GamesActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalDisplay.h>
 #include <I18n.h>
 
 #include "BlackjackActivity.h"
@@ -8,7 +9,6 @@
 #include "MappedInputManager.h"
 #include "MathActivity.h"
 #include "MemoryActivity.h"
-#include "SimonActivity.h"
 #include "SudokuActivity.h"
 #include "TetrisActivity.h"
 #include "components/UITheme.h"
@@ -29,7 +29,6 @@ const GameSpec GAMES[] = {
     {StrId::STR_GAME_SUDOKU, StrId::STR_GAME_SUDOKU_DESC},
     {StrId::STR_GAME_BLACKJACK, StrId::STR_GAME_BLACKJACK_DESC},
     {StrId::STR_GAME_MEMORY, StrId::STR_GAME_MEMORY_DESC},
-    {StrId::STR_GAME_SIMON, StrId::STR_GAME_SIMON_DESC},
     {StrId::STR_GAME_MATH, StrId::STR_GAME_MATH_DESC},
     {StrId::STR_GAME_TETRIS, StrId::STR_GAME_TETRIS_DESC},
 };
@@ -52,13 +51,12 @@ void GamesActivity::loop() {
   });
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     switch (selected) {
-      case 0: startActivityForResult(std::make_unique<CheckersActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
-      case 1: startActivityForResult(std::make_unique<SudokuActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
-      case 2: startActivityForResult(std::make_unique<BlackjackActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
-      case 3: startActivityForResult(std::make_unique<MemoryActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
-      case 4: startActivityForResult(std::make_unique<SimonActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
-      case 5: startActivityForResult(std::make_unique<MathActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
-      case 6: startActivityForResult(std::make_unique<TetrisActivity>(renderer, mappedInput), [this](const ActivityResult&) { requestUpdate(); }); break;
+      case 0: startActivityForResult(std::make_unique<CheckersActivity>(renderer, mappedInput), [this](const ActivityResult&) { forceClean = true; requestUpdate(); }); break;
+      case 1: startActivityForResult(std::make_unique<SudokuActivity>(renderer, mappedInput), [this](const ActivityResult&) { forceClean = true; requestUpdate(); }); break;
+      case 2: startActivityForResult(std::make_unique<BlackjackActivity>(renderer, mappedInput), [this](const ActivityResult&) { forceClean = true; requestUpdate(); }); break;
+      case 3: startActivityForResult(std::make_unique<MemoryActivity>(renderer, mappedInput), [this](const ActivityResult&) { forceClean = true; requestUpdate(); }); break;
+      case 4: startActivityForResult(std::make_unique<MathActivity>(renderer, mappedInput), [this](const ActivityResult&) { forceClean = true; requestUpdate(); }); break;
+      case 5: startActivityForResult(std::make_unique<TetrisActivity>(renderer, mappedInput), [this](const ActivityResult&) { forceClean = true; requestUpdate(); }); break;
       default: break;
     }
     return;
@@ -84,5 +82,13 @@ void GamesActivity::render(RenderLock&&) {
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  renderer.displayBuffer();
+
+  // Regla del panel: parcial rápido al mover la selección y uno limpio cada
+  // doce (y al entrar), que si no la lista queda fantasmeada.
+  const bool clean = forceClean || ++partialCount >= PARTIALS_BEFORE_CLEAN;
+  if (clean) {
+    partialCount = 0;
+    forceClean = false;
+  }
+  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

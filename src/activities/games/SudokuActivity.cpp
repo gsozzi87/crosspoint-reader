@@ -460,7 +460,11 @@ void SudokuActivity::render(RenderLock&&) {
 
   const int contentTop = metrics.topPadding + metrics.headerHeight + metrics.verticalSpacing;
   const int bottomLimit = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // Las ayudas se arman por estado: eligiendo el número, Atrás cancela el
+  // selector en vez de salir del juego.
+  const auto labels = mappedInput.mapLabels(state == State::PICK ? tr(STR_CANCEL) : tr(STR_GAME_QUIT),
+                                            state == State::LEVEL ? tr(STR_GAME_NEW) : tr(STR_SELECT),
+                                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   char buf[64];
 
   if (state == State::LEVEL) {
@@ -530,7 +534,7 @@ void SudokuActivity::render(RenderLock&&) {
   if (state == State::PICK) {
     drawPicker(gridLeft, cell, belowGrid + 36);
   } else {
-    renderer.drawCenteredText(SMALL_FONT_ID, belowGrid + 36, tr(STR_GAME_SELECT_MOVE));
+    renderer.drawCenteredText(SMALL_FONT_ID, belowGrid + 36, tr(STR_GAME_SELECT_CELL));
   }
 
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

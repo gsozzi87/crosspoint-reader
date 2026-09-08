@@ -56,27 +56,50 @@ export function isSafeRemoteUrl(raw: string): boolean {
   return checkUrl(raw, { allowHttp: true }).ok;
 }
 
+// Navegador común. Muchos sitios (todo lo que está detrás de Cloudflare)
+// devuelven 403 a un User-Agent que no parece un navegador, y así un feed que
+// anda perfecto en el teléfono llegaba vacío al aparato.
+export const BROWSER_UA =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
+
+// Con `*/*` al final: hay servidores que contestan 406 si el Accept no incluye
+// el tipo con el que sirven el feed (a veces text/plain o application/json).
+export const FEED_ACCEPT =
+  "application/rss+xml, application/atom+xml, application/rdf+xml, application/xml;q=0.9, text/xml;q=0.9, application/json;q=0.8, text/html;q=0.7, */*;q=0.5";
+
 // fetch con timeout y saltos controlados: cada Location se vuelve a validar,
 // porque un feed público puede redirigir a 169.254.169.254 y ahí están los
-// metadatos de la nube.
-export async function safeFetch(
+// metadatos de la nube. Las redirecciones SE SIGUEN (revalidando el destino):
+// casi todo feed rebota al menos una vez (http→https, /feed→/feed/, un CDN).
+export async function safeFetchAt(
   raw: string,
   init: RequestInit = {},
   opts: { timeoutMs?: number; maxHops?: number } = {},
-): Promise<Response> {
+): Promise<{ res: Response; url: string }> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
-  const maxHops = opts.maxHops ?? 3;
+  const maxHops = opts.maxHops ?? 5;
   let url = raw;
   for (let hop = 0; hop <= maxHops; hop++) {
     const check = checkUrl(url, { allowHttp: true });
     if (!check.ok) throw new Error(check.error);
     const res = await fetch(check.url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
-    if (res.status < 300 || res.status > 399) return res;
+    if (res.status < 300 || res.status > 399) return { res, url: check.url.toString() };
     const next = res.headers.get("location");
-    if (!next) return res;
+    if (!next) return { res, url: check.url.toString() };
+    // El cuerpo del salto no se lee nunca: si no se cierra, la conexión queda
+    // colgada hasta el timeout.
+    res.body?.cancel().catch(() => {});
     url = new URL(next, check.url).toString();
   }
   throw new Error("demasiadas redirecciones");
+}
+
+export async function safeFetch(
+  raw: string,
+  init: RequestInit = {},
+  opts: { timeoutMs?: number; maxHops?: number } = {},
+): Promise<Response> {
+  return (await safeFetchAt(raw, init, opts)).res;
 }
 
 // El cuerpo remoto se corta antes de tenerlo entero en memoria: un "feed" de

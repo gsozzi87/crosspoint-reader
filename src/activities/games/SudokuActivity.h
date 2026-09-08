@@ -39,7 +39,7 @@ class SudokuActivity final : public Activity {
 
   static constexpr int LEVEL_COUNT = 3;
   static constexpr int CLEAR_OPTION = 9;          // última opción del selector
-  static constexpr int PARTIALS_BEFORE_CLEAN = 10;  // regla del panel: limpio cada 10-15 parciales
+  static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
   static constexpr unsigned long RESTART_HOLD_MS = 1000;
 
   // --- estado de la partida ---

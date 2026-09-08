@@ -23,8 +23,10 @@ import { load, save, nextId, resolveList, DEFAULT_SETTINGS, type Settings } from
 import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
 import { config, saveConfig, publicConfig, type Config } from "./config";
-import { chatText, providerLabel } from "./llm";
+import { chatText, providerLabel, searchToolLabel } from "./llm";
+import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
+import { probeFeed, checkFeed } from "./rss";
 
 export const boardApi = new Hono();
 
@@ -83,16 +85,42 @@ boardApi.post("/list/delete", async (c) => {
 
 boardApi.post("/feed", async (c) => {
   const b = await readBody(c);
-  const url = (b.url ?? "").toString().trim().slice(0, 500);
+  let url = (b.url ?? "").toString().trim().slice(0, 500);
+  if (url && !/^[a-z]+:\/\//i.test(url)) url = "https://" + url;  // "diario.com/rss"
   // El servidor es el que va a buscar el feed, y está adentro de la red privada
   // de Railway: un "feed" apuntando ahí adentro es SSRF.
   if (!isSafeRemoteUrl(url)) return c.json({ ok: false, error: "la URL del feed no sirve (tiene que ser http(s) a un host público)" }, 400);
+  // Se lee ANTES de guardarlo. Si el usuario pegó la dirección de la página del
+  // diario (y no la del feed), acá se descubre el feed de verdad por el
+  // <link rel="alternate">; si no hay ninguno, se avisa en vez de guardar algo
+  // que nunca iba a traer noticias.
+  let probe: { url: string; title: string; count: number };
+  try {
+    probe = await probeFeed(url);
+  } catch (err) {
+    return c.json({ ok: false, error: `no se pudo leer el feed: ${String(err instanceof Error ? err.message : err).slice(0, 160)}` }, 400);
+  }
   const store = await load();
   store.feeds ??= [];
-  const name = (b.name ?? "").toString().trim().slice(0, 40) || new URL(url).hostname.replace(/^www\./, "");
-  store.feeds.push({ id: nextId(store), name, url });
+  if (store.feeds.some((f) => f.url === probe.url)) return c.json({ ok: false, error: "ese feed ya está cargado" }, 400);
+  const name =
+    (b.name ?? "").toString().trim().slice(0, 40) ||
+    probe.title ||
+    new URL(probe.url).hostname.replace(/^www\./, "");
+  store.feeds.push({ id: nextId(store), name, url: probe.url });
   await save(store);
-  return c.json({ ok: true });
+  return c.json({ ok: true, name, url: probe.url, count: probe.count });
+});
+
+// "Probar" de la pestaña Noticias: baja el feed sin caché y dice cuántos
+// titulares trae o por qué no trae ninguno.
+boardApi.post("/feed/test", async (c) => {
+  const b = await readBody(c);
+  const store = await load();
+  const feed = (store.feeds ?? []).find((f) => f.id === Number(b.id));
+  if (!feed) return c.json({ ok: false, error: "no está" }, 404);
+  const r = await checkFeed(feed.url);
+  return c.json({ ok: true, name: feed.name, ...r });
 });
 
 // La foto se sube tal como salió del teléfono (JPEG, PNG, lo que sea) y la
@@ -159,7 +187,7 @@ boardApi.get("/config", async (c) => c.json({ ok: true, config: await publicConf
 boardApi.post("/config", async (c) => {
   const b = await readBody(c);
   const cfg = await config();
-  const next: Config = { llm: { ...cfg.llm }, stt: { ...cfg.stt }, deviceToken: cfg.deviceToken };
+  const next: Config = { llm: { ...cfg.llm }, stt: { ...cfg.stt }, search: { ...cfg.search }, deviceToken: cfg.deviceToken };
   // La clave del proveedor viaja como Bearer a este baseUrl: si se acepta
   // cualquier URL, cambiarla es exfiltrar la clave. Solo https a un host
   // público (o http a localhost, para un modelo corriendo en la misma máquina).
@@ -200,17 +228,24 @@ boardApi.post("/config", async (c) => {
     if (typeof b.stt.model === "string" && b.stt.model.trim()) next.stt.model = b.stt.model.trim();
     if (typeof b.stt.key === "string" && b.stt.key.trim()) next.stt.key = b.stt.key.trim();
   }
+  // Búsqueda en internet: se prende y se apaga acá porque cada búsqueda cuesta.
+  if (b.search) {
+    if (typeof b.search.enabled === "boolean") next.search.enabled = b.search.enabled;
+    if (["free", "tavily", "brave"].includes(b.search.provider)) next.search.provider = b.search.provider;
+    if (Number.isFinite(Number(b.search.maxUses))) next.search.maxUses = Math.max(1, Math.min(10, Math.round(Number(b.search.maxUses))));
+    if (typeof b.search.key === "string" && b.search.key.trim()) next.search.key = b.search.key.trim();
+  }
   if (typeof b.deviceToken === "string") next.deviceToken = b.deviceToken.trim().slice(0, 200);
   if (next.llm.provider === "openai" && !next.llm.baseUrl) return c.json({ ok: false, error: "falta la URL del proveedor" }, 400);
   await saveConfig(next);
-  console.log(`config: llm=${next.llm.provider}/${next.llm.model} stt=${next.stt.model}`);
+  console.log(`config: llm=${next.llm.provider}/${next.llm.model} stt=${next.stt.model} búsqueda=${next.search.enabled ? next.search.provider : "off"}`);
   return c.json({ ok: true, config: await publicConfig() });
 });
 
 // Prueba rápida de los dos servicios, para no descubrir que la clave está mal
 // hablándole al aparato.
 boardApi.post("/config/test", async (c) => {
-  const out: { llm?: string; stt?: string } = {};
+  const out: { llm?: string; stt?: string; search?: string } = {};
   const t0 = Date.now();
   try {
     const answer = await chatText({ system: "Respondé exactamente: ok", user: "decime ok", maxTokens: 10 });
@@ -218,8 +253,19 @@ boardApi.post("/config/test", async (c) => {
   } catch (err) {
     out.llm = `ERROR: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`;
   }
-  const cfg = (await config()).stt;
-  out.stt = cfg.key ? `${cfg.model} en ${cfg.baseUrl} (clave puesta)` : "ERROR: falta la clave de transcripción";
+  const conf = await config();
+  out.stt = conf.stt.key ? `${conf.stt.model} en ${conf.stt.baseUrl} (clave puesta)` : "ERROR: falta la clave de transcripción";
+  // La búsqueda: con Claude la hace él (no hay nada que probar acá); con las
+  // compatibles la hace el servidor y sí se puede probar de verdad.
+  if (!conf.search.enabled) out.search = "apagada";
+  else if (conf.llm.provider === "anthropic") out.search = `la hace Claude solo (${searchToolLabel(conf.llm.model)}, hasta ${conf.search.maxUses} por respuesta)`;
+  else {
+    const t1 = Date.now();
+    const r = await searchWeb("noticias de hoy", "es", 3);
+    out.search = r.error
+      ? `ERROR: ${r.error}`
+      : `${r.provider}: ${r.results.length} resultados en ${Date.now() - t1} ms · "${(r.results[0]?.title ?? "").slice(0, 60)}"`;
+  }
   return c.json({ ok: true, ...out });
 });
 
@@ -368,7 +414,9 @@ async function refresh(){
   $("notes").innerHTML = d.notes.map((n) =>
     row(n.text, "", btn("Borrar", "del", { kind: "note", id: n.id }))).join("") || empty("Sin notas");
   $("feeds").innerHTML = x.feeds.map((f) =>
-    row(f.name, f.url, btn("Borrar", "del", { kind: "feed", id: f.id }))).join("") || empty("Sin feeds");
+    row(f.name, f.url,
+      btn("Probar", "testfeed", { id: f.id }) +
+      btn("Borrar", "del", { kind: "feed", id: f.id }))).join("") || empty("Sin feeds");
   $("memories").innerHTML = x.memories.map((m) =>
     row(m.text, "", btn("Borrar", "del", { kind: "memory", id: m.id }))).join("") || empty("Nada guardado");
 
@@ -420,6 +468,12 @@ async function loadConfig(){
   $("sttModel").value = cfg.stt.model;
   $("sttKeyState").textContent = cfg.stt.hasKey ? "clave puesta" : "sin clave";
   $("sttKeyState").className = cfg.stt.hasKey ? "ok" : "bad";
+  const se = cfg.search || { enabled: false, provider: "free", maxUses: 3, hasKey: false };
+  $("searchOn").checked = !!se.enabled;
+  $("searchProvider").value = se.provider;
+  $("searchMax").value = se.maxUses;
+  $("searchKeyState").textContent = se.hasKey ? "clave puesta" : "sin clave (usa los buscadores gratis)";
+  $("searchKeyState").className = se.hasKey ? "ok" : "muted";
   $("tokenState").textContent = cfg.deviceTokenSet ? "hay un token propio guardado" : "se usa el token del entorno";
 }
 
@@ -447,6 +501,12 @@ document.addEventListener("click", async (ev) => {
     if (act === "done") await api("/api/hub/done", { kind: b.dataset.kind, id: Number(b.dataset.id) });
     else if (act === "del") await api("/api/hub/edit", { kind: b.dataset.kind, id: Number(b.dataset.id), action: "delete" });
     else if (act === "delphoto") await api("/api/photos/delete", { id: b.dataset.id });
+    else if (act === "testfeed") {
+      toast("Probando el feed...");
+      const r = await api("/api/board/feed/test", { id: Number(b.dataset.id) });
+      toast(r.error ? r.name + ": " + r.error : r.name + ": " + r.count + " titulares");
+      return;
+    }
     else if (act === "dellist") {
       if (!confirm("¿Borrar la lista " + b.dataset.name + " con todo lo que tenga?")) return;
       await api("/api/board/list/delete", { name: b.dataset.name });
@@ -529,7 +589,19 @@ function start(){
   wire("formItem", "/api/board/item", (f) => ({ list: $("listSelect").value, text: f.text.value }));
   wire("formList", "/api/board/list", (f) => ({ name: f.name.value }));
   wire("formNote", "/api/board/note", (f) => ({ text: f.text.value }));
-  wire("formFeed", "/api/board/feed", (f) => ({ name: f.name.value, url: f.url.value }));
+  // El feed se prueba al agregarlo, así que este formulario cuenta cuántos
+  // titulares trajo (o dice por qué no trajo ninguno) en vez del "Guardado" seco.
+  $("formFeed").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const f = ev.target;
+    toast("Buscando el feed...");
+    try {
+      const r = await api("/api/board/feed", { name: f.name.value, url: f.url.value });
+      f.reset();
+      await refresh();
+      toast(r.name + ": " + r.count + " titulares · " + r.url);
+    } catch (e) { toast(e.message); }
+  });
   $("formPlace").addEventListener("submit", searchPlace);
   $("photoSend").addEventListener("click", sendPhoto);
   $("tokenSave").addEventListener("click", saveToken);
@@ -552,11 +624,18 @@ function start(){
     const body = {
       llm: { provider: preset.provider, baseUrl: $("llmBase").value, model: $("llmModel").value, key: $("llmKey").value },
       stt: { baseUrl: $("sttBase").value, model: $("sttModel").value, key: $("sttKey").value },
+      search: {
+        enabled: $("searchOn").checked,
+        provider: $("searchProvider").value,
+        maxUses: Number($("searchMax").value),
+        key: $("searchKey").value,
+      },
     };
     try {
       await api("/api/board/config", body);
       $("llmKey").value = "";
       $("sttKey").value = "";
+      $("searchKey").value = "";
       await loadConfig();
       toast("Proveedor guardado");
     } catch (e) { toast("No se pudo: " + e.message); }
@@ -566,7 +645,7 @@ function start(){
     $("aiTestOut").textContent = "Probando...";
     try {
       const r = await api("/api/board/config/test", {});
-      $("aiTestOut").textContent = "Modelo: " + r.llm + "\\nTranscripción: " + r.stt;
+      $("aiTestOut").textContent = "Modelo: " + r.llm + "\\nTranscripción: " + r.stt + "\\nBúsqueda: " + r.search;
     } catch (e) { $("aiTestOut").textContent = "No se pudo probar: " + e.message; }
   });
 
@@ -667,7 +746,8 @@ const PAGE = `<!doctype html>
 
 <section class="tab" id="tab-noticias">
   <div class="card"><h2>Noticias (RSS)</h2>
-    <form id="formFeed"><input type="text" name="name" placeholder="Nombre" style="max-width:130px"><input type="text" name="url" placeholder="https://.../rss" required><button>Agregar</button></form>
+    <form id="formFeed"><input type="text" name="name" placeholder="Nombre (opcional)" style="max-width:130px"><input type="text" name="url" placeholder="https://.../rss o la página del diario" required><button>Agregar</button></form>
+    <p class="muted">Sirve la dirección del feed o la del diario: si es una página web, el servidor busca adentro el feed que declara. Se prueba antes de guardarlo.</p>
     <ul id="feeds"></ul>
   </div>
 </section>
@@ -679,6 +759,20 @@ const PAGE = `<!doctype html>
     <div class="row" id="llmBaseRow"><label for="llmBase">URL</label><input type="text" id="llmBase" placeholder="https://api.groq.com/openai/v1"></div>
     <div class="row"><label for="llmModel">Modelo</label><select id="llmModel"></select></div>
     <div class="row"><label for="llmKey">Clave</label><input type="password" id="llmKey" placeholder="dejala vacía para no cambiarla" autocomplete="off"><span id="llmKeyState" class="muted"></span></div>
+  </div>
+  <div class="card"><h2>Buscar en internet</h2>
+    <p class="muted">Para que conteste cosas de ahora (quién ganó, a cuánto está, qué pasó hoy) en vez de lo que se acuerda de cuando lo entrenaron. No busca en todas las preguntas: solo cuando hace falta.</p>
+    <p class="muted">Con Claude busca el modelo solo: cuesta unos <b>USD 0,01 por búsqueda</b> (USD 10 cada 1000) más los tokens de lo que lee. Con Groq, DeepSeek u OpenAI busca este servidor: <b>gratis</b> con Google Noticias y DuckDuckGo, o mejor con una clave de Tavily o Brave (los dos tienen plan gratis mensual).</p>
+    <div class="row"><label><input type="checkbox" id="searchOn"> Buscar cuando haga falta</label></div>
+    <div class="row"><label for="searchProvider">Buscador</label>
+      <select id="searchProvider">
+        <option value="free">Gratis (Google Noticias + DuckDuckGo)</option>
+        <option value="tavily">Tavily (con clave)</option>
+        <option value="brave">Brave (con clave)</option>
+      </select></div>
+    <div class="row"><label for="searchMax">Máximo de búsquedas por respuesta</label><input type="number" id="searchMax" min="1" max="10" style="max-width:90px"></div>
+    <div class="row"><label for="searchKey">Clave del buscador</label><input type="password" id="searchKey" placeholder="dejala vacía para no cambiarla" autocomplete="off"><span id="searchKeyState" class="muted"></span></div>
+    <p class="muted">El buscador solo se usa con los proveedores tipo OpenAI; con Claude la búsqueda ya viene incluida.</p>
   </div>
   <div class="card"><h2>Transcripción de voz</h2>
     <p class="muted">Lo que pasa tu voz a texto. Groq (whisper-large-v3-turbo) es gratis y el más rápido.</p>

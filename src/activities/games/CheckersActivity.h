@@ -18,8 +18,14 @@
 //     ejecuta la movida. En fin de partida arranca una nueva.
 //   - Atrás: cancela la ficha elegida y, si no hay nada elegido, sale.
 //   - Atrás mantenido (1 s): partida nueva en cualquier momento.
-// La ficha resaltada y el destino resaltado se marcan en el tablero con un
-// marco grueso; los candidatos, con un marco fino.
+// Dibujo del tablero (blanco y negro, sin grises): las casillas oscuras van
+// tramadas en diagonal (en negro macizo la ficha desaparece), la grilla lleva
+// línea propia y el tablero un marco doble bien grueso. Las fichas del jugador
+// son discos llenos y las de la máquina anillos huecos, las dos con un halo
+// blanco para que se despeguen de la trama; la dama lleva una corona adentro.
+// La casilla del cursor se destrama (queda blanca) y se marca con un marco
+// grueso, la ficha elegida con un marco doble y los candidatos con escuadras en
+// las esquinas: los tres se distinguen sobre cualquier casilla.
 //
 // Reglas: movimiento diagonal simple, captura OBLIGATORIA cuando existe,
 // capturas múltiples encadenadas (la cadena termina al coronar), coronación en
@@ -54,7 +60,7 @@ class CheckersActivity final : public Activity {
   static constexpr int NO_PROGRESS_DRAW = 60;    // medias jugadas sin captura ni avance de peón
   static constexpr unsigned long RESTART_HOLD_MS = 1000;
   static constexpr unsigned long ROOT_BUDGET_MS = 320;  // si una movida raíz tarda más, se baja la profundidad
-  static constexpr int PARTIALS_BEFORE_CLEAN = 10;      // regla del panel: limpio cada 10-15 parciales
+  static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
 
   // Casilla: fila * 8 + columna, fila 0 arriba (máquina) y fila 7 abajo (jugador).
   // Valores: 0 vacío, +1 peón del jugador, +2 dama del jugador, -1/-2 la máquina.
@@ -144,7 +150,9 @@ class CheckersActivity final : public Activity {
 
   // Dibujo
   void fillCircle(int cx, int cy, int r, bool state) const;
-  void fillDiamond(int cx, int cy, int r, bool state) const;
+  void drawCrown(int cx, int cy, int r, bool state) const;
+  void hatchCell(int x, int y, int cell) const;
+  void drawCornerTicks(int x, int y, int cell, int arm, int thickness) const;
   void drawPiece(int cx, int cy, int cell, int8_t piece) const;
   void drawBoard(int left, int top, int cell) const;
 };

@@ -45,7 +45,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeRecentBooksCount = 1,
                                  .homeContinueReadingInMenu = true,
                                  .homeMenuTopOffset = 20,
-                                 .buttonHintsHeight = 40,
+                                 .buttonHintsHeight = 54,  // barra de ayudas: 40 dejaba el texto pegado al borde
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,

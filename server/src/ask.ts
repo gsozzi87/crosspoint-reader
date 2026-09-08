@@ -11,7 +11,7 @@
 //     page     = texto de la página en la que está el lector (opcional)
 //     question = pregunta del lector (ya transcripta si vino por voz)
 //     lang     = "es" (default) | "en"
-//   200: { ok: true, answer, model, usage: { input, output, cached } }
+//   200: { ok: true, answer, model, sources?: [{title, url}] }
 //   4xx/5xx: { ok: false, error }
 //
 // Modelo: el elegido en /board -> Ajustes (Claude, Groq, DeepSeek o cualquier
@@ -25,7 +25,8 @@ import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 import { load } from "./store";
-import { chatText, providerLabel, LlmError } from "./llm";
+import { chatSearch, providerLabel, LlmError } from "./llm";
+import { sourcesLine } from "./websearch";
 import { readBody, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
@@ -35,11 +36,20 @@ const MAX_QUESTION = 500;
 
 export const ask = new Hono();
 
+// La fecha de hoy en el prompt: sin esto el modelo contesta con el mundo del
+// día en que lo entrenaron y ni se da cuenta.
+function today(): string {
+  return new Date().toLocaleDateString("es-AR", { timeZone: process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires", day: "2-digit", month: "long", year: "numeric" });
+}
+
 function systemPrompt(book: string, chapter: string, lang: string): string {
   const language = LANGUAGE_NAME[normalizeLang(lang)];
   return [
+    `Hoy es ${today()}.`,
     "Sos un compañero de lectura dentro de un lector de libros electrónico de tinta electrónica.",
     `El usuario está leyendo "${book}"${chapter ? `, capítulo "${chapter}"` : ""}.`,
+    "El libro va primero: buscá en internet solo si la pregunta es sobre algo de ahora que el libro no puede contener",
+    "(una fecha, un dato del mundo real). Nunca busques sobre la obra, su autor o su trama: le arruinarías el final.",
     "Primero respondé con lo que aparece en el texto adjunto (lo que el lector ya leyó). Si el texto no",
     "alcanza, respondé igual con conocimiento general en dos o tres frases y aclará en una línea que el",
     "libro todavía no lo trató. Nunca adelantes nada de lo que pasa después en la obra aunque la conozcas",
@@ -54,9 +64,12 @@ function systemPrompt(book: string, chapter: string, lang: string): string {
 function generalPrompt(lang: string, memories: string[]): string {
   const language = LANGUAGE_NAME[normalizeLang(lang)];
   return [
+    `Hoy es ${today()}.`,
     memories.length ? `Cosas que el usuario te pidió que recuerdes: ${memories.map((m) => `«${m}»`).join(" ")}` : "",
     "Sos el asistente por voz de un lector de libros electrónico de tinta electrónica.",
     "Respondé la pregunta de forma directa y útil con conocimiento general.",
+    "Si la respuesta depende de algo que pasó después de tu entrenamiento (resultados, precios, quién está en un cargo,",
+    "estrenos, noticias) buscá en internet antes de contestar en vez de responder de memoria, y decí de cuándo es el dato.",
     "La pregunta llega transcripta de voz: puede traer errores de reconocimiento; interpretala con",
     "sentido común y no comentes la transcripción.",
     `Idioma: ${language}. Texto plano, sin markdown, sin títulos ni listas con viñetas.`,
@@ -79,20 +92,24 @@ ask.post("/", async (c) => {
   const general = !text;
 
   try {
-    const answer = (
-      await chatText({
-        system: general
-          ? generalPrompt(lang, ((await load()).memories ?? []).slice(-40).map((m) => m.text))
-          : systemPrompt(book, chapter, lang),
-        cached: general ? undefined : `<leido_hasta_aca>\n${text}\n</leido_hasta_aca>`,
-        user:
-          page && !general
-            ? `El lector está en esta página:\n<pagina>\n${page}\n</pagina>\n\nPregunta: ${question}`
-            : question,
-        maxTokens: 1024,
-      })
-    ).trim();
-    return c.json({ ok: true, answer, model: await providerLabel() });
+    const r = await chatSearch({
+      system: general
+        ? generalPrompt(lang, ((await load()).memories ?? []).slice(-40).map((m) => m.text))
+        : systemPrompt(book, chapter, lang),
+      cached: general ? undefined : `<leido_hasta_aca>\n${text}\n</leido_hasta_aca>`,
+      user:
+        page && !general
+          ? `El lector está en esta página:\n<pagina>\n${page}\n</pagina>\n\nPregunta: ${question}`
+          : question,
+      maxTokens: 1024,
+      search: "auto",
+      lang,
+    });
+    // La pantalla es de tinta y paginada: las fuentes entran como un solo
+    // renglón con los dominios al final, no como una lista de links.
+    const line = r.searched ? sourcesLine(r.sources, lang) : "";
+    const answer = [r.text.trim(), line].filter(Boolean).join("\n\n");
+    return c.json({ ok: true, answer, model: await providerLabel(), sources: r.sources.slice(0, 5) });
   } catch (err) {
     // El status y el code del LlmError viajan tal cual: "falta la clave" no es
     // lo mismo que "el proveedor está caído", y antes los dos llegaban como 502.

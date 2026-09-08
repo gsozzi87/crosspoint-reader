@@ -10,11 +10,14 @@
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "components/icons/hubWidgetIcons.h"
+#include "components/icons/weatherIcons.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
 
@@ -23,8 +26,9 @@ constexpr const char* TAG = "WEATHER";
 constexpr const char* CACHE = "/.crosspoint/forecast.json";
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 constexpr time_t CACHE_MAX_AGE_S = 3600;  // más viejo que esto: refrescar al entrar
-constexpr int SIDE = 20;
+constexpr int SIDE = 22;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int BIG_FONT_ID = NOTOSANS_18_FONT_ID;  // la temperatura de ahora, bien grande
 
 void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y, bool ink = true) {
   const int stride = (icon.w + 7) / 8;
@@ -34,6 +38,66 @@ void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, 
       if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, ink);
     }
   }
+}
+
+// Dibujo para cada código WMO de Open-Meteo (los mismos tramos que usa el
+// servidor en describeWeather()): 0 despejado, 1-2 algo nublado, 3 nublado,
+// 45/48 niebla, 51-57 llovizna, 61-67 lluvia, 71-77 nieve, 80-82 chaparrones,
+// 85-86 chaparrones de nieve, 95-99 tormenta.
+const freeink::Icon& iconForWmo(const int code, const bool big) {
+  if (code < 0) return big ? icon_wx_cloudy_64 : icon_wx_cloudy_36;   // sin dato: neutro
+  if (code == 0) return big ? icon_wx_clear_64 : icon_wx_clear_36;
+  if (code <= 2) return big ? icon_wx_partly_64 : icon_wx_partly_36;
+  if (code == 3) return big ? icon_wx_cloudy_64 : icon_wx_cloudy_36;
+  if (code <= 48) return big ? icon_wx_fog_64 : icon_wx_fog_36;
+  if (code <= 57) return big ? icon_wx_drizzle_64 : icon_wx_drizzle_36;
+  if (code <= 67) return big ? icon_wx_rain_64 : icon_wx_rain_36;
+  if (code <= 77) return big ? icon_wx_snow_64 : icon_wx_snow_36;
+  if (code <= 82) return big ? icon_wx_showers_64 : icon_wx_showers_36;
+  if (code <= 86) return big ? icon_wx_snow_64 : icon_wx_snow_36;
+  return big ? icon_wx_storm_64 : icon_wx_storm_36;
+}
+
+// El servidor manda la condición ya traducida y (todavía) no manda el código
+// WMO, así que se vuelve del texto al código con la misma tabla de lang.ts: son
+// nueve frases fijas por idioma (es, en, fr, de, pt, ru). Si algún día
+// /api/hub/forecast agrega el número, gana el número y esto no se usa.
+struct CondCode {
+  const char* text;
+  int code;
+};
+// El orden importa para la pasada por subcadena: primero lo específico
+// ("Algo nublado" contiene "nublado", "Nieselregen" contiene "Regen").
+const CondCode CONDS[] = {
+    {"Algo nublado", 2},          {"Parcialmente nublado", 2}, {"Partly cloudy", 2},
+    {"Peu nuageux", 2},           {"Leicht bewölkt", 2},       {"Малооблачно", 2},
+    {"Llovizna", 51},             {"Drizzle", 51},             {"Bruine", 51},
+    {"Nieselregen", 51},          {"Chuvisco", 51},            {"Морось", 51},
+    {"Chaparrones", 80},          {"Showers", 80},             {"Averses", 80},
+    {"Schauer", 80},              {"Pancadas", 80},            {"Ливни", 80},
+    {"Tormenta", 95},             {"Thunderstorm", 95},        {"Orage", 95},
+    {"Gewitter", 95},             {"Tempestade", 95},          {"Гроза", 95},
+    {"Nieve", 71},                {"Snow", 71},                {"Neige", 71},
+    {"Schnee", 71},               {"Neve", 71},                {"Снег", 71},
+    {"Lluvia", 61},               {"Rain", 61},                {"Pluie", 61},
+    {"Regen", 61},                {"Chuva", 61},               {"Дождь", 61},
+    {"Niebla", 45},               {"Fog", 45},                 {"Brouillard", 45},
+    {"Nebel", 45},                {"Névoa", 45},               {"Туман", 45},
+    {"Nublado", 3},               {"Cloudy", 3},               {"Nuageux", 3},
+    {"Bewölkt", 3},               {"Облачно", 3},              {"Despejado", 0},
+    {"Clear", 0},                 {"Dégagé", 0},               {"Klar", 0},
+    {"Céu limpo", 0},             {"Ясно", 0},
+};
+
+int wmoFromCondition(const std::string& cond) {
+  if (cond.empty()) return -1;
+  for (const CondCode& c : CONDS) {
+    if (cond == c.text) return c.code;  // el caso normal: la frase entera
+  }
+  for (const CondCode& c : CONDS) {
+    if (cond.find(c.text) != std::string::npos) return c.code;  // por las dudas, con sufijos
+  }
+  return -1;
 }
 }  // namespace
 
@@ -69,15 +133,21 @@ bool WeatherActivity::parse(const std::string& json) {
   hum = doc["now"]["hum"] | 0;
   wind = doc["now"]["wind"] | 0;
   nowCond = doc["now"]["c"] | "";
+  nowCode = doc["now"]["w"] | -1;
+  if (nowCode < 0) nowCode = wmoFromCondition(nowCond);
   sunrise = doc["sunrise"] | "";
   sunset = doc["sunset"] | "";
   hours.clear();
   for (JsonVariantConst h : doc["hours"].as<JsonArrayConst>()) {
-    hours.push_back({h["h"] | "", h["t"] | 0, h["p"] | 0, h["c"] | ""});
+    Hour item{h["h"] | "", h["t"] | 0, h["p"] | 0, h["w"] | -1, h["c"] | ""};
+    if (item.code < 0) item.code = wmoFromCondition(item.cond);
+    hours.push_back(item);
   }
   days.clear();
   for (JsonVariantConst d : doc["days"].as<JsonArrayConst>()) {
-    days.push_back({d["d"] | "", d["date"] | "", d["max"] | 0, d["min"] | 0, d["p"] | 0, d["c"] | ""});
+    Day item{d["d"] | "", d["date"] | "", d["max"] | 0, d["min"] | 0, d["p"] | 0, d["w"] | -1, d["c"] | ""};
+    if (item.code < 0) item.code = wmoFromCondition(item.cond);
+    days.push_back(item);
   }
   return !days.empty();
 }
@@ -210,88 +280,118 @@ void WeatherActivity::render(RenderLock&&) {
                               base.empty() ? tr(STR_SERVER_NOT_CONFIGURED)
                                            : renderer.truncatedText(SMALL_FONT_ID, base.c_str(), pageWidth - 40).c_str());
   } else {
-    int y = metrics.topPadding + metrics.headerHeight + 10;
+    int y = metrics.topPadding + metrics.headerHeight + 12;
     const int w = pageWidth - 2 * SIDE;
-    char line[128];
+    const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
+    const int ui10H = renderer.getLineHeight(UI_10_FONT_ID);
+    const int ui12H = renderer.getLineHeight(UI_12_FONT_ID);
+    const int bigH = renderer.getLineHeight(BIG_FONT_ID);
+    char line[160];
+    char temp[16];
 
-    // Now: temperature big on the left, condition and the rest stacked right.
-    char big[16];
-    snprintf(big, sizeof(big), "%d°", nowTemp);
-    renderer.drawText(UI_12_FONT_ID, SIDE, y + 6, big, true, EpdFontFamily::BOLD);
-    const int bigW = renderer.getTextWidth(UI_12_FONT_ID, big, EpdFontFamily::BOLD);
-    const int tx = SIDE + bigW + 14;
-    renderer.drawText(UI_10_FONT_ID, tx, y, renderer.truncatedText(UI_10_FONT_ID, nowCond.c_str(), pageWidth - SIDE - tx).c_str(), true, EpdFontFamily::BOLD);
-    snprintf(line, sizeof(line), "%s %d°  ·  %s %d%%", tr(STR_WEATHER_FEELS), feels, tr(STR_WEATHER_HUM), hum);
-    renderer.drawText(SMALL_FONT_ID, tx, y + 22, line);
-    snprintf(line, sizeof(line), "%s %d km/h", tr(STR_WEATHER_WIND), wind);
+    // ---- Ahora: el dibujo grande a la izquierda, la temperatura al lado ----
+    const freeink::Icon& nowIcon = iconForWmo(nowCode, true);
+    drawSdkIcon(renderer, nowIcon, SIDE, y);
+    const int tx = SIDE + nowIcon.w + 20;
+    snprintf(temp, sizeof(temp), "%d°", nowTemp);
+    renderer.drawText(BIG_FONT_ID, tx, y, temp, true, EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, tx, y + bigH - 4,
+                      renderer.truncatedText(UI_10_FONT_ID, nowCond.c_str(), pageWidth - SIDE - tx).c_str(), true,
+                      EpdFontFamily::BOLD);
+    y += std::max<int>(nowIcon.h, bigH + ui10H - 4) + 14;
+
+    // El detalle en dos renglones chicos, a todo el ancho útil.
+    snprintf(line, sizeof(line), "%s %d°   ·   %s %d%%   ·   %s %d km/h", tr(STR_WEATHER_FEELS), feels,
+             tr(STR_WEATHER_HUM), hum, tr(STR_WEATHER_WIND), wind);
+    renderer.drawText(SMALL_FONT_ID, SIDE, y, renderer.truncatedText(SMALL_FONT_ID, line, w).c_str());
+    y += smallH + 4;
     if (!sunrise.empty()) {
-      snprintf(line + strlen(line), sizeof(line) - strlen(line), "  ·  %s %s  %s %s", tr(STR_WEATHER_SUNRISE),
-               sunrise.c_str(), tr(STR_WEATHER_SUNSET), sunset.c_str());
+      snprintf(line, sizeof(line), "%s %s   ·   %s %s", tr(STR_WEATHER_SUNRISE), sunrise.c_str(),
+               tr(STR_WEATHER_SUNSET), sunset.c_str());
+      renderer.drawText(SMALL_FONT_ID, SIDE, y, renderer.truncatedText(SMALL_FONT_ID, line, w).c_str());
+      y += smallH + 4;
     }
-    renderer.drawText(SMALL_FONT_ID, tx, y + 40, renderer.truncatedText(SMALL_FONT_ID, line, pageWidth - SIDE - tx).c_str());
-    y += 66;
+    y += 10;
 
-    // Hours: two rows of four columns, each with time, temperature and rain.
+    // ---- Próximas horas: cuatro columnas con hora, dibujo y temperatura ----
     if (!hours.empty()) {
       renderer.drawLine(SIDE, y, pageWidth - SIDE, y, true);
-      y += 8;
+      y += 12;
       const int cols = 4;
       const int colW = w / cols;
-      for (size_t i = 0; i < hours.size() && i < 8; ++i) {
-        const int cx = SIDE + static_cast<int>(i % cols) * colW;
-        const int cy = y + static_cast<int>(i / cols) * 48;
+      const int iconY = y + smallH + 4;
+      const int tempY = iconY + icon_wx_cloudy_36.h + 6;
+      const int shown = std::min<int>(cols, static_cast<int>(hours.size()));
+      bool anyRain = false;
+      for (int i = 0; i < shown; ++i) anyRain = anyRain || hours[i].rain >= 20;
+      for (int i = 0; i < shown; ++i) {
         const Hour& h = hours[i];
-        renderer.drawText(SMALL_FONT_ID, cx, cy, h.at.c_str());
-        snprintf(line, sizeof(line), "%d°", h.temp);
-        renderer.drawText(UI_10_FONT_ID, cx, cy + 16, line, true, EpdFontFamily::BOLD);
+        const int cc = SIDE + i * colW + colW / 2;  // centro de la columna
+        int tw = renderer.getTextWidth(SMALL_FONT_ID, h.at.c_str());
+        renderer.drawText(SMALL_FONT_ID, cc - tw / 2, y, h.at.c_str());
+        const freeink::Icon& ic = iconForWmo(h.code, false);
+        drawSdkIcon(renderer, ic, cc - ic.w / 2, iconY);
+        snprintf(temp, sizeof(temp), "%d°", h.temp);
+        tw = renderer.getTextWidth(UI_10_FONT_ID, temp, EpdFontFamily::BOLD);
+        renderer.drawText(UI_10_FONT_ID, cc - tw / 2, tempY, temp, true, EpdFontFamily::BOLD);
         if (h.rain >= 20) {
           snprintf(line, sizeof(line), "%d%%", h.rain);
-          renderer.drawText(SMALL_FONT_ID, cx + 34, cy + 20, line);
+          tw = renderer.getTextWidth(SMALL_FONT_ID, line);
+          renderer.drawText(SMALL_FONT_ID, cc - tw / 2, tempY + ui10H + 2, line);
         }
       }
-      y += hours.size() > 4 ? 100 : 52;
+      // El renglón de lluvia solo ocupa lugar si alguna hora lo usa.
+      y = tempY + ui10H + 2 + (anyRain ? smallH : 0) + 14;
     }
 
-    // Days: one row each — name, date, condition, rain, and the min/max bar.
-    renderer.drawLine(SIDE, y, pageWidth - SIDE, y, true);
-    y += 6;
-    int gmin = 99, gmax = -99;
-    for (const Day& d : days) {
-      gmin = std::min(gmin, d.min);
-      gmax = std::max(gmax, d.max);
-    }
-    if (gmax <= gmin) gmax = gmin + 1;
-    const int avail = pageHeight - metrics.buttonHintsHeight - 10 - y;
-    const int rowH = days.empty() ? 0 : std::min(56, avail / static_cast<int>(days.size()));
-    for (size_t i = 0; i < days.size(); ++i) {
-      const Day& d = days[i];
-      const int ry = y + static_cast<int>(i) * rowH;
-      const bool today = i == 0;
-      renderer.drawText(UI_10_FONT_ID, SIDE, ry + 2, d.name.c_str(), true,
-                        today ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-      renderer.drawText(SMALL_FONT_ID, SIDE + 54, ry + 4, d.date.c_str());
-      // Condition, and the rain chance right after it
-      std::string cond = d.cond;
-      if (d.rain >= 20) cond += "  " + std::to_string(d.rain) + "%";
-      renderer.drawText(SMALL_FONT_ID, SIDE + 104, ry + 4,
-                        renderer.truncatedText(SMALL_FONT_ID, cond.c_str(), w - 104 - 4).c_str());
-      // Bar with the min/max of the week, temperatures at both ends
-      const int barY = ry + 24;
-      snprintf(line, sizeof(line), "%d°", d.min);
-      const int minW = renderer.getTextWidth(SMALL_FONT_ID, line);
-      renderer.drawText(SMALL_FONT_ID, SIDE, barY - 2, line);
-      snprintf(line, sizeof(line), "%d°", d.max);
-      const int maxW = renderer.getTextWidth(UI_10_FONT_ID, line, EpdFontFamily::BOLD);
-      renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - maxW, barY - 6, line, true, EpdFontFamily::BOLD);
-      const int barX = SIDE + minW + 8;
-      const int barW = pageWidth - SIDE - maxW - 8 - barX;
-      if (barW > 20) {
-        renderer.drawLine(barX, barY + 4, barX + barW, barY + 4, true);
-        const int x0 = barX + barW * (d.min - gmin) / (gmax - gmin);
-        const int x1 = barX + barW * (d.max - gmin) / (gmax - gmin);
-        renderer.fillRoundedRect(x0, barY, std::max(x1 - x0, 6), 9, 4, Color::Black);
+    // ---- Los días: un dibujo por fila, el día y máxima/mínima ----
+    if (!days.empty()) {
+      renderer.drawLine(SIDE, y, pageWidth - SIDE, y, true);
+      y += 8;
+      const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+      const int avail = bottom - y;
+      int rowH = avail / static_cast<int>(days.size());
+      rowH = std::max(44, std::min(rowH, 84));  // que respire, pero sin pasarse
+      for (size_t i = 0; i < days.size(); ++i) {
+        const Day& d = days[i];
+        const int ry = y + static_cast<int>(i) * rowH;
+        if (ry + rowH > bottom) break;  // nunca por encima de la barra de botones
+        const int center = ry + rowH / 2;
+        const freeink::Icon& ic = iconForWmo(d.code, false);
+        drawSdkIcon(renderer, ic, SIDE, center - ic.opticalCenterY);
+
+        // Máxima (grande) y mínima (chica) pegadas al borde derecho.
+        snprintf(temp, sizeof(temp), "%d°", d.min);
+        const int minW = renderer.getTextWidth(UI_10_FONT_ID, temp);
+        const int minX = pageWidth - SIDE - minW;
+        renderer.drawText(UI_10_FONT_ID, minX, center - ui10H / 2, temp);
+        snprintf(temp, sizeof(temp), "%d°", d.max);
+        const int maxW = renderer.getTextWidth(UI_12_FONT_ID, temp, EpdFontFamily::BOLD);
+        const int maxX = minX - 16 - maxW;
+        renderer.drawText(UI_12_FONT_ID, maxX, center - ui12H / 2, temp, true, EpdFontFamily::BOLD);
+
+        // El día arriba del centro y la fecha (con la lluvia si vale la pena)
+        // abajo, siempre recortados contra el hueco que queda libre.
+        const int nameX = SIDE + ic.w + 18;
+        const int textW = maxX - 12 - nameX;
+        const bool twoLines = rowH >= ui10H + smallH + 4;  // si la fila no da, solo el día
+        if (textW > 24) {
+          const EpdFontFamily::Style nameStyle = i == 0 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+          const int nameY = twoLines ? center - ui10H - 1 : center - ui10H / 2;
+          renderer.drawText(UI_10_FONT_ID, nameX, nameY,
+                            renderer.truncatedText(UI_10_FONT_ID, d.name.c_str(), textW, nameStyle).c_str(), true,
+                            nameStyle);
+          if (twoLines) {
+            std::string sub = d.date;
+            if (d.rain >= 20) sub += "   " + std::to_string(d.rain) + "%";
+            renderer.drawText(SMALL_FONT_ID, nameX, center + 1,
+                              renderer.truncatedText(SMALL_FONT_ID, sub.c_str(), textW).c_str());
+          }
+        }
+        if (i + 1 < days.size() && ry + 2 * rowH <= bottom) {
+          renderer.drawLine(SIDE, ry + rowH, pageWidth - SIDE, ry + rowH, true);
+        }
       }
-      if (i + 1 < days.size()) renderer.drawLine(SIDE, ry + rowH - 4, pageWidth - SIDE, ry + rowH - 4, true);
     }
   }
 

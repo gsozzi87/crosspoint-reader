@@ -1,0 +1,21 @@
+# Manifest for src/components/icons/weatherIcons.h (pantalla Clima) — regenerar con:
+#   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
+#     --manifest src/components/icons/weatherIcons.manifest \
+#     --svgdir <lucide/icons> --sizes 36,64 --out src/components/icons/weatherIcons.h
+#
+# Iconos de Lucide (MIT). El header que está en el repo se generó en la nube, donde no hay
+# rsvg-convert: se rasterizó con el módulo de Python `resvg_py` (misma cuenta de bits y mismo
+# formato freeink::Icon) y con el stroke engrosado a 2,1 (64 px) y 2,6 (36 px) sobre el viewBox
+# de 24, para que la línea no desaparezca en tinta electrónica.
+#
+# 64 px = el clima de ahora; 36 px = la fila de cada día. El mapeo de código WMO a icono está en
+# iconForWmo() de src/activities/home/WeatherActivity.cpp.
+wx_clear   = sun
+wx_partly  = cloud-sun
+wx_cloudy  = cloud
+wx_fog     = cloud-fog
+wx_drizzle = cloud-drizzle
+wx_rain    = cloud-rain
+wx_snow    = cloud-snow
+wx_showers = cloud-sun-rain
+wx_storm   = cloud-lightning

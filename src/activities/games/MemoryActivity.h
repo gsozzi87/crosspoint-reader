@@ -42,12 +42,12 @@ class MemoryActivity final : public Activity {
 
   static constexpr int LEVEL_COUNT = 3;
   static constexpr int FIGURE_COUNT = 16;  // hacen falta 15 para el nivel más grande
-  static constexpr int PARTIALS_BEFORE_CLEAN = 10;   // regla del panel: limpio cada 10-15 parciales
+  static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
   static constexpr unsigned long PEEK_MS = 1200;     // lo que quedan a la vista las que no coinciden
   static constexpr unsigned long RESTART_HOLD_MS = 1000;
 
   static constexpr int MARGIN_X = 16;
-  static constexpr int GAP = 8;
+  static constexpr int GAP = 12;  // deja lugar al marco del cursor entre cartas
 
   // Estado de la partida
   State state = State::LEVEL;
@@ -87,11 +87,11 @@ class MemoryActivity final : public Activity {
   void drawInfoBar(int y) const;
   void drawBoard(int top, int bottom) const;
   void drawCard(int idx, int x, int y, int w, int h) const;
+  void drawCardBack(int x, int y, int w, int h) const;
+  void drawCursor(int x, int y, int w, int h) const;
   void drawSummary(int top, int bottom) const;
-
-  // Primitivas propias (el renderer no trae círculos ni rombos)
-  void fillCircle(int cx, int cy, int r, bool ink) const;
-  void fillDiamond(int cx, int cy, int r, bool ink) const;
-  void fillTriangle(int x1, int y1, int x2, int y2, int x3, int y3, bool ink) const;
-  void drawFigure(int figure, int cx, int cy, int r, bool ink) const;
+  // Pinta la figura `figure` centrada en (cx, cy); `big` elige el icono de 64 px
+  // en vez del de 48. `ink` es el color: negro sobre carta blanca, blanco sobre
+  // la carta emparejada (que va en negativo).
+  void drawFigure(int figure, int cx, int cy, bool big, bool ink) const;
 };

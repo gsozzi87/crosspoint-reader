@@ -8,6 +8,8 @@
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "HubStore.h"
 #include "HubSyncActivity.h"
 #include "TimerActivity.h"
@@ -24,6 +26,30 @@ namespace {
 constexpr const char* TAG = "VOICE_ACT";
 constexpr uint32_t VOICE_TIMEOUT_MS = 90000;  // Whisper + Claude on one request
 constexpr unsigned long SPEAK_MAX_MS = 15000;  // tope por si el audio no termina nunca
+constexpr int SIDE = 16;
+
+// Todo lo que el servidor sabe clasificar (server/src/voice.ts: question,
+// reminder, task, shopping, note, message, timer, alarm, translate, memory),
+// con un ejemplo por tipo. Sin esto el usuario no tiene forma de saber que se
+// le puede pedir: la pantalla de grabacion es el unico lugar donde mirarlo.
+struct VoiceExample {
+  StrId category;
+  StrId phrase;
+};
+const VoiceExample EXAMPLES[] = {
+    {StrId::STR_VOICE_CAT_ASK, StrId::STR_VOICE_SAY_ASK},
+    {StrId::STR_VOICE_CAT_REMINDER, StrId::STR_VOICE_SAY_REMINDER},
+    {StrId::STR_VOICE_CAT_REPEAT, StrId::STR_VOICE_SAY_REPEAT},
+    {StrId::STR_VOICE_CAT_TASK, StrId::STR_VOICE_SAY_TASK},
+    {StrId::STR_VOICE_CAT_SHOPPING, StrId::STR_VOICE_SAY_SHOPPING},
+    {StrId::STR_VOICE_CAT_NOTE, StrId::STR_VOICE_SAY_NOTE},
+    {StrId::STR_VOICE_CAT_MESSAGE, StrId::STR_VOICE_SAY_MESSAGE},
+    {StrId::STR_VOICE_CAT_TIMER, StrId::STR_VOICE_SAY_TIMER},
+    {StrId::STR_VOICE_CAT_ALARM, StrId::STR_VOICE_SAY_ALARM},
+    {StrId::STR_VOICE_CAT_TRANSLATE, StrId::STR_VOICE_SAY_TRANSLATE},
+    {StrId::STR_VOICE_CAT_MEMORY, StrId::STR_VOICE_SAY_MEMORY},
+};
+constexpr int EXAMPLE_COUNT = sizeof(EXAMPLES) / sizeof(EXAMPLES[0]);
 }  // namespace
 
 void VoiceActivity::onEnter() {
@@ -76,13 +102,40 @@ void VoiceActivity::stopRecording() {
     return;
   }
   wifiActivated = true;
-  if (WiFi.status() == WL_CONNECTED) {
+  beginConnect();
+}
+
+// Conexion amigable: se prueban las redes guardadas mostrando un cartel propio;
+// la pantalla de seleccion aparece solo si ninguna anda.
+void VoiceActivity::beginConnect() {
+  wifiPicker = false;
+  wifi.begin();
+  state = CONNECTING;
+  if (wifi.isDone()) {  // ya conectado o sin redes guardadas: sin cartel de mas
+    pumpConnect();
+    return;
+  }
+  requestUpdate();
+}
+
+void VoiceActivity::pumpConnect() {
+  if (wifiPicker) return;
+  const uint32_t rev = wifi.revision();
+  const FriendlyWifi::Phase phase = wifi.pump();
+  if (phase == FriendlyWifi::Phase::Connected) {
     onWifiSelectionComplete(true);
     return;
   }
-  state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
+  if (phase == FriendlyWifi::Phase::NeedsPicker) {
+    wifiPicker = true;
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+                           [this](const ActivityResult& result) {
+                             wifiPicker = false;
+                             onWifiSelectionComplete(!result.isCancelled);
+                           });
+    return;
+  }
+  if (wifi.revision() != rev) requestUpdate();
 }
 
 void VoiceActivity::onWifiSelectionComplete(const bool connected) {
@@ -265,6 +318,13 @@ void VoiceActivity::loop() {
       }
       break;
     case CONNECTING:
+      if (!wifiPicker && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        WiFi.disconnect();
+        leave();
+        break;
+      }
+      pumpConnect();
+      break;
     case REPLY:
       break;
   }
@@ -273,7 +333,8 @@ void VoiceActivity::loop() {
 void VoiceActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto pageWidth = renderer.getScreenWidth();
-  const int mid = renderer.getScreenHeight() / 2;
+  const int pageHeight = renderer.getScreenHeight();
+  const int mid = pageHeight / 2;
 
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_TALK));
@@ -286,16 +347,39 @@ void VoiceActivity::render(RenderLock&&) {
                                   renderer.truncatedText(UI_10_FONT_ID, pendingTitle.c_str(), pageWidth - 40).c_str());
         renderer.drawCenteredText(UI_10_FONT_ID, mid + 26, tr(STR_VOICE_ASK_TIME_HINT));
       } else {
-        // Ejemplos de lo que entiende: sin esto hay que adivinar qué se le puede pedir.
-        renderer.drawCenteredText(UI_12_FONT_ID, mid - 150, tr(STR_VOICE_PROMPT), true, EpdFontFamily::BOLD);
-        renderer.drawCenteredText(SMALL_FONT_ID, mid - 118, tr(STR_VOICE_HINT));
-        const StrId examples[] = {StrId::STR_VOICE_EX1, StrId::STR_VOICE_EX2, StrId::STR_VOICE_EX3,
-                                  StrId::STR_VOICE_EX4, StrId::STR_VOICE_EX5, StrId::STR_VOICE_EX6};
-        int y = mid - 76;
-        for (const StrId id : examples) {
-          renderer.drawCenteredText(UI_10_FONT_ID, y,
-                                    renderer.truncatedText(UI_10_FONT_ID, I18N.get(id), pageWidth - 30).c_str());
-          y += 34;
+        // Ejemplos de lo que entiende, agrupados por tipo: sin esto hay que
+        // adivinar que se le puede pedir. Todo pasa por truncatedText contra el
+        // ancho real; un texto centrado mas ancho que la pantalla es lo que
+        // llena el log de "[GFX] !! Outside range".
+        const int top = metrics.topPadding + metrics.headerHeight + 10;
+        renderer.drawCenteredText(
+            UI_12_FONT_ID, top,
+            renderer.truncatedText(UI_12_FONT_ID, tr(STR_VOICE_PROMPT), pageWidth - 30, EpdFontFamily::BOLD).c_str(),
+            true, EpdFontFamily::BOLD);
+        renderer.drawCenteredText(
+            SMALL_FONT_ID, top + 30,
+            renderer.truncatedText(SMALL_FONT_ID, tr(STR_VOICE_EXAMPLES_TITLE), pageWidth - 30).c_str());
+        const int listTop = top + 58;
+        const int listBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+        const int rowH = std::max(22, std::min(44, (listBottom - listTop) / EXAMPLE_COUNT));
+        // La columna de las etiquetas es la mas ancha de todas, con tope: asi
+        // el ejemplo siempre tiene lugar aunque el idioma use palabras largas.
+        int labelW = 0;
+        for (const VoiceExample& ex : EXAMPLES) {
+          labelW = std::max(labelW, renderer.getTextWidth(SMALL_FONT_ID, I18N.get(ex.category), EpdFontFamily::BOLD));
+        }
+        labelW = std::min(labelW, pageWidth / 3);
+        const int phraseX = SIDE + labelW + 10;
+        const int phraseW = pageWidth - SIDE - phraseX;
+        int y = listTop;
+        for (const VoiceExample& ex : EXAMPLES) {
+          renderer.drawText(
+              SMALL_FONT_ID, SIDE, y + 4,
+              renderer.truncatedText(SMALL_FONT_ID, I18N.get(ex.category), labelW, EpdFontFamily::BOLD).c_str(), true,
+              EpdFontFamily::BOLD);
+          renderer.drawText(UI_10_FONT_ID, phraseX, y,
+                            renderer.truncatedText(UI_10_FONT_ID, I18N.get(ex.phrase), phraseW).c_str());
+          y += rowH;
         }
       }
       confirmLabel = tr(STR_SELECT);
@@ -325,6 +409,8 @@ void VoiceActivity::render(RenderLock&&) {
       }
       break;
     case CONNECTING:
+      if (!wifiPicker) FriendlyWifi::drawStatus(renderer, wifi, mid);
+      break;
     case REPLY:
       break;
   }

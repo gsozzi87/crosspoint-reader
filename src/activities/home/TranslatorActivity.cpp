@@ -155,13 +155,40 @@ void TranslatorActivity::stopRecording() {
     return;
   }
   wifiActivated = true;
-  if (WiFi.status() == WL_CONNECTED) {
+  beginConnect();
+}
+
+// Conexion amigable: cartel propio con el paso en el que va; la pantalla
+// tecnica de seleccion solo si ninguna red guardada anda.
+void TranslatorActivity::beginConnect() {
+  wifiPicker = false;
+  wifi.begin();
+  state = CONNECTING;
+  if (wifi.isDone()) {  // ya conectado o sin redes guardadas: sin cartel de mas
+    pumpConnect();
+    return;
+  }
+  requestUpdate();
+}
+
+void TranslatorActivity::pumpConnect() {
+  if (wifiPicker) return;
+  const uint32_t rev = wifi.revision();
+  const FriendlyWifi::Phase phase = wifi.pump();
+  if (phase == FriendlyWifi::Phase::Connected) {
     onWifiSelectionComplete(true);
     return;
   }
-  state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
-                         [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
+  if (phase == FriendlyWifi::Phase::NeedsPicker) {
+    wifiPicker = true;
+    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+                           [this](const ActivityResult& result) {
+                             wifiPicker = false;
+                             onWifiSelectionComplete(!result.isCancelled);
+                           });
+    return;
+  }
+  if (wifi.revision() != rev) requestUpdate();
 }
 
 void TranslatorActivity::onWifiSelectionComplete(const bool connected) {
@@ -261,6 +288,13 @@ void TranslatorActivity::loop() {
       }
       break;
     case CONNECTING:
+      if (!wifiPicker && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        WiFi.disconnect();
+        state = IDLE;
+        requestUpdate();
+        break;
+      }
+      pumpConnect();
       break;
   }
 }
@@ -337,6 +371,10 @@ void TranslatorActivity::render(RenderLock&&) {
       break;
     case SENDING:
       snprintf(status, sizeof(status), "%s", tr(STR_TRANSLATOR_TRANSLATING));
+      break;
+    case CONNECTING:
+      // El paso de la conexion, con palabras: nada de SSIDs ni intentos.
+      snprintf(status, sizeof(status), "%s", wifiPicker ? tr(STR_NET_PICK_HINT) : wifi.statusText());
       break;
     case FAILED:
       snprintf(status, sizeof(status), "%s %s", I18N.get(failureId), failureDetail.c_str());

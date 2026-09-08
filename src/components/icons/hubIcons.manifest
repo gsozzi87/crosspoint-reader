@@ -1,7 +1,11 @@
 # Manifest for src/components/icons/hubIcons.h (ws397 hub tiles) — regenerate with:
 #   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
 #     --manifest src/components/icons/hubIcons.manifest \
-#     --svgdir <lucide/icons> --sizes 48 --out src/components/icons/hubIcons.h
+#     --svgdir <lucide/icons> --sizes 48,64 --out src/components/icons/hubIcons.h
+# Los mosaicos del hub usan los de 64 px; los de 48 quedan para quien los precise
+# fuera del hub (el linker tira los que no se usan).
+# En la nube no hay rsvg-convert: se rasteriza con resvg_py (mismo resultado byte
+# a byte que librsvg, verificado contra los 48 px que ya estaban generados).
 hub_read = book-open
 hub_ask = mic
 hub_reminders = bell

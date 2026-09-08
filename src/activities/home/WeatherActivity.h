@@ -11,6 +11,10 @@
 // hours and six days, from GET /api/hub/forecast. Mosaico Clima del hub. El
 // último pronóstico queda cacheado en la SD para abrirlo sin WiFi; si tiene más
 // de una hora se refresca solo al entrar, y Atrás mantenido lo fuerza.
+//
+// Todo se muestra con dibujos (sol, nubes, lluvia, tormenta, nieve, niebla) de
+// weatherIcons.h: uno grande para el ahora y uno chico por hora y por día. Las
+// barras de temperatura de la versión anterior no se entendían de un vistazo.
 class WeatherActivity final : public Activity {
  public:
   explicit WeatherActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -29,10 +33,13 @@ class WeatherActivity final : public Activity {
   int lastStatus = 0;    // último código HTTP de /api/hub/forecast, para el mensaje de error
   std::string failureDetail;  // "Server 503", "Transport 0": el motivo real, para no adivinar
 
+  // `code` es el código WMO de Open-Meteo: lo manda el servidor en "w" si lo
+  // trae, y si no se deduce del texto ya traducido de la condición.
   struct Hour {
     std::string at;
     int temp = 0;
     int rain = 0;
+    int code = -1;
     std::string cond;
   };
   struct Day {
@@ -41,12 +48,14 @@ class WeatherActivity final : public Activity {
     int max = 0;
     int min = 0;
     int rain = 0;
+    int code = -1;
     std::string cond;
   };
 
   std::string place;
   std::string nowCond;
   int nowTemp = 0, feels = 0, hum = 0, wind = 0;
+  int nowCode = -1;
   std::string sunrise, sunset;
   std::vector<Hour> hours;
   std::vector<Day> days;

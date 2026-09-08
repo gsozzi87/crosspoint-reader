@@ -60,5 +60,7 @@ class DictionaryDefinitionActivity final : public Activity {
   int currentPage = 0;
   int totalPages = 1;
   int linesPerPage = 1;
+  // Parciales desde el último refresco limpio (regla del panel: 10-15).
+  int partialCount = 0;
   ButtonNavigator buttonNavigator;
 };

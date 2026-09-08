@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 
+#include "HubSyncActivity.h"  // FriendlyWifi: conexion sin la pantalla tecnica
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "voice/VoiceRecorder.h"
@@ -44,10 +45,14 @@ class HubLocationActivity final : public Activity {
   bool wifiActivated = false;
   bool handoff = false;  // leaving for HubSyncActivity: keep WiFi up
   bool requestPending = false;
+  FriendlyWifi wifi;
+  bool wifiPicker = false;  // la pantalla de seleccion tiene el foco
   int chosen = -1;
 
   void startRecording();
   void stopRecording();
+  void beginConnect();
+  void pumpConnect();
   void onWifiSelectionComplete(bool connected);
   void performTranscribe();
   void performSearch();

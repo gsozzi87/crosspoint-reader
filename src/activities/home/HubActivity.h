@@ -25,7 +25,8 @@ class HubActivity final : public Activity {
  private:
   // Clima es un mosaico propio: en esta placa OK no tiene pulsación larga (OK
   // mantenido apaga), así que el "OK largo: clima" del hub nunca se podía usar.
-  // 13 mosaicos en 3 columnas: la última fila queda con uno solo y se centra.
+  // 12 mosaicos = 3 columnas x 4 filas justas (nada de fila incompleta). Fotos
+  // salió del hub: dejó de ser un visor y es "elegir fondo de pantalla" en Ajustes.
   enum Tile {
     TILE_READ = 0,
     TILE_TALK,
@@ -36,7 +37,6 @@ class HubActivity final : public Activity {
     TILE_BIBLE,
     TILE_MUSIC,
     TILE_NEWS,
-    TILE_PHOTOS,
     TILE_GAMES,
     TILE_WEATHER,
     TILE_SETTINGS,

@@ -4,6 +4,8 @@
 #include <HalDisplay.h>
 #include <I18n.h>
 
+#include <cstdio>
+
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -21,8 +23,10 @@ constexpr int BACK_ROW_VALUE = 5;  // peón que se queda cuidando la fila propia
 constexpr int CENTER_VALUE = 3;
 
 constexpr int INFO_HEIGHT = 108;
-constexpr int BOARD_MARGIN = 16;
-constexpr int MAX_CELL = 56;
+constexpr int BOARD_MARGIN = 24;   // deja lugar al marco doble del tablero
+constexpr int MAX_CELL = 54;
+constexpr int FRAME_GAP = 8;       // separación entre el marco de afuera y el tablero
+constexpr int HATCH_STEP = 5;      // paso de la trama de las casillas oscuras
 }  // namespace
 
 void CheckersActivity::onEnter() {
@@ -74,13 +78,17 @@ void CheckersActivity::refreshHumanMoves() {
   if (pieceCursor >= pieceCount) pieceCursor = 0;
 }
 
+// Con una sola ficha (o un solo destino) la palanca no mueve nada: si igual se
+// repintara, el panel destellaría de gusto.
 void CheckersActivity::moveCursor(const int dir) {
-  if (state == PICK_PIECE && pieceCount > 0) {
+  if (state == PICK_PIECE && pieceCount > 1) {
     pieceCursor = dir > 0 ? ButtonNavigator::nextIndex(pieceCursor, pieceCount)
                           : ButtonNavigator::previousIndex(pieceCursor, pieceCount);
-  } else if (state == PICK_MOVE && destCount > 0) {
+  } else if (state == PICK_MOVE && destCount > 1) {
     destCursor = dir > 0 ? ButtonNavigator::nextIndex(destCursor, destCount)
                          : ButtonNavigator::previousIndex(destCursor, destCount);
+  } else {
+    return;
   }
   requestUpdate();
 }
@@ -383,6 +391,7 @@ void CheckersActivity::loop() {
 // ----------------------------------------------------------------- dibujo --
 
 void CheckersActivity::fillCircle(const int cx, const int cy, const int r, const bool state) const {
+  if (r <= 0) return;
   for (int dy = -r; dy <= r; ++dy) {
     int dx = 0;
     while ((dx + 1) * (dx + 1) + dy * dy <= r * r) ++dx;
@@ -390,69 +399,135 @@ void CheckersActivity::fillCircle(const int cx, const int cy, const int r, const
   }
 }
 
-void CheckersActivity::fillDiamond(const int cx, const int cy, const int r, const bool state) const {
-  for (int dy = -r; dy <= r; ++dy) {
-    const int w = r - (dy < 0 ? -dy : dy);
-    renderer.fillRect(cx - w, cy + dy, 2 * w + 1, 1, state);
+// Corona de tres puntas con su base: la marca de la dama. Entra en un cuadrado
+// de lado 2r y se lee incluso en la casilla más chica.
+void CheckersActivity::drawCrown(const int cx, const int cy, const int r, const bool state) const {
+  if (r < 4) {
+    renderer.fillRect(cx - r, cy - r, 2 * r + 1, 2 * r + 1, state);
+    return;
+  }
+  const int half = r / 2;
+  const int xs[7] = {cx - r, cx - half, cx, cx + half, cx + r, cx + r, cx - r};
+  const int ys[7] = {cy - r, cy - r / 4, cy - r, cy - r / 4, cy - r, cy + half, cy + half};
+  renderer.fillPolygon(xs, ys, 7, state);
+  renderer.fillRect(cx - r, cy + half - 1, 2 * r + 1, r / 2 + 2, state);
+}
+
+// Trama de la casilla oscura: rayas en diagonal recortadas a mano contra la
+// casilla (drawLine no recorta sola). En negro macizo la ficha desaparecía.
+void CheckersActivity::hatchCell(const int x, const int y, const int cell) const {
+  for (int d = -cell; d < cell; d += HATCH_STEP) {
+    const int t0 = d < 0 ? -d : 0;
+    const int t1 = cell - d < cell ? cell - d : cell;
+    if (t1 > t0) renderer.drawLine(x + d + t0, y + t0, x + d + t1 - 1, y + t1 - 1, true);
   }
 }
 
-// Jugador: círculo relleno. Máquina: anillo hueco. La dama lleva un rombo en el
-// medio, en el color contrario al de la ficha.
+// Escuadras en las cuatro esquinas de una casilla: marcan los candidatos sin
+// tapar la ficha ni confundirse con el marco del cursor.
+void CheckersActivity::drawCornerTicks(const int x, const int y, const int cell, const int arm,
+                                       const int thickness) const {
+  const int t = thickness;
+  renderer.fillRect(x, y, arm, t, true);
+  renderer.fillRect(x, y, t, arm, true);
+  renderer.fillRect(x + cell - arm, y, arm, t, true);
+  renderer.fillRect(x + cell - t, y, t, arm, true);
+  renderer.fillRect(x, y + cell - t, arm, t, true);
+  renderer.fillRect(x, y + cell - arm, t, arm, true);
+  renderer.fillRect(x + cell - arm, y + cell - t, arm, t, true);
+  renderer.fillRect(x + cell - t, y + cell - arm, t, arm, true);
+}
+
+// Jugador: disco lleno. Máquina: anillo hueco. Las dos con un halo blanco
+// alrededor para despegarlas de la trama de la casilla. La dama lleva una
+// corona en el medio, en el color contrario al de la ficha.
 void CheckersActivity::drawPiece(const int cx, const int cy, const int cell, const int8_t piece) const {
   const int r = cell / 2 - 5;
   if (r < 4) return;
+  fillCircle(cx, cy, r + 2, false);  // halo: la trama no toca la ficha
   if (piece > 0) {
     fillCircle(cx, cy, r, true);
-    if (isKing(piece)) fillDiamond(cx, cy, r / 2, false);
+    if (isKing(piece)) drawCrown(cx, cy, r / 2, false);
   } else {
     fillCircle(cx, cy, r, true);
-    fillCircle(cx, cy, r - 4, false);
-    if (isKing(piece)) fillDiamond(cx, cy, r / 2, true);
+    fillCircle(cx, cy, r - 5 > 2 ? r - 5 : 2, false);
+    if (isKing(piece)) drawCrown(cx, cy, r / 2 - 1, true);
   }
 }
 
 void CheckersActivity::drawBoard(const int left, const int top, const int cell) const {
   const int size = cell * 8;
-  renderer.drawRect(left - 3, top - 3, size + 6, size + 6, 2, true);
 
-  for (int sq = 0; sq < CELLS; ++sq) {
-    const int r = rowOf(sq), c = colOf(sq);
-    const int x = left + c * cell, y = top + r * cell;
-    const bool dark = ((r + c) & 1) != 0;
-    if (dark) {
-      // Trama liviana: marca la casilla jugable sin tapar la ficha.
-      for (int py = y + 3; py < y + cell - 2; py += 5)
-        for (int px = x + 3; px < x + cell - 2; px += 5) renderer.drawPixel(px, py, true);
-    }
-    // Últimas casillas de la máquina: un cuadradito en la esquina.
-    if (sq == lastFrom || sq == lastTo) renderer.fillRect(x + 3, y + 3, 7, 7, true);
-    if (board[sq] != 0) drawPiece(x + cell / 2, y + cell / 2, cell, board[sq]);
+  // Marco doble: uno grueso por fuera y una línea pegada al tablero.
+  renderer.drawRect(left - FRAME_GAP, top - FRAME_GAP, size + 2 * FRAME_GAP, size + 2 * FRAME_GAP, 4, true);
+  renderer.drawRect(left - 2, top - 2, size + 4, size + 4, 2, true);
+
+  // Qué casilla está resaltada ahora mismo.
+  int cursorSq = -1;
+  int sourceSq = -1;
+  if (state == PICK_PIECE && pieceCount > 0) cursorSq = pieceList[pieceCursor];
+  if (state == PICK_MOVE && destCount > 0) {
+    cursorSq = humanMoves.items[destMove[destCursor]].to();
+    sourceSq = humanMoves.items[destMove[0]].from();
   }
 
-  if (state == PICK_PIECE || state == PICK_MOVE) {
-    // Candidatos con marco fino.
-    if (state == PICK_PIECE) {
-      for (uint8_t i = 0; i < pieceCount; ++i) {
-        const int sq = pieceList[i];
-        renderer.drawRect(left + colOf(sq) * cell + 5, top + rowOf(sq) * cell + 5, cell - 10, cell - 10, 1, true);
-      }
-    } else if (destCount > 0) {
-      const int src = humanMoves.items[destMove[0]].from();
-      renderer.drawRect(left + colOf(src) * cell + 2, top + rowOf(src) * cell + 2, cell - 4, cell - 4, 2, true);
-      for (uint8_t i = 0; i < destCount; ++i) {
-        const int sq = humanMoves.items[destMove[i]].to();
-        renderer.drawRect(left + colOf(sq) * cell + 5, top + rowOf(sq) * cell + 5, cell - 10, cell - 10, 1, true);
-      }
+  // Fondo: trama en las oscuras y blanco en las claras. Las dos casillas que
+  // importan (la ficha elegida y el cursor) van sin trama: destramarlas es lo
+  // que las hace inconfundibles sobre cualquier casilla.
+  for (int sq = 0; sq < CELLS; ++sq) {
+    const int r = rowOf(sq), c = colOf(sq);
+    if (((r + c) & 1) == 0 || sq == cursorSq || sq == sourceSq) continue;
+    hatchCell(left + c * cell, top + r * cell, cell);
+  }
+
+  // Grilla: una línea por casilla, así se cuentan las filas de un vistazo.
+  for (int i = 1; i < 8; ++i) {
+    renderer.drawLine(left + i * cell, top, left + i * cell, top + size - 1, true);
+    renderer.drawLine(left, top + i * cell, left + size - 1, top + i * cell, true);
+  }
+
+  // La última movida de la máquina: un cuadradito macizo en dos esquinas
+  // opuestas de la casilla, que no se confunde con las marcas del jugador.
+  for (int sq = 0; sq < CELLS; ++sq) {
+    if (sq != lastFrom && sq != lastTo) continue;
+    const int x = left + colOf(sq) * cell, y = top + rowOf(sq) * cell;
+    renderer.fillRect(x + 3, y + 3, 7, 7, true);
+    renderer.fillRect(x + cell - 10, y + cell - 10, 7, 7, true);
+  }
+
+  for (int sq = 0; sq < CELLS; ++sq) {
+    if (board[sq] == 0) continue;
+    drawPiece(left + colOf(sq) * cell + cell / 2, top + rowOf(sq) * cell + cell / 2, cell, board[sq]);
+  }
+
+  if (state != PICK_PIECE && state != PICK_MOVE) return;
+
+  // Candidatos: escuadras gruesas en las esquinas.
+  if (state == PICK_PIECE) {
+    for (uint8_t i = 0; i < pieceCount; ++i) {
+      const int sq = pieceList[i];
+      if (sq == cursorSq) continue;
+      drawCornerTicks(left + colOf(sq) * cell, top + rowOf(sq) * cell, cell, cell / 3, 3);
     }
-    // El que está bajo el cursor, con marco grueso.
-    int cursorSq = -1;
-    if (state == PICK_PIECE && pieceCount > 0) cursorSq = pieceList[pieceCursor];
-    if (state == PICK_MOVE && destCount > 0) cursorSq = humanMoves.items[destMove[destCursor]].to();
-    if (cursorSq >= 0) {
-      const int x = left + colOf(cursorSq) * cell, y = top + rowOf(cursorSq) * cell;
-      renderer.drawRect(x + 1, y + 1, cell - 2, cell - 2, 3, true);
+  } else {
+    for (uint8_t i = 0; i < destCount; ++i) {
+      const int sq = humanMoves.items[destMove[i]].to();
+      if (sq == cursorSq) continue;
+      drawCornerTicks(left + colOf(sq) * cell, top + rowOf(sq) * cell, cell, cell / 3, 3);
     }
+  }
+
+  // La ficha ya elegida: marco fino sobre su casilla sin trama (siempre tiene
+  // la ficha encima, así que no se confunde con el cursor).
+  if (sourceSq >= 0) {
+    const int x = left + colOf(sourceSq) * cell, y = top + rowOf(sourceSq) * cell;
+    renderer.drawRect(x + 1, y + 1, cell - 2, cell - 2, 2, true);
+  }
+
+  // El cursor: marco macizo pegado al borde de la casilla, sobre fondo blanco.
+  if (cursorSq >= 0) {
+    const int x = left + colOf(cursorSq) * cell, y = top + rowOf(cursorSq) * cell;
+    renderer.drawRect(x, y, cell, cell, 4, true);
   }
 }
 
@@ -485,10 +560,16 @@ void CheckersActivity::render(RenderLock&&) {
     title = result == WON ? tr(STR_GAME_WON) : result == LOST ? tr(STR_GAME_LOST) : tr(STR_GAME_DRAW);
   renderer.drawCenteredText(UI_12_FONT_ID, infoTop, title, true, EpdFontFamily::BOLD);
 
-  const char* sub = "";
-  if (state == PICK_PIECE) sub = tr(STR_GAME_SELECT_PIECE);
-  if (state == PICK_MOVE) sub = tr(STR_GAME_SELECT_MOVE);
-  if (state == GAME_OVER) sub = tr(STR_GAME_OVER);
+  // Debajo, qué está eligiendo el jugador y en qué lugar de la lista va: sin eso
+  // no se sabe si la palanca hizo algo.
+  char sub[96] = "";
+  if (state == PICK_PIECE && pieceCount > 0) {
+    snprintf(sub, sizeof(sub), "%s  (%d/%d)", tr(STR_GAME_SELECT_PIECE), pieceCursor + 1, pieceCount);
+  } else if (state == PICK_MOVE && destCount > 0) {
+    snprintf(sub, sizeof(sub), "%s  (%d/%d)", tr(STR_GAME_SELECT_MOVE), destCursor + 1, destCount);
+  } else if (state == GAME_OVER) {
+    snprintf(sub, sizeof(sub), "%s", tr(STR_GAME_OVER));
+  }
   if (sub[0] != '\0') renderer.drawCenteredText(UI_10_FONT_ID, infoTop + 32, sub);
 
   int human = 0, machine = 0;
@@ -502,10 +583,13 @@ void CheckersActivity::render(RenderLock&&) {
   snprintf(line, sizeof(line), "%s %d   %s %d", tr(STR_GAME_MOVES), moveNumber, tr(STR_GAME_BEST), wins);
   renderer.drawCenteredText(SMALL_FONT_ID, infoTop + 80, line);
 
+  // Las ayudas dicen siempre lo que hace cada botón AHORA: eligiendo la movida,
+  // Atrás cancela la ficha en vez de salir del juego.
   const char* confirmLabel = state == GAME_OVER ? tr(STR_GAME_NEW) : state == AI_TURN ? "" : tr(STR_SELECT);
+  const char* backLabel = state == PICK_MOVE ? tr(STR_CANCEL) : tr(STR_GAME_QUIT);
   const bool navigable = state == PICK_PIECE || state == PICK_MOVE;
-  const auto labels = mappedInput.mapLabels(state == GAME_OVER ? tr(STR_GAME_QUIT) : tr(STR_BACK), confirmLabel,
-                                            navigable ? tr(STR_DIR_UP) : "", navigable ? tr(STR_DIR_DOWN) : "");
+  const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, navigable ? tr(STR_DIR_UP) : "",
+                                            navigable ? tr(STR_DIR_DOWN) : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Casi todo parcial; uno limpio cada tanto para que el panel no fantasmee.

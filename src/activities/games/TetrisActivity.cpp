@@ -11,9 +11,10 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int MARGIN = 14;
-constexpr int GAP = 16;       // entre el pozo y la columna de datos
-constexpr int SIDE_MIN = 96;  // ancho mínimo de la columna de datos
+constexpr int MARGIN = 12;
+constexpr int GAP = 16;        // entre el pozo y la columna de datos
+constexpr int SIDE_MIN = 110;  // ancho mínimo de la columna de datos
+constexpr int SIDE_MAX = 170;  // más ancha que esto, la columna queda vacía
 
 // Las siete piezas clásicas, cada una en sus cuatro giros, sobre una caja de
 // 4x4. El bit (fila * 4 + columna) prendido es un casillero de la pieza. Las
@@ -403,7 +404,7 @@ void TetrisActivity::drawStat(const int x, const int y, const int w, const char*
   renderer.drawText(UI_12_FONT_ID, x, y + 20, buf, true, EpdFontFamily::BOLD);
 }
 
-void TetrisActivity::drawSidebar(const int x, const int y, const int w, const int cell) const {
+void TetrisActivity::drawSidebar(const int x, const int y, const int w, const int h, const int cell) const {
   // Caja de lo que viene, con un triangulito arriba que dice para dónde va.
   const int boxH = cell * 3;
   const int triW = 14;
@@ -416,8 +417,15 @@ void TetrisActivity::drawSidebar(const int x, const int y, const int w, const in
   renderer.drawRect(x, boxY, w, boxH, 2, true);
   drawMiniPiece(nextPiece, x + 2, boxY + 2, w - 4, boxH - 4, cell * 2 / 3);
 
-  int statY = boxY + boxH + 26;
-  const int statStep = 58;
+  // Los cuatro números se reparten en lo que queda de alto: con el pozo de 20
+  // filas la columna es más larga y quedaban todos apretados arriba.
+  const int statsTop = boxY + boxH + 26;
+  const int available = y + h - statsTop;
+  int statStep = available / 4;
+  if (statStep < 58) statStep = 58;
+  if (statStep > 96) statStep = 96;
+
+  int statY = statsTop;
   drawStat(x, statY, w, I18N.get(StrId::STR_GAME_SCORE), score);
   statY += statStep;
   drawStat(x, statY, w, I18N.get(StrId::STR_GAME_LEVEL), level);
@@ -494,21 +502,26 @@ void TetrisActivity::render(RenderLock&&) {
   const int bottom = pageHeight - (metrics.buttonHintsHeight + metrics.verticalSpacing);
 
   // El casillero es lo más grande que entra a lo ancho (dejando la columna de
-  // datos) y a lo alto (dejando la línea del hint de abajo).
+  // datos) y a lo alto (dejando la línea del hint de abajo), pero nunca más que
+  // MAX_CELL: con bloques grandes no entran las veinte filas y se ven pesados.
   const int byWidth = (pageWidth - 2 * MARGIN - SIDE_MIN - GAP) / COLS;
-  const int byHeight = (bottom - top - 12 - 28) / ROWS;
+  const int byHeight = (bottom - top - 24 - 28) / ROWS;
   int cell = byWidth < byHeight ? byWidth : byHeight;
-  if (cell < 12) cell = 12;
+  if (cell > MAX_CELL) cell = MAX_CELL;
+  if (cell < 10) cell = 10;
 
   const int wellW = cell * COLS;
   const int wellH = cell * ROWS;
-  const int wellX = MARGIN;
-  const int wellY = top + 12;
+  int sideW = pageWidth - 2 * MARGIN - wellW - GAP;
+  if (sideW > SIDE_MAX) sideW = SIDE_MAX;
+  // Pozo y columna de datos van pegados y el conjunto, centrado.
+  const int wellX = (pageWidth - (wellW + GAP + sideW)) / 2;
+  int wellY = top + (bottom - top - wellH - 30) / 2;
+  if (wellY < top + 8) wellY = top + 8;
   const int sideX = wellX + wellW + GAP;
-  const int sideW = pageWidth - MARGIN - sideX;
 
   drawWell(wellX, wellY, cell);
-  if (sideW >= 40) drawSidebar(sideX, wellY + 4, sideW, cell);
+  if (sideW >= 40) drawSidebar(sideX, wellY + 4, sideW, wellH - 4, cell);
   if (state == State::PLAYING) drawDropHint(wellY + wellH + 12);
 
   if (state == State::CONFIRM || state == State::OVER) drawOverlay();

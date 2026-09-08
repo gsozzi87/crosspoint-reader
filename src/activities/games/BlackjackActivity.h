@@ -27,10 +27,13 @@
 // jugador arranca con 100 fichas y apuesta de a 10; sin fichas para la apuesta
 // mínima se termina la partida y OK arranca otra.
 //
-// Las cartas se dibujan con primitivas (rectángulo redondeado, índice arriba a
-// la izquierda y palo grande al medio). Como la pantalla no tiene color, los
-// palos se distinguen por la FORMA: pica (punta arriba con pie), corazón (dos
-// lóbulos y punta abajo), diamante (rombo) y trébol (tres círculos con pie).
+// Las cartas se dibujan como cartas de verdad: rectángulo blanco redondeado con
+// sombra abajo a la derecha, el valor arriba a la izquierda y repetido abajo a
+// la derecha dado vuelta, y el palo grande en el medio. El valor y los cuatro
+// palos son bitmaps propios (`cardIcons.h`, 1 bpp): la fuente del aparato no
+// tiene ♠ ♥ ♦ ♣ ni se puede girar 180 grados. Como la pantalla no tiene color,
+// los palos se distinguen por la FORMA, y todos van macizos para que se lean de
+// lejos.
 class BlackjackActivity final : public Activity {
  public:
   explicit BlackjackActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -50,12 +53,14 @@ class BlackjackActivity final : public Activity {
   static constexpr int BLACKJACK = 21;
   static constexpr unsigned long DEALER_STEP_MS = 700;   // una carta de la banca por vez, para poder seguirla
   static constexpr unsigned long RESTART_HOLD_MS = 1000;  // Atrás mantenido: partida nueva
-  static constexpr int PARTIALS_BEFORE_CLEAN = 10;        // regla del panel: limpio cada 10-15 parciales
+  static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
 
   // Medidas del dibujo
   static constexpr int SIDE = 20;
-  static constexpr int CARD_W = 70;
-  static constexpr int CARD_H = 104;
+  static constexpr int CARD_W = 78;
+  static constexpr int CARD_H = 112;
+  static constexpr int CARD_PAD = 8;    // margen del valor en la esquina
+  static constexpr int CARD_SHADOW = 3;  // cuánto se corre la sombra
   static constexpr int BADGE_W = 62;
   static constexpr int BADGE_H = 28;
   static constexpr int ACTION_ROW_H = 56;
@@ -110,7 +115,6 @@ class BlackjackActivity final : public Activity {
   static int cardValue(uint8_t card);
   static int handTotal(const Hand& hand);
   static bool isNatural(const Hand& hand);
-  static const char* rankLabel(uint8_t card);
 
   // Partida
   void newGame();
@@ -126,7 +130,12 @@ class BlackjackActivity final : public Activity {
 
   // Dibujo
   void fillDisc(int cx, int cy, int r, bool state) const;
-  void drawSuit(int cx, int cy, int size, int suit) const;
+  // Palo centrado en (cx, cy): el de 40 px va al medio de la carta, el de 16 en
+  // la ficha de la apuesta y en los carteles.
+  void drawSuitIcon(int cx, int cy, int suit, bool big) const;
+  // Valor de la carta en la esquina. `rotated` lo da vuelta 180 grados para la
+  // esquina de abajo a la derecha.
+  void drawRankGlyph(int x, int y, uint8_t card, bool rotated) const;
   void drawCardFace(int x, int y, uint8_t card) const;
   void drawCardBack(int x, int y) const;
   void drawHand(const Hand& hand, int y, bool hideSecond) const;

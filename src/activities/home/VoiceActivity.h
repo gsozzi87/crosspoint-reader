@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "HubSyncActivity.h"  // FriendlyWifi: conexion sin la pantalla tecnica
 #include "activities/Activity.h"
 #include "voice/SpeechOut.h"
 #include "voice/VoiceRecorder.h"
@@ -41,6 +42,8 @@ class VoiceActivity final : public Activity {
   std::string failureDetail;
   bool wifiActivated = false;
   bool requestPending = false;
+  FriendlyWifi wifi;
+  bool wifiPicker = false;  // la pantalla de seleccion tiene el foco
   int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
   SpeechOut speech;      // the reply, spoken by the server's Piper, played with the text
   std::string pendingTitle;  // reminder waiting for its hour (the server asked)
@@ -49,6 +52,8 @@ class VoiceActivity final : public Activity {
 
   void startRecording();
   void stopRecording();
+  void beginConnect();
+  void pumpConnect();
   void onWifiSelectionComplete(bool connected);
   void performRequest();
   void showReply();

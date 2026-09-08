@@ -21,6 +21,7 @@ constexpr int ROW_H = 44;
 constexpr int SIDE = 20;
 constexpr unsigned long MENU_HOLD_MS = 1200;
 constexpr int PAGER_H = 18;               // franja del indicador "p/N", debajo de las filas
+constexpr int HINT_H = 20;                // línea de ayuda dentro de una sección
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 
 std::string dateOffset(int days) {
@@ -44,10 +45,12 @@ void AgendaActivity::onEnter() {
   requestUpdate();
 }
 
-// Messages (only while there are unread ones), reminders, then every list.
+// Mensajes SIEMPRE primero (aunque no haya ninguno), recordatorios y despues
+// cada lista. La seccion tiene que verse desde que se entra: si aparece solo
+// cuando hay mensajes, nadie se entera de que el aparato los muestra.
 void AgendaActivity::rebuildSections() {
   sections.clear();
-  if (!HUB_STORE.messages.empty()) sections.push_back({MESSAGES, -1});
+  sections.push_back({MESSAGES, -1});
   sections.push_back({REMINDERS, -1});
   for (int i = 0; i < static_cast<int>(HUB_STORE.lists.size()); ++i) sections.push_back({LIST, i});
   if (sectionIndex >= sectionCount()) sectionIndex = sectionCount() - 1;
@@ -123,8 +126,7 @@ void AgendaActivity::tickCurrent() {
   const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/hub/done", body);
   LOG_INF(TAG, "done %s %d: %s", kind, id, ServerClient::resultName(r));
   if (current().kind == MESSAGES && HUB_STORE.messages.empty()) {
-    level = SECTIONS;  // the section disappears with its last message
-    rebuildSections();
+    level = SECTIONS;  // no quedan mensajes: se vuelve a la lista de secciones
   } else if (itemIndex >= itemCount() && itemIndex > 0) {
     itemIndex--;
   }
@@ -260,9 +262,12 @@ void AgendaActivity::render(RenderLock&&) {
   // cuenta que SettingsActivity): con un 8 fijo la última fila quedaba pegada a la
   // barra de botones (verticalSpacing es 16 en Lyra, no 8).
   const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  // Dentro de una sección hay una línea de ayuda abajo (qué hace OK acá), asi
+  // que las filas terminan más arriba todavía.
+  const int hintH = level == ITEMS ? HINT_H : 0;
   // El indicador "p/N" tiene su propia franja abajo: si las filas llegaran hasta
   // `bottom` se le encimarían.
-  const int rowsBottom = bottom - PAGER_H;
+  const int rowsBottom = bottom - PAGER_H - hintH;
   itemsPerPage = std::max(1, (rowsBottom - top) / ROW_H);
   const int count = level == SECTIONS ? sectionCount() : itemCount();
   const int selected = level == SECTIONS ? sectionIndex : itemIndex;
@@ -270,9 +275,27 @@ void AgendaActivity::render(RenderLock&&) {
   const int first = page * itemsPerPage;
 
   if (count == 0) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10,
-                              level == SECTIONS || current().kind == REMINDERS ? tr(STR_HUB_NO_REMINDERS)
-                                                                                : tr(STR_AGENDA_EMPTY));
+    const char* empty = tr(STR_HUB_NO_REMINDERS);
+    if (level == ITEMS) {
+      switch (current().kind) {
+        case MESSAGES:
+          empty = tr(STR_AGENDA_MESSAGES_EMPTY);  // dice de dónde salen los mensajes
+          break;
+        case REMINDERS:
+          empty = tr(STR_HUB_NO_REMINDERS);
+          break;
+        case LIST:
+          empty = tr(STR_AGENDA_EMPTY);
+          break;
+      }
+    }
+    // Centrado y más ancho que la pantalla = "[GFX] !! Outside range": el
+    // cartel de vacío va cortado en líneas contra el ancho real.
+    int emptyY = pageHeight / 2 - 10;
+    for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, empty, pageWidth - 2 * SIDE, 3)) {
+      renderer.drawCenteredText(UI_10_FONT_ID, emptyY, line.c_str());
+      emptyY += 26;
+    }
   }
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
     const int y = top + (i - first) * ROW_H;
@@ -302,7 +325,18 @@ void AgendaActivity::render(RenderLock&&) {
   if (count > itemsPerPage) {
     char pages[16];
     snprintf(pages, sizeof(pages), "%d/%d", page + 1, (count + itemsPerPage - 1) / itemsPerPage);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom - 16, pages);
+    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages),
+                      bottom - hintH - 16, pages);
+  }
+
+  // Línea de ayuda: qué hace OK en esta sección (los mensajes se marcan como
+  // leídos, los ítems se tachan) y el menú del ítem, que estaba escondido.
+  if (level == ITEMS) {
+    const char* hint = tr(STR_AGENDA_DONE_HINT);
+    if (current().kind == MESSAGES) hint = tr(STR_AGENDA_MESSAGE_HINT);
+    else if (current().kind == LIST) hint = tr(STR_AGENDA_ITEM_HINT);
+    renderer.drawCenteredText(SMALL_FONT_ID, bottom - HINT_H + 2,
+                              renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
   }
 
   if (menuStep != NONE && menu.processRender(renderer, mappedInput)) return;
