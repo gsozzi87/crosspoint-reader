@@ -5,6 +5,7 @@
 
 #include <cmath>
 
+#include "HubStore.h"
 #include "util/WavHeader.h"
 
 namespace {
@@ -28,7 +29,8 @@ bool AlertBeep::start(const uint8_t volume) {
   }
   wav::writeHeader(wav, RATE, samples * sizeof(int16_t));
   if (!audio.begin()) return false;
-  audio.setVolume(volume);
+  const int stored = HUB_STORE.musicVolume;
+  audio.setVolume(volume ? volume : static_cast<uint8_t>(stored < 0 ? 0 : stored > 100 ? 100 : stored));
   playing = audio.playBuffer(wav, bytes, true);
   return playing;
 }

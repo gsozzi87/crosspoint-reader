@@ -679,7 +679,7 @@ const PAGE = `<!doctype html>
         <option value="en">English</option><option value="es">Español</option><option value="fr">Français</option>
         <option value="de">Deutsch</option><option value="pt">Português</option><option value="ru">Русский</option>
       </select></div>
-    <div class="row"><label for="setVolume">Volumen música</label><input type="range" id="setVolume" min="0" max="100" step="5"><span id="volumeOut" class="muted"></span></div>
+    <div class="row"><label for="setVolume">Volumen (voz y música)</label><input type="range" id="setVolume" min="0" max="100" step="5"><span id="volumeOut" class="muted"></span></div>
     <div class="row"><button id="settingsSave">Guardar ajustes</button></div>
     <p class="muted" id="lastSync"></p>
   </div>

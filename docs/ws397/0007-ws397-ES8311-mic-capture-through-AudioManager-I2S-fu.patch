@@ -1,7 +1,7 @@
 From ab89b2b057d0760503df7816971b16446f4c6e8e Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 5 Sep 2026 16:33:17 +0000
-Subject: [PATCH 7/7] ws397: ES8311 mic capture through AudioManager (I2S full
+Subject: [PATCH 7/8] ws397: ES8311 mic capture through AudioManager (I2S full
  duplex, AudioConfig::din)
 
 The ws397's mic is analog into the ES8311 (MIC1), so the PDM Microphone path

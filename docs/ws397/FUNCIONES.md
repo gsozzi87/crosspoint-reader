@@ -29,10 +29,10 @@ Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 |---|---------|--------|-------|
 | 0.1 | Boot, pantalla, botones, SD, WiFi, web UI, deep sleep, batería, RTC, OTA | ✅ | |
 | 0.2 | Audio: grabar y reproducir por el ES8311 | ✅ | 1.5.9 |
-| 0.3 | Control de volumen del parlante y ganancia del mic | ⬜ | DAC reg 0x32, PGA reg 0x14; ajuste en Settings |
+| 0.3 | Control de volumen del parlante: **un solo volumen** para música, voz y pitidos (`HubStore::musicVolume`), editable en la música y en `/board` → Ajustes. El registro 0x32 del ES8311 es logarítmico y el SDK mapeaba el porcentaje lineal sobre él: el 70 % quedaba en -23 dB, de ahí que se escuchara bajo. Ahora el porcentaje va a decibeles (1 % = -40 dB, 100 % = +8 dB) | ✅ | 1.5.37, parche 0008 del SDK. Falta la ganancia del mic (PGA reg 0x14) |
 | 0.4 | Trackball + 2 botones por PCF8574 (I²C 41/42, INT 44) | ⬜ | Un botón = PTT, el otro = Home/Back |
 | 0.5 | Wake por recordatorio: el INT del PCF85063 (GPIO45) no es RTC GPIO y no puede despertar del deep sleep, así que se usa el timer de deep sleep del ESP32 armado al próximo recordatorio de la caché (`armReminderWake`). La alarma del RTC queda para cuando haya un pin RTC libre | ✅ | 1.5.19 |
-| 0.6 | Driver SHTC3 (temperatura y humedad interior) | ⬜ | Para el widget de clima, como el Sticky |
+| 0.6 | Driver SHTC3 (temperatura y humedad interior, I²C 0x70) con CRC del datasheet y caché de un minuto; el widget de clima del hub muestra "Interior 23°" junto a lo de afuera | ✅ | 1.5.37, `src/util/Shtc3`. El SDK no lo maneja en esta placa (mapea un SHT40), así que va con Wire directo |
 | 0.7 | Porcentaje de batería real y consumo en deep sleep medidos | ⬜ | |
 | 0.8 | Refresco de un solo destello (halfrefresh) verificado | ⬜ | |
 | 0.9 | Driver QMI8658 por polling (INT1 está compartido con el amp) y gestos: **boca abajo** = silenciar alarma o temporizador y posponer; **doble golpe** = PTT alternativo; **sacudir** = cancelar la grabación o deshacer el último ítem | ⬜ | Se usa en 2.2, 2.8, 2.9 |

@@ -5,9 +5,16 @@
 #include <esp_heap_caps.h>
 
 #include "Adpcm.h"
+#include "HubStore.h"
 
 namespace {
 constexpr const char* TAG = "SPEECH";
+
+// El volumen del aparato, el mismo que se toca en la música y en /board.
+uint8_t deviceVolume() {
+  const int v = HUB_STORE.musicVolume;
+  return static_cast<uint8_t>(v < 0 ? 0 : v > 100 ? 100 : v);
+}
 constexpr size_t MAX_FILE = 256 * 1024;
 }  // namespace
 
@@ -23,7 +30,7 @@ bool SpeechOut::playAdpcm(const uint8_t* data, const size_t len, const uint8_t v
     stop();
     return false;
   }
-  audio.setVolume(volume);
+  audio.setVolume(volume ? volume : deviceVolume());
   started = audio.playBuffer(wav, bytes, false);
   LOG_DBG(TAG, "playing %u samples", (unsigned)adpcm::sampleCount(data, len));
   return started;

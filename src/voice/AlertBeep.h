@@ -10,7 +10,7 @@
 class AlertBeep {
  public:
   ~AlertBeep() { stop(); }
-  bool start(uint8_t volume = 85);
+  bool start(uint8_t volume = 0);  // 0 = el volumen del aparato
   void stop();
   bool isPlaying() const { return playing; }
 

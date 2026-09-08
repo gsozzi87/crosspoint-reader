@@ -66,6 +66,14 @@ llegue el hardware.
 - PMIC: AXP2101-compatible en 0x34 (IC_TYPE 0x4A). SoC en reg 0xA4, VBAT 0x34/0x35, estado en STATUS2. Solo se tocan
   bits de medición; rieles y corriente de carga se dejan como los configuró el PMIC.
 - RTC: PCF85063 en 0x51, bloque de hora en 0x04, OS flag = seconds bit7. INT en GPIO45 (futuro wake por alarma).
+- Volumen: el registro 0x32 del ES8311 es logarítmico (dB = -95,5 + 0,5·N) y `setVolume()` mapeaba el porcentaje
+  lineal sobre N, así que el 70 % quedaba en -23 dB (de ahí que "se escuchara bajo"). Ahora el porcentaje se mapea a
+  decibeles: 1 % = -40 dB, 100 % = +8 dB (0xCF), 0 = mudo, y el 70 % cae justo en 0xB2, el default del vendor.
+  Hay **un solo volumen** para todo (`HubStore::musicVolume`): lo usan la música, la voz de Piper y los pitidos, y se
+  toca desde la música o desde /board → Ajustes.
+- Temperatura interior: `src/util/Shtc3` (I²C 0x70, wakeup 0x3517 / medición 0x7866 / sleep 0xB098, CRC del
+  datasheet, caché de un minuto). El SDK no maneja el SHTC3 en esta placa (`SensorsConfig` mapea un SHT40), así que
+  va con `Wire` directo sobre el bus de los sensores. Se ve en el widget del clima del hub como "Interior 23°".
 - Audio: ES8311 en 0x18 (I²S bclk 14, ws 47, dout 48, din 21, mclk 13), amp enable GPIO39 (compartido con IMU
   INT1; IMU va por polling). Mic es analógico al ES8311 (MIC1), capturado por el ADC del códec sobre el mismo puerto
   I²S (full duplex, una sola tasa para reproducir y grabar); no PDM. Init del códec = vendor `es8311_init` con MCLK
