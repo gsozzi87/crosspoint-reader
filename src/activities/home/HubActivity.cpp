@@ -9,6 +9,7 @@
 #include <WiFi.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 #include "CrossPointSettings.h"
@@ -27,6 +28,7 @@
 #include "TranslatorActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
+#include "util/Shtc3.h"
 #include "components/icons/hubIcons.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "components/icons/listIcons.h"
@@ -365,7 +367,15 @@ void HubActivity::drawInfoWidgets(const int x, const int y, const int w, const i
       renderer.drawText(UI_10_FONT_ID, tx, y + 14, renderer.truncatedText(UI_10_FONT_ID, none, tw).c_str());
     } else {
       renderer.drawText(UI_12_FONT_ID, tx, y + 8, renderer.truncatedText(UI_12_FONT_ID, hub.weatherLine.c_str(), tw, EpdFontFamily::BOLD).c_str(), true, EpdFontFamily::BOLD);
-      renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, hub.weatherDetail.c_str(), tw).c_str());
+      // La de afuera viene del servidor; la de adentro, del SHTC3 de la placa.
+      std::string detail = hub.weatherDetail;
+      const float inside = shtc3::cachedCelsius();
+      if (!std::isnan(inside)) {
+        char in[32];
+        snprintf(in, sizeof(in), "%s %d°", tr(STR_HUB_INDOOR), static_cast<int>(inside + 0.5f));
+        detail = std::string(in) + (detail.empty() ? "" : "  ·  " + detail);
+      }
+      renderer.drawText(SMALL_FONT_ID, tx, y + 38, renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), tw).c_str());
     }
   }
   // Next reminder (right)

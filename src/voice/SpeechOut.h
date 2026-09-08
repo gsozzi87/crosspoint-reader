@@ -11,8 +11,9 @@
 class SpeechOut {
  public:
   ~SpeechOut() { stop(); }
-  bool playAdpcm(const uint8_t* data, size_t len, uint8_t volume = 85);
-  bool playFile(const char* path, uint8_t volume = 85);
+  // volume 0 = el volumen del aparato (HubStore::musicVolume).
+  bool playAdpcm(const uint8_t* data, size_t len, uint8_t volume = 0);
+  bool playFile(const char* path, uint8_t volume = 0);
   bool isPlaying() const { return started && audio.isPlaying(); }
   bool hasStarted() const { return started; }
   void stop();
