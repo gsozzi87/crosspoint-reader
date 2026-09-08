@@ -37,7 +37,7 @@ class TranslatorActivity final : public Activity {
   std::string other;  // the other side
   bool meSpeaking = true;
 
-  VoiceRecorder recorder{12};
+  VoiceRecorder recorder{18};  // 18 s: una frase entera para traducir
   SpeechOut speech;
   std::string original;
   std::string translation;

@@ -44,7 +44,7 @@ class BibleActivity final : public Activity {
   int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
 
-  VoiceRecorder recorder{8};
+  VoiceRecorder recorder{12};  // 12 s: citas y busquedas largas
   OptionPopup picker;
   std::vector<std::string> pickerOptions;
   struct Hit {

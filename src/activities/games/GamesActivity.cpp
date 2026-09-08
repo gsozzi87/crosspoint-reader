@@ -7,7 +7,6 @@
 #include <algorithm>
 
 #include "BlackjackActivity.h"
-#include "BreakoutActivity.h"
 #include "CardsActivity.h"
 #include "CheckersActivity.h"
 #include "ChessActivity.h"
@@ -16,9 +15,7 @@
 #include "MathActivity.h"
 #include "MemoryActivity.h"
 #include "RummyActivity.h"
-#include "SnakeActivity.h"
 #include "SudokuActivity.h"
-#include "TetrisActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -41,12 +38,12 @@ struct GameSpec {
   Factory create;
 };
 
-// Orden del menú: primero los de reflejos, después los de cabeza, después los
-// de tablero y cartas, y al final las tarjetas para los más chicos.
+// Solo juegos POR TURNOS. Los de accion (viborita, ladrillos, bloques) se
+// sacaron en 1.5.41: un refresco parcial de este panel tarda ~30 ms y ademas hay
+// que hacer uno completo cada 12, asi que no hay forma de mover algo de corrido
+// sin que parpadee y vaya a tirones. En un juego por turnos ese mismo refresco
+// por jugada no molesta.
 const GameSpec GAMES[] = {
-    {StrId::STR_GAME_SNAKE, StrId::STR_GAME_SNAKE_DESC, &make<SnakeActivity>},
-    {StrId::STR_GAME_BREAKOUT, StrId::STR_GAME_BREAKOUT_DESC, &make<BreakoutActivity>},
-    {StrId::STR_GAME_TETRIS, StrId::STR_GAME_TETRIS_DESC, &make<TetrisActivity>},
     {StrId::STR_GAME_MEMORY, StrId::STR_GAME_MEMORY_DESC, &make<MemoryActivity>},
     {StrId::STR_GAME_MATH, StrId::STR_GAME_MATH_DESC, &make<MathActivity>},
     {StrId::STR_GAME_SUDOKU, StrId::STR_GAME_SUDOKU_DESC, &make<SudokuActivity>},

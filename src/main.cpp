@@ -429,12 +429,12 @@ void enterDeepSleep(bool fromTimeout = false) {
 //   mantener 3 s ................ apagar
 // El umbral de los 400 ms lo maneja el SDK y NO se toca: es el que decide entre
 // confirmar y encendido. Lo que cambia es cuándo duerme, que siempre estuvo acá.
-static bool usePowerHoldTiers() {
-  // Solo la ws397, y solo si el toque corto no está configurado como "dormir":
-  // con esa opción el botón vuelve a ser un botón de encendido y nada más.
-  return BoardConfig::ACTIVE.board == BoardConfig::Board::WS397 &&
-         SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP;
-}
+// DESACTIVADO a pedido del usuario (1.5.41): repartir el mantenido por tramos
+// terminaba apagando el aparato cuando no correspondia. Era una idea mia, no un
+// pedido, y el atajo de voz ya existe con dos toques de Atras. Se vuelve al
+// camino de siempre: mantener OK apaga y nada mas. El codigo queda por si algun
+// dia se retoma, pero no se usa.
+static bool usePowerHoldTiers() { return false; }
 
 static bool powerHoldTalkAvailable() {
   if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;

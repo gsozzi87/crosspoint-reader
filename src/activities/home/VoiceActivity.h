@@ -34,7 +34,7 @@ class VoiceActivity final : public Activity {
   AfterSpeech afterSpeech = AFTER_NONE;
   unsigned long speakStartedAt = 0;
 
-  VoiceRecorder recorder{12};
+  VoiceRecorder recorder{20};  // 20 s: con 12 se cortaba a mitad de frase
   std::string heard;   // what the server understood
   std::string intent;  // question | reminder | task | ...
   std::string reply;

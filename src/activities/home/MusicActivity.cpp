@@ -19,7 +19,6 @@ namespace {
 constexpr const char* TAG = "MUSIC";
 constexpr const char* MUSIC_ROOT = "/Music";
 constexpr int MAX_TRACKS = 200;
-constexpr unsigned long LEAVE_HOLD_MS = 1000;  // Atrás mantenido = salir
 constexpr int COUNTER_TICK_S = 5;              // refresco parcial del contador
 constexpr int PARTIALS_BEFORE_CLEAN = 12;      // regla del panel: refresco limpio cada 10-15 parciales
 constexpr int VOLUME_STEP = 5;
@@ -254,16 +253,34 @@ void MusicActivity::step(const int direction) {
   switch (zone) {
     case ZONE_LIST: {
       const int count = listCount();
-      if (count <= 0) break;
+      if (count <= 0) {  // carpeta vacia: la palanca pasa derecho a los controles
+        zone = ZONE_TRANSPORT;
+        controlIndex = direction > 0 ? 0 : CTRL_COUNT - 1;
+        break;
+      }
       int& index = level == FOLDERS ? folderIndex : trackIndex;
-      index = direction > 0 ? ButtonNavigator::nextIndex(index, count) : ButtonNavigator::previousIndex(index, count);
+      if (direction > 0 && index >= count - 1) {  // se paso del final: a los controles
+        zone = ZONE_TRANSPORT;
+        controlIndex = 0;
+      } else if (direction < 0 && index <= 0) {  // se paso del principio: al volumen
+        zone = ZONE_VOLUME;
+      } else {
+        index += direction > 0 ? 1 : -1;
+      }
       break;
     }
     case ZONE_TRANSPORT:
-      controlIndex = direction > 0 ? ButtonNavigator::nextIndex(controlIndex, CTRL_COUNT)
-                                   : ButtonNavigator::previousIndex(controlIndex, CTRL_COUNT);
+      if (direction > 0 && controlIndex >= CTRL_COUNT - 1) {
+        zone = ZONE_VOLUME;
+      } else if (direction < 0 && controlIndex <= 0) {
+        zone = ZONE_LIST;
+      } else {
+        controlIndex += direction > 0 ? 1 : -1;
+      }
       break;
     case ZONE_VOLUME:
+      // Con el foco en el volumen la palanca sube y baja; OK devuelve el foco a
+      // la lista (lo dice la barra de botones).
       setVolume(volume + (direction > 0 ? VOLUME_STEP : -VOLUME_STEP));
       return;  // setVolume ya pidió el repintado (o no hubo cambio)
     default:
@@ -296,7 +313,8 @@ void MusicActivity::activate() {
       requestUpdate();
       return;
     case ZONE_VOLUME:
-      playPause();
+      zone = ZONE_LIST;  // OK devuelve el foco a la lista
+      requestUpdate();
       return;
     default:
       return;
@@ -327,11 +345,6 @@ void MusicActivity::loop() {
 
   // Atrás mantenido sale; el corto cambia de zona (wasLongPressed se come la
   // suelta, así que nunca disparan los dos).
-  if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, LEAVE_HOLD_MS)) {
-    leaveOrExit();
-    return;
-  }
-
   buttonNavigator.onNext([this] { step(1); });
   buttonNavigator.onPrevious([this] { step(-1); });
 
@@ -339,9 +352,10 @@ void MusicActivity::loop() {
     activate();
     return;
   }
+  // Atras SIEMPRE sale, igual que en todas las demas pantallas. Antes cambiaba
+  // de zona y salir era Atras mantenido: el usuario no encontraba como irse.
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    zone = static_cast<Zone>((zone + 1) % ZONE_COUNT);
-    requestUpdate();
+    leaveOrExit();
   }
 }
 
@@ -374,7 +388,7 @@ const char* MusicActivity::confirmLabel() const {
     case ZONE_TRANSPORT:
       return controlLabel(controlIndex);
     case ZONE_VOLUME:
-      return playing && !paused ? tr(STR_MUSIC_PAUSE) : tr(STR_MUSIC_PLAY);
+      return tr(STR_MUSIC_ZONE_LIST);  // OK vuelve a la lista
     default:
       return tr(STR_SELECT);
   }

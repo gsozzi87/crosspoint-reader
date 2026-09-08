@@ -13,7 +13,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config";
 import { checkUrl, redactSecrets } from "./net";
-import { searchWeb, needsFreshInfo, formatResults } from "./websearch";
+import { searchWeb, asksForSearch, asksForReasoning, formatResults } from "./websearch";
 import type { Lang } from "./lang";
 
 // `code` es para el aparato: "no_key" se muestra distinto que un fallo del
@@ -31,7 +31,7 @@ export class LlmError extends Error {
 // sobre el mismo capítulo casi no pagan entrada. En las APIs compatibles se pega
 // al system y listo.
 // `search`: "off" no busca nunca; "auto" deja que se busque si hace falta (con
-// Anthropic decide el modelo, con las compatibles decide needsFreshInfo);
+// Anthropic decide el modelo, con las compatibles decide asksForSearch);
 // "force" busca sí o sí (el clasificador de voz ya dijo que hace falta).
 type Options = {
   system: string;
@@ -39,6 +39,7 @@ type Options = {
   maxTokens?: number;
   cached?: string;
   search?: "off" | "auto" | "force";
+  reason?: boolean;  // el usuario pidio expresamente que razone
   lang?: Lang;
   // `memories`: lo que el usuario pidió que el aparato recuerde de él. Es el
   // bloque MÁS estable de todos (cambia solo cuando dicta una memoria nueva),
@@ -256,12 +257,15 @@ async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltI
       ...(builtIn === "compound"
         ? { search_settings: { country: SEARCH_COUNTRY[lang] } }
         : {}),
+      // Razonar solo cuando el usuario lo pidio: DeepSeek v4 y los gpt-oss
+      // piensan por defecto y eso son varios segundos mas de "Pensando...".
+      ...(builtIn === "none" ? { reasoning_effort: o.reason ? "high" : "low" } : {}),
       ...(builtIn === "browser"
         ? {
             tools: [{ type: "browser_search" }],
             tool_choice: o.search === "force" ? "required" : "auto",
             // Con esfuerzo alto se pone a navegar de más y se come los tokens.
-            reasoning_effort: "low",
+            reasoning_effort: o.reason ? "high" : "low",
           }
         : {}),
     }),
@@ -308,7 +312,13 @@ export async function chatText(o: Options): Promise<string> {
 // mostrar las fuentes en el aparato.
 export async function chatSearch(o: Options): Promise<ChatResult> {
   const cfg = await config();
-  const on = (o.search ?? "off") !== "off" && cfg.search.enabled;
+  const lang0: Lang = o.lang ?? "es";
+  // 1.5.41: buscar SOLO si el usuario lo pidió expresamente ("busca...").
+  // "force" lo pide quien llama; "auto" ya no adivina: se mira la frase.
+  const asked = o.search === "force" || (o.search === "auto" && asksForSearch(o.user, lang0));
+  const on = asked && cfg.search.enabled;
+  // Idem razonar: solo si lo dijo. Cuesta tiempo y el aparato ya tarda.
+  const reason = asksForReasoning(o.user, lang0);
   // Anthropic busca solo: se le declara la herramienta y él decide si la usa,
   // así que no se gasta una búsqueda en una pregunta que no la necesita.
   if (cfg.llm.provider === "anthropic") return anthropicRun(o, undefined, on);
@@ -317,7 +327,7 @@ export async function chatSearch(o: Options): Promise<ChatResult> {
   // llega mucho mejor que rasguñar DuckDuckGo desde acá).
   const builtIn = on ? providerSearchKind(cfg.llm.baseUrl, cfg.llm.model) : "none";
   if (builtIn !== "none") {
-    const r = await openAiRun(o, undefined, builtIn);
+    const r = await openAiRun({ ...o, reason }, undefined, builtIn);
     // Si el sistema decidió no buscar, la respuesta igual sirve: es la misma
     // llamada, no se gastó nada de más.
     return r;
@@ -330,7 +340,7 @@ export async function chatSearch(o: Options): Promise<ChatResult> {
   let sources: Source[] = [];
   let searched = false;
   let searchNote: string | undefined;
-  if (on && (o.search === "force" || needsFreshInfo(o.user, lang))) {
+  if (on) {
     const found = await searchWeb(o.user, lang, 5);
     if (found.results.length) {
       searched = true;
