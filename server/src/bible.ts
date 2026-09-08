@@ -132,6 +132,30 @@ bibleApi.get("/chapter", async (c) => {
 // los versículos numerados. El libro más grande (Salmos) ronda los 250 KB.
 //
 //   GET /api/bible/book?lang=xx&book=i  -> text/plain
+// El mismo texto, como función: lo usa también el paquete de contenido
+// (assets.ts) para meter la Biblia entera en el manifiesto y que deje de
+// existir el botón de "bajar la Biblia" aparte.
+export async function bookText(lang: Lang, i: number): Promise<string | null> {
+  const books = await bible(lang);
+  const b = books?.[i];
+  if (!b) return null;
+  const parts: string[] = [];
+  for (let ch = 0; ch < b.chapters.length; ch++) {
+    parts.push(`#${ch + 1}`);
+    for (let v = 0; v < b.chapters[ch].length; v++) parts.push(`${v + 1} ${b.chapters[ch][v]}`);
+  }
+  return parts.join("\n") + "\n";
+}
+
+// Cuántos libros tiene la Biblia de ese idioma (66 en todas las que usamos).
+export async function bookCount(lang: Lang): Promise<number> {
+  return (await bible(lang))?.length ?? 0;
+}
+
+export async function bookName(lang: Lang, i: number): Promise<string> {
+  return BOOK_NAMES[lang][i] ?? `b${i}`;
+}
+
 bibleApi.get("/book", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const books = await bible(lang);
@@ -139,12 +163,7 @@ bibleApi.get("/book", async (c) => {
   const i = Number(c.req.query("book"));
   const b = books[i];
   if (!b) return c.json({ ok: false, error: "bad book" }, 400);
-  const parts: string[] = [];
-  for (let ch = 0; ch < b.chapters.length; ch++) {
-    parts.push(`#${ch + 1}`);
-    for (let v = 0; v < b.chapters[ch].length; v++) parts.push(`${v + 1} ${b.chapters[ch][v]}`);
-  }
-  const body = parts.join("\n") + "\n";
+  const body = (await bookText(lang, i))!;
   return new Response(body, {
     headers: { "Content-Type": "text/plain; charset=utf-8", "Content-Length": String(new TextEncoder().encode(body).length) },
   });

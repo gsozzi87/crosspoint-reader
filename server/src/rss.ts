@@ -4,7 +4,22 @@
 // lo leído en la SD.
 //
 //   GET /api/rss?lang=xx                  -> { ok, feeds: [{ id, name, error?, items: [{ id, title, when, link }] }] }
-//   GET /api/rss/article?feed=id&item=id  -> { ok, title, text }   (o la descripción del feed si la página no da texto)
+//   GET /api/rss/article?feed=id&item=id&lang=xx
+//        -> { ok, title, text, when, source, reason, cache }
+//        `text` SIEMPRE trae algo legible: la nota, la descripción del feed o,
+//        si no se pudo, el motivo escrito en el idioma del aparato.
+//        `reason` = "" | paywall | blocked | notfound | timeout | empty | down | stale
+//        `cache` = false cuando `text` es una explicación y no la nota (el
+//        aparato no debe guardarla en la SD, o el error queda pegado ahí).
+//
+// OJO con el juego de caracteres: `res.text()` decodifica SIEMPRE como UTF-8 y
+// medio diario latinoamericano todavía sirve el RSS en iso-8859-1 (Reforma, por
+// ejemplo, manda `<?xml encoding="iso-8859-1"?>` con un Content-Type sin
+// charset). Los bytes inválidos se descartaban y el titular llegaba al aparato
+// sin tildes: "Exhibe PISA fracaso educativo en Mxico", "Nominan a Quiones",
+// "Baln de Oro". Ahora el cuerpo se baja como bytes y lo decodifica
+// `textCappedSmart` mirando el Content-Type, la declaración del documento y,
+// como desempate, si los bytes son UTF-8 legal (ver net.ts).
 //
 // OJO con el CDATA: casi todos los diarios escriben <title><![CDATA[Titular]]></title>
 // y stripTags() sacaba "<...>" ANTES de desenvolverlo, así que el titular entero
@@ -13,7 +28,8 @@
 // cualquiera con CDATA daban cero. El orden correcto es CDATA → etiquetas → entidades.
 import { Hono } from "hono";
 import { load } from "./store";
-import { safeFetchAt, textCapped, BROWSER_UA, FEED_ACCEPT } from "./net";
+import { normalizeLang, type Lang } from "./lang";
+import { safeFetchAt, textCappedSmart, BROWSER_UA, FEED_ACCEPT } from "./net";
 
 const TTL_MS = 30 * 60 * 1000;
 const ERROR_TTL_MS = 5 * 60 * 1000;  // un feed que falla no se reintenta en cada pedido del aparato
@@ -185,24 +201,60 @@ function headers(ua: string, accept: string): Record<string, string> {
 
 type Downloaded = { body: string; url: string; type: string };
 
+// Motivo concreto de por qué una nota no se pudo traer. Viaja al aparato para
+// que muestre "el diario lo tiene detrás de una suscripción" en vez de un
+// "No se pudo obtener respuesta" que no dice nada.
+export type Reason = "paywall" | "blocked" | "notfound" | "timeout" | "empty" | "down";
+
+export class DownloadError extends Error {
+  constructor(message: string, readonly reason: Reason, readonly status = 0) {
+    super(message);
+  }
+}
+
+function httpReason(status: number): Reason {
+  if (status === 401 || status === 402 || status === 403 || status === 429 || status === 451) return "blocked";
+  if (status === 404 || status === 410) return "notfound";
+  return "down";
+}
+
 // Baja una URL siguiendo redirecciones y con pinta de navegador. Un 403 o un 406
 // casi siempre es el filtro anti-bots o un Accept que no le gustó al servidor:
 // se reintenta una vez presentándose como lector de feeds y aceptando cualquier cosa.
-async function download(url: string, accept: string): Promise<Downloaded> {
-  let got = await safeFetchAt(url, { headers: headers(BROWSER_UA, accept) }, { timeoutMs: 12_000, maxHops: 5 });
+//
+// `budgetMs` es el tiempo TOTAL: el aparato corta a los 20 s (ServerClient) y
+// antes acá se podían encadenar dos intentos de 12 s, así que una nota lenta
+// terminaba en un error genérico en pantalla en vez de en una respuesta.
+async function download(url: string, accept: string, budgetMs = 24_000): Promise<Downloaded> {
+  const deadline = Date.now() + budgetMs;
+  const left = () => Math.max(1_000, deadline - Date.now());
+  let got: Awaited<ReturnType<typeof safeFetchAt>>;
+  try {
+    got = await safeFetchAt(url, { headers: headers(BROWSER_UA, accept) }, { timeoutMs: Math.min(left(), budgetMs * 0.6), maxHops: 5 });
+  } catch (err) {
+    const msg = String(err instanceof Error ? err.message : err);
+    throw new DownloadError(msg, /timeout|abort|timed out/i.test(msg) ? "timeout" : "down");
+  }
   if (got.res.status === 403 || got.res.status === 406 || got.res.status === 401) {
     got.res.body?.cancel().catch(() => {});
-    got = await safeFetchAt(
-      url,
-      { headers: headers("ws397-hub/1.0 (lector de feeds)", "*/*") },
-      { timeoutMs: 12_000, maxHops: 5 },
-    );
+    const first = got.res.status;
+    if (Date.now() >= deadline - 1_500) throw new DownloadError(`el sitio respondió ${first}`, httpReason(first), first);
+    try {
+      got = await safeFetchAt(
+        url,
+        { headers: headers("ws397-hub/1.0 (lector de feeds)", "*/*") },
+        { timeoutMs: left(), maxHops: 5 },
+      );
+    } catch (err) {
+      const msg = String(err instanceof Error ? err.message : err);
+      throw new DownloadError(msg, /timeout|abort|timed out/i.test(msg) ? "timeout" : httpReason(first), first);
+    }
   }
   if (!got.res.ok) {
     got.res.body?.cancel().catch(() => {});
-    throw new Error(`el sitio respondió ${got.res.status}`);
+    throw new DownloadError(`el sitio respondió ${got.res.status}`, httpReason(got.res.status), got.res.status);
   }
-  return { body: await textCapped(got.res, MAX_DOWNLOAD), url: got.url, type: got.res.headers.get("content-type") ?? "" };
+  return { body: await textCappedSmart(got.res, MAX_DOWNLOAD), url: got.url, type: got.res.headers.get("content-type") ?? "" };
 }
 
 // Baja y parsea un feed sin caché. Devuelve el motivo real cuando no hay
@@ -305,29 +357,132 @@ rss.get("/", async (c) => {
   return c.json({ ok: true, feeds: out });
 });
 
+// Marcas de muro de pago. Si la página bajó bien pero casi no dejó texto y
+// aparece alguna de estas, el motivo no es "el servidor falló": el diario
+// simplemente no lo da sin suscripción, y eso es lo que hay que decir.
+const PAYWALL = new RegExp(
+  [
+    "paywall", "meterpaywall", "piano-id", "premium-content", "subscriber-only",
+    "suscr[ií]b", "solo para suscriptores", "contenido exclusivo", "art[ií]culo para suscriptores",
+    "reg[ií]strate para seguir", "inicia sesi[oó]n para (?:seguir|leer)",
+    "subscribe (?:now|to (?:continue|read))", "subscription required",
+    "assinantes", "abonn[ée]s", "nur f[üu]r abonnenten",
+  ].join("|"),
+  "i",
+);
+
+// Lo que se le muestra al lector cuando la nota no se pudo traer. Sale por
+// pantalla tal cual, así que va en el idioma del aparato y en español neutro.
+const WHY: Record<Reason, Record<Lang, string>> = {
+  paywall: {
+    es: "El diario pide una suscripción para leer esta nota. Solo llegó el resumen del feed.",
+    en: "The site requires a subscription to read this article. Only the feed summary came through.",
+    fr: "Le site demande un abonnement pour lire cet article. Seul le résumé du flux est arrivé.",
+    de: "Die Seite verlangt ein Abo für diesen Artikel. Es kam nur die Zusammenfassung des Feeds an.",
+    pt: "O site pede assinatura para ler esta notícia. Só chegou o resumo do feed.",
+    ru: "Сайт требует подписку для чтения этой статьи. Пришло только краткое описание из ленты.",
+  },
+  blocked: {
+    es: "El sitio bloqueó la descarga (contesta que no a los programas que no son un navegador).",
+    en: "The site blocked the download (it refuses anything that is not a browser).",
+    fr: "Le site a bloqué le téléchargement (il refuse tout ce qui n'est pas un navigateur).",
+    de: "Die Seite hat den Abruf blockiert (sie lehnt alles ab, was kein Browser ist).",
+    pt: "O site bloqueou o download (recusa tudo o que não seja um navegador).",
+    ru: "Сайт заблокировал загрузку (он отказывает всему, что не является браузером).",
+  },
+  notfound: {
+    es: "La nota ya no está en el sitio del diario.",
+    en: "The article is no longer on the site.",
+    fr: "L'article n'est plus sur le site.",
+    de: "Der Artikel ist nicht mehr auf der Seite.",
+    pt: "A notícia já não está no site.",
+    ru: "Статьи больше нет на сайте.",
+  },
+  timeout: {
+    es: "El sitio del diario tardó demasiado en contestar. Prueba de nuevo en un rato.",
+    en: "The site took too long to answer. Try again in a while.",
+    fr: "Le site a mis trop de temps à répondre. Réessaie plus tard.",
+    de: "Die Seite hat zu lange gebraucht. Versuche es später noch einmal.",
+    pt: "O site demorou demais para responder. Tenta de novo mais tarde.",
+    ru: "Сайт слишком долго отвечал. Попробуй позже.",
+  },
+  empty: {
+    es: "La página no tiene texto que se pueda leer (es un video, una galería o todo scripts).",
+    en: "The page has no readable text (it is a video, a gallery, or all scripts).",
+    fr: "La page n'a pas de texte lisible (vidéo, galerie ou tout en scripts).",
+    de: "Die Seite hat keinen lesbaren Text (Video, Galerie oder nur Skripte).",
+    pt: "A página não tem texto legível (é um vídeo, uma galeria ou só scripts).",
+    ru: "На странице нет читаемого текста (видео, галерея или только скрипты).",
+  },
+  down: {
+    es: "El sitio del diario no respondió bien.",
+    en: "The site did not answer properly.",
+    fr: "Le site n'a pas répondu correctement.",
+    de: "Die Seite hat nicht richtig geantwortet.",
+    pt: "O site não respondeu corretamente.",
+    ru: "Сайт ответил некорректно.",
+  },
+};
+
+const STALE: Record<Lang, string> = {
+  es: "Los titulares cambiaron desde que abriste la lista. Mantén Atrás para actualizarla y vuelve a entrar.",
+  en: "The headlines changed since you opened the list. Hold Back to refresh it and try again.",
+  fr: "Les titres ont changé depuis l'ouverture de la liste. Maintiens Retour pour l'actualiser.",
+  de: "Die Schlagzeilen haben sich geändert. Halte Zurück gedrückt, um die Liste zu aktualisieren.",
+  pt: "As manchetes mudaram desde que abriste a lista. Mantém Voltar para atualizar e entra de novo.",
+  ru: "Заголовки изменились с момента открытия списка. Удерживай «Назад», чтобы обновить его.",
+};
+
+// Presupuesto total del pedido: el aparato corta a los 20 s (ServerClient), así
+// que acá no se puede tardar más. Antes eran 12 s de feed + 12 + 12 de la nota
+// y el aparato daba "No se pudo obtener respuesta" sin que nada estuviera roto.
+const ARTICLE_BUDGET_MS = 14_000;
+
 rss.get("/article", async (c) => {
+  const lang = normalizeLang(c.req.query("lang"));
   const feedId = Number(c.req.query("feed"));
   const itemId = Number(c.req.query("item"));
   const store = await load();
   const feed = (store.feeds ?? []).find((f) => f.id === feedId);
-  if (!feed) return c.json({ ok: false, error: "unknown feed" }, 404);
-  const { items } = await fetchFeed(feed.id, feed.url);
+  // Todo lo que sale por acá vuelve con 200 y un texto legible: el aparato solo
+  // sabe mostrar "No se pudo obtener respuesta" cuando el status no es 2xx, y un
+  // motivo escrito en pantalla vale mucho más que ese cartel. `cache: false`
+  // avisa que ese texto NO hay que guardarlo en la SD como si fuera la nota.
+  const explain = (title: string, why: string, reason: Reason | "stale") =>
+    c.json({ ok: true, title, text: why, when: "", source: feed?.name ?? "", reason, cache: false });
+  if (!feed) return explain("", STALE[lang], "stale");
+  const { items, error } = await fetchFeed(feed.id, feed.url);
   const item = items.find((i) => i.id === itemId);
-  if (!item) return c.json({ ok: false, error: "unknown item" }, 404);
+  if (!item) return explain(feed.name, error ? `${STALE[lang]}\n\n${error}` : STALE[lang], "stale");
+
   let text = "";
   let title = item.title;
+  let reason: Reason | null = null;
+  let detail = "";
   if (item.link) {
     try {
       // download(): redirecciones revalidadas una por una (un link público
       // puede rebotar a la red interna de Railway) y con pinta de navegador.
-      const page = await download(item.link, "text/html,application/xhtml+xml,*/*;q=0.8");
+      const page = await download(item.link, "text/html,application/xhtml+xml,*/*;q=0.8", ARTICLE_BUDGET_MS);
       const a = extractArticle(page.body);
       text = a.text;
       if (a.title && a.title.length > 10) title = a.title;
+      if (text.length < 400) reason = PAYWALL.test(page.body) ? "paywall" : "empty";
     } catch (err) {
-      console.error("article:", item.link.slice(0, 60), err);
+      reason = err instanceof DownloadError ? err.reason : "down";
+      detail = String(err instanceof Error ? err.message : err).slice(0, 120);
+      console.error("article:", item.link.slice(0, 60), reason, detail);
     }
+  } else {
+    reason = "empty";
   }
-  if (text.length < 200) text = item.desc || text || "(sin texto)";
-  return c.json({ ok: true, title, text, when: item.when, source: feed.name });
+
+  // El resumen del feed es contenido de verdad (en Substack y en muchos blogs
+  // es la nota entera), así que si lo hay se muestra y se cachea igual.
+  if (text.length < 400 && item.desc.length > text.length) text = item.desc;
+  if (text.length >= 200) {
+    return c.json({ ok: true, title, text, when: item.when, source: feed.name, reason: reason ?? "", cache: true });
+  }
+  const why = WHY[reason ?? "empty"][lang];
+  return explain(title, item.link ? `${why}\n\n${item.link}` : why, reason ?? "empty");
 });

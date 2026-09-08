@@ -45,7 +45,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeRecentBooksCount = 1,
                                  .homeContinueReadingInMenu = true,
                                  .homeMenuTopOffset = 20,
-                                 .buttonHintsHeight = 54,  // barra de ayudas: 40 dejaba el texto pegado al borde
+                                 .buttonHintsHeight = 60,  // icono del boton + texto (drawButtonHints)
+                                 .buttonHintsBoxRadius = 14,
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
@@ -96,7 +97,5 @@ class RoundedRaffTheme : public BaseTheme {
                       const std::function<UIIcon(int index)>& rowIcon) const override;
   void drawTextField(const GfxRenderer& renderer, Rect rect, int textWidth, bool cursorMode = false,
                      int contentStartX = 0, int contentWidth = 0) const override;
-  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                       const char* btn4) const override;
   bool homeMenuShowsContinueReading() const { return true; }
 };

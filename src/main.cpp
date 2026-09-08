@@ -42,6 +42,7 @@
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
+#include "activities/settings/AudioTestActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -62,6 +63,11 @@ static unsigned long lastX4ProPowerClickAt = 0;
 namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
 constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
+
+// ws397: tiempos del mantenido de OK/encendido (ver handlePowerHold más abajo).
+constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // desde acá, soltar abre Hablar
+constexpr unsigned long POWER_HOLD_WARN_MS = 2200;    // segundo cartel: ya casi apaga
+constexpr unsigned long POWER_HOLD_SLEEP_MS = 3000;   // acá se apaga
 }  // namespace
 
 // A wake hold must never become an in-app power-button action.  Boot may continue
@@ -412,6 +418,103 @@ void enterDeepSleep(bool fromTimeout = false) {
   sleepNow();
 }
 
+// ws397: el botón de encendido es el MISMO OK (InputStyle::DigitalConfirmPowerHold),
+// así que hasta ahora cualquier mantenido de más de 400 ms dormía el aparato y la
+// pulsación larga de OK no servía para nada más. Ahora el mantenido se reparte por
+// tiempos:
+//   toque corto ................. confirmar (lo resuelve el SDK: menos de
+//                                 CONFIRM_POWER_HOLD_MS = 400 ms)
+//   soltar antes de 1,2 s ....... nada, se puede arrepentir sin consecuencias
+//   soltar entre 1,2 s y 3 s .... Hablar, el mismo PTT del doble toque de Atrás
+//   mantener 3 s ................ apagar
+// El umbral de los 400 ms lo maneja el SDK y NO se toca: es el que decide entre
+// confirmar y encendido. Lo que cambia es cuándo duerme, que siempre estuvo acá.
+static bool usePowerHoldTiers() {
+  // Solo la ws397, y solo si el toque corto no está configurado como "dormir":
+  // con esa opción el botón vuelve a ser un botón de encendido y nada más.
+  return BoardConfig::ACTIVE.board == BoardConfig::Board::WS397 &&
+         SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP;
+}
+
+static bool powerHoldTalkAvailable() {
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;
+  return isCalmScreen(activityManager.currentActivityName());
+}
+
+// Cartel del mantenido, para que se vea que algo está pasando y hasta dónde hay
+// que seguir apretando. Se pinta ENCIMA de lo que haya (no se limpia la pantalla)
+// y son dos pasadas como mucho por gesto: cada repintada de tinta electrónica
+// cuesta medio segundo, y la regla del panel es no gastar parciales al pedo.
+static void drawPowerHoldBanner(const bool talkAvailable, const bool aboutToSleep) {
+  RenderLock lock;
+  const int screenW = renderer.getScreenWidth();
+  const int screenH = renderer.getScreenHeight();
+  const int boxW = screenW - 72;
+  const int boxH = 118;
+  const int x = (screenW - boxW) / 2;
+  const int y = screenH / 2 - boxH / 2;
+
+  renderer.fillRoundedRect(x, y, boxW, boxH, 16, Color::White);
+  renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
+
+  const StrId what = aboutToSleep ? StrId::STR_PWR_HOLD_SLEEPING
+                                  : (talkAvailable ? StrId::STR_PWR_HOLD_TALK : StrId::STR_PWR_HOLD_OFF);
+  renderer.drawCenteredText(UI_12_FONT_ID, y + 30, I18N.get(what), true, EpdFontFamily::BOLD);
+
+  // Barra: cuánto falta para el apagado.
+  const int barX = x + 24;
+  const int barW = boxW - 48;
+  const int barY = y + 76;
+  constexpr int barH = 16;
+  renderer.drawRect(barX, barY, barW, barH, 2, true);
+  const unsigned long reached = aboutToSleep ? POWER_HOLD_WARN_MS : POWER_HOLD_ACTION_MS;
+  const int filled = static_cast<int>(barW * reached / POWER_HOLD_SLEEP_MS);
+  if (filled > 4) renderer.fillRect(barX + 2, barY + 2, filled - 4, barH - 4, true);
+
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+}
+
+// Devuelve true cuando se quedó con la pasada del loop (hay cartel en pantalla o
+// ya se disparó la acción), así la Activity de abajo no repinta encima.
+static bool handlePowerHold(const bool gateOpen) {
+  static int bannerStage = 0;  // 0 sin cartel, 1 con el cartel, 2 avisando el apagado
+
+  const bool pressed = gpio.isPressed(HalGPIO::BTN_POWER);
+  const unsigned long held = gpio.getPowerButtonHeldTime();
+
+  if (pressed) {
+    // Sin el permiso de dormir (recién despertó) o con ABAJO apretado (captura
+    // de pantalla) el mantenido no es nuestro.
+    if (!gateOpen || gpio.isPressed(HalGPIO::BTN_DOWN)) return false;
+    if (held >= POWER_HOLD_SLEEP_MS) {
+      LOG_DBG("MAIN", "Power button held %lums, sleeping", held);
+      bannerStage = 0;
+      enterDeepSleep();
+      // No se llega: enterDeepSleep() termina en esp_deep_sleep_start.
+      return true;
+    }
+    const bool talk = powerHoldTalkAvailable();
+    if (bannerStage == 0 && held >= POWER_HOLD_ACTION_MS) {
+      bannerStage = 1;
+      drawPowerHoldBanner(talk, false);
+    } else if (bannerStage == 1 && held >= POWER_HOLD_WARN_MS) {
+      bannerStage = 2;
+      drawPowerHoldBanner(talk, true);
+    }
+    return bannerStage != 0;
+  }
+
+  if (bannerStage == 0) return false;
+  bannerStage = 0;
+  if (held >= POWER_HOLD_ACTION_MS && powerHoldTalkAvailable()) {
+    LOG_INF("MAIN", "PTT desde el botón de encendido (%lu ms)", held);
+    activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
+  } else {
+    activityManager.requestUpdate();  // sacar el cartel de encima
+  }
+  return true;
+}
+
 void setupDisplayAndFonts(bool seamless = false) {
 #if !FREEINK_MCU_C3
   // C3 resolves its controller in HalGPIO::begin() before SPI claims the
@@ -548,6 +651,9 @@ void setup() {
   SERVER_STORE.loadFromFile();
   HUB_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
+  // ws397: la ganancia del micrófono se calibra en Ajustes -> Prueba de audio y
+  // vale para todo el aparato (el dictado incluido), así que se aplica acá.
+  micgain::loadAndApply();
   UITheme::getInstance().reload();
   ButtonNavigator::setMappedInputManager(mappedInputManager);
 
@@ -864,8 +970,16 @@ void loop() {
   static bool powerReleasedSinceWake = false;
   if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerReleasedSinceWake = true;
 
-  if (powerReleasedSinceWake && millis() >= allowSleepAt && gpio.isPressed(HalGPIO::BTN_POWER) &&
-      gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
+  const bool powerGateOpen = powerReleasedSinceWake && millis() >= allowSleepAt;
+
+  if (usePowerHoldTiers()) {
+    // ws397: el mantenido se reparte entre Hablar y apagar (handlePowerHold).
+    if (handlePowerHold(powerGateOpen)) {
+      delay(10);  // con el cartel en pantalla no hace falta girar en vacío
+      return;
+    }
+  } else if (powerGateOpen && gpio.isPressed(HalGPIO::BTN_POWER) &&
+             gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
     // If the screenshot combination is potentially being pressed, don't sleep
     if (gpio.isPressed(HalGPIO::BTN_DOWN)) {
       return;

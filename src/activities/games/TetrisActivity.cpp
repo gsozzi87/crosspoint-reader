@@ -14,7 +14,7 @@ namespace {
 constexpr int MARGIN = 12;
 constexpr int GAP = 16;        // entre el pozo y la columna de datos
 constexpr int SIDE_MIN = 110;  // ancho mínimo de la columna de datos
-constexpr int SIDE_MAX = 170;  // más ancha que esto, la columna queda vacía
+constexpr int SIDE_MAX = 200;  // con el pozo de 200 px sobra ancho: se lo damos a los datos
 
 // Las siete piezas clásicas, cada una en sus cuatro giros, sobre una caja de
 // 4x4. El bit (fila * 4 + columna) prendido es un casillero de la pieza. Las
@@ -331,7 +331,10 @@ void TetrisActivity::drawWell(const int x, const int y, const int cell) const {
   const int w = cell * COLS;
   const int h = cell * ROWS;
 
+  // Marco del campo: uno grueso pegado al pozo y otro fino un poco afuera, así
+  // el tablero se lee como una cancha y no como un rectángulo suelto.
   renderer.drawRect(x - 3, y - 3, w + 6, h + 6, 3, true);
+  renderer.drawRect(x - 9, y - 9, w + 18, h + 18, 1, true);
 
   // Puntitos en las esquinas de los casilleros: ayudan a contar columnas sin
   // ensuciar la pantalla con una grilla entera.
@@ -405,17 +408,23 @@ void TetrisActivity::drawStat(const int x, const int y, const int w, const char*
 }
 
 void TetrisActivity::drawSidebar(const int x, const int y, const int w, const int h, const int cell) const {
-  // Caja de lo que viene, con un triangulito arriba que dice para dónde va.
-  const int boxH = cell * 3;
+  // Caja de lo que viene, con un triangulito arriba que dice para dónde va. Con
+  // el casillero chico la caja se dibuja con el casillero ENTERO: la pieza que
+  // viene se tiene que leer de un vistazo, y ancho sobra.
+  const int boxH = cell * 4 + 12;
+  // La caja se ajusta a la pieza más ancha (la I, cuatro casilleros) en vez de
+  // ocupar toda la columna: si no queda un cuadrado enorme casi vacío.
+  int boxW = cell * 6;
+  if (boxW > w) boxW = w;
   const int triW = 14;
-  const int cx = x + w / 2;
+  const int cx = x + boxW / 2;
   const int xs[3] = {cx - triW / 2, cx + triW / 2, cx};
   const int ys[3] = {y, y, y + 10};
   renderer.fillPolygon(xs, ys, 3, true);
 
   const int boxY = y + 16;
-  renderer.drawRect(x, boxY, w, boxH, 2, true);
-  drawMiniPiece(nextPiece, x + 2, boxY + 2, w - 4, boxH - 4, cell * 2 / 3);
+  renderer.drawRect(x, boxY, boxW, boxH, 2, true);
+  drawMiniPiece(nextPiece, x + 2, boxY + 2, boxW - 4, boxH - 4, cell);
 
   // Los cuatro números se reparten en lo que queda de alto: con el pozo de 20
   // filas la columna es más larga y quedaban todos apretados arriba.
@@ -437,12 +446,12 @@ void TetrisActivity::drawSidebar(const int x, const int y, const int w, const in
 
 // Debajo del pozo: Atrás mantenido un segundo baja la pieza de golpe (los
 // hints de abajo solo tienen lugar para lo corto).
-void TetrisActivity::drawDropHint(const int y) const {
+void TetrisActivity::drawDropHint(const int wellX, const int wellW, const int y) const {
   char buf[64];
   snprintf(buf, sizeof(buf), "%s  ·  1 s", I18N.get(StrId::STR_GAME_DROP));
-  const int pageWidth = renderer.getScreenWidth();
   const int textW = renderer.getTextWidth(SMALL_FONT_ID, buf);
-  const int textX = (pageWidth - textW) / 2 + 10;
+  // Centrado bajo el POZO, no bajo la pantalla: el campo ya no está en el medio.
+  const int textX = wellX + (wellW - textW) / 2 + 10;
   renderer.drawText(SMALL_FONT_ID, textX, y, buf);
   const int cx = textX - 16;
   const int xs[3] = {cx - 6, cx + 6, cx};
@@ -503,7 +512,8 @@ void TetrisActivity::render(RenderLock&&) {
 
   // El casillero es lo más grande que entra a lo ancho (dejando la columna de
   // datos) y a lo alto (dejando la línea del hint de abajo), pero nunca más que
-  // MAX_CELL: con bloques grandes no entran las veinte filas y se ven pesados.
+  // MAX_CELL: con bloques grandes el tablero se come la pantalla. Con los 20 px
+  // de MAX_CELL el pozo queda de 200x400 y sobra ancho para la columna de datos.
   const int byWidth = (pageWidth - 2 * MARGIN - SIDE_MIN - GAP) / COLS;
   const int byHeight = (bottom - top - 24 - 28) / ROWS;
   int cell = byWidth < byHeight ? byWidth : byHeight;
@@ -517,12 +527,13 @@ void TetrisActivity::render(RenderLock&&) {
   // Pozo y columna de datos van pegados y el conjunto, centrado.
   const int wellX = (pageWidth - (wellW + GAP + sideW)) / 2;
   int wellY = top + (bottom - top - wellH - 30) / 2;
-  if (wellY < top + 8) wellY = top + 8;
+  // El marco de afuera se dibuja 9 px por encima del pozo: ese es el margen.
+  if (wellY < top + 14) wellY = top + 14;
   const int sideX = wellX + wellW + GAP;
 
   drawWell(wellX, wellY, cell);
   if (sideW >= 40) drawSidebar(sideX, wellY + 4, sideW, wellH - 4, cell);
-  if (state == State::PLAYING) drawDropHint(wellY + wellH + 12);
+  if (state == State::PLAYING) drawDropHint(wellX, wellW, wellY + wellH + 18);
 
   if (state == State::CONFIRM || state == State::OVER) drawOverlay();
 

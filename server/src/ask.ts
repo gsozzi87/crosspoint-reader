@@ -24,7 +24,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
-import { load } from "./store";
+import { load, memoryLines } from "./store";
 import { chatSearch, providerLabel, LlmError } from "./llm";
 import { sourcesLine } from "./websearch";
 import { readBody, redactSecrets } from "./net";
@@ -61,11 +61,12 @@ function systemPrompt(book: string, chapter: string, lang: string): string {
   ].join(" ");
 }
 
-function generalPrompt(lang: string, memories: string[]): string {
+// La memoria del usuario NO va acá: viaja aparte (opción `memories` de llm.ts)
+// para que entre en el prefijo cacheado y no se pague en cada consulta.
+function generalPrompt(lang: string): string {
   const language = LANGUAGE_NAME[normalizeLang(lang)];
   return [
     `Hoy es ${today()}.`,
-    memories.length ? `Cosas que el usuario te pidió que recuerdes: ${memories.map((m) => `«${m}»`).join(" ")}` : "",
     "Sos el asistente por voz de un lector de libros electrónico de tinta electrónica.",
     "Respondé la pregunta de forma directa y útil con conocimiento general.",
     "Si la respuesta depende de algo que pasó después de tu entrenamiento (resultados, precios, quién está en un cargo,",
@@ -92,10 +93,12 @@ ask.post("/", async (c) => {
   const general = !text;
 
   try {
+    // La memoria vale también leyendo un libro: si dijo que es diabético, la
+    // respuesta sobre una receta del libro tiene que tenerlo en cuenta.
+    const memories = memoryLines(await load());
     const r = await chatSearch({
-      system: general
-        ? generalPrompt(lang, ((await load()).memories ?? []).slice(-40).map((m) => m.text))
-        : systemPrompt(book, chapter, lang),
+      system: general ? generalPrompt(lang) : systemPrompt(book, chapter, lang),
+      memories,
       cached: general ? undefined : `<leido_hasta_aca>\n${text}\n</leido_hasta_aca>`,
       user:
         page && !general

@@ -21,8 +21,8 @@
 // API compatible con OpenAI). Ver src/llm.ts y src/config.ts.
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
-import { transcribeWav, toWav } from "./transcribe";
-import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, DEFAULT_LISTS } from "./store";
+import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
+import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, memoryLines, rememberFact, DEFAULT_LISTS } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
@@ -86,7 +86,9 @@ const SCHEMA = {
   },
 } as const;
 
-function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang, memories: string[]): string {
+// La memoria del usuario NO va en este texto: viaja en la opción `memories` de
+// llm.ts, que la pone en el bloque cacheado (ver store.ts / llm.ts).
+function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang): string {
   return [
     "Sos el asistente por voz de un aparato de tinta electrónica sin teclado. Recibís una frase transcripta",
     "de voz (puede traer errores de reconocimiento; interpretala con sentido común y no comentes la transcripción)",
@@ -103,9 +105,8 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang,
     "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repetí en la reply la misma unidad que dijo el usuario.",
     "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora; repeat daily si dice 'todos los días') y reply corta.",
     "'Acordate que', 'tené presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
-    memories.length
-      ? `Cosas que el usuario te pidió que recuerdes (usalas si vienen al caso): ${memories.map((m) => `«${m}»`).join(" ")}`
-      : "",
+    "Si está corrigiendo algo que ya sabés de él ('ya no vivo en México', 'ahora trabajo en otro lado'), también es memory:",
+    "escribí el dato NUEVO completo en text y el servidor pisa el viejo.",
     "needsWeb va en true SOLO cuando la respuesta dependa de datos de ahora (resultado de un partido, precio o cotización,",
     "noticias, quién ocupa un cargo hoy, un estreno, una versión): en ese caso el servidor vuelve a preguntar con búsqueda",
     "en internet y esa respuesta pisa la tuya. En todo lo demás va false.",
@@ -183,9 +184,8 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
   const local = now.toLocaleString("sv-SE", { timeZone: TZ }).slice(0, 16).replace(" ", "T");
   const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ });
   const lists = Array.from(new Set([...DEFAULT_LISTS, ...Object.keys(store.lists)]));
-  const memories = (store.memories ?? []).slice(-40).map((m) => m.text);
   const raw = await chatJson<Partial<Parsed>>(
-    { system: systemPrompt(local, weekday, lists, lang, memories), user: text, maxTokens: 1024 },
+    { system: systemPrompt(local, weekday, lists, lang), memories: memoryLines(store), user: text, maxTokens: 1024 },
     SCHEMA,
   );
   // El esquema no obliga a nadie: un modelo compatible puede volver sin reply
@@ -204,12 +204,12 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
 // una llamada más, por eso solo se hace cuando el modelo lo pidió.
 async function answerWithSearch(question: string, lang: Lang): Promise<{ screen: string; spoken: string } | null> {
   try {
-    const memories = ((await load()).memories ?? []).slice(-40).map((m) => m.text);
+    const memories = memoryLines(await load());
     const hoy = new Date().toLocaleDateString("es-AR", { timeZone: TZ, day: "2-digit", month: "long", year: "numeric" });
     const r = await chatSearch({
+      memories,
       system: [
         `Hoy es ${hoy}.`,
-        memories.length ? `Cosas que el usuario te pidió que recuerdes: ${memories.map((m) => `«${m}»`).join(" ")}` : "",
         "Sos el asistente por voz de un aparato de tinta electrónica. La pregunta es sobre algo actual:",
         "buscá en internet antes de contestar en vez de responder de memoria y decí de cuándo es el dato.",
         "La pregunta llega transcripta de voz: puede traer errores; interpretala con sentido común.",
@@ -266,12 +266,14 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
         store.messages.push({ id: nextId(store), from: "voz", text: title, createdAt: stamp, read: false });
         saved.push({ kind: "message", title });
         break;
-      case "memory":
-        store.memories ??= [];
-        store.memories.push({ id: nextId(store), text: title, createdAt: stamp });
-        if (store.memories.length > 100) store.memories.shift();
+      case "memory": {
+        // rememberFact pisa la memoria más parecida: "ya no vivo en México" no
+        // puede quedar guardado al lado de "vivo en México".
+        const { replaced } = rememberFact(store, title);
+        if (replaced) console.log(`voice: memoria actualizada, pisa «${replaced}»`);
         saved.push({ kind: "memory", title });
         break;
+      }
       case "alarm": {
         // Una alarma es un recordatorio: despierta el aparato por el timer de
         // deep sleep y suena aunque esté dormido.
@@ -304,6 +306,20 @@ voice.post("/", async (c) => {
   try {
     text = await transcribeWav(toWav(await c.req.arrayBuffer(), c.req.header("content-type")), lang);
   } catch (err) {
+    // Nadie habló (o Whisper inventó lo de amara.org con el silencio): se
+    // contesta "no escuché nada" y NO se le pregunta nada al modelo. Antes esa
+    // frase inventada entraba como si el usuario la hubiera dicho y el aparato
+    // devolvía una respuesta sobre subtítulos.
+    if (err instanceof NoSpeechError) {
+      const reply = NO_SPEECH_MSG[lang];
+      const audio = speak !== "none" ? await synthesize(reply, lang, 6) : null;
+      console.log(`voice: sin voz (${err.why})`);
+      return framed(
+        { ok: true, text: "", intent: NO_SPEECH, reply, saved: [], timerSeconds: 0,
+          audio: audio?.length ?? 0, ms: { stt: Date.now() - t0, total: Date.now() - t0 } },
+        audio,
+      );
+    }
     const msg = err instanceof Error ? err.message : "internal";
     return c.json({ ok: false, error: msg }, msg.startsWith("stt ") ? 502 : 400);
   }

@@ -13,7 +13,11 @@ class OtaUpdateActivity : public Activity {
     NO_UPDATE,
     FAILED,
     FINISHED,
-    SHUTTING_DOWN
+    SHUTTING_DOWN,
+    // ws397: con el firmware al día, esta misma pantalla sigue con el paquete
+    // de contenido (dibujos, sonidos y la Biblia) — el "botón de bajar
+    // adjuntos". El WiFi ya está arriba, así que se lo pasamos hecho.
+    ASSETS
   };
 
   // Can't initialize this to 0 or the first render doesn't happen
@@ -26,6 +30,8 @@ class OtaUpdateActivity : public Activity {
   // Points into the i18n string table (flash-resident, so no lifetime concern);
   // nullptr means no extra detail.
   const char* failedDetail = nullptr;
+  // Queda pendiente encadenar la descarga del contenido después del chequeo.
+  bool assetsNext = false;
   // Cancel/Update confirmation over the version info (replaces the old
   // hand-rolled bottom tap rects).
   OptionPopup confirmPopup;

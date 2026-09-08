@@ -74,6 +74,9 @@ struct ThemeMetrics {
   int homeMenuTopOffset;
 
   int buttonHintsHeight;
+  // Recuadro de cada ayuda de la barra de abajo: -1 = sin recuadro (solo el
+  // icono y el texto), 0 = recuadro recto, >0 = radio de las esquinas.
+  int buttonHintsBoxRadius;
   int sideButtonHintsWidth;
 
   int progressBarHeight;
@@ -150,8 +153,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .previewPadding = 12,
                                  .previewHeightPercent = 30,
                                  .contentSidePadding = 20,
-                                 .listRowHeight = 30,
-                                 .listWithSubtitleRowHeight = 50,
+                                 .listRowHeight = 36,  // 29 px de renglon: con 30 las colas tocaban la fila de abajo
+                                 .listWithSubtitleRowHeight = 56,
                                  .listRowGap = 0,
                                  .listRowRadius = 0,
                                  .listInset = 0,
@@ -177,7 +180,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .homeRecentBooksCount = 1,
                                  .homeContinueReadingInMenu = false,
                                  .homeMenuTopOffset = 10,
-                                 .buttonHintsHeight = 54,  // barra de ayudas: 40 dejaba el texto pegado al borde
+                                 .buttonHintsHeight = 60,  // icono del boton + texto (drawButtonHints)
+                                 .buttonHintsBoxRadius = 0,
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
@@ -226,10 +230,6 @@ class BaseTheme {
   virtual void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const;
   virtual void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                const char* btn4) const;
-  // Shared by every theme's drawButtonHints(): centres a hint label in its box,
-  // wrapping to two lines rather than overflowing when it's too wide to fit.
-  static void drawHintLabel(GfxRenderer& renderer, int fontId, const char* label, int x, int boxWidth, int boxTop,
-                            int boxHeight, int singleLineYOffset);
   virtual void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const;
   // Menu row height as DRAWN by drawButtonMenu. HomeActivity builds its touch
   // grid from this, so hit bands always match the visuals (RoundedRaff derives

@@ -15,6 +15,7 @@
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/home/AssetSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
@@ -26,7 +27,6 @@
 namespace {
 constexpr const char* TAG = "BIBLE";
 constexpr int ROW_H = 40;
-constexpr int DOWNLOAD_ROW_H = 62;  // la fila de la descarga lleva dos renglones
 constexpr int SIDE = 20;
 constexpr unsigned long VOICE_HOLD_MS = 1200;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
@@ -42,7 +42,6 @@ void BibleActivity::onEnter() {
   if (loadBooksFromCache()) {
     state = BOOKS;
     bookIndex = HUB_STORE.bibleBook < static_cast<int>(books.size()) ? HUB_STORE.bibleBook : 0;
-    bookRow = bookIndex + 1;
     refreshCardCount();
     requestUpdate();
   } else {
@@ -64,6 +63,9 @@ void BibleActivity::onExit() {
 void BibleActivity::fail(StrId why, std::string detail) {
   LOG_ERR(TAG, "%s %s", I18N.get(why), detail.c_str());
   recorder.abort();
+  // Sin la Biblia entera en la tarjeta, casi todo lo que falla se arregla
+  // bajando el paquete de contenido: se ofrece ir ahí en vez del error pelado.
+  offerAssets = !bibleComplete();
   failureId = why;
   failureDetail = std::move(detail);
   state = FAILED;
@@ -135,9 +137,10 @@ bool BibleActivity::fetchChapter(const int book, const int chapter, std::string&
 }
 
 // --- Biblia entera en la SD ------------------------------------------------
-// Un archivo por libro, tal como lo manda el servidor: "#<capítulo>" y abajo los
-// versículos numerados. Son 3,8 MB en español; con eso se lee y se busca sin
-// WiFi (la voz igual necesita el servidor para pasar el audio a texto).
+// Un archivo por libro, tal como lo deja el paquete de contenido: "#<capítulo>"
+// y abajo los versículos numerados. Son 3,8 MB en español; con eso se lee y se
+// busca sin WiFi (la voz igual necesita el servidor para pasar el audio a
+// texto). La descarga la hace `AssetSyncActivity`, no esta pantalla.
 
 std::string BibleActivity::bookPath(const int book) const {
   char name[16];
@@ -177,22 +180,6 @@ bool BibleActivity::readChapterFromBook(const int book, const int chapter, std::
   if (end == std::string::npos) end = whole.size();
   text = whole.substr(start, end - start);
   return !text.empty();
-}
-
-bool BibleActivity::downloadBook(const int book) {
-  ServerClient::Response resp;
-  const ServerClient::Result r =
-      SERVER_CLIENT.get("/api/bible/book?lang=" + lang + "&book=" + std::to_string(book), resp);
-  if (r != ServerClient::Result::Ok || resp.body.size() < 32) {
-    LOG_ERR(TAG, "libro %d: %s (%d)", book, ServerClient::resultName(r), resp.status);
-    return false;
-  }
-  HalFile f;
-  if (!Storage.openFileForWrite(TAG, bookPath(book), f)) return false;
-  const size_t written = f.write(reinterpret_cast<const uint8_t*>(resp.body.data()), resp.body.size());
-  f.close();
-  downloadedKb += static_cast<int>(resp.body.size() / 1024);
-  return written == resp.body.size();
 }
 
 namespace {
@@ -364,7 +351,6 @@ void BibleActivity::saveLastRef() {
 
 void BibleActivity::openChapter(const int book, const int chapter, const int verse) {
   bookIndex = book;
-  bookRow = book + 1;
   chapterIndex = chapter - 1;
   wantedVerse = verse;
   std::string text;
@@ -527,7 +513,6 @@ void BibleActivity::loop() {
         WiFi.setSleep(true);
         state = BOOKS;
         bookIndex = HUB_STORE.bibleBook < static_cast<int>(books.size()) ? HUB_STORE.bibleBook : 0;
-        bookRow = bookIndex + 1;
         refreshCardCount();
         requestUpdate();
       } else if (pending == LOAD_CHAPTER) {
@@ -542,47 +527,10 @@ void BibleActivity::loop() {
       } else if (pending == VOICE) {
         pending = NONE;
         performVoice();
-      } else if (pending == DOWNLOAD) {
-        pending = NONE;
-        downloadIndex = 0;
-        downloadedKb = 0;
-        state = DOWNLOADING;
-        requestUpdate();
       } else {
         state = stateAfterConnect;
         requestUpdate();
       }
-      break;
-    }
-    case DOWNLOADING: {
-      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-        WiFi.setSleep(true);
-        forceDownload = false;
-        refreshCardCount();  // quedó a medias: la fila tiene que decir cuánto falta
-        state = BOOKS;
-        requestUpdate();
-        break;
-      }
-      if (downloadIndex >= static_cast<int>(books.size())) {
-        WiFi.setSleep(true);
-        LOG_INF(TAG, "Biblia completa: %d KB", downloadedKb);
-        forceDownload = false;
-        refreshCardCount();
-        state = BOOKS;
-        bookRow = 0;  // la fila de la descarga, que ahora dice que ya está
-        requestUpdate();
-        break;
-      }
-      const int book = downloadIndex++;
-      if ((forceDownload || !bookDownloaded(book)) && !downloadBook(book)) {
-        // El detalle se pinta en pantalla: el nombre del libro (ya viene en el idioma
-        // del aparato) en vez de un "libro N" en español fijo.
-        forceDownload = false;
-        refreshCardCount();
-        fail(StrId::STR_BIBLE_DOWNLOAD_FAILED, books[book].name);
-        break;
-      }
-      requestUpdate();  // una pasada por libro: la pantalla sigue viva
       break;
     }
     case SEARCHING:
@@ -596,10 +544,8 @@ void BibleActivity::loop() {
     case BOOKS:
     case CHAPTERS: {
       const bool inBooks = state == BOOKS;
-      // La primera fila de los libros baja la Biblia entera; abajo van los libros.
-      const int extra = inBooks ? 1 : 0;
-      const int count = (inBooks ? static_cast<int>(books.size()) : books[bookIndex].chapters) + extra;
-      int& index = inBooks ? bookRow : chapterIndex;
+      const int count = inBooks ? static_cast<int>(books.size()) : books[bookIndex].chapters;
+      int& index = inBooks ? bookIndex : chapterIndex;
       if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, VOICE_HOLD_MS)) {
         startVoice();
         break;
@@ -613,15 +559,7 @@ void BibleActivity::loop() {
         requestUpdate();
       });
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        if (inBooks && bookRow == 0) {
-          // Ya está entera: OK la vuelve a bajar (por si quedó a medias o vieja).
-          forceDownload = bibleComplete();
-          pending = DOWNLOAD;
-          ensureConnected(DOWNLOADING);
-          break;
-        }
         if (inBooks) {
-          bookIndex = bookRow - 1;
           state = CHAPTERS;
           listTop = 0;
           chapterIndex = HUB_STORE.bibleBook == bookIndex && HUB_STORE.bibleChapter > 0 ? HUB_STORE.bibleChapter - 1 : 0;
@@ -672,6 +610,18 @@ void BibleActivity::loop() {
       }
       break;
     case FAILED:
+      // OK baja el paquete de contenido (ahí viene la Biblia entera); Atrás
+      // vuelve a la lista.
+      if (offerAssets && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        offerAssets = false;
+        startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput),
+                               [this](const ActivityResult&) {
+                                 refreshCardCount();
+                                 state = books.empty() ? FAILED : BOOKS;
+                                 requestUpdate();
+                               });
+        break;
+      }
       if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
           mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
         if (books.empty()) {
@@ -703,77 +653,51 @@ void BibleActivity::render(RenderLock&&) {
     case BOOKS:
     case CHAPTERS: {
       const bool inBooks = state == BOOKS;
-      // En los libros, la fila 0 baja la Biblia entera y ocupa dos renglones.
-      const int extra = inBooks ? 1 : 0;
-      const int count = (inBooks ? static_cast<int>(books.size()) : books[bookIndex].chapters) + extra;
-      const int selected = inBooks ? bookRow : chapterIndex;
+      const int count = inBooks ? static_cast<int>(books.size()) : books[bookIndex].chapters;
+      const int selected = inBooks ? bookIndex : chapterIndex;
       const int top = metrics.topPadding + metrics.headerHeight + 10;
-      const int bottom = pageHeight - metrics.buttonHintsHeight - 30;
-      const auto rowHeight = [&](const int i) { return inBooks && i == 0 ? DOWNLOAD_ROW_H : ROW_H; };
-      // Las filas no miden todas lo mismo, así que la ventana visible se corre
-      // a mano hasta que entre la fila elegida (nada de páginas fijas).
-      if (listTop < 0 || listTop >= count) listTop = 0;
-      if (listTop > selected) listTop = selected;
-      while (listTop < count - 1) {
-        int used = top;
-        int last = listTop;
-        for (int i = listTop; i < count; ++i) {
-          if (used + rowHeight(i) > bottom) break;
-          used += rowHeight(i);
-          last = i;
-        }
-        if (selected <= last) break;
-        listTop++;
+      // Sin la Biblia entera en la tarjeta, abajo va el aviso de que viene en el
+      // paquete de contenido: hay que dejarle un renglón.
+      const bool notice = inBooks && !bibleComplete();
+      const int bottom = pageHeight - metrics.buttonHintsHeight - (notice ? 52 : 30);
+      const int perPage = (bottom - top) / ROW_H;
+      if (perPage > 0) {
+        if (listTop > selected) listTop = selected;
+        if (selected >= listTop + perPage) listTop = selected - perPage + 1;
+        if (listTop < 0 || listTop >= count) listTop = 0;
       }
       int y = top;
-      for (int i = listTop; i < count && y + rowHeight(i) <= bottom; ++i) {
-        const int h = rowHeight(i);
+      for (int i = listTop; i < count && y + ROW_H <= bottom; ++i) {
         const bool sel = i == selected;
-        if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), h - 4, 8, Color::Black);
-        if (inBooks && i == 0) {
-          // Fila de la descarga completa: qué hace, cuánto ocupa y cómo va.
-          const bool done = bibleComplete();
-          const bool started = booksOnCard > 0;
-          const char* label = done      ? tr(STR_BIBLE_DOWNLOADED)
-                              : started ? tr(STR_BIBLE_DOWNLOAD_RESUME)
-                                        : tr(STR_BIBLE_DOWNLOAD_ALL);
-          std::string hint = done ? tr(STR_BIBLE_DOWNLOADED_HINT) : tr(STR_BIBLE_DOWNLOAD_HINT);
-          if (!done && started) {
-            hint = std::to_string(booksOnCard) + "/" + std::to_string(books.size()) + "  ·  " + hint;
-          }
-          renderer.drawText(UI_12_FONT_ID, SIDE, y + 6,
-                            renderer.truncatedText(UI_12_FONT_ID, label, pageWidth - 2 * SIDE).c_str(), !sel);
-          renderer.drawText(SMALL_FONT_ID, SIDE, y + 34,
-                            renderer.truncatedText(SMALL_FONT_ID, hint.c_str(), pageWidth - 2 * SIDE).c_str(), !sel);
-        } else {
-          const int book = inBooks ? i - 1 : bookIndex;
-          const std::string label = inBooks ? books[book].name
-                                            : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
-          renderer.drawText(UI_12_FONT_ID, SIDE, y + 7,
-                            renderer.truncatedText(UI_12_FONT_ID, label.c_str(), pageWidth - 2 * SIDE - 40).c_str(),
-                            !sel);
-          if (inBooks) {
-            const std::string n = std::to_string(books[book].chapters);
-            renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 10,
-                              n.c_str(), !sel);
-          } else if (chapterCached(bookIndex, i + 1)) {
-            renderer.fillRect(pageWidth - SIDE - 6, y + ROW_H / 2 - 5, 6, 6);  // cacheado: se lee sin WiFi
-          }
+        if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4, 8, Color::Black);
+        const int book = inBooks ? i : bookIndex;
+        const std::string label = inBooks ? books[book].name
+                                          : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
+        renderer.drawText(UI_12_FONT_ID, SIDE, y + 7,
+                          renderer.truncatedText(UI_12_FONT_ID, label.c_str(), pageWidth - 2 * SIDE - 40).c_str(),
+                          !sel);
+        if (inBooks) {
+          const std::string n = std::to_string(books[book].chapters);
+          renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 10,
+                            n.c_str(), !sel);
+        } else if (chapterCached(bookIndex, i + 1)) {
+          renderer.fillRect(pageWidth - SIDE - 6, y + ROW_H / 2 - 5, 6, 6);  // cacheado: se lee sin WiFi
         }
-        y += h;
+        y += ROW_H;
       }
       char pos[16];
-      if (inBooks) {
-        // La fila de la descarga no cuenta como libro.
-        if (selected > 0) snprintf(pos, sizeof(pos), "%d/%d", selected, static_cast<int>(books.size()));
-        else pos[0] = '\0';
-      } else {
-        snprintf(pos, sizeof(pos), "%d/%d", selected + 1, count);
-      }
-      if (pos[0]) {
-        renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pos), bottom + 4, pos);
-      }
+      snprintf(pos, sizeof(pos), "%d/%d", selected + 1, count);
+      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pos), bottom + 4, pos);
       renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4, tr(STR_BIBLE_VOICE_HINT));
+      if (notice) {
+        // La Biblia entera ya no se baja desde acá: viene en el paquete.
+        std::string line = tr(STR_BIBLE_FROM_PACKAGE);
+        if (booksOnCard > 0) {
+          line = std::to_string(booksOnCard) + "/" + std::to_string(books.size()) + "  ·  " + line;
+        }
+        renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 26,
+                          renderer.truncatedText(SMALL_FONT_ID, line.c_str(), pageWidth - 2 * SIDE).c_str());
+      }
       break;
     }
     case RECORDING:
@@ -784,30 +708,6 @@ void BibleActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_BIBLE_LOADING), true, EpdFontFamily::BOLD);
       confirmLabel = "";
       break;
-    case DOWNLOADING: {
-      const int total = static_cast<int>(books.size());
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 70, tr(STR_BIBLE_DOWNLOADING), true, EpdFontFamily::BOLD);
-      // Qué libro va y cuántos faltan, para que se vea que avanza.
-      if (downloadIndex < total) {
-        renderer.drawCenteredText(UI_10_FONT_ID, mid - 34, books[downloadIndex].name.c_str());
-      }
-      char line[80];
-      snprintf(line, sizeof(line), "%d/%d  ·  %s %d", downloadIndex, total, tr(STR_BIBLE_REMAINING),
-               std::max(0, total - downloadIndex));
-      renderer.drawCenteredText(UI_10_FONT_ID, mid - 6, line);
-      char mbLine[32];
-      snprintf(mbLine, sizeof(mbLine), "%d,%d MB", downloadedKb / 1024, (downloadedKb % 1024) * 10 / 1024);
-      renderer.drawCenteredText(SMALL_FONT_ID, mid + 20, mbLine);
-      const int barW = pageWidth - 120;
-      renderer.drawRect(60, mid + 46, barW, 14, true);
-      if (total > 0) {
-        const int fill = barW * downloadIndex / total;
-        renderer.fillRect(62, mid + 48, std::max(2, fill - 4), 10, true);
-      }
-      renderer.drawCenteredText(SMALL_FONT_ID, mid + 78, tr(STR_BIBLE_DOWNLOAD_STOP));
-      confirmLabel = "";
-      break;
-    }
     case SEARCHING: {
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 20, tr(STR_BIBLE_SEARCHING), true, EpdFontFamily::BOLD);
       char line[48];
@@ -823,6 +723,10 @@ void BibleActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);
       if (!failureDetail.empty()) {
         renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, renderer.truncatedText(UI_10_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
+      }
+      if (offerAssets) {
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 44, tr(STR_BIBLE_FROM_PACKAGE));
+        confirmLabel = tr(STR_ASSETS_GET);
       }
       break;
     case CONNECTING:

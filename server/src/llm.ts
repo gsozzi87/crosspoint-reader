@@ -40,7 +40,25 @@ type Options = {
   cached?: string;
   search?: "off" | "auto" | "force";
   lang?: Lang;
+  // `memories`: lo que el usuario pidió que el aparato recuerde de él. Es el
+  // bloque MÁS estable de todos (cambia solo cuando dicta una memoria nueva),
+  // así que va primero y cacheado: en Anthropic con cache_control, en las
+  // compatibles con OpenAI al principio del system, que es donde pega la caché
+  // de prefijo del proveedor. Ver store.ts (memoryLines / rememberFact).
+  memories?: string[];
 };
+
+// El bloque de memoria como texto. Se arma igual para los dos caminos para que
+// el prefijo cacheado sea byte a byte el mismo entre consultas.
+export function memoryBlock(memories: string[] | undefined): string {
+  const list = (memories ?? []).map((m) => m.trim()).filter(Boolean);
+  if (!list.length) return "";
+  return [
+    "Lo que sabes de esta persona (te lo pidió recordar):",
+    ...list.map((m) => `- ${m}`),
+    "Úsalo cuando venga al caso y no lo menciones si no hace falta. Si algo de acá contradice lo que dice ahora, manda lo que dice ahora.",
+  ].join("\n");
+}
 
 // `source`: el nombre del medio cuando la dirección es la de un intermediario
 // (Google Noticias redirige, así que el dominio de la URL no es la fuente).
@@ -53,6 +71,48 @@ const SEARCH_HINT = [
   "Usalos para todo lo que dependa de la fecha: son más nuevos que lo que sabés de memoria y le ganan a tu memoria.",
   "No inventes nada que no esté ahí; si los resultados no alcanzan para contestar, decilo en una línea.",
 ].join(" ");
+
+// ── Búsqueda incorporada del proveedor ──────────────────────────────────────
+// Groq también la trae, y sale MUCHO más barata que la de Anthropic (va adentro
+// del precio de los tokens, no USD 0,01 por búsqueda):
+//   groq/compound y groq/compound-mini  → sistemas agénticos: buscan solos, no
+//       hay que declarar nada. Las fuentes vuelven en
+//       choices[0].message.executed_tools[].search_results.results[].
+//   openai/gpt-oss-*  → herramienta propia: tools: [{ type: "browser_search" }].
+//       Las citas vienen incrustadas en el texto como 【2†L6-L10】 y hay que
+//       sacarlas antes de mandarlas a una pantalla de tinta.
+// Cualquier otro compatible con OpenAI (DeepSeek, OpenAI) no tiene nada: ahí
+// busca el servidor (websearch.ts) y los resultados van en el prompt.
+export type BuiltInSearch = "compound" | "browser" | "none";
+
+export function providerSearchKind(baseUrl: string, model: string): BuiltInSearch {
+  let host = "";
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    return "none";
+  }
+  if (!host.endsWith("groq.com")) return "none";
+  if (/^groq\/compound/.test(model)) return "compound";
+  if (/^openai\/gpt-oss/.test(model)) return "browser";
+  return "none";
+}
+
+// País que Groq usa para dar más peso a los resultados locales.
+const SEARCH_COUNTRY: Record<Lang, string> = {
+  es: "argentina", en: "united states", fr: "france", de: "germany", pt: "brazil", ru: "russia",
+};
+
+// gpt-oss deja las citas incrustadas en el texto ("...32 % share 【2†L6-L10】").
+// En la pantalla del aparato eso es basura.
+function stripInlineCitations(text: string): string {
+  return text
+    .replace(/【[^】]*】/g, "")
+    .replace(/\[\d+\u2020[^\]]*\]/g, "")
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +([.,;:!?])/g, "$1")
+    .trim();
+}
 
 // La búsqueda de Anthropic es una herramienta de su propio servidor: se declara
 // y la ejecuta él, no hay que hacer ningún ciclo de llamadas acá. La variante
@@ -67,13 +127,38 @@ function webSearchTool(model: string, maxUses: number): SearchTool {
     : { type: "web_search_20250305", name: "web_search", max_uses: maxUses };
 }
 
-// Para mostrar en /board cuál de las dos variantes le toca al modelo elegido.
+// Para mostrar en /board qué búsqueda le toca a lo que está elegido.
 export function searchToolLabel(model: string): string {
   return webSearchTool(model, 1).type;
 }
 
+// Lo mismo pero contando el proveedor entero, en castellano, para la tarjeta de IA.
+export async function searchKindLabel(): Promise<string> {
+  const c = (await config()).llm;
+  if (c.provider === "anthropic") return `Anthropic, del lado del servidor (${searchToolLabel(c.model)}), USD 0,01 por búsqueda`;
+  const kind = providerSearchKind(c.baseUrl, c.model);
+  if (kind === "compound") return "Groq Compound: busca solo, incluida en el precio de los tokens";
+  if (kind === "browser") return "Groq browser_search del gpt-oss: incluida en el precio de los tokens";
+  return "la hace este servidor (Google Noticias + DuckDuckGo, o Tavily/Brave con clave)";
+}
+
 export async function currentModel(): Promise<string> {
   return (await config()).llm.model;
+}
+
+// El system de Anthropic como lista de bloques, del más estable al más volátil:
+// memoria del usuario, instrucciones, y el bloque grande (el capítulo del
+// libro). El cache_control va en el último de los estables: Anthropic cachea
+// TODO el prefijo hasta ahí, así que una sola marca alcanza para los dos.
+function systemBlocks(o: Options): string | Anthropic.TextBlockParam[] {
+  const mem = memoryBlock(o.memories);
+  if (!mem && !o.cached) return o.system;
+  const blocks: Anthropic.TextBlockParam[] = [];
+  if (mem) blocks.push({ type: "text", text: mem });
+  blocks.push({ type: "text", text: o.system });
+  if (o.cached) blocks.push({ type: "text", text: o.cached });
+  blocks[blocks.length - 1].cache_control = { type: "ephemeral" };
+  return blocks;
 }
 
 async function anthropicRun(o: Options, schema: object | undefined, search: boolean): Promise<ChatResult> {
@@ -95,12 +180,7 @@ async function anthropicRun(o: Options, schema: object | undefined, search: bool
     const res = await client.messages.create({
       model: c.model,
       max_tokens: o.maxTokens ?? 1024,
-      system: o.cached
-        ? [
-            { type: "text" as const, text: o.system },
-            { type: "text" as const, text: o.cached, cache_control: { type: "ephemeral" as const } },
-          ]
-        : o.system,
+      system: systemBlocks(o),
       messages,
       ...(tools ? { tools } : {}),
       // El SDK tipa el esquema con su propia forma; el nuestro es un JSON Schema
@@ -134,10 +214,22 @@ async function anthropicText(o: Options, schema?: object): Promise<string> {
   return (await anthropicRun(o, schema, false)).text;
 }
 
-async function openAiText(o: Options, schema?: object): Promise<string> {
-  const c = (await config()).llm;
+type OpenAiChoice = {
+  message?: {
+    content?: string;
+    // Groq: lo que ejecutó el sistema agéntico (búsqueda, código).
+    executed_tools?: { type?: string; search_results?: { results?: { title?: string; url?: string; content?: string; score?: number }[] } }[];
+  };
+};
+
+async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltInSearch): Promise<ChatResult> {
+  const cfg = await config();
+  const c = cfg.llm;
   if (!c.key) throw new LlmError("falta la clave del proveedor (web → Ajustes)", 500, "no_key");
-  const base = o.cached ? `${o.system}\n\n${o.cached}` : o.system;
+  // La memoria va PRIMERA: DeepSeek y los demás cachean por prefijo exacto, así
+  // que lo estable tiene que estar al principio o no se cachea nada.
+  const mem = memoryBlock(o.memories);
+  const base = [mem, o.system, o.cached].filter(Boolean).join("\n\n");
   const system = schema
     ? `${base}\n\nRespondé SOLO con un objeto JSON que cumpla este esquema, sin texto alrededor y sin bloques de código:\n${JSON.stringify(schema)}`
     : base;
@@ -145,6 +237,7 @@ async function openAiText(o: Options, schema?: object): Promise<string> {
   // mano) no tiene que poder mandar el Bearer a la red interna.
   const url = checkUrl(c.baseUrl, { allowLocal: true });
   if (!url.ok) throw new LlmError(`la URL del proveedor no sirve: ${url.error}`, 500, "no_key");
+  const lang: Lang = o.lang ?? "es";
   const res = await fetch(`${c.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${c.key}` },
@@ -155,9 +248,24 @@ async function openAiText(o: Options, schema?: object): Promise<string> {
         { role: "system", content: system },
         { role: "user", content: o.user },
       ],
-      ...(schema ? { response_format: { type: "json_object" } } : {}),
+      // El esquema y la búsqueda incorporada no conviven (Groq lo dice de
+      // browser_search), pero tampoco hace falta: el clasificador nunca busca.
+      // Los sistemas compound tampoco aceptan response_format, así que ahí el
+      // esquema queda solo en el system (que ya lo explica entero).
+      ...(schema && !/^groq\/compound/.test(c.model) ? { response_format: { type: "json_object" } } : {}),
+      ...(builtIn === "compound"
+        ? { search_settings: { country: SEARCH_COUNTRY[lang] } }
+        : {}),
+      ...(builtIn === "browser"
+        ? {
+            tools: [{ type: "browser_search" }],
+            tool_choice: o.search === "force" ? "required" : "auto",
+            // Con esfuerzo alto se pone a navegar de más y se come los tokens.
+            reasoning_effort: "low",
+          }
+        : {}),
     }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(builtIn === "none" ? 60_000 : 90_000),
   });
   // El cuerpo del proveedor vuelve al aparato y a la web: algunos repiten la
   // clave que les mandaste en el error de auth, así que se tacha primero.
@@ -169,13 +277,27 @@ async function openAiText(o: Options, schema?: object): Promise<string> {
       res.status === 401 ? "no_key" : "provider_error",
     );
   }
-  let data: { choices?: { message?: { content?: string } }[] };
+  let data: { choices?: OpenAiChoice[] };
   try {
     data = JSON.parse(body);
   } catch {
     throw new LlmError(`respuesta ilegible del proveedor: ${body.slice(0, 120)}`, 502, "bad_answer");
   }
-  return data.choices?.[0]?.message?.content ?? "";
+  const msg = data.choices?.[0]?.message;
+  let text = msg?.content ?? "";
+  const sources: Source[] = [];
+  for (const t of msg?.executed_tools ?? []) {
+    for (const r of t.search_results?.results ?? []) {
+      if (r.url) sources.push({ title: (r.title ?? "").slice(0, 160), url: r.url });
+    }
+  }
+  if (builtIn === "browser") text = stripInlineCitations(text);
+  const searched = builtIn !== "none" && (sources.length > 0 || (builtIn === "browser" && /【|\u2020/.test(msg?.content ?? "")));
+  return { text, sources: sources.slice(0, 8), searched };
+}
+
+async function openAiText(o: Options, schema?: object): Promise<string> {
+  return (await openAiRun(o, schema, "none")).text;
 }
 
 export async function chatText(o: Options): Promise<string> {
@@ -191,8 +313,18 @@ export async function chatSearch(o: Options): Promise<ChatResult> {
   // así que no se gasta una búsqueda en una pregunta que no la necesita.
   if (cfg.llm.provider === "anthropic") return anthropicRun(o, undefined, on);
 
-  // Las APIs compatibles con OpenAI no tienen nada parecido: busca el servidor y
-  // los resultados van adentro del prompt.
+  // Groq sí la trae: se la deja hacer a él (sale lo mismo que los tokens y
+  // llega mucho mejor que rasguñar DuckDuckGo desde acá).
+  const builtIn = on ? providerSearchKind(cfg.llm.baseUrl, cfg.llm.model) : "none";
+  if (builtIn !== "none") {
+    const r = await openAiRun(o, undefined, builtIn);
+    // Si el sistema decidió no buscar, la respuesta igual sirve: es la misma
+    // llamada, no se gastó nada de más.
+    return r;
+  }
+
+  // El resto (DeepSeek, OpenAI) no tiene nada parecido: busca el servidor y los
+  // resultados van adentro del prompt.
   const lang: Lang = o.lang ?? "es";
   let opts = o;
   let sources: Source[] = [];

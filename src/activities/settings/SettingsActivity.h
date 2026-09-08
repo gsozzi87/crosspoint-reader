@@ -30,6 +30,7 @@ enum class SettingAction {
   HubSync,
   HubLocation,
   Wallpaper,
+  DownloadAssets,  // ws397: el paquete de contenido (dibujos, sonidos, Biblia)
 };
 
 struct SettingInfo {

@@ -40,5 +40,19 @@ inline freeink::ui::ThemeTokens uiThemeTokens(const freeink::ui::GfxRendererTarg
   tokens.sheetRadius = static_cast<uint8_t>(metrics.sheetRadius);
   tokens.capsuleRadius = static_cast<uint8_t>(metrics.capsuleRadius);
   tokens.bodyText.bold = metrics.listTitleBold;
+  // Resalte de la fila elegida con relleno gris (Lyra): en 1 bit el gris es una
+  // trama de puntos del mismo grosor que los palos de la letra, así que pegada
+  // al texto la fila se lee sucia y en tinta electrónica encima fantasmea. Se le
+  // agrega un borde negro (el relleno y el color del texto los sigue poniendo
+  // Screen::list según listSelectionStyle) para que la fila tenga un contorno
+  // limpio y se note cuál está elegida aunque la trama se vea flojita.
+  if (static_cast<freeink::ui::SelectionStyle>(metrics.listSelectionStyle) ==
+      freeink::ui::SelectionStyle::LightPill) {
+    freeink::ui::StyleSet rows = freeink::ui::defaultListRowStyles();
+    rows.selected.border = freeink::ui::Paint::solid(freeink::ui::Color::Black);
+    rows.selected.borderWidth = 1;
+    rows.active = rows.selected;
+    tokens.listRow = rows;
+  }
   return tokens;
 }

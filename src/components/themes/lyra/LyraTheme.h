@@ -6,8 +6,8 @@ class GfxRenderer;
 
 // Lyra theme metrics (zero runtime cost)
 namespace LyraMetrics {
-constexpr ThemeMetrics values = {.batteryWidth = 16,
-                                 .batteryHeight = 12,
+constexpr ThemeMetrics values = {.batteryWidth = 20,  // 16x12 se perdia en una pantalla de 480 px
+                                 .batteryHeight = 14,
                                  .topPadding = 5,
                                  .batteryBarHeight = 40,
                                  .headerHeight = 84,
@@ -15,7 +15,7 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .previewPadding = 12,
                                  .previewHeightPercent = 30,
                                  .contentSidePadding = 20,
-                                 .listRowHeight = 40,
+                                 .listRowHeight = 44,  // 29 px de renglon + aire para la pastilla del elegido
                                  .listWithSubtitleRowHeight = 60,
                                  .listRowGap = 0,
                                  .listRowRadius = 6,
@@ -42,7 +42,8 @@ constexpr ThemeMetrics values = {.batteryWidth = 16,
                                  .homeRecentBooksCount = 1,
                                  .homeContinueReadingInMenu = false,
                                  .homeMenuTopOffset = 16,
-                                 .buttonHintsHeight = 54,  // barra de ayudas: 40 dejaba el texto pegado al borde
+                                 .buttonHintsHeight = 60,  // icono del boton + texto (drawButtonHints)
+                                 .buttonHintsBoxRadius = 8,
                                  .sideButtonHintsWidth = 30,
                                  .progressBarHeight = 16,
                                  .progressBarMarginTop = 1,
@@ -86,8 +87,6 @@ class LyraTheme : public BaseTheme {
   void fillBatteryIcon(const GfxRenderer& renderer, Rect rect, uint16_t percentage) const override;
   void drawSubHeader(const GfxRenderer& renderer, Rect rect, const char* label,
                      const char* rightLabel = nullptr) const override;
-  void drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
-                       const char* btn4) const override;
   void drawSideButtonHints(const GfxRenderer& renderer, const char* topBtn, const char* bottomBtn) const override;
   void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                       const std::function<std::string(int index)>& buttonLabel,

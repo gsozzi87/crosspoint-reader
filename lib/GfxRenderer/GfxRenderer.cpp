@@ -622,7 +622,17 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
 
 void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* text, const bool black,
                                    const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
-  const int x = (getScreenWidth() - getTextWidth(fontId, text, style, baseDir)) / 2;
+  // Un texto mas ancho que la pantalla dejaba x en negativo y drawPixel logueaba
+  // "Outside range" UNA VEZ POR PIXEL: miles de lineas por cartel y el log del
+  // aparato inservible. Se trunca contra el ancho real antes de centrar.
+  const int screenWidth = getScreenWidth();
+  if (getTextWidth(fontId, text, style, baseDir) > screenWidth) {
+    const std::string fitted = truncatedText(fontId, text, screenWidth, style);
+    const int x = std::max(0, (screenWidth - getTextWidth(fontId, fitted.c_str(), style, baseDir)) / 2);
+    drawText(fontId, x, y, fitted.c_str(), black, style, baseDir);
+    return;
+  }
+  const int x = (screenWidth - getTextWidth(fontId, text, style, baseDir)) / 2;
   drawText(fontId, x, y, text, black, style, baseDir);
 }
 
