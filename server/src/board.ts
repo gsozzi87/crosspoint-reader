@@ -550,7 +550,7 @@ async function loadAssets(){
   const mb = (b) => (b / 1048576).toFixed(1) + " MB";
   const langs = r.langs || [];
   $("assetsState").textContent = langs.length
-    ? "Lucide " + r.lucide + " · " + r.cards + " tarjetas."
+    ? "Dibujos " + r.lucide + " · " + r.cards + " tarjetas."
     : "Todavía no se generó nada. Tocá \u201cGenerar lo que falte\u201d.";
   $("assetsTable").innerHTML = !langs.length ? "" :
     "<tr><th>Idioma</th><th>Versión</th><th>Archivos</th><th>Tamaño</th><th>Por tipo</th><th>Estado</th></tr>" +

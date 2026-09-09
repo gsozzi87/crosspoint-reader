@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <I18n.h>
 
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -26,7 +27,13 @@
 //                                        pages, codes:[{page, ...}], warn}}
 //   GET /api/attachment?id=&page=    -> BMP listo para la pantalla, igual que
 //                                       /api/photos/file (el aparato solo lo pinta)
-//   POST /api/trip/packing {tripId, id, done}
+//   POST /api/trip/packing {tripId, id, done}   (tildar)
+//   POST /api/trip/packing {tripId, text}       (agregar lo que sugirió la IA)
+//   GET  /api/suggest/trip?id=&lang=[&refresh=1]
+//       -> {ok, at, lines:[...], packing:[...]}  sugerencias del viaje: qué visitar
+//          y en qué horario, y qué FALTA llevar. Cuestan plata (el servidor busca
+//          en internet), así que se muestran las cacheadas y solo OK las recalcula.
+//          Lo que dice que falta NO se agrega solo: se ofrece y se agrega con OK.
 // Todo se cachea en la SD (/.crosspoint/trips.json y /.crosspoint/att/), así que
 // el viaje se mira sin WiFi, que es como se llega al aeropuerto.
 class TripActivity final : public Activity {
@@ -41,8 +48,8 @@ class TripActivity final : public Activity {
   bool preventAutoSleep() override { return state == CONNECTING || state == LOADING; }
 
  private:
-  enum State { TRIPS, DAYS, ITEMS, PACKING, ATT_TEXT, ATT_IMAGE, CONNECTING, LOADING, FAILED };
-  enum Pending { NONE, TRIPS_FETCH, TRIP_FETCH, ATT_FETCH, PAGE_FETCH };
+  enum State { TRIPS, DAYS, ITEMS, PACKING, SUGGEST, ATT_TEXT, ATT_IMAGE, CONNECTING, LOADING, FAILED };
+  enum Pending { NONE, TRIPS_FETCH, TRIP_FETCH, ATT_FETCH, PAGE_FETCH, SUGGEST_FETCH };
 
   struct TripRef {
     std::string id;
@@ -77,7 +84,7 @@ class TripActivity final : public Activity {
   std::vector<PackItem> packing;
 
   int tripIndex = 0;
-  int dayIndex = 0;   // fila de la lista de días: 0 = cosas para llevar
+  int dayIndex = 0;   // fila de la lista del viaje (ver DAY_ROW_*)
   int itemIndex = 0;
   int packIndex = 0;
   int itemsPerPage = 1;
@@ -96,9 +103,28 @@ class TripActivity final : public Activity {
   int attLine = 0;       // primera línea de la página de texto en pantalla
   int attLinesPerPage = 1;
 
-  int dayRowCount() const { return 1 + static_cast<int>(days.size()); }
-  int selectedDay() const { return dayIndex - 1; }  // < 0 = la fila de cosas para llevar
+  // Filas de la lista del viaje: 0 = sugerencias, 1 = cosas para llevar y
+  // después un día cada una.
+  static constexpr int DAY_ROW_SUGGEST = 0;
+  static constexpr int DAY_ROW_PACKING = 1;
+  static constexpr int DAY_ROW_FIRST = 2;
+  int dayRowCount() const { return DAY_ROW_FIRST + static_cast<int>(days.size()); }
+  int selectedDay() const { return dayIndex - DAY_ROW_FIRST; }  // < 0 = una de las dos filas fijas
   const TripDay* currentDay() const;
+
+  // --- Sugerencias del viaje ------------------------------------------------
+  std::vector<std::string> suggestLines;    // qué visitar, a qué hora, cuánto se tarda
+  std::vector<std::string> suggestPacking;  // lo que el modelo dice que falta llevar
+  std::string suggestTripId;                // de qué viaje son las que tenemos
+  time_t suggestAt = 0;
+  std::string suggestError;
+  bool suggestRefresh = false;
+  int suggestTop = 0;
+  int suggestPerPage = 1;
+
+  bool fetchSuggest(bool refresh);
+  void addSuggestedPacking(int index);
+  void renderSuggest();
 
   void parseTripList(JsonVariantConst arr);
   void parseTrip(JsonVariantConst trip);

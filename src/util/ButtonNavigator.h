@@ -38,6 +38,15 @@ class ButtonNavigator final {
   void onPreviousContinuous(const Callback& callback);
   void onContinuous(const Buttons& buttons, const Callback& callback);
 
+  // Sonidos de la interfaz. Acá es el único lugar por el que pasan TODAS las
+  // pantallas de lista y de menú en cada vuelta del loop, así que el clic se
+  // dispara desde acá y no repetido en veinte Activities. Los botones de
+  // confirmar y volver no llegan por el navegador (cada pantalla los lee
+  // directo), pero sí están pulsados en la misma vuelta en la que se consulta
+  // la navegación, así que se miran acá igual. `UiSound` se ocupa de no pisar
+  // la voz ni la música.
+  static void pollSounds();
+
   [[nodiscard]] static int nextIndex(int currentIndex, int totalItems);
   [[nodiscard]] static int previousIndex(int currentIndex, int totalItems);
 

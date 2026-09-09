@@ -25,10 +25,18 @@ class HubActivity final : public Activity {
  private:
   // Clima es un mosaico propio: en esta placa OK no tiene pulsación larga (OK
   // mantenido apaga), así que el "OK largo: clima" del hub nunca se podía usar.
-  // 12 mosaicos = 3 columnas x 4 filas justas (nada de fila incompleta). Fotos
-  // salió del hub: dejó de ser un visor y es "elegir fondo de pantalla" en Ajustes.
+  // Fotos salió del hub: dejó de ser un visor y es "elegir fondo de pantalla"
+  // en Ajustes.
+  //
+  // Con "Mi día" (calendario, viajes y las sugerencias del día) son 13, y trece
+  // no entra parejo en tres columnas. En vez de dejar una fila coja, "Mi día"
+  // es un mosaico ANCHO arriba de todo (una fila entera, con su subtítulo) y
+  // abajo quedan los 12 de siempre en 3 columnas x 4 filas. Los iconos de esos
+  // 12 bajan de 64 a 48 px: con 64 la etiqueta se sale del borde del mosaico
+  // (probado en el simulador, `hub-C48-info130.png`).
   enum Tile {
-    TILE_READ = 0,
+    TILE_DAY = 0,  // el ancho de arriba
+    TILE_READ,
     TILE_TALK,
     TILE_TRANSLATOR,
     TILE_REMINDERS,
@@ -42,11 +50,12 @@ class HubActivity final : public Activity {
     TILE_SETTINGS,
     TILE_COUNT
   };
-  static constexpr int COLUMNS = 3;
+  static constexpr int COLUMNS = 3;     // los 12 mosaicos de abajo
+  static constexpr int GRID_ROWS = 4;
 
   ButtonNavigator buttonNavigator;
   const bool cleanInitialRefresh;
-  int selected = TILE_READ;
+  int selected = TILE_READ;  // el ancho es el 0, pero se arranca en Leer
   bool firstRenderDone = false;
   bool comingSoon = false;  // a not-yet-built tile was opened: show the notice
   bool autoSyncPending = false;  // cache stale at entry: run HubSyncActivity after the first paint
@@ -70,6 +79,7 @@ class HubActivity final : public Activity {
   void activate(int tile);
   void drawStatusLine(int y, int height) const;
   void drawTile(int index, int x, int y, int w, int h) const;
+  void drawWideTile(int index, int x, int y, int w, int h) const;
   void drawContinueWidget(int x, int y, int w, int h) const;
   void drawInfoWidgets(int x, int y, int w, int h) const;
 };

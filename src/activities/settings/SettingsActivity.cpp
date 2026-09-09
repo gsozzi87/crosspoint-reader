@@ -27,6 +27,7 @@
 #include "SdFirmwareUpdateActivity.h"
 #include "ServerTestActivity.h"
 #include "HubStore.h"
+#include "voice/UiSound.h"
 #include "activities/home/HubLocationActivity.h"
 #include "activities/home/PhotosActivity.h"
 #include "activities/home/HubSyncActivity.h"
@@ -155,6 +156,17 @@ void SettingsActivity::rebuildSettingsLists() {
         [](uint8_t v) {
           HUB_STORE.speakMode = v;
           HUB_STORE.saveToFile();
+        }));
+    // Sonidos de la interfaz: clics cortos al navegar, elegir, volver y pasar
+    // página. De fábrica apagados; al elegir un nivel suena el clic para que se
+    // escuche en el momento cuánto es "suave" y cuánto "normal".
+    systemSettings.push_back(SettingInfo::DynamicEnum(
+        StrId::STR_UI_SOUNDS, {StrId::STR_UI_SOUNDS_OFF, StrId::STR_UI_SOUNDS_SOFT, StrId::STR_UI_SOUNDS_NORMAL},
+        [] { return HUB_STORE.uiSoundMode; },
+        [](uint8_t v) {
+          HUB_STORE.uiSoundMode = v;
+          HUB_STORE.saveToFile();
+          UI_SOUND.play(uisound::Sound::Select);
         }));
   }
   readerSettings.insert(readerSettings.begin(),

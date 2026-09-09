@@ -9,9 +9,17 @@
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
+// "Mi día": el mosaico del hub que junta TODO lo que tiene fecha. Adentro hay
+// tres pantallas, elegidas en un menú de tres filas:
+//   Hoy         -> lo del día (agenda y viaje) más las sugerencias de la IA
+//   Calendario  -> la cuadrícula del mes y la vista de un día
+//   Viajes      -> TripActivity
+// Antes el calendario y los viajes estaban escondidos como secciones adentro de
+// Recordatorios; ahora son pestaña propia, que es como los pidió el usuario.
+//
 // Calendario: vista de mes (la cuadrícula de siempre, con un punto y la
 // cantidad en cada día que tiene algo) y vista de día (lo que hay ese día con
-// su hora). Se entra desde Recordatorios.
+// su hora).
 //
 // Con dos direcciones no hay forma de moverse en cruz, así que la palanca
 // avanza y retrocede DE A UN DÍA: el cursor cruza de fila solo al llegar al
@@ -26,6 +34,10 @@
 //          viene, deja el mes entero disponible sin WiFi.
 //   GET /api/calendar/day?date=YYYY-MM-DD&lang=xx
 //       -> {ok, items:[{at, title, place, note}]}
+//   GET /api/suggest/day?date=YYYY-MM-DD&lang=xx[&refresh=1]
+//       -> {ok, at, ageS, stale, lines:[...]}   sugerencias del día (server/src/suggest.ts)
+//          Cuestan plata (el servidor busca en internet), así que NUNCA se piden
+//          solas: se muestran las cacheadas y solo OK las recalcula (`refresh=1`).
 // Todo se cachea en /.crosspoint/calendar.json, como el clima y las noticias.
 class CalendarActivity final : public Activity {
  public:
@@ -57,8 +69,15 @@ class CalendarActivity final : public Activity {
   static std::string isoDate(int year, int month, int day);
 
  private:
-  enum State { MONTH, DAY, CONNECTING, LOADING, FAILED };
-  enum Pending { NONE, MONTH_FETCH, DAY_FETCH };
+  enum State { HOME, TODAY, MONTH, DAY, CONNECTING, LOADING, FAILED };
+  enum Pending { NONE, MONTH_FETCH, DAY_FETCH, SUGGEST_FETCH };
+  // Filas del menú de entrada.
+  enum HomeRow { ROW_TODAY, ROW_CALENDAR, ROW_TRIPS, HOME_ROWS };
+  // Un renglón de la pantalla Hoy: el texto y con qué fuente se dibuja.
+  struct Line {
+    std::string text;
+    uint8_t style;  // 0 = normal, 1 = título, 2 = chico
+  };
 
   struct DaySummary {
     int day = 0;  // 1..31
@@ -71,8 +90,10 @@ class CalendarActivity final : public Activity {
     std::string place;
   };
 
-  State state = MONTH;
+  State state = HOME;
+  State afterLoad = MONTH;  // adónde volver cuando termina de bajar algo
   Pending pending = NONE;
+  int homeRow = ROW_TODAY;
   int viewYear = 0;  // mes en pantalla (0 = todavía no se sabe: sin reloj ni caché)
   int viewMonth = 0;
   int cursorDay = 1;
@@ -87,6 +108,26 @@ class CalendarActivity final : public Activity {
   bool monthCached = false;  // el mes en pantalla salió de la caché o del servidor
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
+
+  // --- Hoy y las sugerencias ------------------------------------------------
+  std::vector<std::string> suggestLines;
+  std::string suggestDate;      // de qué día son las sugerencias que tenemos
+  time_t suggestAt = 0;         // cuándo las calculó el servidor (epoch UTC)
+  bool suggestRefresh = false;  // el próximo pedido es un recálculo pedido con OK
+  std::string suggestError;
+  std::vector<Line> todayLines;
+  int todayTop = 0;             // primer renglón en pantalla
+  int todayPerPage = 1;
+
+  void openHomeRow();
+  void goToCurrentMonth();
+  void openToday();
+  void buildTodayLines();
+  bool fetchSuggest(bool refresh);
+  bool loadSuggestFromCache(const std::string& date);
+  void saveSuggestToCache() const;
+  void renderHome();
+  void renderToday();
 
   const DaySummary* summaryFor(int day) const;
   void moveDay(int delta);

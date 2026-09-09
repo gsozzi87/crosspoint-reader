@@ -102,6 +102,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["verseText"] = verseText;
   doc["translatorLang"] = translatorLang;
   doc["speakMode"] = speakMode;
+  doc["uiSoundMode"] = uiSoundMode;
   doc["bibleBook"] = bibleBook;
   doc["bibleChapter"] = bibleChapter;
   doc["musicVolume"] = musicVolume;
@@ -150,6 +151,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   verseText = str(doc, "verseText");
   translatorLang = str(doc, "translatorLang");
   speakMode = doc["speakMode"] | 1;
+  uiSoundMode = doc["uiSoundMode"] | 0;
   bibleBook = doc["bibleBook"] | 0;
   bibleChapter = doc["bibleChapter"] | 0;
   musicVolume = doc["musicVolume"] | 70;
@@ -206,7 +208,7 @@ void HubStore::applyServer(JsonVariantConst doc) {
   if (!voice.empty()) ttsVoice = voice;
 }
 
-// { rev, lang, speak: "none"|"short"|"all", musicVolume, translatorLang }
+// { rev, lang, speak: "none"|"short"|"all", uiSound: "off"|"soft"|"normal", musicVolume, translatorLang }
 void HubStore::applySettings(JsonVariantConst s) {
   if (s.isNull()) return;
   const int rev = s["rev"] | 0;
@@ -216,6 +218,12 @@ void HubStore::applySettings(JsonVariantConst s) {
   if (speak == "none") speakMode = 0;
   else if (speak == "all") speakMode = 2;
   else if (speak == "short") speakMode = 1;
+  // Sonidos de la interfaz, igual que los demás ajustes de la web: solo se
+  // toca si la clave viene, así el que no la manda no los apaga.
+  const std::string uiSound = str(s, "uiSound");
+  if (uiSound == "off") uiSoundMode = 0;
+  else if (uiSound == "soft") uiSoundMode = 1;
+  else if (uiSound == "normal") uiSoundMode = 2;
   const int vol = s["musicVolume"] | -1;
   if (vol >= 0 && vol <= 100) musicVolume = vol;
   const std::string other = str(s, "translatorLang");

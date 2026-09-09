@@ -20,8 +20,9 @@
 // un POST /api/hub/reminder por la cola offline. El título se cambia por voz
 // (el aparato no tiene teclado).
 //
-// Acá adentro están además las entradas al Calendario y al Viaje: el mosaico
-// Recordatorios del hub es la puerta de todo lo que tiene fecha.
+// El calendario y los viajes NO están acá: se fueron al mosaico "Mi día" del
+// hub (CalendarActivity), que es donde va todo lo que tiene fecha junto con las
+// sugerencias del día. Este mosaico es solo mensajes, recordatorios y listas.
 class AgendaActivity final : public Activity {
  public:
   explicit AgendaActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -34,7 +35,7 @@ class AgendaActivity final : public Activity {
  private:
   enum Level { SECTIONS, ITEMS, EDIT };
   Level level = SECTIONS;
-  enum Kind { MESSAGES, REMINDERS, CALENDAR, TRIP, LIST };
+  enum Kind { MESSAGES, REMINDERS, LIST };
   struct Section {
     Kind kind;
     int listIndex;  // into HUB_STORE.lists when kind == LIST

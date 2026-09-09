@@ -20,6 +20,7 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "AgendaActivity.h"
+#include "CalendarActivity.h"
 #include "BibleActivity.h"
 #include "MusicActivity.h"
 #include "NewsActivity.h"
@@ -40,10 +41,12 @@ namespace {
 constexpr int SIDE = 20;        // left/right margin
 constexpr int GAP = 12;         // between tiles
 constexpr int STATUS_H = 44;    // status line band
-constexpr int TILE_H = 100;     // 12 mosaicos = 4 filas; entran con iconos de 64 px
+constexpr int WIDE_H = 56;      // el mosaico ancho de "Mi día", arriba de la grilla
+constexpr int MIN_TILE_H = 82;  // icono de 48 + 6 + un renglón: menos que esto corta la etiqueta
+constexpr int MAX_TILE_H = 100;
 constexpr int TILE_RADIUS = 12;
 constexpr int CONTINUE_H = 48;
-constexpr int INFO_H = 148;
+constexpr int INFO_H = 130;     // bajó de 148: lo que le sacamos se lo lleva la fila del mosaico ancho
 constexpr int HINT_GAP = 30;    // aire entre el aviso del atajo de voz y la barra de botones
 constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
 constexpr int PARTIALS_BEFORE_CLEAN = 12;         // regla del panel: completo cada 10-15 parciales
@@ -68,17 +71,19 @@ struct TileSpec {
   const freeink::Icon* icon;
 };
 
-// El orden manda: tiene que coincidir con el enum Tile del .h.
+// El orden manda: tiene que coincidir con el enum Tile del .h. El primero es el
+// mosaico ancho; los otros doce van en la grilla de 3 columnas con iconos de 48.
 const TileSpec TILES[] = {
-    {StrId::STR_HUB_READ, &icon_hub_read_64},           {StrId::STR_HUB_TALK, &icon_hub_ask_64},
-    {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_64},
-    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_64}, {StrId::STR_HUB_TIMER, &icon_hub_timer_64},
-    {StrId::STR_HUB_NOTES, &icon_hub_notes_64},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_64},
-    {StrId::STR_HUB_MUSIC, &icon_hub_music_64},         {StrId::STR_HUB_NEWS, &icon_hub_news_64},
-    {StrId::STR_HUB_GAMES, &icon_hub_games_64},         {StrId::STR_WEATHER_TITLE, &icon_hub_weather_64},
-    {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_64},
+    {StrId::STR_HUB_DAY, &icon_hub_day_48},
+    {StrId::STR_HUB_READ, &icon_hub_read_48},           {StrId::STR_HUB_TALK, &icon_hub_ask_48},
+    {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_48},
+    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
+    {StrId::STR_HUB_NOTES, &icon_hub_notes_48},         {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
+    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},         {StrId::STR_HUB_NEWS, &icon_hub_news_48},
+    {StrId::STR_HUB_GAMES, &icon_hub_games_48},         {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
+    {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
-static_assert(sizeof(TILES) / sizeof(TILES[0]) == 12, "TILES tiene que seguir a Tile");
+static_assert(sizeof(TILES) / sizeof(TILES[0]) == 13, "TILES tiene que seguir a Tile");
 }  // namespace
 
 void HubActivity::onEnter() {
@@ -130,6 +135,12 @@ void HubActivity::activate(const int tile) {
       break;
     case TILE_TALK:
       activityManager.replaceActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
+      break;
+    case TILE_DAY:
+      startActivityForResult(std::make_unique<CalendarActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+        loadLastBook();
+        requestUpdate();
+      });
       break;
     case TILE_REMINDERS:
       startActivityForResult(std::make_unique<AgendaActivity>(renderer, mappedInput), [this](const ActivityResult&) {
@@ -351,6 +362,25 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   renderer.drawText(labelFont, x + (w - labelW) / 2, iconY + spec.icon->h + 6, fitted.c_str(), ink, labelStyle);
 }
 
+// Mosaico ancho: una fila entera con el icono a la izquierda, el nombre y un
+// renglón que dice qué hay adentro. Es lo que evita que el mosaico número 13
+// deje una fila coja en una grilla de tres columnas.
+void HubActivity::drawWideTile(const int index, const int x, const int y, const int w, const int h) const {
+  const bool isSelected = index == selected && !comingSoon;
+  const TileSpec& spec = TILES[index];
+  if (isSelected) renderer.fillRoundedRect(x, y, w, h, TILE_RADIUS, Color::Black);
+  else renderer.drawRoundedRect(x, y, w, h, 2, TILE_RADIUS, true);
+  const bool ink = !isSelected;
+  drawSdkIcon(renderer, *spec.icon, x + 16, y + (h - spec.icon->h) / 2, ink);
+  const int tx = x + 16 + spec.icon->w + 14;
+  const int tw = std::max(20, w - (tx - x) - 14);
+  renderer.drawText(UI_12_FONT_ID, tx, y + 8,
+                    renderer.truncatedText(UI_12_FONT_ID, I18N.get(spec.label), tw, EpdFontFamily::BOLD).c_str(), ink,
+                    EpdFontFamily::BOLD);
+  renderer.drawText(SMALL_FONT_ID, tx, y + 32,
+                    renderer.truncatedText(SMALL_FONT_ID, tr(STR_HUB_DAY_SUB), tw).c_str(), ink);
+}
+
 void HubActivity::drawContinueWidget(const int x, const int y, const int w, const int h) const {
   renderer.drawRoundedRect(x, y, w, h, 1, TILE_RADIUS, true);
   drawSdkIcon(renderer, icon_book_24, x + 14, y + (h - 24) / 2, true);
@@ -492,25 +522,34 @@ void HubActivity::render(RenderLock&&) {
     strncpy(lastClock, timeBuf, sizeof(lastClock));
   }
 
-  // 12 mosaicos = 3 columnas x 4 filas justas, sin fila incompleta que centrar.
-  const int tileW = (pageWidth - 2 * SIDE - GAP * (COLUMNS - 1)) / COLUMNS;
-  const int rows = (TILE_COUNT + COLUMNS - 1) / COLUMNS;
-  const int gridLeft = (pageWidth - (COLUMNS * tileW + (COLUMNS - 1) * GAP)) / 2;
+  // "Mi día" ancho arriba y los otros 12 en 3 columnas x 4 filas. El alto del
+  // mosaico se calcula con lo que queda libre (los temas no tienen el mismo
+  // topPadding ni la misma barra de botones) y nunca baja de MIN_TILE_H, que es
+  // lo que necesita el icono de 48 con su etiqueta adentro del borde.
   const int gridTop = metrics.topPadding + STATUS_H + 8;
-  for (int i = 0; i < TILE_COUNT; ++i) {
-    const int col = i % COLUMNS;
-    const int row = i / COLUMNS;
-    drawTile(i, gridLeft + col * (tileW + GAP), gridTop + row * (TILE_H + GAP), tileW, TILE_H);
+  const int hintsTop = pageHeight - metrics.buttonHintsHeight;
+  const int hintLine = hintsTop - HINT_GAP;
+  const int widgetsH = CONTINUE_H + 8 + INFO_H + 8;
+  const int gridH = hintLine - 10 - widgetsH - gridTop;
+  const int tileH =
+      std::min(MAX_TILE_H, std::max(MIN_TILE_H, (gridH - WIDE_H - GAP - (GRID_ROWS - 1) * GAP) / GRID_ROWS));
+  const int tileW = (pageWidth - 2 * SIDE - GAP * (COLUMNS - 1)) / COLUMNS;
+  const int gridLeft = (pageWidth - (COLUMNS * tileW + (COLUMNS - 1) * GAP)) / 2;
+  drawWideTile(TILE_DAY, SIDE, gridTop, pageWidth - 2 * SIDE, WIDE_H);
+  const int tilesTop = gridTop + WIDE_H + GAP;
+  for (int i = TILE_DAY + 1; i < TILE_COUNT; ++i) {
+    const int cell = i - (TILE_DAY + 1);
+    const int col = cell % COLUMNS;
+    const int row = cell / COLUMNS;
+    drawTile(i, gridLeft + col * (tileW + GAP), tilesTop + row * (tileH + GAP), tileW, tileH);
   }
 
-  int widgetTop = gridTop + rows * TILE_H + (rows - 1) * GAP + 8;
-  const int hintsTop = pageHeight - metrics.buttonHintsHeight;
+  int widgetTop = tilesTop + GRID_ROWS * tileH + (GRID_ROWS - 1) * GAP + 8;
   drawContinueWidget(SIDE, widgetTop, pageWidth - 2 * SIDE, CONTINUE_H);
   widgetTop += CONTINUE_H + 8;
   // El aviso del atajo de voz se dibuja arriba de la barra de botones, así que
   // los widgets tienen que terminar antes o le pasan por encima (y él, a su vez,
   // tiene que terminar antes del borde de arriba de la barra).
-  const int hintLine = hintsTop - HINT_GAP;
   const int infoH = std::min(INFO_H, hintLine - 10 - widgetTop);
   if (infoH > 80) drawInfoWidgets(SIDE, widgetTop, pageWidth - 2 * SIDE, infoH);
 

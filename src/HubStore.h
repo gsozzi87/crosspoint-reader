@@ -117,6 +117,10 @@ class HubStore : public PersistableStore<HubStore> {
   int assetsFiles = 0;         // archivos del paquete guardados en la tarjeta
   bool assetsPending = false;  // se instalo firmware nuevo: falta bajar el contenido
   uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
+  // Sonidos de la interfaz (Ajustes → Sistema, `src/voice/UiSound.h`): 0 apagados,
+  // 1 suaves, 2 normales. Apagados de fábrica: nadie quiere que el aparato
+  // empiece a hacer ruido solo después de una actualización.
+  uint8_t uiSoundMode = 0;
   // Ajustes cargados en /board. El servidor manda `settings.rev`; solo se
   // aplican cuando esa revisión es mayor a la última aplicada, así lo que se
   // cambia en el aparato no se pisa en cada sincronización.

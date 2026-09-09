@@ -2,6 +2,7 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalDisplay.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -116,6 +117,25 @@ bool TripActivity::loadCache() {
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
   parseTripList(doc["trips"]);
   parseTrip(doc["trip"]);
+  JsonVariantConst sg = doc["suggest"];
+  if (!sg.isNull()) {
+    suggestTripId = sg["tripId"] | "";
+    suggestAt = static_cast<time_t>(sg["at"] | (int64_t)0);
+    for (JsonVariantConst lv : sg["lines"].as<JsonArrayConst>()) {
+      const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
+      if (!line.empty()) suggestLines.push_back(line);
+    }
+    for (JsonVariantConst lv : sg["packing"].as<JsonArrayConst>()) {
+      const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
+      if (!line.empty()) suggestPacking.push_back(line);
+    }
+    // Las del viaje anterior no valen para este.
+    if (!tripId.empty() && suggestTripId != tripId) {
+      suggestLines.clear();
+      suggestPacking.clear();
+      suggestAt = 0;
+    }
+  }
   return !days.empty() || !packing.empty() || !trips.empty();
 }
 
@@ -209,6 +229,15 @@ void TripActivity::saveCache() const {
     o["text"] = p.text;
     o["done"] = p.done;
   }
+  // Las sugerencias van al lado del viaje: se ven sin WiFi y no se vuelven a
+  // pedir (o sea, a pagar) por entrar y salir de la pantalla.
+  JsonObject sg = doc["suggest"].to<JsonObject>();
+  sg["tripId"] = suggestTripId;
+  sg["at"] = static_cast<int64_t>(suggestAt);
+  JsonArray sl = sg["lines"].to<JsonArray>();
+  for (const std::string& line : suggestLines) sl.add(line);
+  JsonArray sp = sg["packing"].to<JsonArray>();
+  for (const std::string& line : suggestPacking) sp.add(line);
   std::string raw;
   serializeJson(doc, raw);
   HalFile f;
@@ -248,6 +277,13 @@ bool TripActivity::fetchTrip(const std::string& id) {
   if (trip.isNull() || trip["days"].isNull()) trip = doc.as<JsonVariantConst>();
   parseTrip(trip);
   if (tripId.empty()) tripId = id;
+  // Las sugerencias son de un viaje: al cambiar de viaje no valen más.
+  if (suggestTripId != tripId) {
+    suggestLines.clear();
+    suggestPacking.clear();
+    suggestAt = 0;
+    suggestTripId.clear();
+  }
   saveCache();
   return !days.empty() || !packing.empty();
 }
@@ -376,6 +412,13 @@ void TripActivity::togglePacking() {
   PackItem& p = packing[packIndex];
   p.done = !p.done;
   saveCache();
+  // Lo que se acaba de agregar desde una sugerencia todavía no tiene id (lo pone
+  // el servidor): el tilde queda local hasta la próxima vez que se baje el
+  // viaje. Mandarlo sin id crearía un ítem repetido.
+  if (p.id.empty()) {
+    requestUpdate();
+    return;
+  }
   std::string body;
   {
     // `done` explícito (no un tilde que alterna): un reintento de la cola
@@ -387,6 +430,67 @@ void TripActivity::togglePacking() {
     serializeJson(doc, body);
   }
   LOG_INF(TAG, "packing %s: %s", p.id.c_str(),
+          ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/trip/packing", body)));
+  requestUpdate();
+}
+
+// GET /api/suggest/trip. `refresh` solo cuando lo pidió el usuario con OK: cada
+// recálculo hace buscar al servidor y eso cuesta plata.
+bool TripActivity::fetchSuggest(const bool refresh) {
+  std::string path = "/api/suggest/trip?lang=" + std::string(uiLanguageCode());
+  if (!tripId.empty()) path += "&id=" + tripId;
+  if (refresh) path += "&refresh=1";
+  ServerClient::Response resp;
+  const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
+  suggestError.clear();
+  if (r != ServerClient::Result::Ok) {
+    // 429 = el servidor ya gastó las sugerencias del día; se dice tal cual.
+    suggestError = resp.status == 429 ? tr(STR_SUGGEST_BUDGET) : tr(STR_SUGGEST_FAILED);
+    LOG_ERR(TAG, "GET /api/suggest/trip: %s %d", ServerClient::resultName(r), resp.status);
+    return false;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+    suggestError = tr(STR_SUGGEST_FAILED);
+    return false;
+  }
+  suggestLines.clear();
+  suggestPacking.clear();
+  for (JsonVariantConst lv : doc["lines"].as<JsonArrayConst>()) {
+    const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
+    if (!line.empty()) suggestLines.push_back(line);
+  }
+  for (JsonVariantConst lv : doc["packing"].as<JsonArrayConst>()) {
+    const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
+    // Lo que ya está anotado no se ofrece de nuevo.
+    bool already = false;
+    for (const PackItem& p : packing) already = already || p.text == line;
+    if (!line.empty() && !already) suggestPacking.push_back(line);
+  }
+  suggestAt = static_cast<time_t>(doc["at"] | (int64_t)0);
+  suggestTripId = tripId;
+  if (suggestLines.empty() && suggestPacking.empty()) suggestError = tr(STR_SUGGEST_EMPTY);
+  else saveCache();
+  return !suggestLines.empty() || !suggestPacking.empty();
+}
+
+// OK sobre algo que el modelo dice que falta: recién ahí se agrega a la lista
+// de cosas para llevar (nunca solo). El id lo pone el servidor; hasta que
+// conteste, la fila se muestra con lo que se escribió.
+void TripActivity::addSuggestedPacking(const int index) {
+  if (index < 0 || index >= static_cast<int>(suggestPacking.size())) return;
+  const std::string text = suggestPacking[index];
+  suggestPacking.erase(suggestPacking.begin() + index);
+  packing.push_back({"", text, false});
+  saveCache();
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["tripId"] = tripId;
+    doc["text"] = text;
+    serializeJson(doc, body);
+  }
+  LOG_INF(TAG, "packing + %s: %s", text.c_str(),
           ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/trip/packing", body)));
   requestUpdate();
 }
@@ -424,6 +528,15 @@ void TripActivity::loop() {
       WiFi.setSleep(false);
       const Pending p = pending;
       pending = NONE;
+      if (p == SUGGEST_FETCH) {
+        fetchSuggest(suggestRefresh);
+        suggestRefresh = false;
+        WiFi.setSleep(true);
+        state = SUGGEST;
+        suggestTop = 0;
+        requestUpdate();
+        break;
+      }
       if (p == TRIPS_FETCH) {
         const bool ok = fetchTrips();
         WiFi.setSleep(true);
@@ -509,14 +622,20 @@ void TripActivity::loop() {
         requestUpdate();
       });
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        if (selectedDay() < 0) {
+        if (dayIndex == DAY_ROW_SUGGEST) {
+          suggestTop = 0;
+          state = SUGGEST;
+          // Lo cacheado se muestra en el acto; pedirlas es cosa de OK ahí adentro.
+          requestUpdate();
+        } else if (dayIndex == DAY_ROW_PACKING) {
           state = PACKING;
           packIndex = 0;
+          requestUpdate();
         } else {
           state = ITEMS;
           itemIndex = 0;
+          requestUpdate();
         }
-        requestUpdate();
         break;
       }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -551,7 +670,9 @@ void TripActivity::loop() {
       break;
     }
     case PACKING: {
-      const int count = static_cast<int>(packing.size());
+      // Abajo de la lista van las que sugirió el modelo: OK sobre una la AGREGA.
+      const int mine = static_cast<int>(packing.size());
+      const int count = mine + static_cast<int>(suggestPacking.size());
       buttonNavigator.onNext([&] {
         if (count > 0) packIndex = ButtonNavigator::nextIndex(packIndex, count);
         requestUpdate();
@@ -561,7 +682,31 @@ void TripActivity::loop() {
         requestUpdate();
       });
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        togglePacking();
+        if (packIndex >= mine) addSuggestedPacking(packIndex - mine);
+        else togglePacking();
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        state = DAYS;
+        requestUpdate();
+      }
+      break;
+    }
+    case SUGGEST: {
+      const int total = static_cast<int>(suggestLines.size());
+      buttonNavigator.onNext([&] {
+        if (suggestTop + suggestPerPage < total) suggestTop += suggestPerPage;
+        requestUpdate();
+      });
+      buttonNavigator.onPrevious([&] {
+        suggestTop = std::max(0, suggestTop - suggestPerPage);
+        requestUpdate();
+      });
+      // OK es lo único que le hace gastar una búsqueda al servidor.
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        suggestRefresh = !suggestLines.empty();
+        pending = SUGGEST_FETCH;
+        ensureConnected();
         break;
       }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -657,7 +802,7 @@ void TripActivity::renderList() {
       selected = itemIndex;
       break;
     case PACKING:
-      count = static_cast<int>(packing.size());
+      count = static_cast<int>(packing.size() + suggestPacking.size());
       selected = packIndex;
       break;
     default:
@@ -686,13 +831,17 @@ void TripActivity::renderList() {
         detail = trips[i].when;
         break;
       case DAYS:
-        if (i == 0) {
+        if (i == DAY_ROW_SUGGEST) {
+          title = tr(STR_SUGGEST_TITLE);
+          detail = tr(STR_TRIP_SUGGEST_SUB);
+          if (!suggestPacking.empty()) right = "+" + std::to_string(suggestPacking.size());
+        } else if (i == DAY_ROW_PACKING) {
           title = tr(STR_TRIP_PACKING);
           int done = 0;
           for (const PackItem& p : packing) done += p.done ? 1 : 0;
           right = std::to_string(done) + "/" + std::to_string(packing.size());
         } else {
-          const TripDay& d = days[i - 1];
+          const TripDay& d = days[i - DAY_ROW_FIRST];
           title = dayHeading(d.date, d.label);
           if (title.empty()) title = d.date;
           right = std::to_string(d.items.size());
@@ -706,8 +855,15 @@ void TripActivity::renderList() {
         break;
       }
       case PACKING:
-        title = packing[i].text;
-        right = packing[i].done ? "OK" : "";
+        // Primero lo que ya está anotado y después lo que sugirió el modelo,
+        // marcado con "+" para que se vea que todavía NO está en la lista.
+        if (i < static_cast<int>(packing.size())) {
+          title = packing[i].text;
+          right = packing[i].done ? "OK" : "";
+        } else {
+          title = "+ " + suggestPacking[i - packing.size()];
+          detail = tr(STR_TRIP_SUGGEST_ADD);
+        }
         break;
       default:
         break;
@@ -735,11 +891,61 @@ void TripActivity::renderList() {
 
   const char* hint = nullptr;
   if (state == ITEMS) hint = tr(STR_TRIP_ATTACH_HINT);
+  else if (state == PACKING && !suggestPacking.empty()) hint = tr(STR_TRIP_SUGGEST_HINT);
   else if (state == PACKING) hint = tr(STR_TRIP_PACK_HINT);
   else if (state == DAYS) hint = tr(STR_CAL_REFRESH_HINT);
   if (hint) {
     renderer.drawCenteredText(SMALL_FONT_ID, bottom + 2,
                               renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
+  }
+}
+
+// Las sugerencias del viaje, paginadas. Abajo dice cuándo se calcularon: son de
+// la última vez que se pidieron, no de ahora.
+void TripActivity::renderSuggest() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int top = metrics.topPadding + metrics.headerHeight + 12;
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - HINT_H;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  suggestPerPage = std::max(1, (bottom - top) / lineH);
+
+  std::vector<std::string> lines;
+  for (const std::string& line : suggestLines) {
+    for (const std::string& part : renderer.wrappedText(UI_10_FONT_ID, ("• " + line).c_str(),
+                                                        pageWidth - 2 * SIDE, 6)) {
+      lines.push_back(part);
+    }
+  }
+  if (lines.empty()) {
+    const char* empty = suggestError.empty() ? tr(STR_SUGGEST_EMPTY) : suggestError.c_str();
+    for (const std::string& part : renderer.wrappedText(UI_10_FONT_ID, empty, pageWidth - 2 * SIDE, 4)) {
+      lines.push_back(part);
+    }
+  }
+  if (suggestTop >= static_cast<int>(lines.size())) suggestTop = 0;
+  for (int i = 0; i < suggestPerPage && suggestTop + i < static_cast<int>(lines.size()); ++i) {
+    renderer.drawText(UI_10_FONT_ID, SIDE, top + i * lineH, lines[suggestTop + i].c_str());
+  }
+
+  std::string foot;
+  time_t now = 0;
+  if (suggestAt > 0 && halClock.getEpochUtc(now) && now > suggestAt) {
+    const long mins = static_cast<long>(now - suggestAt) / 60;
+    char buf[64];
+    if (mins < 60) snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
+    else snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
+    foot = buf;
+  }
+  if (!suggestPacking.empty()) {
+    char buf[64];
+    snprintf(buf, sizeof(buf), tr(STR_TRIP_SUGGEST_MISSING), static_cast<int>(suggestPacking.size()));
+    foot += foot.empty() ? buf : std::string("  ·  ") + buf;
+  }
+  if (!foot.empty()) {
+    renderer.drawCenteredText(SMALL_FONT_ID, bottom + 2,
+                              renderer.truncatedText(SMALL_FONT_ID, foot.c_str(), pageWidth - 2 * SIDE).c_str());
   }
 }
 
@@ -804,6 +1010,8 @@ void TripActivity::render(RenderLock&&) {
     title = tr(STR_TRIP_PACKING);
   } else if (state == ATT_TEXT) {
     title = tr(STR_TRIP_ATTACHMENT);
+  } else if (state == SUGGEST) {
+    title = tr(STR_SUGGEST_TITLE);
   }
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
@@ -813,6 +1021,9 @@ void TripActivity::render(RenderLock&&) {
     case ITEMS:
     case PACKING:
       renderList();
+      break;
+    case SUGGEST:
+      renderSuggest();
       break;
     case ATT_TEXT:
       renderAttachmentText();
@@ -832,8 +1043,14 @@ void TripActivity::render(RenderLock&&) {
   }
 
   const char* okLabel = tr(STR_SELECT);
-  if (state == PACKING) okLabel = tr(STR_AGENDA_DONE);
-  else if (state == ATT_TEXT) okLabel = tr(STR_TRIP_ATTACHMENT);
+  if (state == PACKING) {
+    // Sobre una fila sugerida, OK no tilda: agrega.
+    okLabel = packIndex >= static_cast<int>(packing.size()) ? tr(STR_TRIP_SUGGEST_ADD) : tr(STR_AGENDA_DONE);
+  } else if (state == ATT_TEXT) {
+    okLabel = tr(STR_TRIP_ATTACHMENT);
+  } else if (state == SUGGEST) {
+    okLabel = suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO);
+  }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // Regla del panel: refresco limpio cada 10-15 parciales o la lista fantasmea.
