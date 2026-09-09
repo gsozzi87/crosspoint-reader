@@ -9,6 +9,7 @@
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "components/SevenSegment.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
@@ -22,19 +23,10 @@ constexpr long POMODORO_BREAK_S = 5 * 60;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr unsigned long CANCEL_HOLD_MS = 1000;  // Atrás mantenido: cancelar
 
-// 7-segment digit: segments a b c d e f g (top, top-right, bottom-right, bottom, bottom-left, top-left, middle)
-constexpr uint8_t SEGMENTS[10] = {0x3F, 0x06, 0x5B, 0x4F, 0x66, 0x6D, 0x7D, 0x07, 0x7F, 0x6F};
-
+// Los dígitos de 7 segmentos viven en components/SevenSegment.h: los usa también
+// el reproductor de música.
 void drawDigit(const GfxRenderer& r, int digit, int x, int y, int w, int h, int t) {
-  const uint8_t s = SEGMENTS[digit % 10];
-  const int half = h / 2;
-  if (s & 0x01) r.fillRect(x + t, y, w - 2 * t, t);                    // a
-  if (s & 0x02) r.fillRect(x + w - t, y + t, t, half - t);              // b
-  if (s & 0x04) r.fillRect(x + w - t, y + half, t, half - t);           // c
-  if (s & 0x08) r.fillRect(x + t, y + h - t, w - 2 * t, t);             // d
-  if (s & 0x10) r.fillRect(x, y + half, t, half - t);                   // e
-  if (s & 0x20) r.fillRect(x, y + t, t, half - t);                      // f
-  if (s & 0x40) r.fillRect(x + t, y + half - t / 2, w - 2 * t, t);      // g
+  sevenseg::digit(r, digit, x, y, w, h, t);
 }
 }  // namespace
 

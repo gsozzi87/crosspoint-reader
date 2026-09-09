@@ -912,3 +912,7 @@ STR_NEWS_SPEAK_NO_WIFI: "Vorlesen braucht WLAN; der Artikel bleibt am Bildschirm
 STR_NEWS_ARTICLE_HINT: "OK liest vor · Hoch und runter wechseln den Teil"
 STR_NEWS_READING_HINT: "OK pausiert · Hoch und runter springen · Zurück beendet das Vorlesen"
 STR_DAY_DICTATE_HINT: "Zurück halten: Tag diktieren"
+STR_MUSIC_STEREO: "Stereo"
+STR_MUSIC_MONO: "Mono"
+STR_MUSIC_CHOOSE_FOLDER: "ORDNER"
+STR_MUSIC_STOPPED: "GESTOPPT"

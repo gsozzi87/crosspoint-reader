@@ -912,3 +912,7 @@ STR_NEWS_SPEAK_NO_WIFI: "Sem WiFi não é possível ler em voz alta; a notícia 
 STR_NEWS_ARTICLE_HINT: "OK lê em voz alta · Cima e baixo mudam de parte"
 STR_NEWS_READING_HINT: "OK pausa · Cima e baixo saltam de parte · Voltar corta a leitura"
 STR_DAY_DICTATE_HINT: "Manter Voltar: ditar o dia"
+STR_MUSIC_STEREO: "estéreo"
+STR_MUSIC_MONO: "mono"
+STR_MUSIC_CHOOSE_FOLDER: "PASTAS"
+STR_MUSIC_STOPPED: "PARADO"

@@ -18,10 +18,14 @@
 //   OK               hace lo que dice la fila elegida (y la barra de abajo lo repite)
 //   ATRÁS            vuelve: de las pistas a las carpetas, de las carpetas al hub
 //
-// La lista de la carpeta abierta trae primero las acciones (Pausar, Siguiente,
-// Anterior, Detener, Volumen, Aleatorio, Repetir) y después las pistas. El
-// volumen tiene su propio modito: OK sobre "Volumen" y la palanca sube y baja,
-// OK o Atrás para terminar.
+// La pantalla tiene pinta de Winamp vertical (barra de título, visor con el
+// contador de segmentos y el analizador, barra de posición, botonera de
+// transporte, volumen y la lista de pistas abajo), pero por dentro sigue siendo
+// UNA sola lista: los seis botones de la botonera son las seis primeras
+// posiciones, después el volumen y después las pistas. Por eso la palanca
+// recorre la botonera de izquierda a derecha y sigue de largo hacia abajo sin
+// que haya "zonas" ni modos escondidos. El volumen sí tiene su modito: OK sobre
+// la barra y la palanca sube y baja, OK o Atrás para terminar.
 //
 // La música NO vive acá: vive en MusicPlayer (src/music/MusicPlayer.h), así
 // que salir de esta pantalla no corta la canción y el hub puede mostrar qué
@@ -39,7 +43,10 @@ class MusicActivity final : public Activity {
   enum Level { FOLDERS, PLAYLIST };
   // Lo que puede haber en una fila. El orden de ACT_* es el orden en pantalla.
   enum RowKind { ROW_ACTION, ROW_TRACK, ROW_FOLDER };
-  enum Action { ACT_PLAYPAUSE, ACT_NEXT, ACT_PREV, ACT_STOP, ACT_VOLUME, ACT_SHUFFLE, ACT_REPEAT };
+  // El orden de los seis primeros es el orden de la botonera, de izquierda a
+  // derecha; ACT_VOLUME es la fila que va justo debajo.
+  enum Action { ACT_PREV, ACT_PLAYPAUSE, ACT_NEXT, ACT_STOP, ACT_SHUFFLE, ACT_REPEAT, ACT_VOLUME };
+  static constexpr int TRANSPORT_COUNT = 6;
 
   struct Row {
     RowKind kind;
@@ -78,7 +85,12 @@ class MusicActivity final : public Activity {
   std::string rowLabel(const Row& row) const;
   std::string rowValue(const Row& row) const;  // lo que va a la derecha de la fila
 
-  int drawNowPlaying(int x, int y, int w) const;
-  void drawCover(int x, int y, int size) const;
-  void drawList(int x, int y, int w, int h);
+  void drawTitleBar(int x, int y, int w, int h) const;
+  void drawDisplay(int x, int y, int w, int h) const;
+  void drawAnalyzer(int x, int y, int w, int h) const;
+  void drawPosition(int x, int y, int w, int h) const;
+  void drawTransport(int x, int y, int w, int h) const;
+  void drawVolume(int x, int y, int w, int h) const;
+  void drawPlaylist(int x, int y, int w, int h);
+  void drawTransportIcon(int action, int cx, int cy) const;
 };

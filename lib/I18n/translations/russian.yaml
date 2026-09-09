@@ -910,3 +910,7 @@ STR_NEWS_SPEAK_NO_WIFI: "Без Wi-Fi чтение вслух недоступн
 STR_NEWS_ARTICLE_HINT: "OK — читать вслух · вверх и вниз меняют часть"
 STR_NEWS_READING_HINT: "OK — пауза · вверх и вниз меняют часть · Назад останавливает чтение"
 STR_DAY_DICTATE_HINT: "Удерживайте Назад: продиктовать день"
+STR_MUSIC_STEREO: "стерео"
+STR_MUSIC_MONO: "моно"
+STR_MUSIC_CHOOSE_FOLDER: "ПАПКИ"
+STR_MUSIC_STOPPED: "СТОП"

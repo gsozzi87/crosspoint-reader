@@ -89,6 +89,10 @@ void Mp3Source::close() {
   artist_.clear();
   sampleRate_ = channels_ = bitrate_ = duration_ = 0;
   samplesOut_ = 0;
+  for (uint8_t& l : levels_) l = 0;
+  levelPos_ = 0;
+  levelPeak_ = 0;
+  levelFrames_ = 0;
 }
 
 // ID3v2: "ID3" vv f ssss (syncsafe). Frames "TIT2"/"TPE1" (v2.3/2.4) or "TT2"/"TP1" (v2.2).
@@ -193,6 +197,26 @@ bool Mp3Source::decodeFrame() {
       inLen_ = left;
       pcmAvail_ = static_cast<size_t>(info.outputSamps) * sizeof(int16_t);
       pcmPos_ = 0;
+      // Pico del bloque para el analizador. Un cuadro son 1152 muestras (~26 ms),
+      // así que se junta el pico de ocho y se guarda uno: ~5 barras por segundo,
+      // 24 barras = los últimos cinco segundos.
+      {
+        const int16_t* s16 = reinterpret_cast<const int16_t*>(pcmBuf_);
+        const int n = info.outputSamps;
+        uint16_t peak = 0;
+        for (int i = 0; i < n; i += 4) {  // de a cuatro: el pico no cambia y cuesta la cuarta parte
+          const int16_t v = s16[i];
+          const uint16_t a = v < 0 ? static_cast<uint16_t>(-(v + 1)) : static_cast<uint16_t>(v);
+          if (a > peak) peak = a;
+        }
+        if (peak > levelPeak_) levelPeak_ = peak;
+        if (++levelFrames_ >= 8) {
+          levels_[levelPos_] = static_cast<uint8_t>(levelPeak_ >> 12);  // 0..15
+          levelPos_ = (levelPos_ + 1) % LEVELS;
+          levelPeak_ = 0;
+          levelFrames_ = 0;
+        }
+      }
       return true;
     }
     if (err == ERR_MP3_INDATA_UNDERFLOW || err == ERR_MP3_MAINDATA_UNDERFLOW) {

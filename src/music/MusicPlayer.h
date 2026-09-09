@@ -51,6 +51,13 @@ class MusicPlayer {
   const std::string& folderName() const { return folderName_; }
   const std::string& folderPath() const { return folderPath_; }
   const std::vector<std::string>& trackNames() const { return names_; }
+  // Datos técnicos para el panel del reproductor (la línea "192 kbps 44 kHz").
+  int bitrateKbps() const { return active_ ? source_.bitrateKbps() : 0; }
+  int sampleRate() const { return active_ ? source_.sampleRate() : 0; }
+  int channels() const { return active_ ? source_.channels() : 0; }
+  // Barra i del analizador (0..15), de la más vieja a la más nueva.
+  uint8_t level(const int i) const { return active_ ? source_.level(i) : 0; }
+  static constexpr int LEVELS = Mp3Source::LEVELS;
   // Título de la pista: la etiqueta ID3 si la tiene, si no el nombre del archivo.
   std::string title() const;
   const std::string& artist() const { return artist_; }

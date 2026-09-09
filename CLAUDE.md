@@ -232,11 +232,19 @@ llegue el hardware.
   canción, el hub muestra qué suena (chip en la barra + punto en el mosaico) y `MUSIC.pump()` en el loop de
   `main.cpp` encadena la pista siguiente. Mientras hay música, `UiSound` se calla; `AlertBeep`, `SpeechOut` y
   `VoiceRecorder` la cortan primero (el I2S es uno solo). Dormir la corta (`sleepNow`).
-  `MusicActivity` se rehízo entero: **una sola lista vertical** (acciones arriba, pistas abajo), la palanca recorre,
-  OK hace lo que dice la fila —y la barra de botones lo repite—, Atrás vuelve. Volumen con su propio modito (OK
-  sobre "Volumen" y la palanca sube y baja), y también desde Ajustes → Sistema. Las tres "zonas" invisibles de
-  1.5.43 se fueron: nadie podía adivinarlas. Carpeta `/Music` o `/music` (se prueban las dos, y `/MUSIC`, `/Musica`,
-  `/musica`). `src/music/Mp3Source` decodifica con Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una
+  **La pantalla es un Winamp vertical** (1.5.45; la lista pelada de 1.5.44 no le gustó a nadie): barra de título
+  negra, visor con el contador de 7 segmentos (`src/components/SevenSegment.h`, compartido con el temporizador), el
+  analizador, título/artista y la línea "192 kbps 44 kHz estéreo"; barra de posición con cursor; botonera de seis
+  botones biselados; corredera de volumen; y abajo la lista con pinta del editor de listas de Winamp.
+  **El analizador NO es una FFT**: son los picos reales de cada bloque que decodifica `Mp3Source` (`level(i)`),
+  guardados en un anillo de 24. Con el panel repintando cada varios segundos una FFT no tendría sentido, y esto
+  igual dice la verdad sobre el audio.
+  Por dentro sigue siendo **una sola lista**: las seis primeras posiciones son los botones de la botonera, la
+  séptima el volumen y de la octava en adelante las carpetas o las pistas. Por eso la palanca recorre la botonera
+  de izquierda a derecha y sigue de largo hacia abajo, sin "zonas" ni modos escondidos (las tres zonas invisibles
+  de 1.5.43 se fueron). El volumen tiene su modito: OK sobre la barra y la palanca sube y baja. También se toca
+  desde Ajustes → Sistema. Carpeta `/Music` o `/music` (se prueban las dos, y `/MUSIC`, `/Musica`, `/musica`).
+  `src/music/Mp3Source` decodifica con Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una
   `AudioManager::WavSource` con cabecera WAV sintética; tags ID3v2/v1; volumen en `HubStore::musicVolume`.
   Pausa = volumen 0.
 - Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se

@@ -912,3 +912,7 @@ STR_NEWS_SPEAK_NO_WIFI: "La lecture à voix haute demande le WiFi ; l'article re
 STR_NEWS_ARTICLE_HINT: "OK lit à voix haute · Haut et bas changent de partie"
 STR_NEWS_READING_HINT: "OK met en pause · Haut et bas changent de partie · Retour arrête la lecture"
 STR_DAY_DICTATE_HINT: "Retour maintenu : dicter la journée"
+STR_MUSIC_STEREO: "stéréo"
+STR_MUSIC_MONO: "mono"
+STR_MUSIC_CHOOSE_FOLDER: "DOSSIERS"
+STR_MUSIC_STOPPED: "ARRÊTÉ"

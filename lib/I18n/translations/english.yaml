@@ -936,3 +936,7 @@ STR_NEWS_SPEAK_NO_WIFI: "Reading aloud needs WiFi; the article still reads on sc
 STR_NEWS_ARTICLE_HINT: "OK reads aloud · Up and down move between parts"
 STR_NEWS_READING_HINT: "OK pauses · Up and down skip parts · Back stops the reading"
 STR_DAY_DICTATE_HINT: "Hold Back: dictate the day"
+STR_MUSIC_STEREO: "stereo"
+STR_MUSIC_MONO: "mono"
+STR_MUSIC_CHOOSE_FOLDER: "FOLDERS"
+STR_MUSIC_STOPPED: "STOPPED"
