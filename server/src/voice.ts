@@ -6,13 +6,13 @@
 //        El audio (Piper, ver tts.ts) es la reply hablada cuando es corta (o una traducción / confirmación):
 //        viaja en el mismo pedido para que suene junto con el texto, sin una segunda conexión TLS.
 //     text   = lo que se entendió
-//     intent = question | reminder | task | shopping | note | message | timer | alarm | translate
+//     intent = question | reminder | task | shopping | note | timer | alarm | translate
 //     reply  = texto corto para la pantalla (y para leer por el parlante cuando haya TTS)
 //   4xx/5xx: { ok: false, error }
 //
 // Claude clasifica con salida estructurada (JSON con esquema) y en la misma
 // llamada redacta la respuesta: una pregunta se contesta con conocimiento
-// general; un recordatorio, tarea, compra, nota o mensaje se guarda en el
+// general; un recordatorio, tarea, compra o nota se guarda en el
 // store y se confirma; temporizador y alarma todavía no se ejecutan en el
 // aparato, así que se avisa. Una grabación puede traer una acción y una
 // pregunta a la vez: se hacen las dos.
@@ -22,7 +22,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
-import { load, save, nextId, resolveList, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, DEFAULT_LISTS, type Repeat } from "./store";
+import { load, save, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
@@ -50,7 +50,7 @@ const SCHEMA = {
   properties: {
     intent: {
       type: "string",
-      enum: ["question", "reminder", "task", "shopping", "note", "message", "timer", "alarm", "translate", "memory"],
+      enum: ["question", "reminder", "task", "shopping", "note", "timer", "alarm", "translate", "memory"],
       description: "Intención principal de lo dicho.",
     },
     reply: {
@@ -71,9 +71,12 @@ const SCHEMA = {
         additionalProperties: false,
         required: ["kind", "text", "list", "dueAt", "repeat", "seconds"],
         properties: {
-          kind: { type: "string", enum: ["reminder", "task", "shopping", "note", "message", "timer", "alarm", "memory"] },
-          text: { type: "string", description: "Título de la tarea/recordatorio, ítem de compra, texto de la nota o mensaje." },
-          list: { type: ["string", "null"], description: "Nombre de la lista si el usuario la nombró o se deduce; null si no." },
+          kind: { type: "string", enum: ["reminder", "task", "shopping", "note", "timer", "alarm", "memory"] },
+          text: { type: "string", description: "Título de la tarea/recordatorio, ítem de compra o texto de la nota." },
+          list: {
+            type: ["string", "null"],
+            description: "Solo hay dos listas y no se pueden crear más: la de compras y la de tareas. Poné el nombre de una de esas dos, o null.",
+          },
           dueAt: {
             type: ["string", "null"],
             description: "Fecha y hora local del recordatorio o vencimiento como YYYY-MM-DDTHH:MM, o YYYY-MM-DD si no dijo hora; null si no tiene.",
@@ -121,13 +124,14 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "de voz (puede traer errores de reconocimiento; interpretala con sentido común y no comentes la transcripción)",
     "y devolvés JSON según el esquema.",
     `Ahora es ${now} (${weekday}), zona ${TZ}. Resolvé fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
-    `Listas de tareas existentes: ${lists.join(", ")}. Si el usuario nombra una que no existe, usá ese nombre igual (se crea).`,
+    `Hay exactamente DOS listas y no se pueden crear más: "${lists[0]}" (lo que se compra) y "${lists[1]}" (todo lo demás por hacer).`,
+    "Si el usuario nombra cualquier otra lista, ignorá ese nombre: lo que sea una compra va a la de compras y todo lo demás a la de tareas.",
     "Reglas: 'recordame', 'avisame', 'despertame' → reminder. En dueAt poné la hora SOLO si el usuario la dijo; si dijo",
     "el día pero no la hora ('mañana', 'el jueves'), poné la fecha sola (YYYY-MM-DD, sin T) y NUNCA inventes una hora.",
     "'Comprar X', 'compras:' o",
-    "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá a <lista>', 'en trabajo:',",
-    "'tengo que', 'hay que' → task (list si la nombró; si no, null y va a Entrada). 'Nota:', 'anotá' → note. 'Mensaje para',",
-    "'dejá dicho', 'avisale a' → message. 'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
+    "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá', 'anotá que tengo que',",
+    "'tengo que', 'hay que' → task (va a la lista de tareas). 'Nota:', 'anotá' → note.",
+    "'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
     "OJO con la unidad: `seconds` va SIEMPRE en SEGUNDOS. '20 segundos' → 20 (no 1200). '10 minutos' → 600. " +
     "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repetí en la reply la misma unidad que dijo el usuario.",
     "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
@@ -146,7 +150,7 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "Buscar cuesta plata y el usuario pidio decidirlo el. En todo lo demas va false.",
     `'Traducí', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
     "y reply la contesta con conocimiento general, corta y directa. Si la frase trae una acción y una pregunta, guardá la",
-    "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task en Entrada y decilo.",
+    "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task y decilo.",
     `El usuario habla en ${LANGUAGE_NAME[lang]}: los títulos de las acciones y reply van en ese idioma (salvo la traducción). Texto plano, sin markdown ni listas. Máximo 120 palabras salvo que pida más.`,
   ].join(" ");
 }
@@ -226,7 +230,7 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
   const now = new Date();
   const local = now.toLocaleString("sv-SE", { timeZone: TZ }).slice(0, 16).replace(" ", "T");
   const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ });
-  const lists = Array.from(new Set([...DEFAULT_LISTS, ...Object.keys(store.lists)]));
+  const lists = DEFAULT_LISTS;  // son dos y son fijas: compras y tareas
   const raw = await chatJson<Partial<Parsed>>(
     { system: systemPrompt(local, weekday, lists, lang), memories: memoryLines(store), user: text, maxTokens: 1024 },
     SCHEMA,
@@ -293,24 +297,23 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
         break;
       }
       case "task": {
-        const list = resolveList(store, a.list, true);
+        const list = resolveList(store, a.list);
         store.lists[list].push({ id: nextId(store), text: title, done: false, dueDate: a.dueAt ? a.dueAt.slice(0, 10) : null, createdAt: stamp });
-        saved.push({ kind: "task", list, title });
+        saved.push({ kind: "task", list: listLabel(list, lang), title });
         break;
       }
       case "shopping": {
-        const list = resolveList(store, a.list ?? "Compras", true);
+        const list = resolveList(store, a.list ?? SHOPPING_LIST);
         store.lists[list].push({ id: nextId(store), text: title, done: false, dueDate: null, createdAt: stamp });
-        saved.push({ kind: "shopping", list, title });
+        saved.push({ kind: "shopping", list: listLabel(list, lang), title });
         break;
       }
+      // "message" ya no existe como intención (se sacó la pizarra del producto);
+      // si un modelo viejo o terco la devuelve igual, se guarda como nota.
       case "note":
+      case "message":
         store.notes.push({ id: nextId(store), text: title, createdAt: stamp });
         saved.push({ kind: "note", title });
-        break;
-      case "message":
-        store.messages.push({ id: nextId(store), from: "voz", text: title, createdAt: stamp, read: false });
-        saved.push({ kind: "message", title });
         break;
       case "memory": {
         // rememberFact pisa la memoria más parecida: "ya no vivo en México" no
@@ -458,7 +461,7 @@ voice.post("/", async (c) => {
 });
 
 // Lo que el hub muestra y cachea: recordatorios pendientes (el primero es el
-// próximo), listas con sus ítems pendientes y mensajes sin leer.
+// próximo), las dos listas con sus ítems pendientes y las notas.
 export async function hubSlice(lang: Lang) {
   const store = await load();
   return {
@@ -477,11 +480,13 @@ export async function hubSlice(lang: Lang) {
       repeatSpec: normalizeRepeat(r.repeat),
       repeatText: repeatText(r.repeat, r.dueAt, lang),
     })),
-    lists: Object.entries(store.lists).map(([name, items]) => ({
-      name,
-      items: items.filter((i) => !i.done).slice(0, 30).map((i) => ({ id: i.id, text: i.text })),
+    // `name` es el nombre visible en el idioma del aparato; `key` es la clave
+    // canónica del store, que es lo que hay que devolver al mover un ítem.
+    lists: DEFAULT_LISTS.map((key) => ({
+      key,
+      name: listLabel(key, lang),
+      items: (store.lists[key] ?? []).filter((i) => !i.done).slice(0, 30).map((i) => ({ id: i.id, text: i.text })),
     })),
-    messages: store.messages.filter((m) => !m.read).slice(-5).map((m) => ({ id: m.id, from: m.from, text: m.text })),
     notes: store.notes.slice(-20).reverse().map((n) => ({ id: n.id, text: n.text })),
   };
 }
@@ -537,7 +542,7 @@ export async function editEntry(body: { kind?: string; id?: number; action?: str
     if (body.action === "delete") {
       items.splice(idx, 1);
     } else if (body.action === "move") {
-      const target = resolveList(store, body.list, true);
+      const target = resolveList(store, body.list);
       if (target !== name) {
         items.splice(idx, 1);
         store.lists[target].push(item);
@@ -556,12 +561,10 @@ export async function editEntry(body: { kind?: string; id?: number; action?: str
 // Tildar (o posponer `snoozeSeconds`) desde el aparato. Idempotente: llega
 // repetido desde la cola offline. Un recordatorio con repetición no se cierra:
 // pasa al próximo ciclo.
-export async function markDone(kind: "reminder" | "item" | "message", id: number, snoozeSeconds = 0): Promise<boolean> {
+export async function markDone(kind: "reminder" | "item", id: number, snoozeSeconds = 0): Promise<boolean> {
   const store = await load();
   let found = false;
-  if (kind === "message") {
-    for (const m of store.messages) if (m.id === id) { m.read = true; found = true; }
-  } else if (kind === "reminder") {
+  if (kind === "reminder") {
     for (const r of store.reminders) {
       if (r.id !== id) continue;
       found = true;

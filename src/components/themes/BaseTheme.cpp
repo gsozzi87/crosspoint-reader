@@ -23,6 +23,7 @@
 #include "components/icons/bookmark.h"
 #include "components/icons/buttonIcons.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 // Internal constants
 namespace {
@@ -722,8 +723,9 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     const bool selected = selectedIndex == i;
 
     if (selected) {
-      renderer.fillRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
-                        rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
+      renderer.fillRectDither(rect.x + BaseMetrics::values.contentSidePadding, tileY,
+                              rect.width - BaseMetrics::values.contentSidePadding * 2,
+                              BaseMetrics::values.menuRowHeight, SELECTION_FILL);
     } else {
       renderer.drawRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
                         rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
@@ -741,7 +743,7 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     const int textY =
         tileY + (BaseMetrics::values.menuRowHeight - lineHeight) / 2;  // vertically centered assuming y is top of text
     // Invert text when the tile is selected, to contrast with the filled background
-    renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
+    renderer.drawText(UI_10_FONT_ID, textX, textY, label, true);
   }
 }
 

@@ -6,6 +6,7 @@
 
 #include "Adpcm.h"
 #include "HubStore.h"
+#include "music/MusicPlayer.h"
 
 namespace {
 constexpr const char* TAG = "SPEECH";
@@ -20,6 +21,9 @@ constexpr size_t MAX_FILE = 256 * 1024;
 
 bool SpeechOut::playAdpcm(const uint8_t* data, const size_t len, const uint8_t volume) {
   stop();
+  // Hablar manda sobre la música: el I2S es uno solo y, si no, la frase no
+  // arranca (o arranca encima de la canción).
+  MUSIC.stop();
   size_t bytes = 0;
   wav = adpcm::decodeToWav(data, len, bytes);
   if (!wav) {
@@ -64,6 +68,7 @@ bool SpeechOut::playFile(const char* path, const uint8_t volume) {
 }
 
 void SpeechOut::stop() {
+  paused = false;
   if (started) {
     audio.stop();
     started = false;
@@ -73,4 +78,16 @@ void SpeechOut::stop() {
     heap_caps_free(wav);
     wav = nullptr;
   }
+}
+
+void SpeechOut::pause() {
+  if (!started || paused) return;
+  paused = true;
+  audio.setVolume(0);
+}
+
+void SpeechOut::resume() {
+  if (!started || !paused) return;
+  paused = false;
+  audio.setVolume(deviceVolume());
 }

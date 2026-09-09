@@ -142,6 +142,24 @@ struct SettingInfo {
     return s;
   }
 
+  // Igual que Value, pero para algo que NO vive en CrossPointSettings (el
+  // volumen del aparato vive en HubStore, junto al resto de los ajustes del
+  // hub). Sin esto no había forma de tocar el volumen desde Ajustes, que es
+  // donde el usuario lo fue a buscar.
+  static SettingInfo DynamicValue(StrId nameId, const ValueRange valueRange, std::function<uint8_t()> getter,
+                                  std::function<void(uint8_t)> setter, const char* key = nullptr,
+                                  StrId category = StrId::STR_NONE_OPT) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::VALUE;
+    s.valueRange = valueRange;
+    s.valueGetter = std::move(getter);
+    s.valueSetter = std::move(setter);
+    s.key = key;
+    s.category = category;
+    return s;
+  }
+
   static SettingInfo DynamicString(StrId nameId, std::function<std::string()> getter,
                                    std::function<void(const std::string&)> setter, const char* key = nullptr,
                                    StrId category = StrId::STR_NONE_OPT) {

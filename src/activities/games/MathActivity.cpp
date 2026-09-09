@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr int SIDE = 24;          // margen lateral
@@ -584,7 +585,7 @@ void MathActivity::drawOptions(const int top, const int rowHeight, const int gap
     const bool filled = cursorHere || isAnswer;
 
     if (filled) {
-      renderer.fillRoundedRect(SIDE, y, boxW, rowHeight, 12, Color::Black);
+      drawSelectionRow(renderer, SIDE, y, boxW, rowHeight, 12);
     } else {
       renderer.drawRoundedRect(SIDE, y, boxW, rowHeight, 2, 12, true);
     }
@@ -594,7 +595,7 @@ void MathActivity::drawOptions(const int top, const int rowHeight, const int gap
     }
 
     snprintf(buf, sizeof(buf), "%d", options[static_cast<size_t>(i)]);
-    drawBigText(buf, pageWidth / 2, y + rowHeight / 2, boxW - 48, rowHeight - 16, !filled);
+    drawBigText(buf, pageWidth / 2, y + rowHeight / 2, boxW - 48, rowHeight - 16, SELECTION_INK);
   }
 }
 

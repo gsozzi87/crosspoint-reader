@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 
@@ -1169,14 +1170,14 @@ void ChessActivity::drawModeSelect() const {
     const int y = listTop + i * ROW_H;
     const bool selected = i == modeCursor;
     if (selected) {
-      renderer.fillRoundedRect(SIDE, y, width, ROW_H - 10, 12, Color::Black);
+      drawSelectionRow(renderer, SIDE, y, width, ROW_H - 10, 12);
     } else {
       renderer.drawRoundedRect(SIDE, y, width, ROW_H - 10, 2, 12, true);
     }
     const char* label = I18N.get(MODES[i]);
     const std::string shown = renderer.truncatedText(UI_12_FONT_ID, label, width - 24, EpdFontFamily::BOLD);
     const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_12_FONT_ID, SIDE + (width - textWidth) / 2, y + 11, shown.c_str(), !selected,
+    renderer.drawText(UI_12_FONT_ID, SIDE + (width - textWidth) / 2, y + 11, shown.c_str(), SELECTION_INK,
                       EpdFontFamily::BOLD);
   }
 
@@ -1197,7 +1198,7 @@ void ChessActivity::drawPromotionBar(const int top) const {
     const int x = SIDE + i * width;
     const bool selected = i == promoCursor;
     if (selected) {
-      renderer.fillRoundedRect(x + 2, top, width - 4, 34, 8, Color::Black);
+      drawSelectionRow(renderer, x + 2, top, width - 4, 34, 8);
     } else {
       renderer.drawRoundedRect(x + 2, top, width - 4, 34, 2, 8, true);
     }
@@ -1208,7 +1209,7 @@ void ChessActivity::drawPromotionBar(const int top) const {
     if (promo == KNIGHT) name = StrId::STR_GAME_KNIGHT;
     const std::string shown = renderer.truncatedText(UI_10_FONT_ID, I18N.get(name), width - 12, EpdFontFamily::BOLD);
     const int w = renderer.getTextWidth(UI_10_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_10_FONT_ID, x + (width - w) / 2, top + 8, shown.c_str(), !selected, EpdFontFamily::BOLD);
+    renderer.drawText(UI_10_FONT_ID, x + (width - w) / 2, top + 8, shown.c_str(), SELECTION_INK, EpdFontFamily::BOLD);
   }
 }
 

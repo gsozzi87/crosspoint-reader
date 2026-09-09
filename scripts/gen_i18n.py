@@ -465,6 +465,7 @@ def generate_keys_header(
     for code in languages:
         lines.append(f"extern const char STRINGS_{code}_DATA[];")
         lines.append(f"extern const uint16_t OFFSETS_{code}[];")
+        lines.append(f"extern const uint8_t FALLBACK_{code}[];")
 
     lines.append("}  // namespace i18n_strings")
     lines.append("")
@@ -502,10 +503,17 @@ def generate_keys_header(
     lines.append("")
 
     # LangStrings struct
-    lines.append("// Holds a flat string blob and its offset table for one language")
+    lines.append("// Holds a flat string blob, its offset table and its fallback bitmap")
+    lines.append("// for one language. `fallback` has one BIT per StrId: 1 = the string is")
+    lines.append("// identical to English and lives in the English blob. Before, that flag was")
+    lines.append("// bit 15 of the offset itself, which capped a language blob at 32767 bytes —")
+    lines.append("// y el ruso ya estaba en 30975, a un par de pantallas de romper el build con")
+    lines.append("// un error que no dice nada. Con el bitmap aparte el offset usa los 16 bits")
+    lines.append("// (65535) y el mapa cuesta 117 bytes por idioma.")
     lines.append("struct LangStrings {")
     lines.append("  const char* data;")
     lines.append("  const uint16_t* offsets;")
+    lines.append("  const uint8_t* fallback;")
     lines.append("};")
     lines.append("")
 
@@ -516,12 +524,14 @@ def generate_keys_header(
     for code in languages:
         lines.append(f"    case Language::{code}:")
         lines.append(
-            f"      return {{i18n_strings::STRINGS_{code}_DATA, i18n_strings::OFFSETS_{code}}};"
+            f"      return {{i18n_strings::STRINGS_{code}_DATA, i18n_strings::OFFSETS_{code}, "
+            f"i18n_strings::FALLBACK_{code}}};"
         )
     first_code = languages[0]
     lines.append("    default:")
     lines.append(
-        f"      return {{i18n_strings::STRINGS_{first_code}_DATA, i18n_strings::OFFSETS_{first_code}}};"
+        f"      return {{i18n_strings::STRINGS_{first_code}_DATA, i18n_strings::OFFSETS_{first_code}, "
+        f"i18n_strings::FALLBACK_{first_code}}};"
     )
     lines.append("  }")
     lines.append("}")
@@ -608,6 +618,7 @@ def generate_strings_header(
     for code in languages:
         lines.append(f"extern const char STRINGS_{code}_DATA[];")
         lines.append(f"extern const uint16_t OFFSETS_{code}[];")
+        lines.append(f"extern const uint8_t FALLBACK_{code}[];")
 
     lines.append("")
     lines.append("}  // namespace i18n_strings")
@@ -658,8 +669,10 @@ def generate_strings_cpp(
     lines.append("")
 
     # Per-language flat string blobs and offset tables.
-    # Non-English languages skip strings identical to English; their offset
-    # tables use bit 15 (0x8000) to flag "use English blob at offset & 0x7FFF".
+    # Non-English languages skip strings identical to English; a separate
+    # FALLBACK_<code> bitmap (one bit per StrId) says "this one lives in the
+    # English blob". The flag used to be bit 15 of the offset, which capped a
+    # language blob at 32767 bytes.
     lines.append("namespace i18n_strings {")
     lines.append("")
 
@@ -677,28 +690,32 @@ def generate_strings_cpp(
             for s in lang_strings:
                 offsets.append(current_offset)
                 current_offset += len(s.encode("utf-8")) + 1
-            if current_offset > 0x7FFF:
+            if current_offset > 0xFFFF:
                 raise ValueError(
                     f"Language {code}: blob size ({current_offset} bytes) exceeds "
-                    "15-bit offset limit (32767)"
+                    "16-bit offset limit (65535)"
                 )
             en_offsets = list(offsets)
             blob_strings = lang_strings
+            fallback = [False] * len(lang_strings)
         else:
             offsets = []
             current_offset = 0
             blob_strings = []
+            fallback = []
             for i, (s, en_s) in enumerate(zip(lang_strings, en_strings)):
                 if s == en_s:
-                    offsets.append(en_offsets[i] | 0x8000)
+                    offsets.append(en_offsets[i])
+                    fallback.append(True)
                 else:
                     offsets.append(current_offset)
+                    fallback.append(False)
                     current_offset += len(s.encode("utf-8")) + 1
                     blob_strings.append(s)
-            if current_offset > 0x7FFF:
+            if current_offset > 0xFFFF:
                 raise ValueError(
                     f"Language {code}: blob size ({current_offset} bytes) exceeds "
-                    "15-bit offset limit (32767)"
+                    "16-bit offset limit (65535)"
                 )
 
         # Flat string data blob — all strings concatenated with \0 separators.
@@ -716,6 +733,20 @@ def generate_strings_cpp(
         for i in range(0, len(offsets), chunk_size):
             chunk = offsets[i : i + chunk_size]
             lines.append("    " + ", ".join(str(o) for o in chunk) + ",")
+        lines.append("};")
+        lines.append("")
+
+        # Fallback bitmap — one bit per StrId, LSB first inside each byte.
+        packed = bytearray((len(fallback) + 7) // 8)
+        for i, flag in enumerate(fallback):
+            if flag:
+                packed[i >> 3] |= 1 << (i & 7)
+        lines.append(f"const uint8_t FALLBACK_{code}[] = {{")
+        for i in range(0, len(packed), 12):
+            chunk = packed[i : i + 12]
+            lines.append("    " + ", ".join(str(b) for b in chunk) + ",")
+        if not packed:
+            lines.append("    0,")
         lines.append("};")
         lines.append("")
 

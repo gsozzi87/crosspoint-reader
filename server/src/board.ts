@@ -1,21 +1,18 @@
 // La "app del teléfono": una página web del Hono para manejar el aparato desde
 // cualquier navegador. Pide el token del aparato una vez (queda en
-// localStorage) y usa la misma API que el aparato. Sirve para dejar mensajes en
-// la pizarra del hub, crear recordatorios con fecha y repetición, manejar las
-// listas, escribir notas, subir fotos, cargar feeds, ver la memoria del
+// localStorage) y usa la misma API que el aparato. Sirve para crear
+// recordatorios con fecha y repetición, manejar las dos listas (compras y
+// tareas), escribir notas, subir fotos, cargar feeds, ver la memoria del
 // asistente y configurar el aparato (lugar del clima, idioma, voz, volumen).
 //
 //   GET  /board                      página (sin token; el JS lo pide)
 //   GET  /board/log                  el log que sube el aparato (devicelog.ts)
-//   POST /api/board/message  {from, text}
 //   POST /api/board/reminder {title, dueAt: "YYYY-MM-DDTHH:MM"|null, repeat}
 //   POST /api/board/item     {list, text}
 //   POST /api/board/note     {text}
 //   POST /api/board/feed     {name, url}
 //   POST /api/board/photo?name=      (body: image/bmp de 2 bpp, lo arma el navegador)
 //   POST /api/board/attachment?trip=&name=   (multipart o cuerpo crudo: PDF del vuelo, del hotel...)
-//   POST /api/board/list     {name}          crea una lista
-//   POST /api/board/list/delete {name}       la borra con todo lo que tenga
 //   GET  /api/board/extra    -> {feeds, memories, settings, lists}
 //   POST /api/board/settings {lang, speak, musicVolume, translatorLang}
 //   (leer, tildar y borrar: GET /api/hub, POST /api/hub/done, POST /api/hub/edit)
@@ -29,18 +26,9 @@ import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
 import { boardAttachment } from "./attachments";
+import { clampNote, MAX_NOTE_CHARS } from "./notes";
 
 export const boardApi = new Hono();
-
-boardApi.post("/message", async (c) => {
-  const b = await readBody(c);
-  const text = (b.text ?? "").toString().trim().slice(0, 300);
-  if (!text) return c.json({ ok: false, error: "text required" }, 400);
-  const store = await load();
-  store.messages.push({ id: nextId(store), from: (b.from ?? "").toString().trim().slice(0, 40) || "web", text, createdAt: new Date().toISOString(), read: false });
-  await save(store);
-  return c.json({ ok: true });
-});
 
 // Alta y edición (si trae id). La repetición es el objeto nuevo
 // {kind, days, interval, until}; una cadena vieja también entra.
@@ -64,30 +52,10 @@ boardApi.post("/item", async (c) => {
   const text = (b.text ?? "").toString().trim().slice(0, 200);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const store = await load();
-  const list = resolveList(store, b.list, true);
+  const list = resolveList(store, b.list);
   store.lists[list].push({ id: nextId(store), text, done: false, dueDate: null, createdAt: new Date().toISOString() });
   await save(store);
   return c.json({ ok: true, list });
-});
-
-boardApi.post("/list", async (c) => {
-  const b = await readBody(c);
-  const name = (b.name ?? "").toString().trim().slice(0, 40);
-  if (!name) return c.json({ ok: false, error: "name required" }, 400);
-  const store = await load();
-  const list = resolveList(store, name, true);
-  await save(store);
-  return c.json({ ok: true, list });
-});
-
-boardApi.post("/list/delete", async (c) => {
-  const b = await readBody(c);
-  const name = (b.name ?? "").toString();
-  const store = await load();
-  if (!(name in store.lists)) return c.json({ ok: false, error: "not found" }, 404);
-  delete store.lists[name];
-  await save(store);
-  return c.json({ ok: true });
 });
 
 boardApi.post("/feed", async (c) => {
@@ -316,7 +284,7 @@ boardApi.get("/costs", async (c) => {
 
 boardApi.post("/note", async (c) => {
   const b = await readBody(c);
-  const text = (b.text ?? "").toString().trim().slice(0, 2000);
+  const text = clampNote(b.text);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const store = await load();
   store.notes.push({ id: nextId(store), text, createdAt: new Date().toISOString() });
@@ -450,26 +418,24 @@ async function refresh(){
   const d = await api("/api/hub?lang=es");
   const x = await api("/api/board/extra");
 
-  $("messages").innerHTML = d.messages.map((m) =>
-    row(m.from + ": " + m.text, "", btn("Leído", "done", { kind: "message", id: m.id }))).join("") || empty("Sin mensajes");
-
   $("reminders").innerHTML = d.reminders.map((r) =>
     row(r.title, [r.when || "sin hora", r.repeatText].filter(Boolean).join(" · "),
       btn("Hecho", "done", { kind: "reminder", id: r.id }) +
       btn("Editar", "remedit", { rem: JSON.stringify({ id: r.id, title: r.title, at: r.at, repeat: r.repeatSpec }) }) +
       btn("Borrar", "del", { kind: "reminder", id: r.id }))).join("") || empty("Sin recordatorios");
 
-  const names = x.lists.length ? x.lists : d.lists.map((l) => l.name);
+  // Son dos listas fijas (compras y tareas): no se crean ni se borran.
+  const names = x.lists;
   const sel = $("listSelect");
   const keep = sel.value;
   sel.innerHTML = names.map((n) => "<option>" + esc(n) + "</option>").join("");
   if (names.indexOf(keep) >= 0) sel.value = keep;
 
-  const byName = {};
-  d.lists.forEach((l) => { byName[l.name] = l.items; });
+  const byKey = {};
+  d.lists.forEach((l) => { byKey[l.key || l.name] = l.items; });
   $("listItems").innerHTML = names.map((n) => {
-    const items = byName[n] || [];
-    return "<h3>" + esc(n) + " · " + items.length + " " + btn("Borrar lista", "dellist", { name: n }) + "</h3><ul>" +
+    const items = byKey[n] || [];
+    return "<h3>" + esc(n) + " · " + items.length + "</h3><ul>" +
       (items.map((i) => row(i.text, "",
         btn("Hecho", "done", { kind: "item", id: i.id }) +
         btn("Borrar", "del", { kind: "item", id: i.id }))).join("") || empty("Vacía")) + "</ul>";
@@ -831,10 +797,7 @@ document.addEventListener("click", async (ev) => {
       toast(r.error ? r.name + ": " + r.error : r.name + ": " + r.count + " titulares");
       return;
     }
-    else if (act === "dellist") {
-      if (!confirm("¿Borrar la lista " + b.dataset.name + " con todo lo que tenga?")) return;
-      await api("/api/board/list/delete", { name: b.dataset.name });
-    } else if (act === "place") {
+    else if (act === "place") {
       const r = await api("/api/hub/location", JSON.parse(b.dataset.place));
       $("placeResults").innerHTML = "";
       toast(r.weather && r.weather.line ? "Lugar guardado · " + r.weather.line : "Lugar guardado");
@@ -904,7 +867,6 @@ async function loadLog(){
 }
 
 function start(){
-  wire("formMessage", "/api/board/message", (f) => ({ from: f.from.value, text: f.text.value }));
   wireRepeat("rem", "remDate");
   wireRepeat("ev", "evDate");
   $("formReminder").addEventListener("submit", async (e) => {
@@ -930,7 +892,6 @@ function start(){
     $("evTimeRow").style.display = $("evAllDay").checked ? "none" : "flex";
   });
   wire("formItem", "/api/board/item", (f) => ({ list: $("listSelect").value, text: f.text.value }));
-  wire("formList", "/api/board/list", (f) => ({ name: f.name.value }));
   wire("formNote", "/api/board/note", (f) => ({ text: f.text.value }));
   // El feed se prueba al agregarlo, así que este formulario cuenta cuántos
   // titulares trajo (o dice por qué no trajo ninguno) en vez del "Guardado" seco.
@@ -1236,13 +1197,6 @@ const PAGE = `<!doctype html>
 <main id="app" style="display:none">
 
 <section class="tab" id="tab-pizarra">
-  <div class="card"><h2>Mensaje para el hub</h2>
-    <form id="formMessage">
-      <input type="text" name="from" placeholder="De" style="max-width:110px">
-      <input type="text" name="text" placeholder="Mensaje" required><button>Dejar</button>
-    </form>
-    <ul id="messages"></ul>
-  </div>
   <div class="card"><h2 id="remFormTitle">Recordatorios</h2>
     <form id="formReminder">
       <input type="hidden" id="remId">
@@ -1294,16 +1248,18 @@ const PAGE = `<!doctype html>
 
 <section class="tab" id="tab-listas">
   <div class="card"><h2>Listas</h2>
+    <p class="muted">Hay dos listas y nada más: Compras y Tareas. Todo lo que dictes que no sea una compra
+      va a Tareas.</p>
     <form id="formItem"><select id="listSelect"></select><input type="text" name="text" placeholder="Ítem" required><button>Agregar</button></form>
-    <form id="formList"><input type="text" name="name" placeholder="Lista nueva" required><button>Crear lista</button></form>
     <div id="listItems"></div>
   </div>
 </section>
 
 <section class="tab" id="tab-notas">
   <div class="card"><h2>Notas</h2>
-    <form id="formNote"><textarea name="text" rows="3" placeholder="Nota" required></textarea><button>Guardar</button></form>
-    <p class="muted">En el aparato también se dictan: Atrás dos veces y decí "nota: ...".</p>
+    <form id="formNote"><textarea name="text" rows="8" placeholder="Nota" required></textarea><button>Guardar</button></form>
+    <p class="muted">Las notas pueden ser largas (hasta 20.000 caracteres). En el aparato también se dictan:
+      presiona Atrás dos veces y di "nota: ...".</p>
     <ul id="notes"></ul>
   </div>
 </section>

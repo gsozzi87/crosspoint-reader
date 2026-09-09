@@ -21,6 +21,12 @@ class VoiceRecorder {
   // Drains one block from I2S. False on a capture error. Stops by itself when full.
   bool pump();
   bool isRecording() const { return recording; }
+
+  // ¿Hay ALGÚN micrófono abierto en el aparato? Cada pantalla tiene su propia
+  // grabadora, pero el códec es uno solo: main.cpp lo consulta para no abrir un
+  // recordatorio (ni el atajo de voz) encima de una grabación en curso, que
+  // dejaba el micrófono colgado y la toma perdida.
+  static bool anyRecording() { return s_open > 0; }
   // Closes the mic and finalises the WAV header.
   void stop();
   // Closes the mic and drops the take.
@@ -51,6 +57,7 @@ class VoiceRecorder {
   size_t maxSamples;
   size_t recorded = 0;
   bool recording = false;
+  static int s_open;  // grabadoras con el micrófono abierto ahora mismo
   bool blips = true;
   uint8_t* packed = nullptr;  // ADPCM view of the take
 

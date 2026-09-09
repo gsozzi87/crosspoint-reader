@@ -23,6 +23,8 @@
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
+#include "voice/VoiceNotes.h"  // mmss(): el contador de la grabación
+#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "BIBLE";
@@ -30,6 +32,9 @@ constexpr int ROW_H = 40;
 constexpr int SIDE = 20;
 constexpr unsigned long VOICE_HOLD_MS = 1200;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr uint32_t ASK_TIMEOUT_MS = 90000;   // transcripción + LLM del lado del servidor
+constexpr size_t MAX_CHAPTER_BYTES = 24 * 1024;  // lo que se manda del capítulo (Salmo 119 es el único que roza esto)
+constexpr uint32_t RECORD_SECONDS = 20;
 }  // namespace
 
 std::string BibleActivity::cacheDir() const { return std::string("/.crosspoint/bible/") + lang; }
@@ -65,7 +70,10 @@ void BibleActivity::fail(StrId why, std::string detail) {
   recorder.abort();
   // Sin la Biblia entera en la tarjeta, casi todo lo que falla se arregla
   // bajando el paquete de contenido: se ofrece ir ahí en vez del error pelado.
-  offerAssets = !bibleComplete();
+  // Lo que falla al preguntar no: eso es el servidor o la red, y bajar la
+  // Biblia no lo arregla.
+  offerAssets = !suppressAssetOffer && !bibleComplete();
+  suppressAssetOffer = false;
   failureId = why;
   failureDetail = std::move(detail);
   state = FAILED;
@@ -350,6 +358,7 @@ void BibleActivity::saveLastRef() {
 }
 
 void BibleActivity::openChapter(const int book, const int chapter, const int verse) {
+  asking = false;  // lo que venga a continuación es traer texto, no una pregunta
   bookIndex = book;
   chapterIndex = chapter - 1;
   wantedVerse = verse;
@@ -394,6 +403,15 @@ void BibleActivity::ensureConnected(const State next) {
 
 void BibleActivity::onWifiSelectionComplete(const bool connected) {
   if (!connected) {
+    // Leer y buscar andan sin conexión con la Biblia en la tarjeta; preguntar
+    // no, y decirlo así es más útil que "falló el WiFi".
+    if (pending == ASK) {
+      pending = NONE;
+      recorder.abort();
+      suppressAssetOffer = true;
+      fail(StrId::STR_BIBLE_ASK_NEEDS_WIFI);
+      return;
+    }
     fail(StrId::STR_SERVER_WIFI_FAILED);
     return;
   }
@@ -401,18 +419,99 @@ void BibleActivity::onWifiSelectionComplete(const bool connected) {
   requestUpdate();
 }
 
-void BibleActivity::startVoice() {
+// En la lista de capítulos el botón de voz hace dos cosas distintas, así que
+// primero se pregunta cuál: sin esto no hay forma de que se vea que además de
+// buscar se puede preguntar (mantener OK no sirve, en esta placa apaga).
+void BibleActivity::openVoiceMenu() {
+  menuOptions = {tr(STR_BIBLE_MENU_SEARCH), tr(STR_BIBLE_MENU_ASK)};
+  state = MENU;
+  picker.show(StrId::STR_BIBLE_ASK_TITLE, menuOptions, 0, [this](const int idx) { startVoice(idx == 1); });
+  requestUpdate();
+}
+
+void BibleActivity::startVoice(const bool ask) {
+  asking = ask;
   if (!SERVER_STORE.hasToken()) {
+    suppressAssetOffer = ask;
     fail(StrId::STR_ASK_NO_TOKEN);
     return;
   }
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder.start(why)) {
+    suppressAssetOffer = ask;
     fail(why);
     return;
   }
+  shownSecond = -1;
+  forceClean = true;
   state = RECORDING;
   requestUpdate();
+}
+
+// El capítulo entero va en el cuerpo: el aparato ya lo tiene en la tarjeta y el
+// servidor no guarda la Biblia por idioma del usuario.
+void BibleActivity::performAsk() {
+  std::string question, detail;
+  const bool ok = SpeechToText::transcribe(recorder, question, detail);
+  recorder.release();
+  if (!ok) {
+    suppressAssetOffer = true;
+    fail(StrId::STR_ASK_TRANSCRIBE_FAILED, detail);
+    return;
+  }
+  std::string chapter;
+  if (!readChapter(bookIndex, chapterIndex + 1, chapter) && !fetchChapter(bookIndex, chapterIndex + 1, chapter)) {
+    fail(StrId::STR_BIBLE_CHAPTER_FAILED);
+    return;
+  }
+  if (chapter.size() > MAX_CHAPTER_BYTES) {
+    LOG_INF(TAG, "capítulo de %u bytes recortado a %u", (unsigned)chapter.size(), (unsigned)MAX_CHAPTER_BYTES);
+    chapter.resize(MAX_CHAPTER_BYTES);
+  }
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["book"] = books[bookIndex].name;
+    doc["chapter"] = chapterIndex + 1;
+    doc["text"] = chapter;
+    doc["question"] = question;
+    doc["lang"] = lang;
+    serializeJson(doc, body);
+  }
+  chapter.clear();
+  chapter.shrink_to_fit();
+  LOG_INF(TAG, "POST /api/bible/ask: %u bytes (\"%s\")", (unsigned)body.size(), question.c_str());
+  ServerClient::Response resp;
+  const ServerClient::Result r = SERVER_CLIENT.postJson("/api/bible/ask", body, resp, ASK_TIMEOUT_MS);
+  body.clear();
+  body.shrink_to_fit();
+  WiFi.setSleep(true);
+  suppressAssetOffer = true;
+  if (r != ServerClient::Result::Ok) {
+    char why[96];
+    snprintf(why, sizeof(why), "%s (%d)", ServerClient::resultName(r), resp.status);
+    fail(StrId::STR_ASK_FAILED, why);
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+    fail(StrId::STR_ASK_FAILED, tr(STR_VOICE_BAD_REPLY));
+    return;
+  }
+  const std::string answer = doc["answer"] | "";
+  if (answer.empty()) {
+    fail(StrId::STR_ASK_FAILED, doc["error"] | tr(STR_VOICE_EMPTY_REPLY));
+    return;
+  }
+  suppressAssetOffer = false;
+  state = READING;
+  // La pregunta transcripta como título, igual que en "Preguntarle al libro".
+  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, question, answer),
+                         [this](const ActivityResult&) {
+                           state = CHAPTERS;
+                           forceClean = true;
+                           requestUpdate();
+                         });
 }
 
 // Transcribe, then GET /api/bible/find: a reference opens straight away, a
@@ -527,6 +626,9 @@ void BibleActivity::loop() {
       } else if (pending == VOICE) {
         pending = NONE;
         performVoice();
+      } else if (pending == ASK) {
+        pending = NONE;
+        performAsk();
       } else {
         state = stateAfterConnect;
         requestUpdate();
@@ -547,7 +649,10 @@ void BibleActivity::loop() {
       const int count = inBooks ? static_cast<int>(books.size()) : books[bookIndex].chapters;
       int& index = inBooks ? bookIndex : chapterIndex;
       if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, VOICE_HOLD_MS)) {
-        startVoice();
+        // En los libros solo se puede buscar; en los capítulos hay uno elegido,
+        // así que además se puede preguntar sobre él y hay que ofrecer las dos.
+        if (inBooks) startVoice(/*ask=*/false);
+        else openVoiceMenu();
         break;
       }
       buttonNavigator.onNext([&] {
@@ -581,25 +686,49 @@ void BibleActivity::loop() {
       }
       break;
     }
-    case RECORDING:
+    case RECORDING: {
+      const State back = asking ? CHAPTERS : BOOKS;
       if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
         recorder.abort();
-        state = BOOKS;
+        state = back;
+        forceClean = true;
         requestUpdate();
         break;
       }
       if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) || !recorder.isRecording()) {
         recorder.stop();
+        forceClean = true;
         if (recorder.tooShort()) {
-          state = BOOKS;
+          state = back;
           requestUpdate();
           break;
         }
-        pending = VOICE;
-        ensureConnected(BOOKS);
+        pending = asking ? ASK : VOICE;
+        ensureConnected(back);
         break;
       }
-      if (!recorder.pump()) fail(StrId::STR_AUDIO_CAPTURE_FAILED);
+      if (!recorder.pump()) {
+        suppressAssetOffer = true;
+        fail(StrId::STR_AUDIO_CAPTURE_FAILED);
+        break;
+      }
+      // El contador de segundos: se repinta segundo a segundo al principio y al
+      // final, y de a cinco en el medio (cada repintado es un refresco del papel).
+      const int seconds = static_cast<int>(recorder.seconds());
+      const int left = static_cast<int>(RECORD_SECONDS) - seconds;
+      if (seconds != shownSecond && (seconds <= 5 || left <= 5 || seconds % 5 == 0)) {
+        shownSecond = seconds;
+        requestUpdate();
+      }
+      break;
+    }
+    case MENU:
+      if (picker.handleInput(mappedInput, [this] { requestUpdate(); })) {
+        if (state == MENU && !picker.isActive()) {  // Atrás en el menú: vuelve a los capítulos
+          state = CHAPTERS;
+          requestUpdate();
+        }
+      }
       break;
     case PICK_RESULT:
       if (picker.handleInput(mappedInput, [this] { requestUpdate(); })) {
@@ -669,17 +798,17 @@ void BibleActivity::render(RenderLock&&) {
       int y = top;
       for (int i = listTop; i < count && y + ROW_H <= bottom; ++i) {
         const bool sel = i == selected;
-        if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4, 8, Color::Black);
+        if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
         const int book = inBooks ? i : bookIndex;
         const std::string label = inBooks ? books[book].name
                                           : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
         renderer.drawText(UI_12_FONT_ID, SIDE, y + 7,
                           renderer.truncatedText(UI_12_FONT_ID, label.c_str(), pageWidth - 2 * SIDE - 40).c_str(),
-                          !sel);
+                          SELECTION_INK);
         if (inBooks) {
           const std::string n = std::to_string(books[book].chapters);
           renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 10,
-                            n.c_str(), !sel);
+                            n.c_str(), SELECTION_INK);
         } else if (chapterCached(bookIndex, i + 1)) {
           renderer.fillRect(pageWidth - SIDE - 6, y + ROW_H / 2 - 5, 6, 6);  // cacheado: se lee sin WiFi
         }
@@ -688,7 +817,11 @@ void BibleActivity::render(RenderLock&&) {
       char pos[16];
       snprintf(pos, sizeof(pos), "%d/%d", selected + 1, count);
       renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pos), bottom + 4, pos);
-      renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4, tr(STR_BIBLE_VOICE_HINT));
+      renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4,
+                        renderer
+                            .truncatedText(SMALL_FONT_ID, inBooks ? tr(STR_BIBLE_VOICE_HINT) : tr(STR_BIBLE_CHAPTER_HINT),
+                                           pageWidth - 2 * SIDE - 60)
+                            .c_str());
       if (notice) {
         // La Biblia entera ya no se baja desde acá: viene en el paquete.
         std::string line = tr(STR_BIBLE_FROM_PACKAGE);
@@ -700,12 +833,39 @@ void BibleActivity::render(RenderLock&&) {
       }
       break;
     }
-    case RECORDING:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, tr(STR_BIBLE_VOICE_PROMPT), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, tr(STR_BIBLE_VOICE_EXAMPLES));
+    case MENU:
+      if (picker.processRender(renderer, mappedInput)) return;
       break;
+    case RECORDING: {
+      renderer.drawCenteredText(
+          UI_12_FONT_ID, mid - 70,
+          renderer
+              .truncatedText(UI_12_FONT_ID, asking ? tr(STR_BIBLE_ASK_PROMPT) : tr(STR_BIBLE_VOICE_PROMPT),
+                             pageWidth - 40, EpdFontFamily::BOLD)
+              .c_str(),
+          true, EpdFontFamily::BOLD);
+      if (asking) {
+        // Sobre qué se está preguntando, para que no haya dudas.
+        const std::string ref = books[bookIndex].name + " " + std::to_string(chapterIndex + 1);
+        renderer.drawCenteredText(UI_10_FONT_ID, mid - 36, ref.c_str());
+      }
+      // Los segundos que van y el tope: sin esto no hay forma de saber cuánto
+      // se puede hablar.
+      const int seconds = static_cast<int>(recorder.seconds());
+      const std::string counter = std::string(tr(STR_REC_ELAPSED)) + "   " + voicenotes::mmss(seconds) + " / " +
+                                  voicenotes::mmss(static_cast<int>(RECORD_SECONDS));
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 4, counter.c_str(), true, EpdFontFamily::BOLD);
+      int exampleY = mid + 40;
+      for (const std::string& line : renderer.wrappedText(
+               UI_10_FONT_ID, asking ? tr(STR_BIBLE_ASK_EXAMPLES) : tr(STR_BIBLE_VOICE_EXAMPLES), pageWidth - 60, 2)) {
+        renderer.drawCenteredText(UI_10_FONT_ID, exampleY, line.c_str());
+        exampleY += 26;
+      }
+      break;
+    }
     case LOADING:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_BIBLE_LOADING), true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, asking ? tr(STR_ASK_ASKING) : tr(STR_BIBLE_LOADING),
+                                true, EpdFontFamily::BOLD);
       confirmLabel = "";
       break;
     case SEARCHING: {
@@ -735,8 +895,13 @@ void BibleActivity::render(RenderLock&&) {
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partialCount = 0;
+  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla
+  // fantasmea. Con el micrófono abierto se evita (medio segundo de SPI ahí come
+  // muestras) y en su lugar se pide uno al entrar y otro al salir.
+  const bool clean = forceClean || (state != RECORDING && ++partialCount >= PARTIALS_BEFORE_CLEAN);
+  if (clean) {
+    partialCount = 0;
+    forceClean = false;
+  }
   renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

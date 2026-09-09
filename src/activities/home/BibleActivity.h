@@ -10,9 +10,16 @@
 
 // Bible: books -> chapters -> paged text, from the server one chapter at a
 // time and cached on the SD (/.crosspoint/bible/<lang>/), so anything read
-// once is there without WiFi. Back held = ask by voice ("John 3 16",
-// "Psalm 23", or words to search); the server resolves the reference or
-// returns matching verses to pick from. The last place read is remembered.
+// once is there without WiFi. The last place read is remembered.
+//
+// Atrás mantenido es el botón de voz:
+//   - en la lista de libros graba y busca ("Juan 3 16", "Salmo 23", o palabras
+//     sueltas); con la Biblia entera en la tarjeta eso se resuelve acá y el
+//     servidor solo hace falta para pasar la voz a texto;
+//   - en la lista de capítulos abre un menú con "Buscar por voz" y "Preguntar
+//     sobre este capítulo" (POST /api/bible/ask con el capítulo entero: "no
+//     entendí del versículo 8 al 12", "qué significa esa palabra"). Preguntar
+//     es lo único que necesita conexión sí o sí.
 class BibleActivity final : public Activity {
  public:
   explicit BibleActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -26,8 +33,8 @@ class BibleActivity final : public Activity {
   bool preventAutoSleep() override { return state == RECORDING || state == CONNECTING || state == LOADING; }
 
  private:
-  enum State { BOOKS, CHAPTERS, READING, RECORDING, CONNECTING, LOADING, PICK_RESULT, SEARCHING, FAILED };
-  enum Pending { NONE, LOAD_BOOKS, LOAD_CHAPTER, VOICE };
+  enum State { BOOKS, CHAPTERS, READING, MENU, RECORDING, CONNECTING, LOADING, PICK_RESULT, SEARCHING, FAILED };
+  enum Pending { NONE, LOAD_BOOKS, LOAD_CHAPTER, VOICE, ASK };
   State state = BOOKS;
   Pending pending = NONE;
   State stateAfterConnect = BOOKS;
@@ -44,9 +51,16 @@ class BibleActivity final : public Activity {
   int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
 
-  VoiceRecorder recorder{12};  // 12 s: citas y busquedas largas
+  // 20 s: una cita entra en dos, pero una pregunta sobre el capítulo ("no
+  // entendí del versículo 8 al 12, ¿qué quiso decir?") no.
+  VoiceRecorder recorder{20};
+  bool asking = false;         // la toma en curso es una pregunta, no una búsqueda
+  int shownSecond = -1;        // último segundo pintado del contador de grabación
+  bool forceClean = false;     // pedir un refresco limpio al entrar/salir de la grabación
+  bool suppressAssetOffer = false;  // este error no se arregla bajando el paquete
   OptionPopup picker;
   std::vector<std::string> pickerOptions;
+  std::vector<std::string> menuOptions;
   struct Hit {
     int book;
     int chapter;
@@ -93,8 +107,12 @@ class BibleActivity final : public Activity {
   void showChapter(const std::string& text);
   void ensureConnected(State next);
   void onWifiSelectionComplete(bool connected);
-  void startVoice();
+  void openVoiceMenu();
+  void startVoice(bool ask);
   void performVoice();
+  // Transcribe, manda el capítulo entero a POST /api/bible/ask y muestra la
+  // respuesta paginada con la pregunta como título.
+  void performAsk();
   void fail(StrId why, std::string detail = "");
   void saveLastRef();
 };

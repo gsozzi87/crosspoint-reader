@@ -36,6 +36,8 @@
 #include "components/icons/hubWidgetIcons.h"
 #include "components/icons/listIcons.h"
 #include "fontIds.h"
+#include "components/Selection.h"
+#include "music/MusicPlayer.h"
 
 namespace {
 constexpr int SIDE = 20;        // left/right margin
@@ -310,15 +312,19 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
       rightEdge -= 12;
     }
   }
-  if (!HUB_STORE.messages.empty() && rightEdge - leftLimit > 40) {
-    char count[24];
-    snprintf(count, sizeof(count), tr(STR_HUB_MESSAGES_FORMAT), (int)HUB_STORE.messages.size());
-    const std::string shown = renderer.truncatedText(UI_10_FONT_ID, count, rightEdge - leftLimit - 28);
+  // Lo que está sonando, si hay música puesta. La música vive fuera del
+  // reproductor (MusicPlayer), así que se sigue viendo desde el hub — que es lo
+  // que el usuario pidió: "quiero que figure lo que se está reproduciendo".
+  // Ocupa el lugar que tenían los mensajes, que se sacaron del sistema.
+  if (MUSIC.isActive() && rightEdge - leftLimit > 60) {
+    std::string line = MUSIC.nowPlayingLine();
+    if (MUSIC.isPaused()) line += " (" + std::string(tr(STR_MUSIC_PAUSED)) + ")";
+    const std::string shown = renderer.truncatedText(UI_10_FONT_ID, line.c_str(), rightEdge - leftLimit - 28);
     const int w = renderer.getTextWidth(UI_10_FONT_ID, shown.c_str());
     rightEdge -= w;
     renderer.drawText(UI_10_FONT_ID, rightEdge, textY + 2, shown.c_str());
     rightEdge -= 24 + 4;
-    drawSdkIcon(renderer, icon_hub_message_24, rightEdge, y + (height - 24) / 2, true);
+    drawSdkIcon(renderer, icon_hub_music_24, rightEdge, y + (height - 24) / 2, true);
   }
 
   renderer.drawLine(SIDE, y + height, renderer.getScreenWidth() - SIDE, y + height, true);
@@ -328,11 +334,11 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   const bool isSelected = index == selected && !comingSoon;
   const TileSpec& spec = TILES[index];
   if (isSelected) {
-    renderer.fillRoundedRect(x, y, w, h, TILE_RADIUS, Color::Black);
+    drawSelectionRow(renderer, x, y, w, h, TILE_RADIUS);
   } else {
     renderer.drawRoundedRect(x, y, w, h, 2, TILE_RADIUS, true);
   }
-  const bool ink = !isSelected;  // white on the selected tile
+  const bool ink = SELECTION_INK;  // el resalte es gris claro: el texto sigue en negro
 
   // Con el icono de 64 px no entran dos renglones de etiqueta (quedarían por
   // debajo del borde del mosaico), así que la palabra larga se dibuja con la
@@ -354,8 +360,8 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
   drawSdkIcon(renderer, *spec.icon, iconX, iconY, ink);
 
   // Punto en la esquina del mosaico Tiempo cuando hay algo corriendo o pausado.
-  if (index == TILE_TIMER && HUB_STORE.timeActive()) {
-    renderer.fillRoundedRect(x + w - 18, y + 10, 8, 8, 4, ink ? Color::Black : Color::White);
+  if ((index == TILE_TIMER && HUB_STORE.timeActive()) || (index == TILE_MUSIC && MUSIC.isActive())) {
+    renderer.fillRoundedRect(x + w - 18, y + 10, 8, 8, 4, Color::Black);
   }
 
   const int labelW = renderer.getTextWidth(labelFont, fitted.c_str(), labelStyle);
@@ -368,9 +374,9 @@ void HubActivity::drawTile(const int index, const int x, const int y, const int 
 void HubActivity::drawWideTile(const int index, const int x, const int y, const int w, const int h) const {
   const bool isSelected = index == selected && !comingSoon;
   const TileSpec& spec = TILES[index];
-  if (isSelected) renderer.fillRoundedRect(x, y, w, h, TILE_RADIUS, Color::Black);
+  if (isSelected) drawSelectionRow(renderer, x, y, w, h, TILE_RADIUS);
   else renderer.drawRoundedRect(x, y, w, h, 2, TILE_RADIUS, true);
-  const bool ink = !isSelected;
+  const bool ink = SELECTION_INK;
   drawSdkIcon(renderer, *spec.icon, x + 16, y + (h - spec.icon->h) / 2, ink);
   const int tx = x + 16 + spec.icon->w + 14;
   const int tw = std::max(20, w - (tx - x) - 14);

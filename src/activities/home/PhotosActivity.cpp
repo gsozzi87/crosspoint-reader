@@ -21,6 +21,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "WALLP";
@@ -449,13 +450,13 @@ void PhotosActivity::render(RenderLock&&) {
         const int y = top + (i - first) * ROW_H;
         const bool sel = i == index;
         const int photoIndex = photoAt(i);
-        if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4, 8, Color::Black);
+        if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
         const char* label = photoIndex < 0 ? tr(STR_NONE_OPT) : photos[photoIndex].name.c_str();
         renderer.drawText(UI_12_FONT_ID, SIDE, y + 8,
-                          renderer.truncatedText(UI_12_FONT_ID, label, pageWidth - 2 * SIDE - 30).c_str(), !sel);
+                          renderer.truncatedText(UI_12_FONT_ID, label, pageWidth - 2 * SIDE - 30).c_str(), SELECTION_INK);
         // Punto a la derecha = ésta es la que está de fondo.
         const bool marked = photoIndex < 0 ? HUB_STORE.wallpaperPath.empty() : isWallpaper(photos[photoIndex]);
-        if (marked) renderer.fillRoundedRect(pageWidth - SIDE - 12, y + ROW_H / 2 - 8, 12, 12, 6, sel ? Color::White : Color::Black);
+        if (marked) renderer.fillRoundedRect(pageWidth - SIDE - 12, y + ROW_H / 2 - 8, 12, 12, 6, Color::Black);
       }
       if (photos.empty()) renderer.drawCenteredText(UI_10_FONT_ID, mid + 40, tr(STR_WALLPAPER_EMPTY));
       char pages[16];

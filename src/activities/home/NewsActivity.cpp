@@ -9,12 +9,16 @@
 #include <ServerClient.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
-#include "activities/reader/DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/UrlEncode.h"
+#include "voice/Lang.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "NEWS";
@@ -24,6 +28,16 @@ constexpr int ROW_H = 44;
 constexpr int SIDE = 20;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+// Un trozo de lectura: una frase entera que entre en la pantalla y que el
+// servidor pueda sintetizar de una (su tope es 4000 caracteres).
+// 700 caracteres son unos 45 s de voz: 350 KB de ADPCM y 1,4 MB de WAV ya
+// decodificado, y de esos hay dos vivos a la vez (el que suena y el que se está
+// bajando). Con 900 la PSRAM se ponía fea.
+constexpr size_t CHUNK_MAX = 700;
+constexpr size_t CHUNK_MIN = 250;
+// La tarea de audio tarda un toque en arrancar: sin esta gracia, isPlaying()
+// da false justo después de pedir la reproducción y el trozo se saltearía solo.
+constexpr unsigned long SPEAK_GRACE_MS = 600;
 }  // namespace
 
 void NewsActivity::onEnter() {
@@ -40,6 +54,7 @@ void NewsActivity::onEnter() {
 
 void NewsActivity::onExit() {
   Activity::onExit();
+  speech.stop();
   if (wifiActivated) {
     WiFi.disconnect(false);
     delay(30);
@@ -136,17 +151,164 @@ void NewsActivity::openArticle() {
     showArticle(title, text);
     return;
   }
-  pending = ARTICLE;
+  pending = ARTICLE_FETCH;
   ensureConnected();
 }
 
 void NewsActivity::showArticle(const std::string& title, const std::string& text) {
-  state = READING;
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, title, text),
-                         [this](const ActivityResult&) {
-                           state = ITEMS;
-                           requestUpdate();
-                         });
+  articleTitle = title;
+  articleText = text;
+  chunks = textchunks::split(articleText, CHUNK_MAX, CHUNK_MIN);
+  chunkIndex = 0;
+  notice.clear();
+  stopSpeaking();
+  state = ARTICLE;
+  requestUpdate();
+}
+
+// ---------------------------------------------------------------------------
+// Leer la noticia en voz alta
+// ---------------------------------------------------------------------------
+
+std::string NewsActivity::chunkText(const int index) const {
+  if (index < 0 || index >= static_cast<int>(chunks.size())) return "";
+  return articleText.substr(chunks[index].start, chunks[index].len);
+}
+
+// GET /api/tts?text=&lang=&max= -> el clip ADPCM del trozo. `max` es el tope en
+// segundos y por default son 20: sin mandarlo, cada trozo se cortaba ahí.
+bool NewsActivity::fetchClip(const int index, std::string& out) {
+  const std::string text = chunkText(index);
+  if (text.empty()) return false;
+  ServerClient::Response resp;
+  const std::string path =
+      std::string("/api/tts?lang=") + uiLanguageCode() + "&max=90&text=" + urlEncode(text);
+  const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
+  if (r != ServerClient::Result::Ok || resp.body.size() < 16) {
+    LOG_ERR(TAG, "GET /api/tts: %s %d (%u bytes)", ServerClient::resultName(r), resp.status,
+            (unsigned)resp.body.size());
+    return false;
+  }
+  out = std::move(resp.body);
+  return true;
+}
+
+void NewsActivity::requestClip() {
+  pending = CLIP;
+  state = LOADING;
+  requestUpdate();
+}
+
+// Se hace desde loop() (bloquea lo que tarde el servidor) con la pantalla ya
+// pintada, como el resto de las llamadas de red del aparato.
+void NewsActivity::serveClip() {
+  WiFi.setSleep(false);
+  bool ok = false;
+  if (nextClipIndex == chunkIndex && !nextClip.empty()) {
+    clip.swap(nextClip);  // ya estaba bajado mientras sonaba el anterior
+    ok = true;
+  } else {
+    clip.clear();
+    ok = fetchClip(chunkIndex, clip);
+  }
+  nextClip.clear();
+  nextClipIndex = -1;
+  state = ARTICLE;
+  if (!ok) {
+    stopSpeaking();
+    notice = tr(STR_NEWS_SPEAK_FAILED);
+    requestUpdate();
+    return;
+  }
+  speaking = true;
+  playClip();
+  requestUpdate();
+}
+
+void NewsActivity::playClip() {
+  paused = false;
+  speakStartedAt = millis();
+  if (!speech.playAdpcm(reinterpret_cast<const uint8_t*>(clip.data()), clip.size())) {
+    stopSpeaking();
+    notice = tr(STR_NEWS_SPEAK_FAILED);
+  }
+}
+
+void NewsActivity::startSpeaking() {
+  notice.clear();
+  if (chunks.empty()) return;
+  speaking = true;
+  paused = false;
+  nextClip.clear();
+  nextClipIndex = -1;
+  pending = CLIP;
+  ensureConnected();  // con el WiFi ya arriba entra derecho a LOADING
+}
+
+void NewsActivity::stopSpeaking() {
+  speech.stop();
+  speaking = false;
+  paused = false;
+  clip.clear();
+  nextClip.clear();
+  nextClipIndex = -1;
+  if (ServerClient::networkUp()) WiFi.setSleep(true);
+}
+
+// Mientras suena un trozo se baja el siguiente, así entre uno y otro no hay
+// silencio; cuando termina, el que sigue arranca en el acto.
+void NewsActivity::pumpSpeech() {
+  if (!speaking || paused) return;
+  const int next = chunkIndex + 1;
+  if (speech.hasStarted() && nextClipIndex != next && next < static_cast<int>(chunks.size())) {
+    nextClip.clear();
+    nextClipIndex = next;  // se marca antes de pedirlo: si falla, no se reintenta en bucle
+    if (!fetchClip(next, nextClip)) nextClip.clear();
+  }
+  if (millis() - speakStartedAt < SPEAK_GRACE_MS || speech.isPlaying()) return;
+  if (next >= static_cast<int>(chunks.size())) {  // se terminó la noticia
+    stopSpeaking();
+    requestUpdate();
+    return;
+  }
+  chunkIndex = next;
+  if (nextClipIndex == chunkIndex && !nextClip.empty()) {
+    speech.stop();
+    clip.swap(nextClip);
+    nextClip.clear();
+    nextClipIndex = -1;
+    playClip();
+    requestUpdate();
+    return;
+  }
+  requestClip();
+}
+
+// Arriba y abajo saltan de trozo. Si está leyendo, la lectura salta con el
+// cursor (que es lo que uno espera al adelantar).
+void NewsActivity::jumpChunk(const int delta) {
+  const int count = static_cast<int>(chunks.size());
+  if (count == 0) return;
+  const int target = chunkIndex + delta;
+  if (target < 0 || target >= count) return;
+  chunkIndex = target;
+  if (!speaking) {
+    requestUpdate();
+    return;
+  }
+  speech.stop();
+  const bool haveIt = nextClipIndex == chunkIndex && !nextClip.empty();
+  if (haveIt) {
+    clip.swap(nextClip);
+    nextClip.clear();
+    nextClipIndex = -1;
+    playClip();
+    requestUpdate();
+    return;
+  }
+  nextClip.clear();
+  nextClipIndex = -1;
+  requestClip();
 }
 
 void NewsActivity::ensureConnected() {
@@ -162,6 +324,16 @@ void NewsActivity::ensureConnected() {
 
 void NewsActivity::onWifiSelectionComplete(const bool connected) {
   if (!connected) {
+    // Sin WiFi no hay voz, pero el artículo se sigue leyendo en pantalla: se
+    // avisa ahí mismo en vez de tirar al usuario a la pantalla de error.
+    if (pending == CLIP) {
+      pending = NONE;
+      stopSpeaking();
+      notice = tr(STR_NEWS_SPEAK_NO_WIFI);
+      state = ARTICLE;
+      requestUpdate();
+      return;
+    }
     fail(StrId::STR_SERVER_WIFI_FAILED);
     return;
   }
@@ -185,7 +357,7 @@ void NewsActivity::loop() {
         state = FEEDS;
         feedIndex = 0;
         requestUpdate();
-      } else if (p == ARTICLE) {
+      } else if (p == ARTICLE_FETCH) {
         std::string title, text;
         const bool ok = fetchArticle(feeds[feedIndex].id, feeds[feedIndex].items[itemIndex].id, title, text);
         WiFi.setSleep(true);
@@ -195,10 +367,46 @@ void NewsActivity::loop() {
           break;
         }
         showArticle(title, text);
+      } else if (p == CLIP) {
+        serveClip();
       } else {
         state = FEEDS;
         requestUpdate();
       }
+      break;
+    }
+    case ARTICLE: {
+      // Atrás corta la lectura y deja el artículo; otro Atrás vuelve a la lista.
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        if (speaking) {
+          stopSpeaking();
+          requestUpdate();
+        } else {
+          state = ITEMS;
+          requestUpdate();
+        }
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        if (!speaking) {
+          startSpeaking();
+        } else if (paused) {
+          // Reanuda donde iba. Si el clip ya se drenó mientras estaba en pausa
+          // (la tarea de audio termina igual), se vuelve a poner el trozo.
+          paused = false;
+          if (speech.isPlaying()) speech.resume();
+          else playClip();
+          requestUpdate();
+        } else {
+          speech.pause();
+          paused = true;
+          requestUpdate();
+        }
+        break;
+      }
+      buttonNavigator.onNext([this] { jumpChunk(1); });
+      buttonNavigator.onPrevious([this] { jumpChunk(-1); });
+      if (state == ARTICLE) pumpSpeech();
       break;
     }
     case FEEDS:
@@ -252,9 +460,52 @@ void NewsActivity::loop() {
       }
       break;
     case CONNECTING:
-    case READING:
       break;
   }
+}
+
+// El artículo, un trozo por pantalla: el mismo pedazo que se lee en voz alta,
+// así lo que se escucha y lo que se ve van juntos.
+void NewsActivity::renderArticle() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  int top = metrics.topPadding + metrics.headerHeight + 10;
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int total = static_cast<int>(chunks.size());
+
+  // Franja de estado: por dónde va y si está leyendo.
+  char part[48];
+  snprintf(part, sizeof(part), tr(STR_NEWS_PART_FORMAT), total ? chunkIndex + 1 : 0, total);
+  renderer.drawText(SMALL_FONT_ID, SIDE, top, part);
+  if (speaking) {
+    const char* label = paused ? tr(STR_NEWS_PAUSED) : tr(STR_NEWS_READING);
+    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, label), top, label);
+  }
+  top += 26;
+
+  if (!notice.empty()) {
+    for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, notice.c_str(), pageWidth - 2 * SIDE, 2)) {
+      renderer.drawText(UI_10_FONT_ID, SIDE, top, line.c_str(), true, EpdFontFamily::BOLD);
+      top += 22;
+    }
+    top += 6;
+  }
+
+  const int hintY = bottom - 18;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  const int maxLines = std::max(1, (hintY - 8 - top) / lineH);
+  const std::string text = chunkText(chunkIndex);
+  int y = top;
+  for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, text.c_str(), pageWidth - 2 * SIDE, maxLines)) {
+    renderer.drawText(UI_10_FONT_ID, SIDE, y, line.c_str());
+    y += lineH;
+  }
+  renderer.drawCenteredText(
+      SMALL_FONT_ID, hintY,
+      renderer.truncatedText(SMALL_FONT_ID, speaking ? tr(STR_NEWS_READING_HINT) : tr(STR_NEWS_ARTICLE_HINT),
+                             pageWidth - 2 * SIDE)
+          .c_str());
 }
 
 void NewsActivity::render(RenderLock&&) {
@@ -264,10 +515,17 @@ void NewsActivity::render(RenderLock&&) {
   const int mid = pageHeight / 2;
 
   renderer.clearScreen();
-  const std::string title = state == ITEMS ? feeds[feedIndex].name : std::string(tr(STR_HUB_NEWS));
+  const std::string title = state == ARTICLE  ? articleTitle
+                            : state == ITEMS  ? feeds[feedIndex].name
+                                              : std::string(tr(STR_HUB_NEWS));
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
+  const char* okLabel = tr(STR_SELECT);
   switch (state) {
+    case ARTICLE:
+      okLabel = !speaking ? tr(STR_NEWS_SPEAK) : paused ? tr(STR_NEWS_RESUME) : tr(STR_NEWS_PAUSE);
+      renderArticle();
+      break;
     case FEEDS:
     case ITEMS: {
       const bool inFeeds = state == FEEDS;
@@ -281,22 +539,22 @@ void NewsActivity::render(RenderLock&&) {
       for (int i = first; i < count && i < first + itemsPerPage; ++i) {
         const int y = top + (i - first) * ROW_H;
         const bool sel = i == selected;
-        if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4, 8, Color::Black);
+        if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
         if (inFeeds) {
           const Feed& f = feeds[i];
-          renderer.drawText(UI_12_FONT_ID, SIDE, y + 9, renderer.truncatedText(UI_12_FONT_ID, f.name.c_str(), pageWidth - 2 * SIDE - 40).c_str(), !sel);
+          renderer.drawText(UI_12_FONT_ID, SIDE, y + 9, renderer.truncatedText(UI_12_FONT_ID, f.name.c_str(), pageWidth - 2 * SIDE - 40).c_str(), SELECTION_INK);
           const std::string n = std::to_string(f.items.size());
-          renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 12, n.c_str(), !sel);
+          renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 12, n.c_str(), SELECTION_INK);
         } else {
           const Item& it = feeds[feedIndex].items[i];
           const int whenW = it.when.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, it.when.c_str()) + 10;
-          renderer.drawText(UI_10_FONT_ID, SIDE, y + 4, renderer.truncatedText(UI_10_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - whenW).c_str(), !sel);
+          renderer.drawText(UI_10_FONT_ID, SIDE, y + 4, renderer.truncatedText(UI_10_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - whenW).c_str(), SELECTION_INK);
           // Second line: the rest of a long headline
           const std::string first1 = renderer.truncatedText(UI_10_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - whenW);
           if (first1.size() >= 3 && first1.size() < it.title.size() + 3 && it.title.compare(0, first1.size() - 3, first1, 0, first1.size() - 3) == 0) {
-            renderer.drawText(UI_10_FONT_ID, SIDE, y + 22, renderer.truncatedText(UI_10_FONT_ID, it.title.substr(first1.size() - 3).c_str(), pageWidth - 2 * SIDE).c_str(), !sel);
+            renderer.drawText(UI_10_FONT_ID, SIDE, y + 22, renderer.truncatedText(UI_10_FONT_ID, it.title.substr(first1.size() - 3).c_str(), pageWidth - 2 * SIDE).c_str(), SELECTION_INK);
           }
-          if (whenW) renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - whenW + 10, y + 6, it.when.c_str(), !sel);
+          if (whenW) renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - whenW + 10, y + 6, it.when.c_str(), SELECTION_INK);
         }
       }
       char pages[16];
@@ -306,7 +564,8 @@ void NewsActivity::render(RenderLock&&) {
       break;
     }
     case LOADING:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_NEWS_LOADING), true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, speaking ? tr(STR_NEWS_SPEAK_LOADING) : tr(STR_NEWS_LOADING),
+                                true, EpdFontFamily::BOLD);
       break;
     case FAILED:
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);
@@ -316,10 +575,9 @@ void NewsActivity::render(RenderLock&&) {
       }
       break;
     case CONNECTING:
-    case READING:
       break;
   }
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
   const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;

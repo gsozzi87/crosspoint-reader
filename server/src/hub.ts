@@ -10,7 +10,7 @@
 //     weather: { line, detail },             // "Nublado · 18°" / "Máx 22° · Mín 11° · Humedad 60 %"
 //     reminders: [{ title, when }],          // el primero es el próximo
 //     events: [{ when, title }],             // agenda de hoy (máx. 4)
-//     messages: [{ from, text }],            // pizarra (máx. 5)
+//     lists: [{ key, name, items }],         // solo dos: compras y tareas
 //     quote: string
 //   }
 //
@@ -23,7 +23,7 @@
 // Clima: Open-Meteo, gratis y sin key. Env de respaldo en Railway:
 //   HUB_LAT, HUB_LON   (si no hay lugar guardado; sin nada, weather queda vacío)
 //   HUB_TZ             default "America/Argentina/Buenos_Aires"
-// Recordatorios, agenda y mensajes: por ahora se leen de /data/hub-data.json
+// Recordatorios y agenda: por ahora se leen de /data/hub-data.json
 // (volumen de Railway) con la misma forma que la respuesta; la Fase 2 los
 // reemplaza por las tablas de verdad. Si el archivo no existe, van vacíos.
 import { Hono } from "hono";
@@ -160,7 +160,6 @@ async function weather(lang: Lang): Promise<Weather> {
 type HubData = {
   reminders?: { title: string; when: string }[];
   events?: { when: string; title: string }[];
-  messages?: { from: string; text: string }[];
   quote?: string;
 };
 
@@ -173,7 +172,6 @@ async function data(): Promise<HubData> {
   return {
     reminders: arr(r.reminders),
     events: arr(r.events),
-    messages: arr(r.messages),
     quote: typeof r.quote === "string" ? r.quote : undefined,
   };
 }
@@ -330,8 +328,8 @@ hub.get("/", async (c) => {
   // La zona del lugar guardado, antes de armar las horas de los recordatorios.
   await refreshTimeZone();
   const [w, d, s, ics, verse, store] = await Promise.all([weather(lang), data(), hubSlice(lang), agendaConfigured() ? todayForHub(lang) : Promise.resolve([]), verseOfTheDay(lang), loadStore()]);
-  // Recordatorios, listas y mensajes salen del store del asistente (voice.ts);
-  // el hub-data.json a mano sigue sirviendo para la agenda y como respaldo.
+  // Recordatorios y listas salen del store del asistente (voice.ts); el
+  // hub-data.json a mano sigue sirviendo para la agenda y como respaldo.
   return c.json({
     ok: true,
     now: Math.floor(Date.now() / 1000),
@@ -339,7 +337,6 @@ hub.get("/", async (c) => {
     reminders: s.reminders.length ? s.reminders : (d.reminders ?? []).slice(0, 5),
     lists: s.lists,
     events: agendaConfigured() ? ics : (d.events ?? []).slice(0, 4),
-    messages: s.messages.length ? s.messages : (d.messages ?? []).slice(0, 5),
     notes: s.notes,
     quote: d.quote || quoteOfTheDay(lang),
     verse,  // { ref, text } del día, o null si la Biblia no está
@@ -405,8 +402,8 @@ hub.post("/done", async (c) => {
   let body: { kind?: string; id?: number; snooze?: number };
   body = await readBody(c);
   const id = Number(body.id);
-  if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item" && body.kind !== "message")) {
-    return c.json({ ok: false, error: "kind (reminder|item|message) and id required" }, 400);
+  if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item")) {
+    return c.json({ ok: false, error: "kind (reminder|item) and id required" }, 400);
   }
   const found = await markDone(body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0);
   return c.json({ ok: true, found });

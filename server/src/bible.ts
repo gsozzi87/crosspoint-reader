@@ -13,13 +13,19 @@
 //   GET  /api/bible/find?lang=xx&q=texto          -> referencia ("Juan 3 16", "Salmo 23") o búsqueda
 //        -> { ok, kind: "ref", book, chapter, verse } | { ok, kind: "search", results: [{book, name, chapter, verse, text}] }
 //        Sin LLM: parser de referencias con los nombres del idioma y búsqueda de texto normalizado.
+//   POST /api/bible/ask  { book, chapter, text, question, lang } -> { ok, answer }
+//        Preguntar sobre lo que se está leyendo ("no entendí del versículo 8 al
+//        12", "qué significa tal palabra"). El capítulo va en el prompt cacheado.
 import { Hono } from "hono";
 import { readFile, rename } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { writeTextAtomic } from "./fsjson";
 import { textCapped } from "./net";
-import { normalizeLang, type Lang } from "./lang";
+import { LANGUAGE_NAME, normalizeLang, type Lang } from "./lang";
 import { BOOK_NAMES } from "./bibleNames";
+import { chatText, LlmError } from "./llm";
+import { readBody, redactSecrets } from "./net";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const SOURCES: Record<Lang, string> = {
   es: "es_rvr", en: "en_kjv", fr: "fr_apee", de: "de_schlachter", pt: "pt_aa", ru: "ru_synodal",
@@ -219,4 +225,67 @@ bibleApi.get("/find", async (c) => {
     }
   }
   return c.json({ ok: true, kind: "search", results });
+});
+
+// ── Preguntar sobre el capítulo que se está leyendo ─────────────────────────
+//
+//   POST /api/bible/ask   (Bearer del aparato, lo chequea api.ts)
+//   body: { book: "Juan", chapter: 4,
+//           text: "<el capítulo entero, versículos numerados>",
+//           question: "no entendí del versículo 8 al 12",
+//           lang: "es" }
+//   200: { ok: true, answer }
+//   4xx/5xx: { ok: false, error }
+//
+// El capítulo va en el bloque `cached` (en Anthropic es un bloque de system con
+// cache_control, igual que en ask.ts): preguntar tres cosas seguidas sobre el
+// mismo capítulo no paga tres veces la entrada. La pregunta llega transcripta
+// del micrófono, así que puede traer errores de reconocimiento.
+const MAX_CHAPTER = 40_000;
+const MAX_BIBLE_QUESTION = 500;
+
+function askPrompt(book: string, chapter: number, lang: Lang): string {
+  return [
+    "Acompañás a alguien que está leyendo la Biblia en un lector de tinta electrónica.",
+    `Está en ${book}${chapter ? ` capítulo ${chapter}` : ""} y el texto del capítulo va adjunto, con los versículos numerados.`,
+    "Explicá el pasaje con claridad y con respeto, apoyándote en lo que dice el texto y en el contexto histórico",
+    "y cultural en el que fue escrito.",
+    "Si pregunta por un rango de versículos ('del 8 al 12'), contestá sobre esos versículos y nombralos.",
+    "Si pregunta qué significa una palabra, explicá esa palabra en este contexto (qué quería decir cuando se escribió).",
+    "Si pregunta qué dice el capítulo, resumí de qué se trata.",
+    "No empujes la interpretación de ninguna iglesia ni corriente: quedate en lo que dice el texto y, cuando hay",
+    "lecturas distintas, decilo en una línea sin tomar partido. Si algo no está en el capítulo, decilo en vez de inventarlo.",
+    "La pregunta llega transcripta de voz: puede traer errores de reconocimiento; interpretala con sentido común",
+    "y no comentes la transcripción.",
+    `Idioma: ${LANGUAGE_NAME[lang]}. Texto plano, sin markdown, sin títulos ni listas con viñetas.`,
+    "La pantalla es chica: entre 6 y 10 líneas.",
+  ].join(" ");
+}
+
+bibleApi.post("/ask", async (c) => {
+  const body = await readBody(c);
+  const lang = normalizeLang(body.lang);
+  const book = (body.book ?? "").toString().trim().slice(0, 60);
+  const chapter = Math.max(0, Math.floor(Number(body.chapter)) || 0);
+  const text = (body.text ?? "").toString().slice(0, MAX_CHAPTER);
+  const question = (body.question ?? "").toString().trim().slice(0, MAX_BIBLE_QUESTION);
+  if (!question) return c.json({ ok: false, error: "question is required" }, 400);
+  try {
+    const answer = await chatText({
+      system: askPrompt(book, chapter, lang),
+      cached: text ? `<capitulo>\n${text}\n</capitulo>` : undefined,
+      user: question,
+      maxTokens: 800,
+      search: "off",
+      lang,
+    });
+    return c.json({ ok: true, answer: answer.trim() });
+  } catch (err) {
+    if (err instanceof LlmError) {
+      console.error("bible ask llm:", err.message);
+      return c.json({ ok: false, error: err.message, code: err.code }, err.status as ContentfulStatusCode);
+    }
+    console.error("bible ask:", err);
+    return c.json({ ok: false, error: redactSecrets(String(err)).slice(0, 200), code: "internal" }, 500);
+  }
 });

@@ -146,12 +146,15 @@ llegue el hardware.
   del visor dice qué guardó; una pregunta se muestra con lo entendido como título. Back → hub con `silentRestart()`.
   Servidor: `src/voice.ts` (transcribe con `transcribeWav` de `transcribe.ts`, clasifica con salida estructurada de
   Claude, modelo `VOICE_MODEL`/`ASK_MODEL` default `claude-haiku-4-5`, ejecuta contra `src/store.ts` →
-  `/data/store.json`: recordatorios, listas por nombre con Entrada/Casa/Trabajo/Administrativo/Compras de fábrica,
-  notas, mensajes). `hub.ts` toma recordatorios y mensajes del store; `hub-data.json` queda para la agenda.
-- Recordatorios y listas en el aparato (`AgendaActivity`, mosaico Recordatorios): secciones (Recordatorios y cada
-  lista con su cantidad) e ítems desde la caché de `HubStore` (`reminders[{id,title,when}]`, `lists[{name,
-  items[{id,text}]}]` que trae `GET /api/hub`); OK tilda: se saca de la caché y `POST /api/hub/done` sale por
-  `postOrQueue` (cola offline si no hay WiFi, la vacía la próxima sincronización).
+  `/data/store.json`: recordatorios, DOS listas fijas —compras y tareas—, notas). `hub.ts` toma los recordatorios y
+  las listas del store; `hub-data.json` queda para la agenda. Las listas viajan con `key` (clave canónica del store,
+  la que hay que devolver al mover un ítem) y `name` (el nombre ya traducido, el que se muestra).
+- Recordatorios y listas en el aparato (`AgendaActivity`, mosaico Recordatorios): tres secciones y nada más —
+  Recordatorios, Compras y Tareas—, con sus ítems desde la caché de `HubStore` (`reminders[{id,title,when}]`,
+  `lists[{key,name,items[{id,text}]}]` que trae `GET /api/hub`); OK tilda: se saca de la caché y `POST /api/hub/done`
+  sale por `postOrQueue` (cola offline si no hay WiFi, la vacía la próxima sincronización). **Las categorías de
+  listas se sacaron en 1.5.44** ("son muchas cosas"): el servidor migra solo lo que hubiera en Entrada, Casa,
+  Trabajo, Administrativo o en proyectos sueltos a la lista de tareas.
 - Recordatorios que suenan (`ReminderAlertActivity`): `HubStore::Reminder.dueAt` (epoch del servidor). Al dormir,
   `armReminderWake()` en main.cpp arma el timer de deep sleep al próximo `dueAt` (GPIO45 del RTC no es RTC GPIO, no
   sirve para despertar); al arrancar por timer, si hay uno vencido se muestra el alerta y si no vuelve a dormir. En el
@@ -197,12 +200,11 @@ llegue el hardware.
 - Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
   hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
   mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
-- Página web `GET /board` (`server/src/board.ts`), con pestañas: Pizarra (mensajes, recordatorios, memoria), Listas,
+- Página web `GET /board` (`server/src/board.ts`), con pestañas: Pizarra (recordatorios, memoria), Listas,
   Notas, Fotos, Noticias, **IA** (proveedor, modelo, claves, token), Ajustes (clima, idioma, voz, volumen) y Log.
   Todo desde el teléfono con el token del aparato; altas en
   `POST /api/board/*`, borrados por `POST /api/hub/edit {kind, id, action:"delete"}` (kind = reminder, item, note,
-  feed, memory). Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`) y se ven en Recordatorios →
-  Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).
+  feed, memory).
   El token se pide en un formulario de la propia página (no `prompt()`) y se guarda en `localStorage`; los botones
   de las listas van por delegación con `data-act`, nunca por `onclick` armado con comillas (una comilla escapada
   dentro del template literal rompía el script entero y dejaba la página muerta).
@@ -222,12 +224,21 @@ llegue el hardware.
   `parseRefLocal()` resuelve la cita ("primera de Juan 4 8") con los nombres que ya están en la SD y `searchStep()`
   busca todas las palabras en cada versículo, un libro por pasada. Lo único que sigue necesitando el servidor es
   pasar la voz a texto. Lógica probada de escritorio con `g++` contra el archivo real de Juan.
-- Música (`MusicActivity`, mosaico Música), con pinta de Winamp pero al tamaño de esta pantalla (480x800): título y
-  artista grandes, contador de 7 segmentos de 68 px, barra de posición gruesa, botones de transporte de 56x38 y
-  volumen con número; la playlist va en filas de 38 px. La versión anterior copiaba las proporciones de la skin
-  original (275x116) y en el aparato quedaba todo minúsculo. MP3 de `/Music/<carpeta>/` en la SD. `src/music/Mp3Source` decodifica con
-  Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una `AudioManager::WavSource` con cabecera WAV
-  sintética, así el SDK no cambia; tags ID3v2/v1; volumen en `HubStore::musicVolume`. Pausa = volumen 0.
+- Música. **POR QUÉ NUNCA SONÓ hasta 1.5.44**: `AudioManager::parseWavHeader` no lee la cabecera de corrido, la
+  recorre por chunks — `seek(0)`, `seek(12)` para el "fmt " y `seek(36)` para el "data" antes del `seek(44)` final —
+  y el `seek` de `Mp3Source::wavSource()` sólo aceptaba 0 y 44, así que el segundo devolvía false y `play()` fallaba
+  siempre. Ahora acepta cualquier posición dentro de la cabecera sintética.
+  `src/music/MusicPlayer` (singleton `MUSIC`): el reproductor vive **fuera de la Activity**, así salir no corta la
+  canción, el hub muestra qué suena (chip en la barra + punto en el mosaico) y `MUSIC.pump()` en el loop de
+  `main.cpp` encadena la pista siguiente. Mientras hay música, `UiSound` se calla; `AlertBeep`, `SpeechOut` y
+  `VoiceRecorder` la cortan primero (el I2S es uno solo). Dormir la corta (`sleepNow`).
+  `MusicActivity` se rehízo entero: **una sola lista vertical** (acciones arriba, pistas abajo), la palanca recorre,
+  OK hace lo que dice la fila —y la barra de botones lo repite—, Atrás vuelve. Volumen con su propio modito (OK
+  sobre "Volumen" y la palanca sube y baja), y también desde Ajustes → Sistema. Las tres "zonas" invisibles de
+  1.5.43 se fueron: nadie podía adivinarlas. Carpeta `/Music` o `/music` (se prueban las dos, y `/MUSIC`, `/Musica`,
+  `/musica`). `src/music/Mp3Source` decodifica con Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una
+  `AudioManager::WavSource` con cabecera WAV sintética; tags ID3v2/v1; volumen en `HubStore::musicVolume`.
+  Pausa = volumen 0.
 - Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se
   cargan en `/board`, artículo limpiado a texto sin LLM); titulares y artículos leídos cacheados en `/.crosspoint/rss/`.
   El hub pasa a 3x4: Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos,
@@ -254,8 +265,17 @@ llegue el hardware.
   acepta `audio/adpcm` o `audio/wav` (`toWav` en `transcribe.ts`) y devuelve tiempos por etapa en `ms`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
-- Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
-  barra. Íconos de 24 px en `src/components/icons/hubWidgetIcons.h`. Pendiente: temperatura interior (SHTC3).
+- Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos) y, en la barra, lo que se está
+  reproduciendo. Íconos de 24 px en `src/components/icons/hubWidgetIcons.h`. Pendiente: temperatura interior (SHTC3).
+- **Los mensajes se sacaron del sistema en 1.5.44** ("me parece algo irrelevante"): no están más ni en el aparato,
+  ni en `GET /api/hub`, ni en la Pizarra, ni como intención de voz (lo que el modelo clasifique como mensaje se
+  guarda como nota).
+- **El resalte de lo elegido va en GRIS, no en negro** (`src/components/Selection.h`: `drawSelectionRow()` y
+  `SELECTION_INK`). El negro macizo con texto invertido pegaba un salto de contraste enorme y dejaba fantasma; ahora
+  es gris claro tramado con marco fino y el texto sigue en negro. Vale para el hub y para toda lista nuestra.
+- `GfxRenderer::drawPixel` ya NO escribe una línea de log por píxel fuera de pantalla: los cuenta y avisa una vez por
+  segundo. Un solo cartel más ancho que la pantalla dejaba miles de líneas de "Outside range" y se comía el log
+  entero (el que mandó el usuario en 1.5.43 tenía 2900 líneas y 2877 eran eso).
 
 ## Roadmap acordado
 

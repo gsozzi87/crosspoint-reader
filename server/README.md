@@ -1,8 +1,8 @@
 # Servidor del hub ws397 (Bun + Hono, Railway)
 
 Todo lo que el aparato necesita del lado del servidor, en un solo lugar: OTA del firmware, preguntas al
-libro, transcripción, hub (clima, agenda, recordatorios, mensajes), voz con clasificador de intención y
-el store de recordatorios, listas, notas y mensajes.
+libro, transcripción, hub (clima, agenda, recordatorios), voz con clasificador de intención y el store de
+recordatorios, las dos listas (compras y tareas) y notas.
 
 ## Railway
 
@@ -35,16 +35,18 @@ el store de recordatorios, listas, notas y mensajes.
 | `GET /firmware/latest` | aparato (sin token) | JSON con forma de release de GitHub: `tag_name`, `assets[firmware-ws397.bin]`. |
 | `GET /firmware/firmware-ws397.bin` | aparato | El binario. |
 | `PUT /firmware` | `release.sh` (Bearer `OTA_TOKEN`, `X-Version`) | Sube un binario nuevo. |
-| `GET /board` | teléfono | Página web: mensajes para el hub, calendario, recordatorios, listas y notas. Pide el token del aparato una vez. |
-| `POST /api/board/{message,reminder,item,note}` | página web | Altas desde la página. |
+| `GET /board` | teléfono | Página web: calendario, recordatorios, listas, notas, fotos, noticias, viajes y ajustes. Pide el token del aparato una vez. |
+| `POST /api/board/{reminder,item,note}` | página web | Altas desde la página. |
 | `GET /api/ping` | aparato | Prueba del token. |
 | `POST /api/ask` | aparato | Pregunta sobre el libro (`text`) o general (sin `text`). `lang` = idioma de la UI. |
 | `POST /api/transcribe?lang=xx` | aparato | WAV → texto en el idioma de la UI. |
-| `GET /api/hub?lang=xx` | aparato | Clima, recordatorios, listas, agenda, mensajes y frase, en el idioma de la UI. |
+| `GET /api/hub?lang=xx` | aparato | Clima, recordatorios, las dos listas, agenda, notas y frase, en el idioma de la UI. |
 | `GET /api/hub/location/search?q=`, `POST /api/hub/location` | aparato | Lugar del clima por voz. |
 | `POST /api/voice?lang=xx` | aparato | Una grabación: transcribe, clasifica la intención y ejecuta. Devuelve JSON + voz Piper (ADPCM) en un cuerpo binario. |
 | `GET /api/tts?text=&lang=xx` | aparato | Voz Piper en ADPCM 16 kHz para los avisos que el aparato guarda en la SD. |
 | `GET /api/bible/{books,chapter,day,find}?lang=xx` | aparato | Biblia por capítulos (cacheados en la SD), versículo del día, búsqueda por referencia o texto (sin LLM). |
+| `POST /api/bible/ask` | aparato | Preguntar sobre el capítulo que se está leyendo. Ver más abajo. |
+| `POST /api/notes` | aparato | Nota rápida, sin clasificador de intención ni LLM. Ver más abajo. |
 | `GET /api/hub/forecast?lang=xx` | aparato | Pronóstico: ahora, por horas y seis días (pantalla de Clima). |
 | `GET /api/photos`, `GET /api/photos/file?id=` | aparato | Álbum: BMP de 2 bpp (4 grises) que el navegador convierte al subirlos desde `/board`. |
 | `GET /api/rss`, `GET /api/rss/article?feed=&item=` | aparato | Noticias de los feeds RSS/Atom cargados en `/board`; artículo limpiado a texto. |
@@ -52,7 +54,8 @@ el store de recordatorios, listas, notas y mensajes.
 | `POST /api/hub/reminder` | aparato / web | Alta y **edición** de un recordatorio: título, fecha, hora y repetición. |
 | `GET /api/calendar?from=&to=&lang=` | aparato | Calendario local del rango con las repeticiones expandidas + resumen por día. |
 | `GET /api/calendar/day?date=&lang=` | aparato | El día completo. |
-| `POST /api/calendar/event`, `/event/delete` | aparato / web | Alta, edición y borrado de un evento. |
+| `POST /api/calendar/event`, `/event/delete` | aparato / web | Alta, edición (con `id`) y borrado de un evento. |
+| `POST /api/calendar/dictate` | aparato | Cargar el día entero dictándolo por el micrófono. Ver más abajo. |
 | `GET /api/calendar/repeat?...` | web | La repetición en una línea, para mostrarla mientras se edita. |
 | `POST /api/hub/done` | aparato | `{kind: "reminder"\|"item", id, snooze?}` marca hecho o pospone (también desde la cola offline). |
 | `POST /api/hub/edit` | aparato | Mover, poner fecha o borrar un ítem de lista; borrar una nota. |
@@ -108,6 +111,118 @@ Idiomas soportados (`lang`): `es`, `en`, `fr`, `de`, `pt`, `ru`. El aparato mand
 la transcripción escucha en ese idioma, las respuestas salen en ese idioma y el traductor traduce desde ese
 idioma al que se pida (si no se dice, al inglés; desde inglés, al español).
 
+## Listas: son dos, y la pizarra de mensajes ya no existe
+
+Dos cambios que sacan cosas del producto, los dos pedidos por el usuario.
+
+**Se fueron los mensajes.** La pizarra ("dejale un mensaje al hub") se sacó entera: no está el tipo
+`Message` ni el campo `messages` del store, `GET /api/hub` ya **no manda la clave** `messages` (no viaja
+vacía: no viaja), `POST /api/hub/done` y `POST /api/hub/edit` ya no aceptan `kind: "message"`,
+`POST /api/board/message` devuelve 404 y la Pizarra de `/board` no tiene el formulario ni el listado.
+En `voice.ts` desapareció la intención `message` del esquema, del prompt y del ejecutor; si un modelo
+igual la devuelve, **se guarda como nota** en vez de perderse. Un `store.json` viejo con `messages`
+adentro se sigue leyendo sin problemas: esa clave se ignora al cargar y no vuelve a escribirse.
+
+**Las listas son dos y no se pueden crear más**: la de **compras** y la de **tareas** (to-do). Las
+categorías de antes (Entrada, Casa, Trabajo, Administrativo y los proyectos sueltos) desaparecieron.
+
+- La **clave guardada** es siempre el nombre canónico en español (`"Compras"` y `"Tareas"`,
+  `SHOPPING_LIST` / `TASK_LIST` en `store.ts`): así cambiar el idioma del aparato no renombra las listas
+  ni deja los ítems huérfanos. El **nombre visible** sale de `LABELS` de `lang.ts` según el idioma
+  (`listLabel()`), o sea Compras/Tareas, Shopping/Tasks, Courses/Tâches, Einkäufe/Aufgaben,
+  Compras/Tarefas, Покупки/Задачи.
+- Cada lista de `GET /api/hub` viaja con `key` (la canónica, que es lo que hay que devolver al mover un
+  ítem) y `name` (la que se muestra).
+- `resolveList()` ya no crea nada: cualquier nombre que llegue —del modelo, del aparato en otro idioma o
+  de la web— se resuelve a una de las dos. Se va a compras solo si el nombre tiene una palabra de compra
+  en alguno de los seis idiomas (compras, súper, mercado, shopping, groceries, courses, Einkauf,
+  покупки…); **todo lo demás cae en tareas**.
+- El prompt de `voice.ts` se lo dice al modelo con todas las letras: hay dos listas, no invente otras.
+- **Migración automática al leer `store.json`**: los ítems **no hechos** de las listas viejas se vuelcan
+  en orden a Tareas y las listas viejas se borran del archivo. No se pierde nada; lo ya tildado no se
+  arrastra. Probado con un `store.json` del formato viejo (Entrada, Casa, Trabajo, Administrativo,
+  Compras y un proyecto suelto): quedan los cinco pendientes en Tareas, la leche en Compras, y los
+  recordatorios, las notas y las memorias intactos.
+- En `/board` la pestaña Listas ya no crea ni borra listas: muestra las dos y deja agregar y tildar
+  ítems. `POST /api/board/list` y `POST /api/board/list/delete` se fueron.
+
+## `POST /api/notes` — nota rápida sin clasificador
+
+Una nota no necesita que un modelo decida qué es: hasta ahora toda nota entraba por `/api/voice`, o sea
+que había que esperar la llamada al LLM (el "Pensando…" que se hacía eterno para guardar un párrafo).
+Ahora el aparato transcribe con `/api/transcribe` y manda el texto derecho acá; **no se llama a ningún
+modelo**.
+
+```
+POST /api/notes            (Bearer del aparato)
+{ "text": "...", "lang": "es" }
+→ 200 { "ok": true, "id": 34 }
+   400 { "ok": false, "error": "text required" }   // texto vacío
+```
+
+Las notas pueden ser **largas**: hasta 20.000 caracteres, y lo que pase de ahí se corta con puntos
+suspensivos en vez de rebotar el pedido. El mismo tope vale para `POST /api/board/note` desde la web.
+
+**Y el tope del cuerpo de `/api/transcribe` subió a 4 MB** (`MAX_BYTES` en `transcribe.ts`). Estaba en
+2 MB, y como el ADPCM se topea en `MAX_BYTES/4`, una grabación de 90 s en ADPCM (~720 KB) rebotaba con
+`audio too large` antes de llegar al STT: dictar una nota larga era imposible. Con 4 MB entran unos dos
+minutos de ADPCM y unos dos de WAV.
+
+## `POST /api/calendar/dictate` — cargar el día dictándolo
+
+"A las 8 gimnasio, a las 9 reunión con Ana, a las 13 almuerzo", de un tirón por el micrófono.
+
+```
+POST /api/calendar/dictate            (Bearer del aparato)
+{ "text": "a las 8 gimnasio, a las 9 reunión con Ana, a las 13 almuerzo",
+  "date": "2026-09-10",               // opcional: sin él, hoy en la zona del lugar guardado
+  "lang": "es" }
+→ 200 { "ok": true,
+        "added": [ { "id": 12, "start": "2026-09-10T08:00", "title": "Gimnasio", "allDay": false } ],
+        "reply": "Cargué 3 actividades." }
+   400 { "ok": false, "error": "text required" }
+   5xx { "ok": false, "error": "...", "code": "no_key" | "provider_error" | ... }
+```
+
+- El parseo lo hace el modelo configurado con salida estructurada (`chatJson`): devuelve
+  `{ items: [{ time: "HH:MM"|null, endTime: "HH:MM"|null, title }] }` en el idioma de `lang`.
+- Sin hora → **evento de todo el día** (`start` es la fecha sola y `allDay: true`).
+- `end` = `start` salvo que el modelo haya entendido una hora de fin ("de 8 a 9", "hasta las 10").
+- Cada actividad se guarda como un `CalEvent` de `calendar.ts` con las mismas funciones que el resto
+  (`mutate` + `nextEventId`): un solo leer-modificar-escribir para todas, porque el archivo lo escribe
+  también el módulo de viajes y una escritura por renglón es una carrera por renglón.
+- Tope de 40 actividades por dictado y 4.000 caracteres de texto.
+- `reply` es una frase corta en el idioma pedido, para leerla por el parlante; la arma el servidor con
+  una plantilla (incluidos los plurales del ruso), no el modelo: es una línea con un número y no vale
+  otra llamada.
+- **Editar y borrar son los de siempre**: `POST /api/calendar/event` con `id` edita el evento en su
+  lugar (404 si el id no existe; probado que no duplica) y `POST /api/calendar/event/delete` lo borra.
+
+## `POST /api/bible/ask` — preguntar sobre lo que se está leyendo
+
+"No entendí del versículo 8 al 12", "¿qué dijo el capítulo?", "¿qué significa esa palabra?".
+
+```
+POST /api/bible/ask            (Bearer del aparato)
+{ "book": "Juan", "chapter": 4,
+  "text": "<el capítulo entero, versículos numerados>",
+  "question": "no entendí del versículo 8 al 12",
+  "lang": "es" }
+→ 200 { "ok": true, "answer": "..." }
+   400 { "ok": false, "error": "question is required" }
+```
+
+El capítulo va en el bloque `cached` de `llm.ts` — con Anthropic es un bloque de system con
+`cache_control`, igual que en `ask.ts`—, así que preguntar tres cosas seguidas sobre el mismo capítulo
+no paga tres veces la entrada. Nunca busca en internet (`search: "off"`).
+
+El prompt: explicar el pasaje con claridad y respeto, apoyándose en lo que dice el texto y en el
+contexto histórico; si preguntan por un rango de versículos, contestar sobre esos y nombrarlos; si
+preguntan qué significa una palabra, explicarla en ese contexto; **no empujar la interpretación de
+ninguna iglesia ni corriente** —cuando hay lecturas distintas se dice en una línea sin tomar partido— y
+decir que algo no está en el capítulo en vez de inventarlo. Texto plano, entre 6 y 10 líneas, en el
+idioma de `lang`.
+
 ## Recordatorios que se repiten y calendario local
 
 El aparato tiene que poder **ver y cambiar** cuándo lo va a despertar un recordatorio ("¿mañana y
@@ -135,7 +250,7 @@ el `store.json` (`normalizeStore`), sin tocar nada más: `"daily"` → `{kind:"d
 `"weekly"` → `{kind:"weekly",interval:1}` (sin `days`, o sea el mismo día de la semana del `dueAt`,
 exactamente lo que hacía antes), `"monthly"` → `{kind:"monthly",interval:1}`, y cualquier basura →
 `{kind:"none"}`. Probado con un `store.json` del formato viejo: no se pierde ningún recordatorio,
-ninguna nota, ningún mensaje ni ningún ítem de lista.
+ninguna nota ni ningún ítem de lista.
 
 ### `repeatText()`: la repetición en una línea, en los seis idiomas
 

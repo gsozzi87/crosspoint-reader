@@ -263,10 +263,18 @@ AudioManager::WavSource Mp3Source::wavSource() {
     }
     return readPcm(dst, len);
   };
+  // POR QUE LA MUSICA NUNCA SONO (hasta 1.5.44): AudioManager::parseWavHeader no
+  // lee la cabecera de corrido, la RECORRE por chunks. Hace seek(0), seek(12)
+  // para el "fmt " y seek(36) para el "data" antes del seek(44) final. Este
+  // lambda solo aceptaba 0 y 44, asi que el segundo seek devolvia false,
+  // parseWavHeader cortaba, play() fallaba y no sonaba nada nunca. Ahora
+  // cualquier posicion DENTRO de la cabecera sintetica vuelve a la cabecera, y
+  // 44 pasa al PCM. Mas alla de eso sigue sin haber busqueda (el MP3 se decodifica
+  // de corrido, no se puede saltar).
   src.seek = [this](size_t pos) -> bool {
-    if (pos == 0) {
+    if (pos < sizeof(header_)) {
       inHeader_ = true;
-      headerPos_ = 0;
+      headerPos_ = pos;
       return true;
     }
     if (pos == sizeof(header_)) {  // dataStart: PCM begins with the frame decoded at open()

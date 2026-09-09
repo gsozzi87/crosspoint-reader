@@ -9,7 +9,8 @@
 //   ?lang=xx      idioma de la UI del aparato (es, en, zh, fr, de, pt, ru); default es
 //
 //   POST /api/transcribe   (Bearer del aparato, lo chequea api.ts)
-//   body: audio/wav (16 kHz mono 16-bit, hasta ~10 s = 320 KB)
+//   body: audio/wav o audio/adpcm (16 kHz mono 16-bit; hasta 4 MB de cuerpo,
+//         o sea ~2 min de WAV y ~2 min de ADPCM)
 //   200: { ok: true, text }
 //   200: { ok: true, text: "", code: "no_speech", error: "No escuché nada..." }  ← no habló nadie
 //   4xx/5xx: { ok: false, error }
@@ -29,7 +30,10 @@ import { checkUrl, redactSecrets } from "./net";
 
 // El servicio de transcripción se elige desde /board -> Ajustes (Groq es gratis
 // y el más rápido); las variables de entorno quedan como valor por defecto.
-const MAX_BYTES = 2_000_000;
+// 4 MB de cuerpo. Antes eran 2 MB, y como el ADPCM se topea en MAX_BYTES/4
+// (500 KB), una grabación de 90 s en ADPCM (~720 KB) rebotaba con "audio too
+// large" antes de llegar al STT. Con 4 MB entran ~2 minutos de ADPCM y ~2 de WAV.
+const MAX_BYTES = 4_000_000;
 
 export const transcribe = new Hono();
 

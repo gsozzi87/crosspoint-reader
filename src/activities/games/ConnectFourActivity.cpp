@@ -9,6 +9,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr int SIDE_MARGIN = 20;
@@ -534,12 +535,12 @@ void ConnectFourActivity::drawModeScreen() const {
     const int y = listTop + i * rowH;
     const bool sel = i == modeCursor;
     if (sel) {
-      renderer.fillRoundedRect(SIDE_MARGIN, y, pageWidth - 2 * SIDE_MARGIN, rowH - 12, 12, Color::Black);
+      drawSelectionRow(renderer, SIDE_MARGIN, y, pageWidth - 2 * SIDE_MARGIN, rowH - 12, 12);
     } else {
       renderer.drawRoundedRect(SIDE_MARGIN, y, pageWidth - 2 * SIDE_MARGIN, rowH - 12, 2, 12, true);
     }
     const char* label = i == 0 ? tr(STR_GAME_CONNECT4_TWO) : tr(STR_GAME_CONNECT4_CPU);
-    renderer.drawCenteredText(UI_12_FONT_ID, y + 16, label, !sel, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_12_FONT_ID, y + 16, label, SELECTION_INK, EpdFontFamily::BOLD);
   }
 
   // Muestra las dos fichas para que se entienda quién es quién antes de jugar.

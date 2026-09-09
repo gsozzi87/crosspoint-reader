@@ -20,6 +20,7 @@ import { tripApi, tripsApi } from "./trips";
 import { attachmentApi } from "./attachments";
 import { calendar } from "./calendar";
 import { suggest } from "./suggest";
+import { notes } from "./notes";
 
 const ENV_TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -43,15 +44,16 @@ api.get("/ping", (c) => c.json({ ok: true, now: Date.now(), requestId: c.req.hea
 
 api.route("/ask", ask);              // POST /api/ask         → Claude sobre el capítulo
 api.route("/transcribe", transcribe); // POST /api/transcribe  → voz a texto (Whisper)
-api.route("/hub", hub);               // GET  /api/hub?lang=   → clima, recordatorios, listas, agenda, mensajes, frase; POST /api/hub/done
+api.route("/hub", hub);               // GET  /api/hub?lang=   → clima, recordatorios, listas, agenda, notas, frase; POST /api/hub/done
 api.route("/voice", voice);           // POST /api/voice       → una grabación: el servidor decide qué es y lo hace
 api.route("/tts", tts);               // GET  /api/tts?text=   → voz Piper en ADPCM (avisos que el aparato cachea en la SD)
 api.route("/translate", translate);   // POST /api/translate?from=&to= → traductor en conversación: texto + traducción + voz
-api.route("/board", boardApi);        // POST /api/board/{message,reminder,item,note} → lo que se carga desde la página web
-api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find} → Biblia por capítulos, versículo del día, búsqueda
+api.route("/board", boardApi);        // POST /api/board/{reminder,item,note} → lo que se carga desde la página web
+api.route("/notes", notes);          // POST /api/notes → nota rápida, sin pasar por el clasificador
+api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find}; POST /api/bible/ask → Biblia y preguntas sobre el capítulo
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
 api.route("/photos", photos);
-api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete → calendario local
+api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete, /dictate → calendario local
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
 api.route("/trips", tripsApi);       // GET  /api/trips?lang= → lista de viajes
 api.route("/trip", tripApi);         // GET  /api/trip?id= y los POST de días, ítems, para llevar y adjuntos

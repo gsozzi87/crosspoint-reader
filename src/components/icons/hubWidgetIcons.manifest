@@ -5,5 +5,5 @@
 hub_weather = cloud-sun
 hub_reminder = bell-ring
 hub_calendar = calendar
-hub_message = message-square
+hub_music = music
 hub_sync = refresh-cw

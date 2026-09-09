@@ -35,7 +35,7 @@ class AgendaActivity final : public Activity {
  private:
   enum Level { SECTIONS, ITEMS, EDIT };
   Level level = SECTIONS;
-  enum Kind { MESSAGES, REMINDERS, LIST };
+  enum Kind { REMINDERS, LIST };
   struct Section {
     Kind kind;
     int listIndex;  // into HUB_STORE.lists when kind == LIST

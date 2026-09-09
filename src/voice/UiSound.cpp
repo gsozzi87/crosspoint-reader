@@ -10,6 +10,7 @@
 
 #include "HubStore.h"
 #include "util/WavHeader.h"
+#include "music/MusicPlayer.h"
 
 namespace {
 
@@ -38,6 +39,9 @@ bool i2sPortFree() {
 void UiSound::play(const uisound::Sound sound) {
   const uint8_t level = HUB_STORE.uiSoundMode;
   if (level == uisound::OFF || level > uisound::NORMAL) return;
+  // "Cuando se reproduzca la música los demás sonidos no deben oírse, sólo la
+  // música": con una canción puesta los clics se saltean sin más.
+  if (MUSIC.isActive()) return;
   if (!BoardConfig::hasAudio()) return;
   if (!ensureTask()) return;
 

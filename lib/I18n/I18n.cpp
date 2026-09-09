@@ -21,9 +21,12 @@ const char* I18n::get(StrId id) const {
   // Use generated helper function - no hardcoded switch needed!
   const LangStrings lang = getLanguageStrings(_language);
 
-  // If bit 15 of the offset is set, apply the offset to the English lookup table
+  // El bit del mapa dice si esta cadena es igual a la inglesa (y entonces vive
+  // en el blob inglés). Antes ese flag era el bit 15 del propio offset, que
+  // dejaba el blob de cada idioma en 32767 bytes como máximo; el ruso ya estaba
+  // en 30975 y el build se iba a romper con un error incomprensible.
   const uint16_t off = lang.offsets[index];
-  if (off & 0x8000) return STRINGS_EN_DATA + (off & 0x7FFF);
+  if (lang.fallback[index >> 3] & (1u << (index & 7))) return STRINGS_EN_DATA + off;
   return lang.data + off;
 }
 

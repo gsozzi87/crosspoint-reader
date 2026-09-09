@@ -50,6 +50,8 @@
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/ScreenshotUtil.h"
+#include "music/MusicPlayer.h"
+#include "voice/VoiceRecorder.h"
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
@@ -298,6 +300,9 @@ static void armReminderWake(const bool quiet = false) {
 // despertador, el temporizador y los recordatorios quedan mudos hasta que el
 // usuario apriete un botón (pasaba en el re-sleep por wake espurio del botón).
 static void sleepNow() {
+  // La música no sobrevive al deep sleep: cortarla acá deja el códec y el I2S
+  // en un estado conocido antes de apagar.
+  MUSIC.stop();
   armReminderWake(/*quiet=*/true);
   powerManager.startDeepSleep(gpio);
 }
@@ -309,11 +314,16 @@ static void sleepNow() {
 // las que usan red o audio se dejan en paz (ahí manda el wake por deep sleep).
 constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atrás
 
+// Pantallas "tranquilas" (ver abajo) pero con el micrófono abierto NO lo son:
+// Notas, Agenda y Calendario ahora graban, y un recordatorio que se abriera
+// encima dejaba el micrófono colgado y la toma perdida.
+static bool busyRecording() { return VoiceRecorder::anyRecording(); }
+
 static bool isCalmScreen(const char* name) {
   // Pantallas tranquilas: ahi suenan los recordatorios y el temporizador, y
   // anda el doble Atras para hablar. Calendar y Trip son listas quietas igual
   // que Agenda, asi que entran (si no, en el calendario no sonaria una alarma).
-  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather", "Calendar", "Trip"};
+  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather", "Calendar", "Trip", "Music"};
   for (const char* n : CALM) {
     if (strcmp(name, n) == 0) return true;
   }
@@ -333,6 +343,7 @@ static void checkVoiceShortcut() {
   lastBackRelease = isDouble ? 0 : now;  // el segundo toque cierra la ventana
   if (!isDouble) return;
   if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
+  if (busyRecording()) return;
   const char* name = activityManager.currentActivityName();
   if (!isCalmScreen(name)) return;
   LOG_INF("MAIN", "PTT shortcut from %s", name);
@@ -341,6 +352,7 @@ static void checkVoiceShortcut() {
 
 static void checkTimeAlarms() {
   if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
+  if (busyRecording()) return;
   if (!isCalmScreen(activityManager.currentActivityName())) return;
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) return;
@@ -898,7 +910,7 @@ void loop() {
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep()) {
+      activityManager.preventAutoSleep() || MUSIC.isActive()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -1017,6 +1029,11 @@ void loop() {
   if (gpio.wasUsbStateChanged() && !activityManager.isReaderActivity()) {
     activityManager.requestUpdate();
   }
+
+  // La música vive fuera de la Activity (MusicPlayer): esto es lo que engancha
+  // la pista siguiente cuando termina la anterior, esté abierto el reproductor
+  // o esté el usuario en el hub.
+  MUSIC.pump();
 
   checkVoiceShortcut();
 

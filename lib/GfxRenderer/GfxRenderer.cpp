@@ -561,9 +561,24 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   // Note: this call should be inlined for better performance
   rotateCoordinates(orientation, x, y, &phyX, &phyY, panelWidth, panelHeight);
 
-  // Bounds checking against runtime panel dimensions
+  // Bounds checking against runtime panel dimensions.
+  //
+  // Un pixel afuera se descarta y punto. ANTES esto escribia una linea de log
+  // POR PIXEL: un solo cartel un poco mas ancho que la pantalla dejaba miles de
+  // lineas de "Outside range", el archivo de log rotaba y se comia todo lo que
+  // de verdad servia (el log que mando el usuario en 1.5.43 tenia 2900 lineas y
+  // 2877 eran esto). Ahora se cuentan y se avisa una vez por segundo, con el
+  // total: se sigue viendo que algo dibuja afuera, sin tapar nada.
   if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) {
-    LOG_ERR("GFX", "!! Outside range (%d, %d) -> (%d, %d)", x, y, phyX, phyY);
+    static uint32_t clipped = 0;
+    static uint32_t lastReport = 0;
+    ++clipped;
+    const uint32_t now = millis();
+    if (now - lastReport >= 1000) {
+      lastReport = now;
+      LOG_ERR("GFX", "%lu pixeles fuera de pantalla (ultimo %d,%d)", static_cast<unsigned long>(clipped), x, y);
+      clipped = 0;
+    }
     return;
   }
 

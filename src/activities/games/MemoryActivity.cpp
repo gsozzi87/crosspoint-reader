@@ -11,6 +11,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "memoryIcons.h"
+#include "components/Selection.h"
 
 namespace {
 // Nivel -> forma de la grilla. 8, 10 y 15 parejas.
@@ -363,20 +364,20 @@ void MemoryActivity::drawLevelScreen(const int top, const int bottom) const {
   for (int i = 0; i < LEVEL_COUNT; ++i) {
     const int y = listTop + i * ROW_H;
     const bool sel = i == level;
-    if (sel) renderer.fillRoundedRect(MARGIN_X - 4, y, pageWidth - 2 * (MARGIN_X - 4), ROW_H - 10, 10, Color::Black);
+    if (sel) drawSelectionRow(renderer, MARGIN_X - 4, y, pageWidth - 2 * (MARGIN_X - 4), ROW_H - 10, 10);
 
     snprintf(buf, sizeof(buf), "%s %d", I18N.get(StrId::STR_GAME_LEVEL), i + 1);
-    renderer.drawText(UI_12_FONT_ID, MARGIN_X + 8, y + 10, buf, !sel, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, MARGIN_X + 8, y + 10, buf, SELECTION_INK, EpdFontFamily::BOLD);
 
     snprintf(buf, sizeof(buf), "%dx%d - %d %s", COLS[i], ROWS[i], COLS[i] * ROWS[i] / 2,
              I18N.get(StrId::STR_GAME_PAIRS));
-    renderer.drawText(UI_10_FONT_ID, MARGIN_X + 8, y + 36, buf, !sel);
+    renderer.drawText(UI_10_FONT_ID, MARGIN_X + 8, y + 36, buf, SELECTION_INK);
 
     if (bestMoves[static_cast<size_t>(i)] > 0) {
       snprintf(buf, sizeof(buf), "%s %u", I18N.get(StrId::STR_GAME_BEST),
                static_cast<unsigned>(bestMoves[static_cast<size_t>(i)]));
       renderer.drawText(UI_10_FONT_ID, pageWidth - MARGIN_X - 8 - renderer.getTextWidth(UI_10_FONT_ID, buf), y + 36,
-                        buf, !sel);
+                        buf, SELECTION_INK);
     }
   }
 }

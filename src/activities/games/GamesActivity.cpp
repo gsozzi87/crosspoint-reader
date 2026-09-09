@@ -18,6 +18,7 @@
 #include "SudokuActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr int ROW_H = 52;
@@ -114,14 +115,14 @@ void GamesActivity::render(RenderLock&&) {
     const int i = scroll + row;
     const int y = top + row * ROW_H;
     const bool sel = i == selected;
-    if (sel) renderer.fillRoundedRect(SIDE - 8, y, pageWidth - 2 * (SIDE - 8), ROW_H - 8, 10, Color::Black);
+    if (sel) drawSelectionRow(renderer, SIDE - 8, y, pageWidth - 2 * (SIDE - 8), ROW_H - 8, 10);
     const char* name = I18N.get(GAMES[i].name);
     const char* hint = I18N.get(GAMES[i].hint);
     renderer.drawText(UI_12_FONT_ID, SIDE, y + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, name, textW, EpdFontFamily::BOLD).c_str(), !sel,
+                      renderer.truncatedText(UI_12_FONT_ID, name, textW, EpdFontFamily::BOLD).c_str(), SELECTION_INK,
                       EpdFontFamily::BOLD);
     renderer.drawText(SMALL_FONT_ID, SIDE, y + 28,
-                      renderer.truncatedText(SMALL_FONT_ID, hint, textW).c_str(), !sel);
+                      renderer.truncatedText(SMALL_FONT_ID, hint, textW).c_str(), SELECTION_INK);
   }
 
   // Solo cuando hay más juegos de los que entran: dice cuál de cuántos es.

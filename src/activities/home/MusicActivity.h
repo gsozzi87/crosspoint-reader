@@ -1,107 +1,84 @@
 #pragma once
 
-#include <AudioManager.h>
-
 #include <string>
 #include <vector>
 
 #include "activities/Activity.h"
-#include "music/Mp3Source.h"
 #include "util/ButtonNavigator.h"
 
-// Reproductor de MP3 de la SD, pensado para los botones que tiene el aparato:
-// una palanca (arriba XOR abajo), OK y Atrás. No hay rueda de volumen ni forma
-// de "apuntar" a un botón de la pantalla, así que la pantalla se divide en tres
-// zonas y la palanca trabaja siempre dentro de la zona que tiene el foco:
+// Reproductor de MP3 de la SD.
 //
-//   Lista    — arriba/abajo elige carpeta o pista, OK abre / reproduce / pausa
-//   Control  — arriba/abajo elige el mando (Play, Anterior, Siguiente, Detener,
-//              Aleatorio, Repetir) y OK lo activa
-//   Volumen  — arriba sube y abajo baja el volumen, OK pausa o reanuda
+// SE REHIZO ENTERO EN 1.5.44. La versión anterior partía la pantalla en tres
+// "zonas" invisibles (lista, mandos, volumen) y Atrás las iba rotando: nadie
+// podía adivinarlo ("ni los botones, encima las indicaciones de como usarlo
+// estan mal, no se entiende una pija"). Ahora hay UNA SOLA LISTA vertical, que
+// es lo único que este aparato sabe hacer bien con una palanca de arriba/abajo:
 //
-// Atrás corto pasa a la zona siguiente y Atrás mantenido sale (de la carpeta
-// primero, del reproductor después). La barra de abajo dice siempre qué hace
-// cada botón en la zona que está enfocada, y el volumen es el único del aparato
-// (HubStore::musicVolume): el mismo de la voz, los avisos y la música.
+//   ARRIBA / ABAJO   recorren la lista, siempre
+//   OK               hace lo que dice la fila elegida (y la barra de abajo lo repite)
+//   ATRÁS            vuelve: de las pistas a las carpetas, de las carpetas al hub
+//
+// La lista de la carpeta abierta trae primero las acciones (Pausar, Siguiente,
+// Anterior, Detener, Volumen, Aleatorio, Repetir) y después las pistas. El
+// volumen tiene su propio modito: OK sobre "Volumen" y la palanca sube y baja,
+// OK o Atrás para terminar.
+//
+// La música NO vive acá: vive en MusicPlayer (src/music/MusicPlayer.h), así
+// que salir de esta pantalla no corta la canción y el hub puede mostrar qué
+// está sonando.
 class MusicActivity final : public Activity {
  public:
   explicit MusicActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Music", renderer, mappedInput) {}
 
   void onEnter() override;
-  void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return playing && !paused; }
 
  private:
   enum Level { FOLDERS, PLAYLIST };
-  // Zona con el foco. El orden es el del ciclo de Atrás corto.
-  enum Zone { ZONE_LIST = 0, ZONE_TRANSPORT, ZONE_VOLUME, ZONE_COUNT };
-  // Mandos de la zona Control, en el orden en que los recorre la palanca.
-  enum Control { CTRL_PLAY = 0, CTRL_PREV, CTRL_NEXT, CTRL_STOP, CTRL_SHUFFLE, CTRL_REPEAT, CTRL_COUNT };
+  // Lo que puede haber en una fila. El orden de ACT_* es el orden en pantalla.
+  enum RowKind { ROW_ACTION, ROW_TRACK, ROW_FOLDER };
+  enum Action { ACT_PLAYPAUSE, ACT_NEXT, ACT_PREV, ACT_STOP, ACT_VOLUME, ACT_SHUFFLE, ACT_REPEAT };
+
+  struct Row {
+    RowKind kind;
+    int index;  // pista o carpeta
+    Action action;
+  };
 
   Level level = FOLDERS;
-  Zone zone = ZONE_LIST;
-  int controlIndex = CTRL_PLAY;
-
-  std::vector<std::string> folders;  // full paths
-  std::vector<std::string> tracks;   // full paths of the folder being browsed
-  std::vector<std::string> trackNames;
-  std::string folderName;
-  int folderIndex = 0;
-  int trackIndex = 0;  // selected in the list
+  bool volumeMode = false;  // la palanca cambia el volumen en vez de moverse
+  int selected = 0;
+  int scroll = 0;
   ButtonNavigator buttonNavigator;
 
-  // Lo que suena vive aparte de lo que se está mirando: Atrás vuelve a las
-  // carpetas y la música sigue, así que la vista no puede depender del vector
-  // de la carpeta abierta (una carpeta más corta daba lectura fuera de rango).
-  std::vector<std::string> playTracks;
-  std::vector<std::string> playTrackNames;
-  std::string playFolderName;
-  int playFolderIndex = -1;  // carpeta que suena, -1 = ninguna
-  int playingIndex = -1;     // pista cargada, índice en playTracks
+  std::vector<std::string> folders;    // rutas completas
+  std::vector<std::string> tracks;     // rutas de la carpeta que se está mirando
+  std::vector<std::string> trackNames;
+  std::string folderName;
+  std::string folderPath;
+  std::vector<Row> rows;
 
-  AudioManager audio;
-  Mp3Source source;
-  bool playing = false;
-  bool paused = false;
-  bool shuffle = false;
-  bool repeat = false;
-  int volume = 70;
-  int lastShownSecond = -1;
   int partials = 0;
-
-  // Cierto cuando la fila seleccionada es la pista que está sonando (misma
-  // carpeta y mismo índice): sin lo primero, OK sobre otra carpeta pausaba.
-  bool isSelectedPlaying() const {
-    return playing && folderIndex == playFolderIndex && trackIndex == playingIndex;
-  }
-  int listCount() const;
+  int lastShownSecond = -1;
+  bool forceClean = false;
 
   void scanFolders();
   void openFolder(int index);
-  bool playSelected(int index);  // adopta la carpeta que se está mirando y arranca
-  bool play(int index);          // índice en playTracks (la carpeta que suena)
-  void stop();
-  void togglePause();
-  void playPause();  // OK sobre el mando Play y sobre la zona de volumen
-  void next(bool fromEnd);
-  void previous();
-  void setVolume(int value);
-
-  // Entradas, ya repartidas por zona.
-  void step(int direction);
+  void buildRows();
+  int visibleRows(int listTop) const;
+  void clampScroll(int listTop);
+  void moveSelection(int direction);
   void activate();
-  void leaveOrExit();
+  void goBack();
 
-  // Etiquetas de la barra de botones: siempre dicen lo que hace cada botón AHORA.
+  // Qué dice el botón OK para la fila elegida. Nunca "Seleccionar" a secas.
   const char* confirmLabel() const;
-  const char* zoneLabel(Zone z) const;
-  const char* controlLabel(int control) const;
+  std::string rowLabel(const Row& row) const;
+  std::string rowValue(const Row& row) const;  // lo que va a la derecha de la fila
 
-  int drawNowPlaying(int x, int y, int w) const;      // devuelve el alto usado
-  int drawControls(int x, int y, int w) const;        // idem
-  int drawVolume(int x, int y, int w) const;          // idem
-  void drawList(int x, int y, int w, int h) const;
+  int drawNowPlaying(int x, int y, int w) const;
+  void drawCover(int x, int y, int size) const;
+  void drawList(int x, int y, int w, int h);
 };

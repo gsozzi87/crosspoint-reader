@@ -18,8 +18,17 @@ class SpeechOut {
   bool hasStarted() const { return started; }
   void stop();
 
+  // Pausa de verdad. El SDK no tiene pause: parar y volver a reproducir
+  // arrancaba el clip de cero, así que al leer una noticia "Seguir" te hacía
+  // escuchar el párrafo entero otra vez. Como en la música, la pausa baja el
+  // volumen a cero y deja el stream corriendo.
+  void pause();
+  void resume();
+  bool isPaused() const { return paused; }
+
  private:
   AudioManager audio;
   uint8_t* wav = nullptr;
   bool started = false;
+  bool paused = false;
 };

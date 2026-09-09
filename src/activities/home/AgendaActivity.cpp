@@ -18,6 +18,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "AGENDA";
@@ -89,13 +90,12 @@ void AgendaActivity::onEnter() {
   requestUpdate();
 }
 
-// Mensajes SIEMPRE primero (aunque no haya ninguno), recordatorios y al final
-// cada lista. La sección tiene que verse desde que se entra: si aparece solo
-// cuando hay mensajes, nadie se entera de que el aparato los muestra. El
-// calendario y los viajes se mudaron al mosaico "Mi día" del hub.
+// Recordatorios primero y después las listas. En 1.5.44 se sacaron los
+// mensajes ("quítalos del sistema, no me gusta, se me hace algo irrelevante") y
+// las listas quedaron sin categorías: el servidor manda sólo dos, compras y
+// tareas. El calendario y los viajes viven en el mosaico "Mi día" del hub.
 void AgendaActivity::rebuildSections() {
   sections.clear();
-  sections.push_back({MESSAGES, -1});
   sections.push_back({REMINDERS, -1});
   for (int i = 0; i < static_cast<int>(HUB_STORE.lists.size()); ++i) sections.push_back({LIST, i});
   if (sectionIndex >= sectionCount()) sectionIndex = sectionCount() - 1;
@@ -103,7 +103,6 @@ void AgendaActivity::rebuildSections() {
 
 int AgendaActivity::itemCount() const {
   switch (current().kind) {
-    case MESSAGES: return static_cast<int>(HUB_STORE.messages.size());
     case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
     case LIST: return static_cast<int>(HUB_STORE.lists[current().listIndex].items.size());
   }
@@ -112,7 +111,6 @@ int AgendaActivity::itemCount() const {
 
 int AgendaActivity::sectionItemCount(const int index) const {
   switch (sections[index].kind) {
-    case MESSAGES: return static_cast<int>(HUB_STORE.messages.size());
     case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
     case LIST: return static_cast<int>(HUB_STORE.lists[sections[index].listIndex].items.size());
   }
@@ -121,7 +119,6 @@ int AgendaActivity::sectionItemCount(const int index) const {
 
 std::string AgendaActivity::sectionTitle(const int index) const {
   switch (sections[index].kind) {
-    case MESSAGES: return tr(STR_HUB_MESSAGES);
     case REMINDERS: return tr(STR_HUB_REMINDERS);
     case LIST: return HUB_STORE.lists[sections[index].listIndex].name;
   }
@@ -131,11 +128,6 @@ std::string AgendaActivity::sectionTitle(const int index) const {
 std::string AgendaActivity::itemText(const int index, std::string& detail) const {
   detail.clear();
   switch (current().kind) {
-    case MESSAGES: {
-      const HubStore::Message& m = HUB_STORE.messages[index];
-      detail = m.from;
-      return m.text;
-    }
     case REMINDERS: {
       const HubStore::Reminder& r = HUB_STORE.reminders[index];
       detail = r.when;
@@ -154,11 +146,6 @@ void AgendaActivity::tickCurrent() {
   int id = 0;
   const char* kind = "item";
   switch (current().kind) {
-    case MESSAGES:
-      kind = "message";
-      id = HUB_STORE.messages[itemIndex].id;
-      HUB_STORE.removeMessage(id);
-      break;
     case REMINDERS:
       kind = "reminder";
       id = HUB_STORE.reminders[itemIndex].id;
@@ -179,11 +166,7 @@ void AgendaActivity::tickCurrent() {
   }
   const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/hub/done", body);
   LOG_INF(TAG, "done %s %d: %s", kind, id, ServerClient::resultName(r));
-  if (current().kind == MESSAGES && HUB_STORE.messages.empty()) {
-    level = SECTIONS;  // no quedan mensajes: se vuelve a la lista de secciones
-  } else if (itemIndex >= itemCount() && itemIndex > 0) {
-    itemIndex--;
-  }
+  if (itemIndex >= itemCount() && itemIndex > 0) itemIndex--;
   requestUpdate();
 }
 
@@ -232,8 +215,9 @@ void AgendaActivity::onMenuPick(const int index) {
       menuStep = NONE;
     }
   } else if (menuStep == MOVE) {
-    if (index >= 0 && index < static_cast<int>(menuOptions.size())) {
-      const std::string target = menuOptions[index];
+    if (index >= 0 && index < static_cast<int>(HUB_STORE.lists.size())) {
+      // Al servidor va la CLAVE de la lista, no el nombre traducido.
+      const std::string target = HUB_STORE.lists[index].key;
       HUB_STORE.moveItem(menuItemId, target);
       HUB_STORE.saveToFile();
       sendEdit("move", target.c_str(), nullptr);
@@ -591,7 +575,7 @@ void AgendaActivity::renderEditor() {
   for (int row = 0; row < EDIT_ROWS; ++row) {
     const int y = top + row * EDIT_ROW_H;
     const bool sel = row == editRow;
-    if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), EDIT_ROW_H - 6, 8, Color::Black);
+    if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), EDIT_ROW_H - 6);
     const char* label = tr(STR_REM_TITLE_ROW);
     std::string value;
     switch (row) {
@@ -616,11 +600,11 @@ void AgendaActivity::renderEditor() {
       default: break;
     }
     renderer.drawText(UI_12_FONT_ID, SIDE, y + 12,
-                      renderer.truncatedText(UI_12_FONT_ID, label, pageWidth / 2 - SIDE).c_str(), !sel);
+                      renderer.truncatedText(UI_12_FONT_ID, label, pageWidth / 2 - SIDE).c_str(), SELECTION_INK);
     if (!value.empty()) {
       const std::string shown = renderer.truncatedText(UI_10_FONT_ID, value.c_str(), pageWidth / 2 - SIDE - 8);
       renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, shown.c_str()), y + 15,
-                        shown.c_str(), !sel);
+                        shown.c_str(), SELECTION_INK);
     }
   }
 
@@ -676,9 +660,6 @@ void AgendaActivity::render(RenderLock&&) {
     const char* empty = tr(STR_HUB_NO_REMINDERS);
     if (level == ITEMS) {
       switch (current().kind) {
-        case MESSAGES:
-          empty = tr(STR_AGENDA_MESSAGES_EMPTY);  // dice de dónde salen los mensajes
-          break;
         case REMINDERS:
           empty = tr(STR_HUB_NO_REMINDERS);
           break;
@@ -698,8 +679,8 @@ void AgendaActivity::render(RenderLock&&) {
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
     const int y = top + (i - first) * rowH;
     const bool isSelected = i == selected;
-    if (isSelected) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), rowH - 4, 8, Color::Black);
-    const bool ink = !isSelected;
+    if (isSelected) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), rowH - 4);
+    const bool ink = SELECTION_INK;
     std::string detail;
     std::string text;
     std::string second;  // segunda línea: la repetición del recordatorio
@@ -731,12 +712,11 @@ void AgendaActivity::render(RenderLock&&) {
                       bottom - hintH - 16, pages);
   }
 
-  // Línea de ayuda: qué hace OK en esta sección (los mensajes se marcan como
-  // leídos, los ítems se tachan) y el menú del ítem, que estaba escondido.
+  // Línea de ayuda: qué hace OK en esta sección (los ítems se tachan) y el
+  // menú del ítem, que estaba escondido.
   if (level == ITEMS) {
     const char* hint = tr(STR_AGENDA_DONE_HINT);
-    if (current().kind == MESSAGES) hint = tr(STR_AGENDA_MESSAGE_HINT);
-    else if (current().kind == LIST) hint = tr(STR_AGENDA_ITEM_HINT);
+    if (current().kind == LIST) hint = tr(STR_AGENDA_ITEM_HINT);
     else if (current().kind == REMINDERS) hint = tr(STR_REM_OPEN_HINT);
     renderer.drawCenteredText(SMALL_FONT_ID, bottom - HINT_H + 2,
                               renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
@@ -745,9 +725,7 @@ void AgendaActivity::render(RenderLock&&) {
   if (menuStep != NONE && menu.processRender(renderer, mappedInput)) return;
   const char* okLabel = tr(STR_SELECT);
   if (level == ITEMS) {
-    okLabel = current().kind == MESSAGES  ? tr(STR_AGENDA_READ)
-              : current().kind == REMINDERS ? tr(STR_SELECT)
-                                            : tr(STR_AGENDA_DONE);
+    okLabel = current().kind == REMINDERS ? tr(STR_SELECT) : tr(STR_AGENDA_DONE);
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

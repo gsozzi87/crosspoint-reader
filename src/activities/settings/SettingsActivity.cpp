@@ -40,6 +40,7 @@
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "music/MusicPlayer.h"
 
 namespace fui = freeink::ui;
 
@@ -157,6 +158,12 @@ void SettingsActivity::rebuildSettingsLists() {
           HUB_STORE.speakMode = v;
           HUB_STORE.saveToFile();
         }));
+    // El volumen del aparato (música, voz de Piper y avisos son uno solo). Se
+    // pidió tenerlo también acá: hasta 1.5.43 sólo se podía tocar desde la
+    // música o desde la web, y nadie lo encontraba.
+    systemSettings.push_back(SettingInfo::DynamicValue(
+        StrId::STR_MUSIC_VOLUME, {0, 100, 10}, [] { return static_cast<uint8_t>(MUSIC.volume()); },
+        [](uint8_t v) { MUSIC.setVolume(v); }));
     // Sonidos de la interfaz: clics cortos al navegar, elegir, volver y pasar
     // página. De fábrica apagados; al elegir un nivel suena el clic para que se
     // escuche en el momento cuánto es "suave" y cuánto "normal".
@@ -387,6 +394,12 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
     setting.valueSetter((cur + 1) % totalValues);
+  } else if (setting.type == SettingType::VALUE && setting.valuePtr == nullptr && setting.valueGetter) {
+    // Valor dinámico (el volumen): mismo ciclo min..max, pero leído y escrito
+    // por los lambdas en vez de por un puntero a CrossPointSettings.
+    const int current = setting.valueGetter();
+    const int next = current + setting.valueRange.step;
+    setting.valueSetter(next > setting.valueRange.max ? setting.valueRange.min : static_cast<uint8_t>(next));
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {
@@ -546,6 +559,9 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
       return I18N.get(setting.enumValues[value]);
     }
     return "";
+  }
+  if (setting.type == SettingType::VALUE && setting.valuePtr == nullptr && setting.valueGetter) {
+    return std::to_string(setting.valueGetter()) + " %";
   }
   if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {

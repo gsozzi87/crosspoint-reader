@@ -11,6 +11,7 @@
 #include "cardIcons.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 
@@ -840,13 +841,13 @@ int RummyActivity::drawPlayerHand(const int top) const {
 void RummyActivity::drawOptionRow(const int x, const int y, const int w, const char* label,
                                   const bool selected) const {
   if (selected) {
-    renderer.fillRoundedRect(x, y, w, ROW_H - 10, 12, Color::Black);
+    drawSelectionRow(renderer, x, y, w, ROW_H - 10, 12);
   } else {
     renderer.drawRoundedRect(x, y, w, ROW_H - 10, 2, 12, true);
   }
   const std::string shown = renderer.truncatedText(UI_12_FONT_ID, label, w - 24, EpdFontFamily::BOLD);
   const int width = renderer.getTextWidth(UI_12_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, x + (w - width) / 2, y + 11, shown.c_str(), !selected, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, x + (w - width) / 2, y + 11, shown.c_str(), SELECTION_INK, EpdFontFamily::BOLD);
 }
 
 void RummyActivity::drawModeSelect() const {

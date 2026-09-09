@@ -1,7 +1,10 @@
 // Datos del asistente en un JSON del volumen de Railway (/data/store.json):
-// recordatorios, listas de tareas (varias, por nombre), notas y la pizarra de
-// mensajes. Alcanza para un usuario y una casa; si crece, se cambia por SQLite
-// sin tocar a quien lo usa (voice.ts, hub.ts).
+// recordatorios, DOS listas (compras y tareas) y notas. Alcanza para un usuario
+// y una casa; si crece, se cambia por SQLite sin tocar a quien lo usa
+// (voice.ts, hub.ts).
+//
+// No hay pizarra de mensajes: se sacó del producto. Un store.json viejo que
+// todavía traiga "messages" se lee igual y esa clave se ignora.
 import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 import { LABELS, type Lang } from "./lang";
 
@@ -30,7 +33,6 @@ export type Reminder = {
 };
 export type Item = { id: number; text: string; done: boolean; dueDate: string | null; createdAt: string };
 export type Note = { id: number; text: string; createdAt: string };
-export type Message = { id: number; from: string; text: string; createdAt: string; read: boolean };
 
 export type Memory = { id: number; text: string; createdAt: string };
 
@@ -56,12 +58,17 @@ export type Store = {
   memories?: Memory[]; // "acordate que ...": datos que el asistente tiene presentes al contestar
   feeds?: Feed[];      // RSS/Atom para Noticias (se cargan desde /board)
   reminders: Reminder[];
-  lists: Record<string, Item[]>; // "Entrada", "Casa", "Trabajo", "Administrativo", "Compras", proyectos...
+  lists: Record<string, Item[]>; // solo SHOPPING_LIST y TASK_LIST
   notes: Note[];
-  messages: Message[];
 };
 
-export const DEFAULT_LISTS = ["Entrada", "Casa", "Trabajo", "Administrativo", "Compras"];
+// Las listas son dos y nada más: la de compras y la de tareas (to-do). El
+// nombre guardado es siempre el canónico en español (la clave del archivo, que
+// no cambia si el usuario cambia el idioma del aparato); lo que se MUESTRA sale
+// de LABELS según el idioma (listLabel()).
+export const SHOPPING_LIST = "Compras";
+export const TASK_LIST = "Tareas";
+export const DEFAULT_LISTS = [SHOPPING_LIST, TASK_LIST];
 
 export const REPEAT_KINDS = ["none", "daily", "weekdays", "weekly", "monthly", "yearly"] as const;
 export const NO_REPEAT: Repeat = { kind: "none" };
@@ -117,7 +124,7 @@ export function sameRepeat(a: Repeat, b: Repeat): boolean {
 }
 
 function emptyStore(): Store {
-  return { nextId: 1, reminders: [], lists: {}, notes: [], messages: [] };
+  return { nextId: 1, reminders: [], lists: {}, notes: [] };
 }
 
 // El archivo puede venir de una versión vieja o quedar a medias: se acepta solo
@@ -132,18 +139,30 @@ function normalizeStore(raw: unknown): Store {
     reminders: arr<Reminder>(r.reminders),
     lists: {},
     notes: arr<Note>(r.notes),
-    messages: arr<Message>(r.messages),
     memories: arr<Memory>(r.memories),
     feeds: arr<Feed>(r.feeds),
   };
   for (const rem of store.reminders) rem.repeat = normalizeRepeat(rem.repeat);
-  const lists = r.lists && typeof r.lists === "object" && !Array.isArray(r.lists) ? r.lists : {};
-  for (const [name, items] of Object.entries(lists)) if (Array.isArray(items)) store.lists[name] = items as Item[];
-  for (const name of DEFAULT_LISTS) store.lists[name] ??= [];
+  // MIGRACIÓN de las listas por categoría ("Entrada", "Casa", "Trabajo",
+  // "Administrativo", proyectos sueltos): quedaron DOS listas. Todo lo que no
+  // era de compras se vuelca a la de tareas, en orden, sin perder nada; lo ya
+  // hecho no se arrastra. Las listas viejas desaparecen del archivo.
+  const rawLists = r.lists && typeof r.lists === "object" && !Array.isArray(r.lists) ? r.lists : {};
+  store.lists[SHOPPING_LIST] = [];
+  store.lists[TASK_LIST] = [];
+  for (const [name, items] of Object.entries(rawLists)) {
+    if (!Array.isArray(items)) continue;
+    const target = isShoppingName(name) ? SHOPPING_LIST : TASK_LIST;
+    for (const it of items as Item[]) {
+      if (!it || typeof it !== "object") continue;
+      if (target === TASK_LIST && it.done) continue;  // basura vieja de listas que ya no existen
+      store.lists[target].push(it);
+    }
+  }
   store.settings = { ...DEFAULT_SETTINGS, ...(r.settings && typeof r.settings === "object" ? r.settings : {}) };
   // El nextId tiene que quedar arriba de todo lo que ya existe: si el archivo
   // vino truncado, repetir ids mezcla ítems de listas distintas.
-  const ids = [...store.reminders, ...store.notes, ...store.messages, ...(store.memories ?? []), ...(store.feeds ?? []), ...Object.values(store.lists).flat()]
+  const ids = [...store.reminders, ...store.notes, ...(store.memories ?? []), ...(store.feeds ?? []), ...Object.values(store.lists).flat()]
     .map((e: { id?: number }) => Number(e?.id) || 0);
   store.nextId = Math.max(store.nextId, ...ids.map((i) => i + 1), 1);
   return store;
@@ -174,17 +193,39 @@ export function nextId(store: Store): number {
   return store.nextId++;
 }
 
-// Nombre de lista tal como lo dijo el usuario -> nombre canónico (sin
-// distinguir mayúsculas ni acentos). Crea la lista si no existe y `create`.
-export function resolveList(store: Store, spoken: string | null | undefined, create: boolean): string {
-  const norm = (s: string) => s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
-  const wanted = norm(spoken ?? "");
-  if (!wanted) return "Entrada";
-  for (const name of Object.keys(store.lists)) if (norm(name) === wanted) return name;
-  if (!create) return "Entrada";
-  const pretty = spoken!.trim().replace(/^\w/, (c) => c.toUpperCase());
-  store.lists[pretty] = [];
-  return pretty;
+function foldName(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+}
+
+// Palabras que quieren decir "esto es una compra", en los seis idiomas. Todo lo
+// demás (cualquier lista que invente el modelo o escriba la web) cae en tareas.
+const SHOPPING_WORDS = [
+  "compra", "compras", "super", "supermercado", "mercado", "mandado", "mandados", "almacen",
+  "shopping", "groceries", "grocery", "market",
+  "courses", "course", "supermarche", "epicerie",
+  "einkauf", "einkaufe", "einkaufen", "einkaufsliste", "supermarkt",
+  "mercearia",
+  "pokupki", "produkty", "покупки", "продукты", "магазин",
+];
+
+export function isShoppingName(name: string | null | undefined): boolean {
+  const n = foldName(name ?? "");
+  if (!n) return false;
+  return n.split(/[^a-z0-9Ѐ-ӿ]+/).some((w) => w && SHOPPING_WORDS.includes(w));
+}
+
+// Nombre de lista tal como lo dijo el usuario (o como lo mandó el aparato en su
+// idioma) -> una de las DOS listas. Ya no se crean listas nuevas: lo que no sea
+// claramente de compras va a tareas.
+export function resolveList(store: Store, spoken: string | null | undefined): string {
+  store.lists[SHOPPING_LIST] ??= [];
+  store.lists[TASK_LIST] ??= [];
+  return isShoppingName(spoken) ? SHOPPING_LIST : TASK_LIST;
+}
+
+// El nombre que se muestra, en el idioma del aparato.
+export function listLabel(name: string, lang: Lang = "es"): string {
+  return name === SHOPPING_LIST ? LABELS[lang].shopping : LABELS[lang].tasks;
 }
 
 // "2026-09-07T10:30" -> texto corto para la pantalla del aparato, relativo a hoy.

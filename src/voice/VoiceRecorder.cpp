@@ -8,17 +8,23 @@
 
 #include "Adpcm.h"
 #include "util/WavHeader.h"
+#include "music/MusicPlayer.h"
 
 namespace {
 constexpr const char* TAG = "VOICE";
 constexpr size_t BLOCK = 512;  // 32 ms at 16 kHz
 }  // namespace
 
+int VoiceRecorder::s_open = 0;
+
 bool VoiceRecorder::start(StrId& why) {
   if (!BoardConfig::hasCodecMic()) {
     why = StrId::STR_ASK_NO_MIC;
     return false;
   }
+  // El puerto I2S es uno solo: con música puesta beginCapture() falla y el
+  // usuario veía "Falló la captura del micrófono".
+  MUSIC.stop();
   release();
   const size_t bytes = wav::HEADER_BYTES + maxSamples * sizeof(int16_t);
   buffer = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
@@ -43,6 +49,7 @@ bool VoiceRecorder::start(StrId& why) {
     return false;
   }
   recording = true;
+  ++s_open;
   LOG_DBG(TAG, "Recording (max %u s)", (unsigned)(maxSamples / SAMPLE_RATE));
   return true;
 }
@@ -65,6 +72,7 @@ bool VoiceRecorder::pump() {
 void VoiceRecorder::stop() {
   if (!recording) return;
   recording = false;
+  if (s_open > 0) --s_open;
   audio.endCapture();
   blip(700, 110);
   audio.end();  // release I2S + codec before WiFi/TLS need the heap
@@ -75,6 +83,7 @@ void VoiceRecorder::stop() {
 void VoiceRecorder::abort() {
   if (recording) {
     recording = false;
+    if (s_open > 0) --s_open;
     audio.endCapture();
     audio.end();
   }

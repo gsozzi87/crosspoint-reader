@@ -21,6 +21,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "TRIP";
@@ -821,7 +822,7 @@ void TripActivity::renderList() {
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
     const int y = top + (i - first) * ROW_H;
     const bool sel = i == selected;
-    if (sel) renderer.fillRoundedRect(SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 6, 8, Color::Black);
+    if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 6);
     std::string title;
     std::string detail;
     std::string right;
@@ -873,19 +874,19 @@ void TripActivity::renderList() {
     if (state == ITEMS) {
       const TripItem& it = currentDay()->items[i];
       if (!it.at.empty()) {
-        renderer.drawText(SMALL_FONT_ID, x, y + 10, it.at.c_str(), !sel);
+        renderer.drawText(SMALL_FONT_ID, x, y + 10, it.at.c_str(), SELECTION_INK);
         x += renderer.getTextWidth(SMALL_FONT_ID, it.at.c_str()) + 12;
       }
     }
     renderer.drawText(UI_12_FONT_ID, x, y + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, title.c_str(), pageWidth - x - SIDE - rightW).c_str(), !sel);
+                      renderer.truncatedText(UI_12_FONT_ID, title.c_str(), pageWidth - x - SIDE - rightW).c_str(), SELECTION_INK);
     if (!detail.empty()) {
       renderer.drawText(SMALL_FONT_ID, x, y + 30,
                         renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), pageWidth - x - SIDE - rightW).c_str(),
-                        !sel);
+                        SELECTION_INK);
     }
     if (rightW) {
-      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - rightW + 12, y + 14, right.c_str(), !sel);
+      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - rightW + 12, y + 14, right.c_str(), SELECTION_INK);
     }
   }
 
