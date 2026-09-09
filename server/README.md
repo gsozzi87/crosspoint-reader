@@ -4,6 +4,10 @@ Todo lo que el aparato necesita del lado del servidor, en un solo lugar: OTA del
 libro, transcripción, hub (clima, agenda, recordatorios), voz con clasificador de intención y el store de
 recordatorios, las dos listas (compras y tareas) y notas.
 
+Anda de dos formas, y la que corre la decide **una sola variable**: sin `DATABASE_URL` es el servidor de un solo
+usuario de siempre (archivos en `/data`, un `DEVICE_TOKEN`, sin login), y con `DATABASE_URL` es multiusuario, con
+cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígitos. Ver **Multiusuario** más abajo.
+
 ## Railway
 
 - **Root Directory**: `server` (Settings → Source → Root Directory). Con eso Railway solo mira esta carpeta.
@@ -27,6 +31,11 @@ recordatorios, las dos listas (compras y tareas) y notas.
 | `ASSETS_DIR` | Dónde se guarda el paquete de contenido (default `/data/assets`). `ASSETS_BUILD=0` no lo genera al arrancar. |
 | `NOTO_EMOJI_REF` | Rama o tag de [noto-emoji](https://github.com/googlefonts/noto-emoji) de donde salen los dibujos de las tarjetas (default `main`). |
 | `STT_MIN_SECONDS`, `STT_MIN_PEAK`, `STT_MIN_RMS` | Mínimos de audio para considerar que alguien habló (defaults `0.4`, `350`, `90`). Dependen de la ganancia del micrófono. |
+| `DATABASE_URL` | **Enciende el modo multiusuario** (Postgres). Sin ella, todo sigue como siempre: archivos en `/data` y un solo `DEVICE_TOKEN`. |
+| `ADMIN_EMAIL` | Correo de la cuenta de administrador que se crea al migrar, y la única que puede tocar la pestaña IA. |
+| `SESSION_SECRET` | Clave con la que se firman las cookies de sesión. Si no está, se genera una y se guarda en la base. |
+| `MONTHLY_LLM_CALLS`, `MONTHLY_STT_SECONDS` | Topes mensuales por cuenta. Sin poner = sin tope. |
+| `ACCOUNTS_DIR` | Dónde viven las fotos, los adjuntos y el log de las cuentas nuevas (default `/data/accounts`). |
 
 ## Rutas
 
@@ -68,6 +77,13 @@ recordatorios, las dos listas (compras y tareas) y notas.
 | `GET /api/assets/file?id=` | aparato | Un archivo del paquete, con `Range` para reanudar. |
 | `GET /api/assets/status`, `POST /api/assets/build` | web | Cómo va la generación del paquete y cómo forzarla. |
 | `GET /api/board/costs` | web | Cuánto sale cada consulta con cada modelo (tarjeta de la pestaña IA). |
+| `POST /auth/register`, `/auth/login`, `/auth/logout` | web | Cuentas de la web. Solo con `DATABASE_URL`. |
+| `GET /auth/me` | web | Si el servidor tiene cuentas, quién soy y qué aparatos tengo. |
+| `POST /api/pair/start` | aparato (**sin** token) | Pide el código de 6 dígitos para vincularse. |
+| `GET /api/pair/status` | aparato | Si ya lo vincularon y a qué cuenta. |
+| `POST /api/account/pair` | web (sesión) | Vincula el aparato del código a mi cuenta. |
+| `POST /api/account/device/rename`, `/device/delete` | web (sesión) | Renombrar y desvincular un aparato. |
+| `GET /api/account/devices`, `POST /api/account/password` | web (sesión) | Mis aparatos y cambiar mi contraseña. |
 
 ### Voz: silencio y alucinaciones
 
@@ -714,8 +730,181 @@ leía nadie.
   palabras): "ya no vivo en México" pisa a "vivo en México" y no quedan dos que se contradicen.
 - Se ven y se borran en `/board` → Pizarra → Memoria del asistente.
 
+
+## Multiusuario: cuentas, aparatos y `DATABASE_URL`
+
+El aparato se vende en volumen, así que el servidor tiene que aguantar ~1000 aparatos de gente distinta. Eso se
+enciende con **una sola variable**.
+
+### Regla de oro: sin base de datos, nada cambia
+
+Si `DATABASE_URL` **no** está en el entorno, el servidor se comporta **exactamente** como siempre: los JSON
+sueltos en `/data`, un solo `DEVICE_TOKEN`, sin login, y `/board` pidiendo el token del aparato. Es lo que corre
+hoy en Railway y no se puede caer. La bifurcación está en **un solo lugar**, `src/fsjson.ts`
+(`readDoc` / `writeDoc` / `mutateDoc`), y en `src/db.ts`; el resto del servidor solo recibe un `accountId` y no
+sabe de dónde salen los datos.
+
+### El diseño: `docs`
+
+Cada archivo JSON de hoy pasa a ser una fila `docs(account_id, name)` con **el mismo contenido**:
+
+| Antes | Ahora |
+|---|---|
+| `/data/store.json` | `docs(1, "store")` |
+| `/data/calendar.json` | `docs(1, "calendar")` |
+| `/data/trips.json` | `docs(1, "trips")` |
+| `/data/suggest.json` | `docs(1, "suggest")` |
+| `/data/hub-settings.json` | `docs(1, "hub-settings")` |
+| `/data/hub-data.json` | `docs(1, "hub-data")` |
+| `/data/attachments/index.json` | `docs(1, "attachments")` |
+
+Por eso `store.ts`, `calendar.ts`, `trips.ts` y compañía **no cambiaron su lógica**: cambió de dónde leen y
+escriben. Las tablas son `accounts`, `devices`, `pairings`, `docs`, `usage` y `server_meta`; se crean solas al
+arrancar con `CREATE TABLE IF NOT EXISTS` (no hay herramienta de migraciones).
+
+Lo que **no** es JSON sigue siendo archivo, pero por cuenta: la cuenta 1 (la que ya venía andando) se queda en
+`/data/photos`, `/data/attachments` y `/data/device.log`, y las cuentas nuevas van a
+`/data/accounts/<id>/photos`, `/attachments` y `/device.log`. El `id` que llega por la URL se limpia a `[a-z0-9]`
+y el de la cuenta es un número, así que ninguna ruta puede salirse de su directorio.
+
+`writeDoc` es un `INSERT ... ON CONFLICT DO UPDATE` y `mutateDoc` es una transacción con un candado de Postgres
+por `(cuenta, documento)` (`pg_advisory_xact_lock`) más `SELECT ... FOR UPDATE`: eso ordena a dos pedidos a la
+vez **y a dos réplicas**, cosa que la cola en memoria de los archivos no podía. Probado con 12 altas de
+calendario simultáneas sobre un documento que todavía no existía: entran las 12.
+
+### Quién es cada pedido (`src/tenant.ts`)
+
+1. **aparato** → `Authorization: Bearer <token>`; se busca `sha256(token)` en `devices.token_hash` (el token en
+   claro **no se guarda nunca**) y sale su `account_id`. Se marca `devices.last_seen`.
+2. **web** → cookie de sesión firmada (HttpOnly, `SameSite=Lax`, `Secure` sobre https). No hay tabla de sesiones:
+   la cookie es `<cuenta>.<vencimiento>` firmado con `SESSION_SECRET`, y dura 30 días.
+3. **el de siempre** → el `DEVICE_TOKEN` del entorno y el `config.deviceToken` valen **siempre** y son la
+   **cuenta 1**. Es lo que hace que el aparato que ya está andando siga andando sin tocarle nada.
+
+El middleware de `/api` deja la cuenta en el contexto de Hono (`c.set("accountId", ...)`) y todos los handlers la
+leen de ahí con `accountOf(c)`. La **zona horaria** del pedido (la del lugar que eligió esa cuenta para el clima)
+viaja en un `AsyncLocalStorage` que arma ese mismo middleware: es lo único implícito de todo esto, y es a
+propósito, porque `localToEpoch()` y media docena de funciones de fechas son sincrónicas y las llama todo el
+mundo.
+
+### Vincular un aparato: el código de 6 dígitos
+
+El aparato **no tiene teclado**, así que nunca puede escribir un correo. El flujo va al revés:
+
+```
+POST /api/pair/start          (SIN Bearer: el aparato todavía no está vinculado)
+body: { "deviceId": "A1B2C3D4E5F6", "token": "<64 hex>" }
+200:  { "ok": true, "code": "482913", "expiresIn": 600 }
+```
+
+El servidor guarda `pairings(code, device_id, sha256(token))` con 10 minutos de vida. El código son 6 dígitos al
+azar, sin repetir uno vivo. Un pedido cada 30 s por `deviceId`: mientras tanto devuelve **el mismo código**, así
+el aparato que reintenta no le cambia el número al usuario en la cara. Los vencidos se borran al crear uno nuevo
+(no hay cron).
+
+```
+POST /api/account/pair        (con la cookie de sesión, desde la web)
+body: { "code": "482913", "name": "El lector de la cocina" }
+200:  { "ok": true, "deviceId": "A1B2C3D4E5F6" }
+```
+
+Crea (o reasigna) la fila de `devices` para esa cuenta y borra el pairing. Si el aparato ya estaba en otra
+cuenta, se **mueve** a esta. Solo lo acepta una sesión de la web: un aparato con su Bearer no puede reasignarse
+solo (403 `no_session`).
+
+```
+GET /api/pair/status          (con Bearer del token del aparato)
+200:  { "ok": true, "paired": true|false, "account": "ana@ejemplo.com"|null }
+```
+
+El aparato lo consulta cada pocos segundos mientras muestra el código. **Sin `DATABASE_URL`**, `pair/start`
+devuelve 501 `{code:"single_user"}` y `pair/status` devuelve `{paired:true, account:null, single:true}` si el
+token sirve: no hay nada que vincular.
+
+### Migración de lo que ya existe
+
+La primera vez que arranca con `DATABASE_URL`, si la tabla `accounts` está vacía:
+
+- crea la cuenta 1 con el correo de `ADMIN_EMAIL` (o `admin@localhost`) y una contraseña al azar que **se imprime
+  una sola vez en el log del servidor**, con el aviso de cambiarla (se cambia desde /board → Aparatos);
+- vuelca cada JSON de `/data` a `docs` con esa cuenta;
+- registra el `DEVICE_TOKEN` del entorno como su primer aparato (guardando el hash, no el token).
+
+Es idempotente: con la tabla `accounts` ya poblada no toca nada.
+
+### Claves de IA y costo
+
+Con 1000 aparatos no puede poner cada uno su clave de Anthropic: `config.json` (proveedor, modelos, claves de
+LLM/STT, buscador, token del aparato) es **del operador**, uno solo para todo el servidor, y **solo lo ve y lo
+toca una cuenta admin**. Para las demás, la pestaña IA de `/board` ni se muestra y `GET/POST /api/board/config` y
+`POST /api/board/config/test` contestan **403**. Sin base de datos hay un solo usuario y es el admin, así que
+todo sigue igual que siempre.
+
+El consumo se cuenta por cuenta y por mes en `usage` (llamadas al LLM y segundos de audio transcritos; los
+segundos salen del tamaño del cuerpo, 32 kB/s en WAV y 8 kB/s en ADPCM). **Solo se cobra lo que salió bien**: un
+502 del proveedor no se le carga a nadie. Pasado `MONTHLY_LLM_CALLS` o `MONTHLY_STT_SECONDS`, estas cuatro rutas
+contestan **429** con el mensaje ya traducido al idioma del pedido y `code: "quota"`:
+
+```
+/api/ask   /api/voice   /api/transcribe   /api/translate
+```
+
+**Todo lo demás sigue andando**: hub, calendario, recordatorios, listas, notas, biblia offline, música, fotos,
+noticias y viajes. Pasarse de preguntas no convierte el aparato en un ladrillo.
+
+### Dos cosas que eran del operador y ahora se aíslan
+
+- **`HUB_ICS_URL`** es una variable del entorno, o sea del operador: si valiera para todas las cuentas, el
+  calendario privado del que la puso se lo verían los 1000 aparatos. En multiusuario vale **solo para la
+  cuenta 1**.
+- **La caché de feeds RSS** se guardaba por **id de feed**, y los ids son de cada cuenta (el feed 5 de una casa no
+  es el feed 5 de otra): una cuenta veía los titulares de la otra. Ahora la clave es la URL, que además comparte
+  lo ya bajado entre cuentas.
+
+Las cachés en memoria (el store, el lugar, el clima, el pronóstico, la zona horaria) pasaron de una variable
+suelta a un `Map` **con tope** por cuenta: con 1000 aparatos, un `Map` sin límite es una fuga de memoria.
+
+### `/board` con login
+
+- **Sin base de datos**: igual que siempre, con el formulario del token del aparato.
+- **Con base de datos**: pantalla de entrar / crear cuenta, y la sesión va en una cookie HttpOnly — **no se guarda
+  ningún token en el navegador**. Aparece la pestaña **Aparatos** (lista, renombrar, desvincular, el campo para el
+  código de 6 dígitos, cambiar la contraseña y salir) y la pestaña **IA** solo si la cuenta es admin.
+- La misma página sirve para los dos casos: lo decide el script preguntando `GET /auth/me` **antes** de cualquier
+  otra cosa (si no, un 401 de un pedido suelto mostraba la pantalla del token en un servidor con login).
+- `/board/log` también entra con la sesión; si el servidor no tiene cuentas, sigue pidiendo el token.
+- Los botones de las listas van por delegación con `data-act`, **nunca** con `onclick` armado con comillas, y
+  adentro del template literal del script **no puede haber backticks** (ni siquiera en un comentario: se lo come
+  el literal y rompe la página entera; pasó dos veces escribiendo esto).
+
+### Encenderlo en Railway
+
+1. En el proyecto, **New → Database → Add PostgreSQL**.
+2. En el servicio del servidor, agregar la variable `DATABASE_URL` con la referencia
+   `${{Postgres.DATABASE_URL}}`, más `ADMIN_EMAIL` y `SESSION_SECRET` (una cadena larga al azar).
+3. Redeploy. En el log aparece la contraseña provisoria del admin **una sola vez**: entrar a `/board`, cambiarla
+   desde Aparatos, y de ahí en más cada usuario se crea su cuenta y vincula su aparato con el código.
+4. El volumen en `/data` **sigue haciendo falta**: ahí viven el firmware, el paquete de contenido, la caché de la
+   Biblia, las fotos y los adjuntos.
+
+Para volver atrás alcanza con sacar `DATABASE_URL`: los archivos originales de `/data` siguen ahí (la migración
+los copia, no los borra), así que el servidor vuelve al modo de un solo usuario con los datos que tenía el día que
+se encendió la base.
+
 ## Local
+
+Como siempre (un solo usuario, archivos sueltos):
 
 ```
 cd server && bun install && OTA_TOKEN=x DEVICE_TOKEN=y ANTHROPIC_API_KEY=... STT_API_KEY=... bun run src/index.ts
 ```
+
+Multiusuario, contra un Postgres local:
+
+```
+cd server && bun install
+DATABASE_URL=postgres://postgres@127.0.0.1:5432/ws397 ADMIN_EMAIL=vos@ejemplo.com SESSION_SECRET=lo-que-sea \
+  OTA_TOKEN=x DEVICE_TOKEN=y bun run src/index.ts
+```
+
+Chequeo rápido antes de subir nada: `bun install && bunx tsc --noEmit`.

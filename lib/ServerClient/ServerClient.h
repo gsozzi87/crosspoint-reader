@@ -49,7 +49,11 @@ class ServerClient {
   // POST a JSON body (already serialized) to base+path with the token.
   // timeoutMs = 0 keeps the default (20 s); slow endpoints (LLM answers) pass
   // their own, per socket operation.
-  Result postJson(const std::string& path, const std::string& json, Response& out, uint32_t timeoutMs = 0);
+  // auth=false para los endpoints que se usan ANTES de estar vinculado
+  // (/api/pair/start): mandar un token que el servidor todavía no conoce
+  // volvería 401 antes de llegar al handler.
+  Result postJson(const std::string& path, const std::string& json, Response& out, uint32_t timeoutMs = 0,
+                  bool auth = true);
   // POST a raw body (e.g. audio/wav) with the token. Retries like postJson.
   Result postBytes(const std::string& path, const char* contentType, const uint8_t* data, size_t len,
                    Response& out, uint32_t timeoutMs = 0);

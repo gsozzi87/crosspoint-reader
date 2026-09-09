@@ -11,16 +11,19 @@
 import { Hono } from "hono";
 import { mkdir, readdir, readFile, stat, unlink } from "node:fs/promises";
 import sharp from "sharp";
-import { writeBytesAtomic, writeTextAtomic } from "./fsjson";
+import { photosDir, writeBytesAtomic, writeTextAtomic } from "./fsjson";
 import { readBody } from "./net";
+import { accountOf, type AppEnv } from "./tenant";
 
-const DIR = process.env.PHOTOS_DIR ?? "/data/photos";
+// Las fotos son archivos: cada cuenta tiene su directorio (la cuenta 1, la que
+// ya venía andando, se queda en /data/photos).
 const MAX_BYTES = 400_000;
 const MAX_PHOTOS = 60;
 
 type Photo = { id: string; name: string; size: number; at: string };
 
-async function index(): Promise<Photo[]> {
+async function index(accountId: number): Promise<Photo[]> {
+  const DIR = photosDir(accountId);
   try {
     const files = await readdir(DIR);
     const out: Photo[] = [];
@@ -110,7 +113,8 @@ export async function toDeviceBmp(input: Uint8Array): Promise<Uint8Array> {
   return buf;
 }
 
-export async function savePhoto(name: string, bytes: Uint8Array): Promise<string> {
+export async function savePhoto(accountId: number, name: string, bytes: Uint8Array): Promise<string> {
+  const DIR = photosDir(accountId);
   await mkdir(DIR, { recursive: true });
   const id = Date.now().toString(36);
   // .tmp + rename: si se corta a la mitad, el aparato bajaba un BMP truncado y
@@ -118,7 +122,7 @@ export async function savePhoto(name: string, bytes: Uint8Array): Promise<string
   await writeBytesAtomic(`${DIR}/${id}.bmp`, bytes);
   await writeTextAtomic(`${DIR}/${id}.txt`, name.slice(0, 80));
   // Keep the album bounded: drop the oldest beyond MAX_PHOTOS.
-  const all = await index();
+  const all = await index(accountId);
   for (const old of all.slice(MAX_PHOTOS)) {
     await unlink(`${DIR}/${old.id}.bmp`).catch(() => {});
     await unlink(`${DIR}/${old.id}.txt`).catch(() => {});
@@ -126,15 +130,17 @@ export async function savePhoto(name: string, bytes: Uint8Array): Promise<string
   return id;
 }
 
-export const photos = new Hono();
+export const photos = new Hono<AppEnv>();
 
-photos.get("/", async (c) => c.json({ ok: true, photos: await index() }));
+photos.get("/", async (c) => c.json({ ok: true, photos: await index(accountOf(c)) }));
 
 photos.get("/file", async (c) => {
+  // El id se limpia a [a-z0-9]: no hay forma de que se escape del directorio
+  // de la cuenta con "..", una barra o una ruta absoluta.
   const id = (c.req.query("id") ?? "").replace(/[^a-z0-9]/gi, "");
   if (!id) return c.json({ ok: false, error: "id required" }, 400);
   try {
-    const bytes = await readFile(`${DIR}/${id}.bmp`);
+    const bytes = await readFile(`${photosDir(accountOf(c))}/${id}.bmp`);
     return new Response(bytes, { headers: { "Content-Type": "image/bmp", "Content-Length": String(bytes.length) } });
   } catch {
     return c.json({ ok: false, error: "not found" }, 404);
@@ -145,6 +151,7 @@ photos.post("/delete", async (c) => {
   const b = await readBody(c);
   const id = (b.id ?? "").toString().replace(/[^a-z0-9]/gi, "");
   if (!id) return c.json({ ok: false, error: "id required" }, 400);
+  const DIR = photosDir(accountOf(c));
   await unlink(`${DIR}/${id}.bmp`).catch(() => {});
   await unlink(`${DIR}/${id}.txt`).catch(() => {});
   return c.json({ ok: true });

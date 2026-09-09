@@ -22,18 +22,18 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
-import { load, save, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
+import { load, save, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
 import { sourcesLine } from "./websearch";
 import { redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { accountOf, type AppEnv } from "./tenant";
 
-const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
+// La zona es la de la cuenta del pedido (el lugar que eligió para el clima).
 
-
-export const voice = new Hono();
+export const voice = new Hono<AppEnv>();
 
 function framed(json: object, audio: Uint8Array | null): Response {
   const head = Buffer.from(JSON.stringify(json), "utf8");
@@ -123,7 +123,7 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "Sos el asistente por voz de un aparato de tinta electrónica sin teclado. Recibís una frase transcripta",
     "de voz (puede traer errores de reconocimiento; interpretala con sentido común y no comentes la transcripción)",
     "y devolvés JSON según el esquema.",
-    `Ahora es ${now} (${weekday}), zona ${TZ}. Resolvé fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
+    `Ahora es ${now} (${weekday}), zona ${timeZone()}. Resolvé fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
     `Hay exactamente DOS listas y no se pueden crear más: "${lists[0]}" (lo que se compra) y "${lists[1]}" (todo lo demás por hacer).`,
     "Si el usuario nombra cualquier otra lista, ignorá ese nombre: lo que sea una compra va a la de compras y todo lo demás a la de tareas.",
     "Reglas: 'recordame', 'avisame', 'despertame' → reminder. En dueAt poné la hora SOLO si el usuario la dijo; si dijo",
@@ -166,9 +166,9 @@ const ASK_TIME: Record<Lang, string> = {
 
 // Respuesta a "¿a qué hora?": "a las nueve", "14:30", "ocho y media". Se
 // resuelve sin LLM cuando alcanza con los dígitos, y con él si no.
-// Desfase de HUB_TZ respecto de UTC, para saber qué hora es "ahora" en casa.
+// Desfase de la zona de la cuenta respecto de UTC, para saber qué hora es "ahora" en casa.
 function tzOffsetMsLocal(): number {
-  const tz = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
+  const tz = timeZone();
   const at = Date.now();
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit",
@@ -225,11 +225,11 @@ export function repeatFromAction(raw: Action["repeat"]): Repeat {
 }
 type Parsed = { intent: string; reply: string; needsWeb: boolean; actions: Action[] };
 
-async function classify(text: string, lang: Lang): Promise<Parsed> {
-  const store = await load();
+async function classify(acc: number, text: string, lang: Lang): Promise<Parsed> {
+  const store = await load(acc);
   const now = new Date();
-  const local = now.toLocaleString("sv-SE", { timeZone: TZ }).slice(0, 16).replace(" ", "T");
-  const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: TZ });
+  const local = now.toLocaleString("sv-SE", { timeZone: timeZone() }).slice(0, 16).replace(" ", "T");
+  const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: timeZone() });
   const lists = DEFAULT_LISTS;  // son dos y son fijas: compras y tareas
   const raw = await chatJson<Partial<Parsed>>(
     { system: systemPrompt(local, weekday, lists, lang), memories: memoryLines(store), user: text, maxTokens: 1024 },
@@ -249,10 +249,10 @@ async function classify(text: string, lang: Lang): Promise<Parsed> {
 // hace falta internet, así que acá se contesta de nuevo con búsqueda (con
 // Anthropic la hace el modelo; con las compatibles busca el servidor). Cuesta
 // una llamada más, por eso solo se hace cuando el modelo lo pidió.
-async function answerWithSearch(question: string, lang: Lang): Promise<{ screen: string; spoken: string } | null> {
+async function answerWithSearch(acc: number, question: string, lang: Lang): Promise<{ screen: string; spoken: string } | null> {
   try {
-    const memories = memoryLines(await load());
-    const hoy = new Date().toLocaleDateString("es-AR", { timeZone: TZ, day: "2-digit", month: "long", year: "numeric" });
+    const memories = memoryLines(await load(acc));
+    const hoy = new Date().toLocaleDateString("es-AR", { timeZone: timeZone(), day: "2-digit", month: "long", year: "numeric" });
     const r = await chatSearch({
       memories,
       system: [
@@ -279,8 +279,8 @@ async function answerWithSearch(question: string, lang: Lang): Promise<{ screen:
   }
 }
 
-async function execute(parsed: Parsed, spoken: string, lang: Lang) {
-  const store = await load();
+async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) {
+  const store = await load(acc);
   const saved: { kind: string; list?: string; title: string; when?: string; repeatText?: string }[] = [];
   const stamp = new Date().toISOString();
   for (const a of parsed.actions ?? []) {
@@ -338,12 +338,13 @@ async function execute(parsed: Parsed, spoken: string, lang: Lang) {
         break; // timer corre en el aparato (timerSeconds)
     }
   }
-  if (saved.length) await save(store);
+  if (saved.length) await save(acc, store);
   console.log(`voice: "${spoken}" -> ${parsed.intent}`, saved.map((s) => `${s.kind}:${s.title}`).join(" | "));
   return saved;
 }
 
 voice.post("/", async (c) => {
+  const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
   const speak = c.req.query("speak") ?? "short";  // none | short | all (ajuste del aparato)
   // Segunda vuelta cuando le preguntamos la hora de un recordatorio: el
@@ -384,10 +385,10 @@ voice.post("/", async (c) => {
   try {
     if (pending) {
       const dueAt = await parseTimeReply(text, lang, pendingDate);
-      const store = await load();
+      const store = await load(acc);
       const aligned = dueAt ? alignToRepeat(dueAt.slice(0, 10), pendingRepeat) + dueAt.slice(10) : null;
       store.reminders.push({ id: nextId(store), title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });
-      await save(store);
+      await save(acc, store);
       const label = whenLabel(aligned, lang);
       const repText = repeatText(pendingRepeat, aligned, lang);
       const reply = aligned ? `${pending} — ${label}` : pending;
@@ -395,7 +396,7 @@ voice.post("/", async (c) => {
       console.log(`voice: hora de "${pending}" -> ${aligned} (${repText})`);
       return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", title: pending, when: label, repeatText: repText }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
     }
-    const parsed = await classify(text, lang);
+    const parsed = await classify(acc, text, lang);
     // Recordatorio sin hora (con día o sin día): se pregunta en vez de inventarla,
     // y no se guarda nada todavía — antes execute() ya lo había guardado y el
     // segundo turno creaba un duplicado.
@@ -421,13 +422,13 @@ voice.post("/", async (c) => {
     // Pregunta de actualidad: se vuelve a contestar con búsqueda.
     let spokenReply = parsed.reply;
     if (parsed.intent === "question" && parsed.needsWeb && !(parsed.actions ?? []).length) {
-      const better = await answerWithSearch(text, lang);
+      const better = await answerWithSearch(acc, text, lang);
       if (better) {
         parsed.reply = better.screen;
         spokenReply = better.spoken;
       }
     }
-    const saved = await execute(parsed, text, lang);
+    const saved = await execute(acc, parsed, text, lang);
     // Temporizador y alarma corren en el aparato: segundos hasta que suene.
     let timerSeconds = 0;
     for (const a of parsed.actions ?? []) {
@@ -462,8 +463,8 @@ voice.post("/", async (c) => {
 
 // Lo que el hub muestra y cachea: recordatorios pendientes (el primero es el
 // próximo), las dos listas con sus ítems pendientes y las notas.
-export async function hubSlice(lang: Lang) {
-  const store = await load();
+export async function hubSlice(accountId: number, lang: Lang) {
+  const store = await load(accountId);
   return {
     // La repetición va de dos formas: `repeat`/`weekday`/`interval` es lo que
     // lee y edita el firmware (HubStore::Reminder), `repeatSpec` es el objeto
@@ -508,31 +509,31 @@ export function fixTimerUnit(seconds: number, said: string): number {
   return capped;
 }
 
-export async function editEntry(body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null }): Promise<boolean> {
-  const store = await load();
+export async function editEntry(accountId: number, body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null }): Promise<boolean> {
+  const store = await load(accountId);
   const id = Number(body.id);
   if (body.kind === "feed") {
     const before = (store.feeds ?? []).length;
     store.feeds = (store.feeds ?? []).filter((f) => f.id !== id);
-    if (store.feeds.length !== before) await save(store);
+    if (store.feeds.length !== before) await save(accountId, store);
     return store.feeds.length !== before;
   }
   if (body.kind === "memory") {
     const before = (store.memories ?? []).length;
     store.memories = (store.memories ?? []).filter((m) => m.id !== id);
-    if (store.memories.length !== before) await save(store);
+    if (store.memories.length !== before) await save(accountId, store);
     return store.memories.length !== before;
   }
   if (body.kind === "reminder") {
     const before = store.reminders.length;
     store.reminders = store.reminders.filter((r) => r.id !== id);
-    if (store.reminders.length !== before) await save(store);
+    if (store.reminders.length !== before) await save(accountId, store);
     return store.reminders.length !== before;
   }
   if (body.kind === "note") {
     const before = store.notes.length;
     store.notes = store.notes.filter((n) => n.id !== id);
-    if (store.notes.length !== before) await save(store);
+    if (store.notes.length !== before) await save(accountId, store);
     return store.notes.length !== before;
   }
   for (const [name, items] of Object.entries(store.lists)) {
@@ -552,7 +553,7 @@ export async function editEntry(body: { kind?: string; id?: number; action?: str
     } else {
       return false;
     }
-    await save(store);
+    await save(accountId, store);
     return true;
   }
   return false;
@@ -561,8 +562,8 @@ export async function editEntry(body: { kind?: string; id?: number; action?: str
 // Tildar (o posponer `snoozeSeconds`) desde el aparato. Idempotente: llega
 // repetido desde la cola offline. Un recordatorio con repetición no se cierra:
 // pasa al próximo ciclo.
-export async function markDone(kind: "reminder" | "item", id: number, snoozeSeconds = 0): Promise<boolean> {
-  const store = await load();
+export async function markDone(accountId: number, kind: "reminder" | "item", id: number, snoozeSeconds = 0): Promise<boolean> {
+  const store = await load(accountId);
   let found = false;
   if (kind === "reminder") {
     for (const r of store.reminders) {
@@ -574,6 +575,6 @@ export async function markDone(kind: "reminder" | "item", id: number, snoozeSeco
   } else {
     for (const items of Object.values(store.lists)) for (const i of items) if (i.id === id) { i.done = true; found = true; }
   }
-  if (found) await save(store);
+  if (found) await save(accountId, store);
   return found;
 }

@@ -8,6 +8,8 @@ import { warmUp } from "./tts";
 import { warmAssets } from "./assets";
 import { normalizeLang } from "./lang";
 import { redactSecrets } from "./net";
+import { auth, seedFromFiles } from "./accounts";
+import { initDb, multiUser } from "./db";
 
 const app = new Hono();
 
@@ -21,7 +23,15 @@ app.onError((err, c) => {
 
 app.notFound((c) => c.json({ ok: false, error: "not found", code: "not_found" }, 404));
 
+// La base de datos, si la hay. SIN `DATABASE_URL` esto no hace nada y el
+// servidor arranca igual que siempre: archivos en /data y un solo DEVICE_TOKEN.
+// Con `DATABASE_URL` crea las tablas que falten y, la primera vez, migra lo que
+// había en /data a la cuenta 1 (ver `seedFromFiles`).
+await initDb();
+await seedFromFiles().catch((err) => console.error("db: no se pudo migrar /data", err));
+
 app.get("/", (c) => c.text("ws397 server ok"));
+app.route("/auth", auth);   // registro, login, logout y quién soy (solo con base de datos)
 app.route("/firmware", firmware);
 app.route("/board", board);
 app.route("/board/log", logPage);  // log del aparato, texto plano  // página web para el teléfono (pide el token del aparato)
@@ -32,6 +42,6 @@ warmUp(hubLang);       // Piper carga el modelo una vez
 warmAssets(hubLang);   // genera el paquete de contenido si falta (una sola vez, queda en /data)
 
 const port = Number(process.env.PORT ?? 3000);
-console.log(`ws397 server on :${port}`);
+console.log(`ws397 server on :${port} (${multiUser ? "multiusuario, Postgres" : "un solo usuario, archivos en /data"})`);
 
 export default { port, fetch: app.fetch };

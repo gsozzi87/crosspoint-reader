@@ -3,18 +3,20 @@
 // el navegador desde /board/log, sin cable ni monitor serie.
 import { Hono } from "hono";
 import { readFile } from "node:fs/promises";
-import { serialize, writeAtomicNow } from "./fsjson";
+import { deviceLogFile, serialize, writeAtomicNow } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
 
-const FILE = process.env.DEVICE_LOG_FILE ?? "/data/device.log";
+// El log es POR CUENTA y nunca se mezcla: adentro están los nombres de las
+// redes WiFi de la casa y todo lo que se dicta por voz.
 const MAX_BYTES = 512 * 1024;
 
-export const deviceLog = new Hono();
+export const deviceLog = new Hono<AppEnv>();
 
 // GET /api/log (con el Bearer del aparato): el texto del log, para la página.
 deviceLog.get("/", async (c) => {
   let text = "";
   try {
-    text = await readFile(FILE, "utf8");
+    text = await readFile(deviceLogFile(accountOf(c)), "utf8");
   } catch {
     text = "(todavía no subió ningún log; sincronizá el hub)";
   }
@@ -26,6 +28,7 @@ deviceLog.post("/", async (c) => {
   if (!text.trim()) return c.json({ ok: false, error: "empty" }, 400);
   // Leer y escribir dentro de la misma cola: dos subidas juntas leían las dos
   // el archivo viejo y la segunda se comía el log de la primera.
+  const FILE = deviceLogFile(accountOf(c));
   const size = await serialize(FILE, async () => {
     let previous = "";
     try {
@@ -41,10 +44,11 @@ deviceLog.post("/", async (c) => {
   return c.json({ ok: true, size });
 });
 
-// La página en sí no lleva datos: pide el log con el token guardado en el
-// navegador (el mismo de /board). Antes servía el log entero sin token y ahí
-// están los nombres de las redes WiFi de la casa y todo lo que se dictó por voz.
-export const logPage = new Hono();
+// La página en sí no lleva datos: pide el log con la sesión de /board (modo
+// multiusuario) o con el token guardado en el navegador (como siempre). Antes
+// servía el log entero sin token y ahí están los nombres de las redes WiFi de la
+// casa y todo lo que se dictó por voz.
+export const logPage = new Hono<AppEnv>();
 
 logPage.get("/", (c) =>
   c.html(
@@ -58,15 +62,24 @@ input,button{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid #55
 <script>
 const token = localStorage.getItem("deviceToken") || "";
 async function load() {
-  if (!token) { ask(); return; }
-  const r = await fetch("/api/log", { headers: { Authorization: "Bearer " + token } });
-  if (r.status === 401) { localStorage.removeItem("deviceToken"); ask(); return; }
+  // Primero la cookie de sesión (modo multiusuario); si el servidor no tiene
+  // cuentas, el token guardado del aparato.
+  const headers = token ? { Authorization: "Bearer " + token } : {};
+  const r = await fetch("/api/log", { headers: headers, credentials: "same-origin" });
+  if (r.status === 401) { ask(); return; }
   const t = await r.text();
   document.getElementById("l").textContent = t;
   document.getElementById("size").textContent = Math.round(t.length / 1024) + " KB";
   window.scrollTo(0, document.body.scrollHeight);
 }
-function ask() {
+async function ask() {
+  let multi = false;
+  try { multi = (await (await fetch("/auth/me", { credentials: "same-origin" })).json()).multi === true; } catch (e) {}
+  if (multi) {
+    document.getElementById("l").innerHTML =
+      "<p>Hay que entrar con tu cuenta: <a href='/board'>ir a la Pizarra</a>.</p>";
+    return;
+  }
   document.getElementById("l").innerHTML =
     "<p>Token del aparato:</p><p><input id='t' style='width:60%'> <button id='go'>Entrar</button></p>";
   document.getElementById("go").addEventListener("click", () => {

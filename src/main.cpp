@@ -657,6 +657,11 @@ void setup() {
   devlog::begin();  // from here every LOG_* line also goes to the SD
   setLogSink(&devlog::write);
   SERVER_STORE.loadFromFile();
+  // El aparato tiene identidad propia desde el primer arranque: si no hay token
+  // guardado se genera uno al azar y se persiste. Después se vincula a una
+  // cuenta desde la web con el código que muestra Ajustes -> Vincular con mi
+  // cuenta; nunca hay que escribir un token de 64 caracteres con la palanca.
+  SERVER_STORE.ensureToken();
   HUB_STORE.loadFromFile();
   OPDS_STORE.loadFromFile();
   // ws397: la ganancia del micrófono se calibra en Ajustes -> Prueba de audio y

@@ -132,9 +132,9 @@ ServerClient::Result ServerClient::get(const std::string& path, Response& out, b
 }
 
 ServerClient::Result ServerClient::postJson(const std::string& path, const std::string& json, Response& out,
-                                            uint32_t timeoutMs) {
+                                            uint32_t timeoutMs, bool auth) {
   const Body body{"application/json", reinterpret_cast<const uint8_t*>(json.data()), json.size()};
-  return request("POST", path, &body, true, out, timeoutMs);
+  return request("POST", path, &body, auth, out, timeoutMs);
 }
 
 ServerClient::Result ServerClient::postBytes(const std::string& path, const char* contentType, const uint8_t* data,

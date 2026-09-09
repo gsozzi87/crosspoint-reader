@@ -31,6 +31,8 @@ enum class SettingAction {
   HubLocation,
   Wallpaper,
   DownloadAssets,  // ws397: el paquete de contenido (dibujos, sonidos, Biblia)
+  UsbDrive,        // ws397: la tarjeta como disco en la computadora, por cable
+  DevicePair,      // ws397: vincular el aparato con una cuenta de la web
 };
 
 struct SettingInfo {

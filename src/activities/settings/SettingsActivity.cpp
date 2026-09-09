@@ -41,6 +41,10 @@
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
 #include "music/MusicPlayer.h"
+#if FREEINK_CAP_USB_MSC
+#include "activities/network/UsbDriveActivity.h"
+#include "DevicePairActivity.h"
+#endif
 
 namespace fui = freeink::ui;
 
@@ -127,6 +131,12 @@ void SettingsActivity::rebuildSettingsLists() {
   // tarjetas, sonidos, la Biblia entera) vive en el servidor y se baja acá, o
   // solo, detrás de la actualización de firmware.
   if (isWs397) {
+#if FREEINK_CAP_USB_MSC
+    // La tarjeta como disco por USB: es la forma de cargar libros y MP3 sin
+    // sacarla del aparato, así que va acá arriba y no escondida en Transferir
+    // archivos.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_USB_DRIVE, SettingAction::UsbDrive));
+#endif
     systemSettings.push_back(SettingInfo::Action(StrId::STR_ASSETS_MENU, SettingAction::DownloadAssets));
   }
   // Actualizar por SD: en la ws397 el firmware entra por OTA desde el servidor
@@ -147,6 +157,10 @@ void SettingsActivity::rebuildSettingsLists() {
     // "Prueba de servidor" era un diagnóstico de desarrollo: lo mismo lo dice
     // Sincronizar hub, que además sirve para algo. Queda ServerTestActivity en
     // el código por si hay que volver a colgarla de algún lado.
+    // Vincular con la cuenta de la web: el aparato muestra un código de seis
+    // dígitos y la persona lo escribe desde el teléfono, ya con su sesión
+    // iniciada. Es la única forma de asociarlo sin teclado.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_PAIR_TITLE, SettingAction::DevicePair));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
     // Fondo de pantalla: elegir qué foto queda pintada cuando el aparato se suspende.
@@ -434,6 +448,14 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::ServerTest:
         startActivityForResult(std::make_unique<ServerTestActivity>(renderer, mappedInput), resultHandler);
+        break;
+#if FREEINK_CAP_USB_MSC
+      case SettingAction::UsbDrive:
+        startActivityForResult(std::make_unique<UsbDriveActivity>(renderer, mappedInput), resultHandler);
+        break;
+#endif
+      case SettingAction::DevicePair:
+        startActivityForResult(std::make_unique<DevicePairActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::HubSync:
         startActivityForResult(std::make_unique<HubSyncActivity>(renderer, mappedInput), resultHandler);

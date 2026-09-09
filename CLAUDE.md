@@ -84,6 +84,35 @@ llegue el hardware.
   desde el pin (reg01 0x3F), volumen 0xB2.
 - Sensores: SHTC3 en 0x70 (sin driver aún), QMI8658 en 0x6B.
 
+## Modo memoria USB (la tarjeta como disco)
+
+- `-DFREEINK_CAP_USB_MSC=1 -DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=1` en el env `ws397`. La variante prebuilt
+  `qio_opi` que usa esta placa ya trae TinyUSB con `CONFIG_TINYUSB_MSC_ENABLED=1`, así que **no** hay que cambiar
+  `board_build.arduino.memory_type` (el X4 Pro lo hace por otro motivo).
+- `ARDUINO_USB_MODE=0` cambia el tipo de `Serial` de `HWCDC` a `USBCDC`; `lib/Logging/Logging.h` lo contempla ahora
+  (una referencia del tipo equivocado no compila). El log por cable sigue saliendo por USB CDC, pero acá el log que
+  importa es el que se sube al servidor y se lee en `/board/log`.
+- Se llega por **Ajustes → Sistema → Modo memoria USB** (`SettingAction::UsbDrive` → `UsbDriveActivity` del SDK) y
+  también por Transferir archivos, donde en las placas con MSC la memoria USB es la **primera** opción
+  (`menuModes[]` en `NetworkModeSelectionActivity`: el orden de la pantalla dejó de coincidir con el de
+  `NetworkMode`). Cuesta ~23 KB de RAM y ~60 KB de flash.
+- Con esto se cargan libros y MP3 sin sacar la tarjeta. La subida de archivos por la web quedó **descartada**.
+
+## Identidad del aparato y cuentas (multiusuario)
+
+- El aparato se genera su token solo, la primera vez que arranca: 32 bytes de `esp_random` en hexa
+  (`ServerCredentialStore::ensureToken()`, llamado desde `setup()`), guardados en `/.crosspoint/server.json`.
+  `ServerCredentialStore::deviceId()` es la MAC de fábrica en hexa y es la identidad **pública**.
+- **El token NO se deriva de la MAC**, ni siquiera por HMAC: eso obliga a meter un secreto de fábrica en el
+  firmware, y cualquiera que baje un `.bin` lo saca y calcula el token de cualquier aparato a partir de su MAC —
+  que va impresa en la caja. Perder el token no pierde datos: los datos son de la CUENTA, así que se vuelve a
+  vincular con el código y listo.
+- Vincular sin teclado (`DevicePairActivity`, Ajustes → Sistema → Vincular con mi cuenta): `POST /api/pair/start`
+  `{deviceId, token}` **sin Bearer** → `{ok, code, expiresIn}`; la pantalla muestra el código de seis dígitos en
+  dígitos de segmentos y consulta `GET /api/pair/status` cada 3 s hasta que del otro lado lo escriban en
+  `/board` → Aparatos. `ServerClient::postJson` acepta `auth=false` justamente para el primero (un Bearer que el
+  servidor todavía no conoce daría 401 antes de llegar al handler).
+
 ## Servidor propio (Fase 1, cliente HTTP común)
 
 - `lib/ServerClient/`: `ServerCredentialStore` (`/.crosspoint/server.json`: URL del servidor y token del aparato,

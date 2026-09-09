@@ -1,14 +1,15 @@
-// Datos del asistente en un JSON del volumen de Railway (/data/store.json):
-// recordatorios, DOS listas (compras y tareas) y notas. Alcanza para un usuario
-// y una casa; si crece, se cambia por SQLite sin tocar a quien lo usa
-// (voice.ts, hub.ts).
+// Datos del asistente: recordatorios, DOS listas (compras y tareas) y notas.
+//
+// Vive en el documento "store" de la cuenta: sin `DATABASE_URL` eso es el
+// /data/store.json de siempre, y con base de datos es la fila
+// docs(account_id, "store") con exactamente el mismo contenido. Lo único que
+// cambió acá es que hay que decir DE QUÉ CUENTA: `load(accountId)`.
 //
 // No hay pizarra de mensajes: se sacó del producto. Un store.json viejo que
 // todavía traiga "messages" se lee igual y esa clave se ignora.
-import { readJsonSafe, writeJsonAtomic } from "./fsjson";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { readDoc, writeDoc } from "./fsjson";
 import { LABELS, type Lang } from "./lang";
-
-const FILE = process.env.STORE_FILE ?? "/data/store.json";
 
 export type RepeatKind = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
 
@@ -168,25 +169,47 @@ function normalizeStore(raw: unknown): Store {
   return store;
 }
 
-let cache: Store | null = null;
-let loading: Promise<Store> | null = null;
+// Caché por cuenta, con tope. Con 1000 aparatos un Map sin límite es una fuga
+// de memoria, así que se queda con las últimas MAX_CACHED cuentas (LRU por orden
+// de inserción del Map) y el resto vuelve a leerse de la base.
+const MAX_CACHED = 64;
+const cache = new Map<number, Store>();
+const loading = new Map<number, Promise<Store>>();
 
-export function load(): Promise<Store> {
-  if (cache) return Promise.resolve(cache);
+function remember(accountId: number, store: Store): Store {
+  cache.delete(accountId);
+  cache.set(accountId, store);
+  while (cache.size > MAX_CACHED) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  return store;
+}
+
+export function load(accountId: number): Promise<Store> {
+  const hit = cache.get(accountId);
+  if (hit) return Promise.resolve(remember(accountId, hit));
   // La promesa se cachea, no el resultado: dos pedidos juntos leían el archivo
   // dos veces y se quedaban con dos objetos distintos (lo que guardaba uno lo
   // pisaba el otro).
-  loading ??= readJsonSafe<unknown>(FILE, null).then((raw) => {
-    cache = normalizeStore(raw);
-    loading = null;
-    return cache;
-  });
-  return loading;
+  let pending = loading.get(accountId);
+  if (!pending) {
+    pending = readDoc<unknown>(accountId, "store", null).then((raw) => {
+      loading.delete(accountId);
+      return remember(accountId, normalizeStore(raw));
+    }, (err) => {
+      loading.delete(accountId);
+      throw err;
+    });
+    loading.set(accountId, pending);
+  }
+  return pending;
 }
 
-export async function save(store: Store): Promise<void> {
-  cache = store;
-  await writeJsonAtomic(FILE, store);
+export async function save(accountId: number, store: Store): Promise<void> {
+  remember(accountId, store);
+  await writeDoc(accountId, "store", store);
 }
 
 export function nextId(store: Store): number {
@@ -246,10 +269,7 @@ export function whenLabel(dueAt: string | null, lang: Lang = "es", now = new Dat
 // usa el clima) y HUB_TZ queda de respaldo. Se relee cada minuto en vez de
 // cachearse para siempre: un proceso que arrancó antes de que se guardara el
 // lugar se quedaba con la zona vieja hasta el próximo deploy.
-const SETTINGS_FILE = process.env.HUB_SETTINGS_FILE ?? "/data/hub-settings.json";
 const ENV_TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
-let tzValue = ENV_TZ;
-let tzReadAt = 0;
 
 function tzExists(tz: string): boolean {
   try {
@@ -260,21 +280,62 @@ function tzExists(tz: string): boolean {
   }
 }
 
-// La zona en uso. Sincrónica a propósito: localToEpoch se llama desde todos
-// lados y no puede ser async.
+// La zona es de CADA CUENTA (sale del lugar que eligió para el clima), pero
+// `timeZone()` tiene que ser sincrónica: localToEpoch, expandRepeat y media
+// docena de funciones más la llaman desde todos lados y no pueden ser async ni
+// recibir la cuenta por parámetro sin arrastrar el accountId hasta el último
+// rincón. Por eso la zona del pedido en curso viaja en un AsyncLocalStorage que
+// arma el middleware de la API (`withTimeZone`): es lo único implícito de todo
+// el multiusuario, y es a propósito.
+type TzScope = { tz: string };
+const tzScope = new AsyncLocalStorage<TzScope>();
+
+// Zona por cuenta, releída como mucho una vez por minuto (antes era una sola
+// variable global y un proceso que arrancó sin lugar se quedaba con la zona
+// vieja hasta el próximo deploy).
+const tzCache = new Map<number, { tz: string; at: number }>();
+
 export function timeZone(): string {
-  return tzValue;
+  return tzScope.getStore()?.tz ?? ENV_TZ;
 }
 
-// Relee la zona del lugar guardado (como mucho una vez por minuto). La llaman
-// los endpoints del calendario y del hub antes de hacer cuentas con fechas.
-export async function refreshTimeZone(): Promise<string> {
-  if (Date.now() - tzReadAt < 60_000) return tzValue;
-  tzReadAt = Date.now();
-  const raw = await readJsonSafe<Record<string, unknown> | null>(SETTINGS_FILE, null);
-  const tz = raw && typeof raw === "object" ? String(raw.timezone ?? "") : "";
-  tzValue = tz && tzExists(tz) ? tz : ENV_TZ;
-  return tzValue;
+/** La zona de una cuenta, del lugar que eligió para el clima; HUB_TZ de respaldo. */
+export async function timeZoneOf(accountId: number): Promise<string> {
+  const hit = tzCache.get(accountId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.tz;
+  let tz = ENV_TZ;
+  try {
+    const raw = await readDoc<Record<string, unknown> | null>(accountId, "hub-settings", null);
+    const saved = raw && typeof raw === "object" ? String(raw.timezone ?? "") : "";
+    if (saved && tzExists(saved)) tz = saved;
+  } catch (err) {
+    console.error("timeZoneOf:", err);
+  }
+  if (tzCache.size > 512) tzCache.clear();
+  tzCache.set(accountId, { tz, at: Date.now() });
+  return tz;
+}
+
+/** Corre `fn` con la zona de esa cuenta puesta para todo lo sincrónico de adentro. */
+export async function withTimeZone<T>(accountId: number, fn: () => Promise<T>): Promise<T> {
+  return tzScope.run({ tz: await timeZoneOf(accountId) }, fn);
+}
+
+/**
+ * Relee la zona de la cuenta y la deja puesta en el pedido en curso. La llaman
+ * el calendario y el hub antes de hacer cuentas con fechas; con el middleware
+ * ya puesta, es redundante pero barata (caché de un minuto).
+ */
+export async function refreshTimeZone(accountId: number): Promise<string> {
+  const tz = await timeZoneOf(accountId);
+  const scope = tzScope.getStore();
+  if (scope) scope.tz = tz;
+  return tz;
+}
+
+/** Cuando cambia el lugar, la zona vieja no vale más. */
+export function forgetTimeZone(accountId: number): void {
+  tzCache.delete(accountId);
 }
 
 // Desfase (ms) de la zona en uso respecto de UTC en un instante dado.

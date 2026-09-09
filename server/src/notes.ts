@@ -14,10 +14,11 @@
 import { Hono } from "hono";
 import { load, save, nextId } from "./store";
 import { readBody } from "./net";
+import { accountOf, type AppEnv } from "./tenant";
 
 export const MAX_NOTE_CHARS = 20_000;
 
-export const notes = new Hono();
+export const notes = new Hono<AppEnv>();
 
 export function clampNote(raw: unknown): string {
   const text = (raw ?? "").toString().trim();
@@ -28,10 +29,11 @@ notes.post("/", async (c) => {
   const b = await readBody(c);
   const text = clampNote(b.text);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
-  const store = await load();
+  const acc = accountOf(c);
+  const store = await load(acc);
   const id = nextId(store);
   store.notes.push({ id, text, createdAt: new Date().toISOString() });
-  await save(store);
+  await save(acc, store);
   console.log(`nota nueva #${id} (${text.length} caracteres)`);
   return c.json({ ok: true, id });
 });

@@ -31,7 +31,8 @@
 //   - `end` de un evento de todo el día es el ÚLTIMO día INCLUIDO (no el
 //     siguiente, como en ICS): es lo que espera cualquiera que lo lea.
 import { Hono } from "hono";
-import { readJsonSafe, serialize, writeAtomicNow } from "./fsjson";
+import { mutateDoc, readDoc } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
 import { readBody } from "./net";
 import { LANGUAGE_NAME, normalizeLang, type Lang } from "./lang";
 import { chatJson, LlmError } from "./llm";
@@ -41,7 +42,6 @@ import {
   localToEpoch, normalizeRepeat, refreshTimeZone, repeatText, startOfLocalDay, timeZone, todayLocal, type Repeat,
 } from "./store";
 
-const FILE = process.env.CALENDAR_FILE ?? "/data/calendar.json";
 const MAX_OCCURRENCES = 500;
 
 export type CalEvent = {
@@ -130,20 +130,18 @@ function normalizeCalendar(raw: unknown): CalendarFile {
   return { version: 1, events };
 }
 
-export async function loadCalendar(): Promise<CalendarFile> {
-  return normalizeCalendar(await readJsonSafe<unknown>(FILE, null));
+export async function loadCalendar(accountId: number): Promise<CalendarFile> {
+  return normalizeCalendar(await readDoc<unknown>(accountId, "calendar", null));
 }
 
-// Leer-modificar-escribir dentro de la MISMA cola de fsjson que usa
-// writeJsonAtomic: si otro módulo (viajes) escribe el archivo al mismo tiempo,
-// las dos escrituras se ordenan en vez de pisarse. Nunca se cachea el archivo
-// en memoria, justamente porque no somos los únicos que lo escriben.
-async function mutate<T>(fn: (cal: CalendarFile) => T): Promise<T> {
-  return serialize(FILE, async () => {
-    const cal = normalizeCalendar(await readJsonSafe<unknown>(FILE, null));
+// Leer-modificar-escribir sin carreras (`mutateDoc` de fsjson): si otro módulo
+// (viajes) escribe el calendario al mismo tiempo, las dos escrituras se ordenan
+// en vez de pisarse. Nunca se cachea en memoria, justamente porque no somos los
+// únicos que lo escriben.
+async function mutate<T>(accountId: number, fn: (cal: CalendarFile) => T): Promise<T> {
+  return mutateDoc(accountId, "calendar", normalizeCalendar, (cal) => {
     const out = fn(cal);
     cal.events.sort((a, b) => a.start.localeCompare(b.start));
-    await writeAtomicNow(FILE, JSON.stringify(cal, null, 2));
     return out;
   });
 }
@@ -233,8 +231,8 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
 }
 
 // Los recordatorios de store.ts se PROYECTAN acá: se leen, no se copian.
-async function expandReminders(from: string, to: string, lang: Lang, out: Occurrence[]): Promise<void> {
-  const store = await loadStore();
+async function expandReminders(accountId: number, from: string, to: string, lang: Lang, out: Occurrence[]): Promise<void> {
+  const store = await loadStore(accountId);
   for (const r of store.reminders) {
     if (r.done || !r.dueAt) continue;
     const date = r.dueAt.slice(0, 10);
@@ -269,14 +267,14 @@ async function expandReminders(from: string, to: string, lang: Lang, out: Occurr
 }
 
 // Todo lo que cae en [from, to], ordenado por día y hora.
-export async function occurrencesBetween(from: string, to: string, lang: Lang): Promise<{ items: Occurrence[]; truncated: boolean }> {
-  const cal = await loadCalendar();
+export async function occurrencesBetween(accountId: number, from: string, to: string, lang: Lang): Promise<{ items: Occurrence[]; truncated: boolean }> {
+  const cal = await loadCalendar(accountId);
   const out: Occurrence[] = [];
   let full = false;
   for (const ev of cal.events) {
     if (!expandEvent(ev, from, to, lang, out)) { full = true; break; }
   }
-  if (!full) await expandReminders(from, to, lang, out);
+  if (!full) await expandReminders(accountId, from, to, lang, out);
   out.sort((a, b) =>
     a.date.localeCompare(b.date) ||
     (a.allDay === b.allDay ? (a.time || "").localeCompare(b.time || "") : a.allDay ? -1 : 1) ||
@@ -297,7 +295,7 @@ export function daySummary(items: Occurrence[]): { date: string; count: number; 
 
 // ── Rutas ───────────────────────────────────────────────────────────────────
 
-export const calendar = new Hono();
+export const calendar = new Hono<AppEnv>();
 
 function rangeOf(fromRaw: string, toRaw: string): { from: string; to: string } {
   // Sin rango: el mes de hoy. Tope de 400 días para que nadie pida diez años.
@@ -311,10 +309,11 @@ function rangeOf(fromRaw: string, toRaw: string): { from: string; to: string } {
 }
 
 calendar.get("/", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const { from, to } = rangeOf(c.req.query("from") ?? "", c.req.query("to") ?? "");
-  const { items, truncated } = await occurrencesBetween(from, to, lang);
+  const { items, truncated } = await occurrencesBetween(acc, from, to, lang);
   const summary = daySummary(items);
   // Un mes sin nada igual lleva un día con count 0: el aparato saca de ahí de
   // qué mes es la respuesta cuando pide sin rango (sin reloj no sabe la fecha),
@@ -334,17 +333,19 @@ calendar.get("/", async (c) => {
 });
 
 calendar.get("/day", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const date = isDateStr(c.req.query("date") ?? "") ? (c.req.query("date") as string) : todayLocal();
-  const { items } = await occurrencesBetween(date, date, lang);
+  const { items } = await occurrencesBetween(acc, date, date, lang);
   return c.json({ ok: true, date, tz: timeZone(), count: items.length, items });
 });
 
 // Alta y edición. Acepta {date, time, endTime} (lo cómodo para un formulario) o
 // {start, end} ya armados.
 calendar.post("/event", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const b = await readBody(c);
   const title = (b.title ?? "").toString().trim().slice(0, 200);
@@ -360,7 +361,7 @@ calendar.post("/event", async (c) => {
   // Con repetición semanal el evento arranca el primer día que corresponde.
   const first = alignToRepeat(date, repeat);
   const span = Math.max(0, diffDays(endDate, date));
-  const ev = await mutate((cal) => {
+  const ev = await mutate(acc, (cal) => {
     const id = Math.floor(Number(b.id));
     const existing = Number.isFinite(id) && id > 0 ? cal.events.find((e) => e.id === id) : undefined;
     if (Number.isFinite(id) && id > 0 && !existing) return null;
@@ -389,7 +390,7 @@ calendar.post("/event/delete", async (c) => {
   const b = await readBody(c);
   const id = Math.floor(Number(b.id));
   if (!Number.isFinite(id) || id <= 0) return c.json({ ok: false, error: "id required" }, 400);
-  const found = await mutate((cal) => {
+  const found = await mutate(accountOf(c), (cal) => {
     const before = cal.events.length;
     cal.events = cal.events.filter((e) => e.id !== id);
     return cal.events.length !== before;
@@ -400,7 +401,7 @@ calendar.post("/event/delete", async (c) => {
 // La repetición en una línea, para mostrarla mientras se edita.
 //   GET /api/calendar/repeat?kind=weekly&days=2,4&interval=1&until=2026-12-31&date=2026-09-08&lang=es
 calendar.get("/repeat", async (c) => {
-  await refreshTimeZone();
+  await refreshTimeZone(accountOf(c));
   const lang = normalizeLang(c.req.query("lang"));
   const daysRaw = (c.req.query("days") ?? "").split(",").map((d) => Number(d)).filter((d) => Number.isInteger(d));
   const untilRaw = c.req.query("until") ?? "";
@@ -502,7 +503,7 @@ function capFirst(s: string): string {
 }
 
 calendar.post("/dictate", async (c) => {
-  await refreshTimeZone();
+  await refreshTimeZone(accountOf(c));
   const b = await readBody(c);
   const lang = normalizeLang(b.lang ?? c.req.query("lang"));
   const text = (b.text ?? "").toString().trim().slice(0, MAX_DICTATE_CHARS);
@@ -541,7 +542,7 @@ calendar.post("/dictate", async (c) => {
 
   // Un solo leer-modificar-escribir para todas: el archivo lo escriben también
   // los viajes, y una escritura por actividad es una carrera por cada renglón.
-  const added = await mutate((cal) => {
+  const added = await mutate(accountOf(c), (cal) => {
     const out: { id: number; start: string; title: string; allDay: boolean }[] = [];
     for (const it of items.slice(0, MAX_DICTATE_ITEMS)) {
       const title = capFirst(String(it.title ?? "").trim().replace(/\s+/g, " ").slice(0, 200));

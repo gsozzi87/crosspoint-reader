@@ -28,6 +28,7 @@
 // cualquiera con CDATA daban cero. El orden correcto es CDATA → etiquetas → entidades.
 import { Hono } from "hono";
 import { load } from "./store";
+import { accountOf, type AppEnv } from "./tenant";
 import { normalizeLang, type Lang } from "./lang";
 import { safeFetchAt, textCappedSmart, BROWSER_UA, FEED_ACCEPT } from "./net";
 
@@ -40,7 +41,12 @@ const MAX_DESC = 8_000;              // el <content:encoded> sirve de artículo 
 
 export type Item = { id: number; title: string; when: string; link: string; desc: string };
 type FeedCache = { at: number; items: Item[]; error?: string };
-const cache = new Map<number, FeedCache>();
+// La clave es la URL, NO el id del feed: los ids son de cada cuenta (el feed 5
+// de una casa no es el feed 5 de otra) y con el id de clave una cuenta veía los
+// titulares de la otra. Por URL además se comparte lo ya bajado, que es lo
+// mismo para todos.
+const cache = new Map<string, FeedCache>();
+const MAX_CACHED_FEEDS = 400;
 
 // El CDATA se desenvuelve primero, siempre.
 function unCdata(s: string): string {
@@ -284,18 +290,27 @@ function errorText(err: unknown): string {
 
 // Devuelve también el error: un feed caído daba lista vacía con ok:true y en el
 // aparato parecía que el diario no publicó nada.
-async function fetchFeed(id: number, url: string): Promise<{ items: Item[]; error?: string }> {
-  const c = cache.get(id);
+async function fetchFeed(url: string): Promise<{ items: Item[]; error?: string }> {
+  const c = cache.get(url);
   if (c && Date.now() - c.at < (c.error ? ERROR_TTL_MS : TTL_MS)) return { items: c.items, error: c.error };
+  const keep = (v: FeedCache) => {
+    cache.delete(url);
+    cache.set(url, v);
+    while (cache.size > MAX_CACHED_FEEDS) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  };
   try {
     const { items } = await readFeed(url);
-    cache.set(id, { at: Date.now(), items });
+    keep({ at: Date.now(), items });
     return { items };
   } catch (err) {
     const error = errorText(err);
     console.error("rss:", url.slice(0, 60), error);
     // Se guardan los últimos titulares buenos: mejor noticias viejas que nada.
-    cache.set(id, { at: Date.now(), items: c?.items ?? [], error });
+    keep({ at: Date.now(), items: c?.items ?? [], error });
     return { items: c?.items ?? [], error };
   }
 }
@@ -336,14 +351,14 @@ export function extractArticle(html: string): { title: string; text: string } {
   return { title, text: text.slice(0, MAX_TEXT) };
 }
 
-export const rss = new Hono();
+export const rss = new Hono<AppEnv>();
 
 rss.get("/", async (c) => {
-  const store = await load();
+  const store = await load(accountOf(c));
   const feeds = store.feeds ?? [];
   // En serie, cinco feeds lentos eran cinco esperas sumadas y el aparato se
   // quedaba mirando "Cargando".
-  const results = await Promise.allSettled(feeds.map((f) => fetchFeed(f.id, f.url)));
+  const results = await Promise.allSettled(feeds.map((f) => fetchFeed(f.url)));
   const out = feeds.map((f, i) => {
     const r = results[i];
     const got = r.status === "fulfilled" ? r.value : { items: [] as Item[], error: String(r.reason).slice(0, 120) };
@@ -442,7 +457,7 @@ rss.get("/article", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const feedId = Number(c.req.query("feed"));
   const itemId = Number(c.req.query("item"));
-  const store = await load();
+  const store = await load(accountOf(c));
   const feed = (store.feeds ?? []).find((f) => f.id === feedId);
   // Todo lo que sale por acá vuelve con 200 y un texto legible: el aparato solo
   // sabe mostrar "No se pudo obtener respuesta" cuando el status no es 2xx, y un
@@ -451,7 +466,7 @@ rss.get("/article", async (c) => {
   const explain = (title: string, why: string, reason: Reason | "stale") =>
     c.json({ ok: true, title, text: why, when: "", source: feed?.name ?? "", reason, cache: false });
   if (!feed) return explain("", STALE[lang], "stale");
-  const { items, error } = await fetchFeed(feed.id, feed.url);
+  const { items, error } = await fetchFeed(feed.url);
   const item = items.find((i) => i.id === itemId);
   if (!item) return explain(feed.name, error ? `${STALE[lang]}\n\n${error}` : STALE[lang], "stale");
 

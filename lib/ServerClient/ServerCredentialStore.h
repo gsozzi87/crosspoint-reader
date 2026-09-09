@@ -35,6 +35,23 @@ class ServerCredentialStore : public PersistableStore<ServerCredentialStore> {
   void setToken(const std::string& t);
   const std::string& getToken() const { return token; }
   bool hasToken() const { return !token.empty(); }
+
+  // Identidad pública del aparato: la MAC de fábrica en hex, sin separadores.
+  // Es lo que se manda al vincularlo y lo que se ve en la web; no es secreta.
+  static std::string deviceId();
+
+  // El token propio del aparato. Se genera UNA sola vez, al azar, y se guarda
+  // acá; después se vincula a una cuenta desde la web con el código que muestra
+  // la pantalla.
+  //
+  // NO se deriva de la MAC. Derivarlo tendría la ventaja de recuperarlo solo
+  // después de un borrado, pero para eso hay que meter un secreto de fábrica en
+  // el firmware, y cualquiera que baje un .bin puede sacarlo y, con eso,
+  // calcular el token de CUALQUIER aparato a partir de su MAC — que además va
+  // impresa en la caja. Al azar no hay nada que deducir, y perder el token no
+  // pierde datos: los datos son de la CUENTA, así que se vuelve a vincular con
+  // el código de seis dígitos y listo.
+  const std::string& ensureToken();
 };
 
 #define SERVER_STORE ServerCredentialStore::getInstance()

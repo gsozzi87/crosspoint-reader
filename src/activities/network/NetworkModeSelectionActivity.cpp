@@ -10,29 +10,41 @@
 namespace fui = freeink::ui;
 
 namespace {
+// En las placas con memoria USB, ESA va primera: enchufar el cable y que la
+// tarjeta aparezca como un disco es lo que se usa el 90 % de las veces, y así
+// entrar y apretar OK ya alcanza. `menuModes` existe porque el orden de la
+// pantalla dejó de coincidir con el de NetworkMode.
 constexpr StrId menuItems[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    StrId::STR_JOIN_NETWORK,
-    StrId::STR_CALIBRE_WIRELESS,
-    StrId::STR_CREATE_HOTSPOT,
 #if FREEINK_CAP_USB_MSC
     StrId::STR_USB_DRIVE,
 #endif
+    StrId::STR_JOIN_NETWORK,
+    StrId::STR_CALIBRE_WIRELESS,
+    StrId::STR_CREATE_HOTSPOT,
 };
 constexpr StrId menuDescs[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    StrId::STR_JOIN_DESC,
-    StrId::STR_CALIBRE_DESC,
-    StrId::STR_HOTSPOT_DESC,
 #if FREEINK_CAP_USB_MSC
     StrId::STR_USB_DRIVE_DESC,
 #endif
+    StrId::STR_JOIN_DESC,
+    StrId::STR_CALIBRE_DESC,
+    StrId::STR_HOTSPOT_DESC,
 };
 constexpr UIIcon menuIcons[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
-    UIIcon::Wifi,
-    UIIcon::Library,
-    UIIcon::Hotspot,
 #if FREEINK_CAP_USB_MSC
     UIIcon::Usb,
 #endif
+    UIIcon::Wifi,
+    UIIcon::Library,
+    UIIcon::Hotspot,
+};
+constexpr NetworkMode menuModes[NetworkModeSelectionActivity::MENU_ITEM_COUNT] = {
+#if FREEINK_CAP_USB_MSC
+    NetworkMode::USB_DRIVE,
+#endif
+    NetworkMode::JOIN_NETWORK,
+    NetworkMode::CONNECT_CALIBRE,
+    NetworkMode::CREATE_HOTSPOT,
 };
 }  // namespace
 
@@ -59,7 +71,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
 
-  onModeSelected(static_cast<NetworkMode>(index));
+  onModeSelected(menuModes[index]);
 }
 
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
