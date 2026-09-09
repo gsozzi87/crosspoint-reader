@@ -1,6 +1,31 @@
 #include "ButtonNavigator.h"
 
+#include "voice/UiSound.h"
+
 const MappedInputManager* ButtonNavigator::mappedInput = nullptr;
+
+void ButtonNavigator::pollSounds() {
+  if (mappedInput == nullptr) return;
+  // wasPressed() vale toda la vuelta del loop y pollSounds() se llama varias
+  // veces por vuelta: se guarda el estado anterior para que el clic salga una
+  // sola vez por pulsación.
+  static bool navDown = false;
+  static bool confirmDown = false;
+  static bool backDown = false;
+
+  const bool nav = mappedInput->wasPressed(MappedInputManager::Button::NavNext) ||
+                   mappedInput->wasPressed(MappedInputManager::Button::NavPrevious);
+  if (nav && !navDown) UI_SOUND.play(uisound::Sound::Nav);
+  navDown = nav;
+
+  const bool confirm = mappedInput->wasPressed(MappedInputManager::Button::Confirm);
+  if (confirm && !confirmDown) UI_SOUND.play(uisound::Sound::Select);
+  confirmDown = confirm;
+
+  const bool back = mappedInput->wasPressed(MappedInputManager::Button::Back);
+  if (back && !backDown) UI_SOUND.play(uisound::Sound::Back);
+  backDown = back;
+}
 
 void ButtonNavigator::onNext(const Callback& callback) {
   onNextPress(callback);
@@ -30,6 +55,7 @@ void ButtonNavigator::onNextContinuous(const Callback& callback) { onContinuous(
 void ButtonNavigator::onPreviousContinuous(const Callback& callback) { onContinuous(getPreviousButtons(), callback); }
 
 void ButtonNavigator::onPress(const Buttons& buttons, const Callback& callback) {
+  pollSounds();
   const bool wasPressed = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
     return mappedInput != nullptr && mappedInput->wasPressed(button);
   });
@@ -40,6 +66,7 @@ void ButtonNavigator::onPress(const Buttons& buttons, const Callback& callback) 
 }
 
 void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback) {
+  pollSounds();
   const bool wasReleased = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
     return mappedInput != nullptr && mappedInput->wasReleased(button);
   });
@@ -54,11 +81,18 @@ void ButtonNavigator::onRelease(const Buttons& buttons, const Callback& callback
 }
 
 void ButtonNavigator::onContinuous(const Buttons& buttons, const Callback& callback) {
+  pollSounds();
   const bool isPressed = std::any_of(buttons.begin(), buttons.end(), [this](const MappedInputManager::Button button) {
     return mappedInput != nullptr && mappedInput->isPressed(button) && shouldNavigateContinuously();
   });
 
   if (isPressed) {
+    // Manteniendo el botón la lista sigue corriendo sin pulsaciones nuevas:
+    // el clic de cada salto sale de acá.
+    const bool isNav = std::any_of(buttons.begin(), buttons.end(), [](const MappedInputManager::Button button) {
+      return button == MappedInputManager::Button::NavNext || button == MappedInputManager::Button::NavPrevious;
+    });
+    if (isNav) UI_SOUND.play(uisound::Sound::Nav);
     callback();
     lastContinuousNavTime = millis();
   }

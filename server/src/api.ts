@@ -19,6 +19,7 @@ import { assets } from "./assets";
 import { tripApi, tripsApi } from "./trips";
 import { attachmentApi } from "./attachments";
 import { calendar } from "./calendar";
+import { suggest } from "./suggest";
 
 const ENV_TOKEN = process.env.DEVICE_TOKEN ?? "";
 
@@ -54,5 +55,6 @@ api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /ap
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
 api.route("/trips", tripsApi);       // GET  /api/trips?lang= → lista de viajes
 api.route("/trip", tripApi);         // GET  /api/trip?id= y los POST de días, ítems, para llevar y adjuntos
+api.route("/suggest", suggest);        // GET /api/suggest/day, /trip → sugerencias del día y del viaje (cacheadas, con tope diario)
 api.route("/attachment", attachmentApi);  // GET /api/attachment?id=&page= → el bitmap listo para pintar; /info → texto extraído
 api.route("/log", deviceLog);         // POST /api/log → el aparato sube su log; se lee en /board/log         // GET  /api/photos, /api/photos/file?id= → álbum (BMP 2 bpp ya convertido)

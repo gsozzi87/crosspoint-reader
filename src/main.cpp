@@ -65,7 +65,7 @@ constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
 constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 
 // ws397: tiempos del mantenido de OK/encendido (ver handlePowerHold más abajo).
-constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // desde acá, soltar abre Hablar
+constexpr unsigned long POWER_HOLD_ACTION_MS = 600;   // desde acá se ve la barrita del apagado
 constexpr unsigned long POWER_HOLD_WARN_MS = 2200;    // segundo cartel: ya casi apaga
 constexpr unsigned long POWER_HOLD_SLEEP_MS = 3000;   // acá se apaga
 }  // namespace
@@ -432,23 +432,22 @@ void enterDeepSleep(bool fromTimeout = false) {
 //   mantener 3 s ................ apagar
 // El umbral de los 400 ms lo maneja el SDK y NO se toca: es el que decide entre
 // confirmar y encendido. Lo que cambia es cuándo duerme, que siempre estuvo acá.
-// DESACTIVADO a pedido del usuario (1.5.41): repartir el mantenido por tramos
-// terminaba apagando el aparato cuando no correspondia. Era una idea mia, no un
-// pedido, y el atajo de voz ya existe con dos toques de Atras. Se vuelve al
-// camino de siempre: mantener OK apaga y nada mas. El codigo queda por si algun
-// dia se retoma, pero no se usa.
-static bool usePowerHoldTiers() { return false; }
-
-static bool powerHoldTalkAvailable() {
-  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;
-  return isCalmScreen(activityManager.currentActivityName());
+// 1.5.43: el usuario SI quiere la barrita, pero solo para apagar: "el boton PWR
+// es el que al mantenerlo apretado tiene que mostrar esa barrita de carga de 3s
+// para apagarse". O sea que vuelve el indicador, pero SIN el tramo del medio que
+// abria Hablar (eso era idea mia y terminaba apagando cuando no correspondia).
+// Mantener OK 3 s apaga, y mientras tanto se ve cuanto falta.
+static bool usePowerHoldTiers() {
+  return BoardConfig::ACTIVE.board == BoardConfig::Board::WS397 &&
+         SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP;
 }
+
 
 // Cartel del mantenido, para que se vea que algo está pasando y hasta dónde hay
 // que seguir apretando. Se pinta ENCIMA de lo que haya (no se limpia la pantalla)
 // y son dos pasadas como mucho por gesto: cada repintada de tinta electrónica
 // cuesta medio segundo, y la regla del panel es no gastar parciales al pedo.
-static void drawPowerHoldBanner(const bool talkAvailable, const bool aboutToSleep) {
+static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSleep) {
   RenderLock lock;
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
@@ -460,8 +459,7 @@ static void drawPowerHoldBanner(const bool talkAvailable, const bool aboutToSlee
   renderer.fillRoundedRect(x, y, boxW, boxH, 16, Color::White);
   renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
 
-  const StrId what = aboutToSleep ? StrId::STR_PWR_HOLD_SLEEPING
-                                  : (talkAvailable ? StrId::STR_PWR_HOLD_TALK : StrId::STR_PWR_HOLD_OFF);
+  const StrId what = aboutToSleep ? StrId::STR_PWR_HOLD_SLEEPING : StrId::STR_PWR_HOLD_OFF;
   renderer.drawCenteredText(UI_12_FONT_ID, y + 30, I18N.get(what), true, EpdFontFamily::BOLD);
 
   // Barra: cuánto falta para el apagado.
@@ -470,8 +468,7 @@ static void drawPowerHoldBanner(const bool talkAvailable, const bool aboutToSlee
   const int barY = y + 76;
   constexpr int barH = 16;
   renderer.drawRect(barX, barY, barW, barH, 2, true);
-  const unsigned long reached = aboutToSleep ? POWER_HOLD_WARN_MS : POWER_HOLD_ACTION_MS;
-  const int filled = static_cast<int>(barW * reached / POWER_HOLD_SLEEP_MS);
+  const int filled = static_cast<int>(barW * held / POWER_HOLD_SLEEP_MS);
   if (filled > 4) renderer.fillRect(barX + 2, barY + 2, filled - 4, barH - 4, true);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -496,25 +493,21 @@ static bool handlePowerHold(const bool gateOpen) {
       // No se llega: enterDeepSleep() termina en esp_deep_sleep_start.
       return true;
     }
-    const bool talk = powerHoldTalkAvailable();
     if (bannerStage == 0 && held >= POWER_HOLD_ACTION_MS) {
       bannerStage = 1;
-      drawPowerHoldBanner(talk, false);
+      drawPowerHoldBanner(held, false);
     } else if (bannerStage == 1 && held >= POWER_HOLD_WARN_MS) {
       bannerStage = 2;
-      drawPowerHoldBanner(talk, true);
+      drawPowerHoldBanner(held, true);  // segunda y última repintada: la tinta cuesta
     }
     return bannerStage != 0;
   }
 
   if (bannerStage == 0) return false;
+  // Solto antes de los 3 s: no pasa nada, solo se saca el cartel. El atajo de
+  // voz vive en el doble toque de Atras, no aca.
   bannerStage = 0;
-  if (held >= POWER_HOLD_ACTION_MS && powerHoldTalkAvailable()) {
-    LOG_INF("MAIN", "PTT desde el botón de encendido (%lu ms)", held);
-    activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
-  } else {
-    activityManager.requestUpdate();  // sacar el cartel de encima
-  }
+  activityManager.requestUpdate();
   return true;
 }
 

@@ -14,7 +14,6 @@
 #include "CalendarActivity.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
-#include "TripActivity.h"
 #include "VoiceActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -90,17 +89,14 @@ void AgendaActivity::onEnter() {
   requestUpdate();
 }
 
-// Mensajes SIEMPRE primero (aunque no haya ninguno), recordatorios, después el
-// calendario y el viaje (todo lo que tiene fecha entra por acá, el hub no tiene
-// lugar para otro mosaico) y al final cada lista. La sección tiene que verse
-// desde que se entra: si aparece solo cuando hay mensajes, nadie se entera de
-// que el aparato los muestra.
+// Mensajes SIEMPRE primero (aunque no haya ninguno), recordatorios y al final
+// cada lista. La sección tiene que verse desde que se entra: si aparece solo
+// cuando hay mensajes, nadie se entera de que el aparato los muestra. El
+// calendario y los viajes se mudaron al mosaico "Mi día" del hub.
 void AgendaActivity::rebuildSections() {
   sections.clear();
   sections.push_back({MESSAGES, -1});
   sections.push_back({REMINDERS, -1});
-  sections.push_back({CALENDAR, -1});
-  sections.push_back({TRIP, -1});
   for (int i = 0; i < static_cast<int>(HUB_STORE.lists.size()); ++i) sections.push_back({LIST, i});
   if (sectionIndex >= sectionCount()) sectionIndex = sectionCount() - 1;
 }
@@ -110,8 +106,6 @@ int AgendaActivity::itemCount() const {
     case MESSAGES: return static_cast<int>(HUB_STORE.messages.size());
     case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
     case LIST: return static_cast<int>(HUB_STORE.lists[current().listIndex].items.size());
-    case CALENDAR:
-    case TRIP: return 0;  // son pantallas propias, no listas de acá
   }
   return 0;
 }
@@ -121,8 +115,6 @@ int AgendaActivity::sectionItemCount(const int index) const {
     case MESSAGES: return static_cast<int>(HUB_STORE.messages.size());
     case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
     case LIST: return static_cast<int>(HUB_STORE.lists[sections[index].listIndex].items.size());
-    case CALENDAR:
-    case TRIP: return -1;  // sin cantidad que mostrar
   }
   return 0;
 }
@@ -131,8 +123,6 @@ std::string AgendaActivity::sectionTitle(const int index) const {
   switch (sections[index].kind) {
     case MESSAGES: return tr(STR_HUB_MESSAGES);
     case REMINDERS: return tr(STR_HUB_REMINDERS);
-    case CALENDAR: return tr(STR_CAL_TITLE);
-    case TRIP: return tr(STR_TRIP_TITLE);
     case LIST: return HUB_STORE.lists[sections[index].listIndex].name;
   }
   return "";
@@ -152,8 +142,6 @@ std::string AgendaActivity::itemText(const int index, std::string& detail) const
       return r.title;
     }
     case LIST: return HUB_STORE.lists[current().listIndex].items[index].text;
-    case CALENDAR:
-    case TRIP: return "";
   }
   return "";
 }
@@ -180,9 +168,6 @@ void AgendaActivity::tickCurrent() {
       id = HUB_STORE.lists[current().listIndex].items[itemIndex].id;
       HUB_STORE.removeItem(id);
       break;
-    case CALENDAR:
-    case TRIP:
-      return;
   }
   HUB_STORE.saveToFile();
   std::string body;
@@ -265,21 +250,8 @@ void AgendaActivity::onMenuPick(const int index) {
   requestUpdate();
 }
 
-// OK sobre una sección: el calendario y el viaje son pantallas propias, el
-// resto abre la lista de ítems.
+// OK sobre una sección: abre su lista de ítems.
 void AgendaActivity::openSection() {
-  switch (current().kind) {
-    case CALENDAR:
-      startActivityForResult(std::make_unique<CalendarActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
-      return;
-    case TRIP:
-      startActivityForResult(std::make_unique<TripActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
-      return;
-    default:
-      break;
-  }
   level = ITEMS;
   itemIndex = 0;
   requestUpdate();
@@ -712,9 +684,6 @@ void AgendaActivity::render(RenderLock&&) {
           break;
         case LIST:
           empty = tr(STR_AGENDA_EMPTY);
-          break;
-        case CALENDAR:
-        case TRIP:
           break;
       }
     }

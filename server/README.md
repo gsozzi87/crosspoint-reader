@@ -25,7 +25,7 @@ el store de recordatorios, listas, notas y mensajes.
 | `HUB_ICS_URL` | Calendario(s) ICS para la agenda del hub (URL secreta iCal de Google, Apple, Outlook...), separados por coma. |
 | `TRIPS_FILE`, `ATTACHMENTS_DIR` | Dónde viven los viajes y los adjuntos (defaults `/data/trips.json` y `/data/attachments`). |
 | `ASSETS_DIR` | Dónde se guarda el paquete de contenido (default `/data/assets`). `ASSETS_BUILD=0` no lo genera al arrancar. |
-| `LUCIDE_VERSION`, `CARD_STROKE` | Versión de los dibujos de las tarjetas y grosor del trazo (defaults `1.43.0` y `1.25`). |
+| `NOTO_EMOJI_REF` | Rama o tag de [noto-emoji](https://github.com/googlefonts/noto-emoji) de donde salen los dibujos de las tarjetas (default `main`). |
 | `STT_MIN_SECONDS`, `STT_MIN_PEAK`, `STT_MIN_RMS` | Mínimos de audio para considerar que alguien habló (defaults `0.4`, `350`, `90`). Dependen de la ganancia del micrófono. |
 
 ## Rutas
@@ -378,18 +378,20 @@ archivos más del manifiesto).
 
 ### Qué trae y cuánto pesa
 
-Medido con el catálogo de hoy (239 tarjetas, Biblia Reina-Valera en español):
+Medido con el catálogo de hoy (240 tarjetas, Biblia Reina-Valera en español):
 
 | `kind` | Qué | Archivos | Tamaño |
 |---|---|---:|---:|
 | `bible` | La Biblia entera del idioma, un archivo de texto por libro (`#<capítulo>` y los versículos numerados) | 66 | **3,83 MB** |
-| `cards` | El índice de las tarjetas (`index.json`, 44 KB) y el dibujo de cada una: BMP de 1 bpp de 320x320 (12.862 bytes) | 240 | **2,97 MB** |
-| `sounds` | La palabra de cada tarjeta dicha por Piper, en español y en inglés, en el mismo ADPCM que ya usa el aparato | 478 | **~3,7 MB** (estimado) |
+| `cards` | El índice de las tarjetas (`index.json`, 43,5 KB) y el dibujo de cada una: BMP de **2 bpp (4 grises)** de 320x320 (25.670 bytes) | 241 | **6,20 MB** |
+| `sounds` | La palabra de cada tarjeta dicha por Piper, en español y en inglés, en el mismo ADPCM que ya usa el aparato | 480 | **~3,7 MB** (estimado) |
 | `icons` | Reservado | 0 | — |
-| | **Total del paquete en español** | **784** | **~10,5 MB** |
+| | **Total del paquete en español** | **787** | **~13,7 MB** |
 
 El audio es lo único estimado: un clip son `8 + muestras/2` bytes a 16 kHz, y una palabra suelta de
-Piper dura entre 0,8 y 1,1 s → 6,5 a 8,8 KB por clip. Los otros dos números están medidos.
+Piper dura entre 0,8 y 1,1 s → 6,5 a 8,8 KB por clip. Los otros dos números están medidos. Cada dibujo
+pesa 25.670 bytes: el doble que la versión de 1 bpp y **veinte veces menos** que el tope de 512 KB por
+archivo que baja el aparato.
 
 En otro idioma cambia solo la Biblia (el inglés pesa menos, el ruso más); los dibujos y los audios son
 los mismos para todos (las tarjetas se dicen siempre en español y en inglés, que es de lo que se trata
@@ -399,24 +401,64 @@ el juego).
 
 Solo, sin ningún paso a mano:
 
-- Los **dibujos** salen de [Lucide](https://lucide.dev) (`lucide-static`, licencia ISC), que se baja de
-  jsDelivr con la versión fijada en `LUCIDE_VERSION` y se rasteriza con **sharp** (la misma librería que
-  ya convierte las fotos: trae librsvg adentro, así que no hace falta Python ni `rsvg-convert` en la
-  imagen). El trazo de Lucide se afina de 2 a `CARD_STROKE` (1,25) antes de escalar: a 320 px queda de
-  ~17 px, grueso y redondo, que es lo que se lee bien en tinta electrónica.
-- Los **números** (1 a 10) no existen en Lucide, así que el dibujo se arma acá: N puntos para contar.
+- Los **dibujos** salen de **Noto Color Emoji** ([googlefonts/noto-emoji](https://github.com/googlefonts/noto-emoji),
+  código Apache 2.0 y glifos OFL 1.1): son ilustraciones llenas, no iconos de trazo. Un bebé no reconoce
+  un contorno, reconoce una figura. Se eligió Noto justamente porque **no obliga a atribuir a nadie**
+  (OpenMoji es CC BY-SA y Twemoji CC BY, los dos con atribución obligatoria en el producto); igual queda
+  el crédito acá. El SVG de cada emoji se baja de jsDelivr (`NOTO_EMOJI_REF`) **una sola vez** y queda
+  guardado en `ASSETS_DIR/emoji/<codepoint>.svg`, así una segunda corrida no vuelve a bajar nada.
+- Los **números** (1 a 10) y las **formas** no salen de los emoji: los dígitos no existen y las formas son
+  cuadraditos de colores que en gris no se distinguen, así que se dibujan acá (N puntos para contar; la
+  forma llena en negro).
 - La **voz** la hace Piper con la voz de cada idioma (`tts.ts`), una vez por palabra.
 - Todo queda en `ASSETS_DIR` (el volumen) con un índice `index-<lang>.json`, así que un redeploy no
-  vuelve a generar nada. La primera corrida tarda unos minutos por los 478 clips de Piper; los 239
-  dibujos y los 66 libros salen en unos segundos.
+  vuelve a generar nada. La primera corrida tarda unos minutos por los 480 clips de Piper; los 240
+  dibujos salen en 7 s y los 66 libros en unos segundos.
+
+### Los dibujos son de 4 grises, no de blanco y negro
+
+La pantalla del aparato pinta **cuatro grises** y las fotos ya se ven así (`toDeviceBmp` en `photos.ts`);
+las tarjetas se hacían en 1 bpp por costumbre, no por necesidad. Ahora salen del mismo pipeline, en tres
+pasos que importan los tres:
+
+1. el emoji se rasteriza **con transparencia**, para saber qué píxel es figura y cuál es fondo;
+2. el tono de la figura se estira a `[0, 190]` (percentiles 2/98). Sin esto, un emoji amarillo o blanco
+   —la luna, la estrella, la banana, el vaso de leche— queda del color del papel y **desaparece**;
+3. Floyd-Steinberg a los cuatro niveles y BMP de 2 bpp, igual que las fotos.
+
+Comparado renderizando el catálogo entero y mirándolo (tal cual / escala fija / normalizado): el
+normalizado es el único que deja legibles la luna y el vaso de leche.
+
+> **Falta del lado del firmware**: `CardsActivity::drawCard` dibuja el BMP con un `drawBitmap` común, y
+> en modo `BW` el SDK pinta de negro **todo** lo que no sea blanco puro (`val < 3`), así que un BMP de 4
+> grises sale como una mancha. Hay que dibujar la tarjeta con el pipeline de gris del SDK, que ya está
+> escrito y probado en `PhotosActivity::drawFullScreenPhoto` (base BW + pasada `GRAYSCALE_LSB` + pasada
+> `GRAYSCALE_MSB` + `displayGrayBuffer`). Hasta que eso esté, el aparato muestra la silueta del dibujo.
+>
+> **Y una de la web**: `GET /api/assets/status` ahora devuelve `art` (`noto/<ref>/4gray-v1`) además del
+> viejo `lucide`, que se mantiene solo para que la tarjeta de `/board` no diga "undefined". Cuando esa
+> página muestre `Dibujos: <art>` en vez de `Lucide <...>` (`board.ts`), el campo `lucide` se saca.
+
+### Las palabras van en español neutro
+
+Regla fija, escrita también arriba de `src/cards.ts` para que no se vuelva a colar un regionalismo: lo
+que ve el usuario se entiende en toda Hispanoamérica y en España, y **si una palabra no tiene una
+variante clara y neutra se saca y se pone otra** (son tarjetas para un bebé, sobran los sustantivos
+fáciles). Ya resueltos: *remera* → **camiseta**, *frutilla* → **fresa**, *ananá* → **piña**, *palta* →
+**aguacate**, *colectivo* → **autobús**, *anteojos* → **gafas**, *media* → **calcetín**, *torta* →
+**pastel**, *celular* → **teléfono**, *ordenador* → **computadora**, *mamadera* → **biberón**,
+*sillón* → **sofá**, *cacahuete* → **maní**, y *auto* para el carro/coche. Las que no tenían arreglo
+—durazno/melocotón, papa/patata, palomitas/pochoclo, zumo/jugo, manteca/mantequilla, lavarropas/lavadora,
+heladera/refrigerador— se cambiaron por otra tarjeta. El inglés va en **americano** (cookie, candy,
+truck, pants).
 
 Se dispara al arrancar el servidor (5 s después, para no pelear con el arranque) y cuando llega un
 pedido de manifiesto si falta algo, con un repaso como mucho cada 10 minutos.
 
-**No hay categoría de colores**: las tarjetas van en 1 bpp y un dibujo en blanco y negro no puede decir
-"rojo". En su lugar va **formas** (círculo, cuadrado, triángulo, estrella…), que es una categoría clásica
-de tarjetas para bebés y sí se entiende. Las categorías son: Animales, Comida, Casa, Cuerpo, Formas,
-Números, Vehículos, Naturaleza, Ropa y Juguetes.
+**No hay categoría de colores**: con cuatro grises un dibujo sigue sin poder decir "rojo". En su lugar va
+**formas** (círculo, cuadrado, triángulo, estrella…), que es una categoría clásica de tarjetas para bebés
+y sí se entiende. Las categorías son: Animales (46), Comida (38), Casa (31), Cuerpo (16), Formas (9),
+Números (10), Vehículos (20), Naturaleza (29), Ropa (15) y Juguetes (26).
 
 ### Contrato exacto (para el firmware)
 
@@ -439,7 +481,7 @@ ignora.
   "items": [
     { "id": "bible/es/b00",       "kind": "bible",  "path": "/.crosspoint/bible/es/b00.txt",        "bytes": 192553, "sha": "6f696e077072234b" },
     { "id": "cards/index",        "kind": "cards",  "path": "/.crosspoint/cards/index.json",        "bytes": 44667,  "sha": "8ec015a8be996c00" },
-    { "id": "cards/ani-perro",    "kind": "cards",  "path": "/.crosspoint/cards/img/ani-perro.bmp", "bytes": 12862,  "sha": "e8e65c7c7ed15ea1" },
+    { "id": "cards/ani-perro",    "kind": "cards",  "path": "/.crosspoint/cards/img/ani-perro.bmp", "bytes": 25670,  "sha": "e8e65c7c7ed15ea1" },
     { "id": "sounds/es/ani-perro","kind": "sounds", "path": "/.crosspoint/cards/audio/es/ani-perro.adp", "bytes": 7208, "sha": "0d2e…" }
   ]
 }
@@ -476,14 +518,22 @@ ignora.
                "audioEn": "cards/audio/en/ani-perro.adp" } ] }
 ```
 
-**El dibujo** es un **BMP de 1 bpp** con paleta de dos colores (índice 0 negro, índice 1 blanco), filas
-de abajo hacia arriba y padding a 4 bytes — o sea, lo que el `Bitmap` de `lib/GfxRenderer` ya sabe leer,
-sin ningún formato propio. 320x320 = 62 bytes de cabecera + 40 por fila = 12.862 bytes.
+**El dibujo** es un **BMP de 2 bpp** con paleta de cuatro grises (0, 85, 170, 255), filas de abajo hacia
+arriba y padding a 4 bytes — el mismo formato que ya usan las fotos y los adjuntos, o sea lo que el
+`Bitmap` de `lib/GfxRenderer` ya sabe leer, sin ningún formato propio. 320x320 = 70 bytes de cabecera +
+80 por fila = 25.670 bytes.
 
 **El audio** (`.adp`) es el mismo ADPCM que devuelve `/api/tts`: cabecera `"ADPC"` + cantidad de muestras
 (uint32 LE) + los nibbles, 16 kHz mono. Lo reproduce `SpeechOut::playFile` del firmware.
 
 Las palabras de las tarjetas (id, español, inglés, categoría e ícono) están en `src/cards.ts`.
+
+**Qué se regenera cuando algo cambia.** Cada entrada del índice guarda un `tag` con de qué se generó: el
+dibujo (`emoji:1f436`, `num:3`, `shape:circulo`) o la palabra que dice el clip. Si el `tag` no coincide
+con el catálogo de hoy, esa entrada sola se cae y se rehace; los ids que ya no existen se van. Además el
+índice lleva la marca `art` (`noto/<ref>/4gray-v1`): al cambiarla se descartan **todos** los dibujos y se
+regeneran, sin tocar la Biblia ni el audio. Con eso, cambiar *remera* por *camiseta* regenera un dibujo y
+dos clips de Piper, no los 480.
 
 ## Proveedores de IA, búsqueda y costo por consulta
 

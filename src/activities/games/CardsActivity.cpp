@@ -15,6 +15,7 @@
 #include "MappedInputManager.h"
 #include "activities/home/AssetSyncActivity.h"
 #include "components/UITheme.h"
+#include "util/GrayText.h"
 #include "fontIds.h"
 
 namespace {
@@ -360,8 +361,11 @@ void CardsActivity::drawCard(const int top, const int bottom) {
     return;
   }
 
-  // El dibujo, centrado y en un marco: BMP de 1 bpp, que es lo que el SDK dibuja
-  // derecho (una pasada en blanco y negro de un BMP en grises sale como mancha).
+  // El dibujo, centrado y en un marco. Es un BMP de 4 GRISES (el servidor lo
+  // arma igual que las fotos), asi que el dibujo en si solo deja la base en
+  // blanco y negro: los grises los agrega GrayText::displayPage al final del
+  // render. Sin eso el SDK pinta de negro todo lo que no sea blanco puro y la
+  // figura sale como silueta.
   const int boxW = std::min(IMAGE_BOX, pageWidth - 40);
   const int boxTop = top + 16;
   bool drawn = false;
@@ -449,10 +453,14 @@ void CardsActivity::render(RenderLock&&) {
 
   // Cada tarjeta es un dibujo a pantalla completa: va con refresco limpio o el
   // panel se queda con la figura anterior encima.
-  const bool clean = forceClean || ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) {
-    partialCount = 0;
+  if (forceClean) {
+    partialCount = PARTIALS_BEFORE_CLEAN;
     forceClean = false;
   }
-  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // Los cuatro grises del dibujo salen de la misma pasada que usa el lector. Se
+  // vuelve a dibujar SOLO la figura (el encabezado y los botones se quedan con
+  // la base en blanco y negro, como la barra de estado del lector).
+  const int cardTop = top;
+  const int cardBottom = bottom;
+  GrayText::displayPage(renderer, partialCount, [this, cardTop, cardBottom] { drawCard(cardTop, cardBottom); });
 }

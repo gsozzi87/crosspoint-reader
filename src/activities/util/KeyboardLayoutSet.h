@@ -20,10 +20,14 @@ inline constexpr LayoutInfo ALL[] = {
     {freeink::ui::KeyboardLayoutId::QwertzDe, Language::DE},
     {freeink::ui::KeyboardLayoutId::SpanishEs, Language::ES},
     {freeink::ui::KeyboardLayoutId::CyrillicRu, Language::RU},
-    {freeink::ui::KeyboardLayoutId::CyrillicUk, Language::UK},
-    {freeink::ui::KeyboardLayoutId::CyrillicBe, Language::BE},
-    {freeink::ui::KeyboardLayoutId::CyrillicKk, Language::KK},
-    {freeink::ui::KeyboardLayoutId::HebrewIl, Language::HE},
+    // Ucraniano, bielorruso, kazajo y hebreo no se compilan en este fork (los
+    // idiomas del producto son siete), asi que esas distribuciones se ofrecen
+    // en ruso, que comparte el alfabeto en tres de los cuatro casos. La POSICION
+    // de cada fila es el bit guardado en disco: no se puede reordenar ni sacar.
+    {freeink::ui::KeyboardLayoutId::CyrillicUk, Language::RU},
+    {freeink::ui::KeyboardLayoutId::CyrillicBe, Language::RU},
+    {freeink::ui::KeyboardLayoutId::CyrillicKk, Language::RU},
+    {freeink::ui::KeyboardLayoutId::HebrewIl, Language::EN},
 };
 inline constexpr uint8_t COUNT = sizeof(ALL) / sizeof(ALL[0]);
 static_assert(COUNT <= 16, "keyboard layout mask is uint16_t");

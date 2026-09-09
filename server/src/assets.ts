@@ -27,9 +27,9 @@
 //   POST /api/assets/build   -> forzar la generación (idempotente)
 //
 // Kinds: `bible` (66 archivos, uno por libro), `cards` (el índice de las
-// tarjetas más el dibujo de cada una, BMP de 1 bpp que lee el `Bitmap` del
-// firmware), `sounds` (la palabra de cada tarjeta dicha por Piper, ADPCM del
-// mismo formato que /api/tts), `icons` (reservado).
+// tarjetas más el dibujo de cada una, BMP de 2 bpp en 4 grises que lee el
+// `Bitmap` del firmware), `sounds` (la palabra de cada tarjeta dicha por Piper,
+// ADPCM del mismo formato que /api/tts), `icons` (reservado).
 //
 // Las rutas y los nombres son los que espera el firmware (`AssetSyncActivity` y
 // `CardsActivity`): el índice en `/.crosspoint/cards/index.json`, los dibujos en
@@ -49,43 +49,75 @@ import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 
 const DIR = process.env.ASSETS_DIR ?? "/data/assets";
 const BUILD_ON_START = process.env.ASSETS_BUILD !== "0";
-// Lucide fijado a una versión: si flota, un dibujo puede cambiar solo y el
-// aparato se baja las 239 tarjetas de nuevo sin motivo.
-const LUCIDE = process.env.LUCIDE_VERSION ?? "1.43.0";
-const LUCIDE_URL = (name: string) => `https://cdn.jsdelivr.net/npm/lucide-static@${LUCIDE}/icons/${name}.svg`;
+// Los dibujos salen de Noto Color Emoji (googlefonts/noto-emoji): Apache 2.0 +
+// OFL, o sea que NO obligan a atribuir a nadie, y son ilustraciones llenas, no
+// iconos de trazo (un bebé no reconoce un contorno). El SVG de cada emoji se
+// baja una sola vez y queda guardado en el volumen.
+const NOTO_REF = process.env.NOTO_EMOJI_REF ?? "main";
+const NOTO_URL = (file: string) => `https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@${NOTO_REF}/svg/${file}.svg`;
 
 // El dibujo ocupa bien la pantalla de 480x800 sin comerse el lugar de la palabra.
 export const CARD_PX = 320;
-// Lucide dibuja a 24 px con trazo 2; escalado a 320 el trazo quedaría de 27 px y
-// el dibujo sería una mancha. 1,25 da un trazo de ~17 px: grueso, redondo y
-// clarísimo en tinta electrónica, que es justo lo que sirve para un bebé.
-// Grosor del trazo del dibujo de la tarjeta. Se AGRANDA respecto del 2 que trae
-// Lucide, no se achica: a 320 px en blanco y negro puro (sin grises), un trazo
-// fino se lee lavado y de lejos no se distingue. Comparado renderizando las dos
-// versiones y mirandolas: 1.25 quedaba debil, 2.6 se lee de lejos.
-const STROKE = process.env.CARD_STROKE ?? "2.6";
-// Un gris por debajo de esto cuenta como negro (mismo umbral que gen_icons.py).
-const THRESHOLD = 110;
+// Margen: el emoji ocupa el 94 % del cuadro y el resto queda de aire.
+const CARD_INSET = 0.94;
+// Los cuatro grises del panel (los mismos que usa toDeviceBmp en photos.ts).
+const LEVELS = [0, 85, 170, 255];
+// Hasta dónde se aclara la figura. Un emoji amarillo (la luna, la estrella, la
+// banana) en gris queda casi blanco y DESAPARECE contra el fondo, así que el
+// tono de cada dibujo se estira a [0, 190]: el más claro de la figura cae en el
+// gris 170 y nunca en el blanco del fondo. Comparado mirando las tres opciones
+// (tal cual / escala fija / normalizado): normalizado es el único que deja
+// legibles la luna y el vaso de leche.
+const ART_HI = 190;
+// Marca de formato del dibujo. Al cambiarla, las tarjetas viejas del volumen se
+// descartan solas y se regeneran (ver loadIndex).
+const ART_REV = `noto/${NOTO_REF}/4gray-v1`;
 
 export type AssetKind = "bible" | "cards" | "sounds" | "icons";
-export type AssetEntry = { id: string; kind: AssetKind; path: string; bytes: number; sha: string };
+// `tag` es de qué se generó el archivo (el dibujo, o la palabra que dice el
+// clip): si cambia, esa entrada sola se rehace. Sin eso, cambiar UNA palabra
+// obligaba a regenerar los 480 clips de Piper (minutos) o dejaba el audio viejo
+// diciendo "remera" para siempre.
+export type AssetEntry = { id: string; kind: AssetKind; path: string; bytes: number; sha: string; tag?: string };
 
 // El índice se guarda en el volumen: un reinicio del contenedor no tiene que
-// volver a generar 239 dibujos y 478 clips de voz.
-type Index = { lucide: string; entries: Record<string, AssetEntry> };
-// La marca lleva el grosor: al cambiarlo, las tarjetas viejas se descartan solas.
+// volver a generar 240 dibujos y 480 clips de voz.
+type Index = { art: string; entries: Record<string, AssetEntry> };
 const indexFile = (lang: Lang) => `${DIR}/index-${lang}.json`;
 const indexes = new Map<Lang, Index>();
+
+// Lo que tendría que decir el `tag` de cada id con el catálogo de hoy. Lo que no
+// coincida se descarta del índice y se genera de nuevo.
+function expectedTags(): Map<string, string> {
+  const out = new Map<string, string>();
+  out.set("cards/index", `index/${CARDS.length}`);
+  for (const c of CARDS) {
+    out.set(`cards/${c.id}`, c.icon);
+    out.set(`sounds/es/${c.id}`, c.es);
+    out.set(`sounds/en/${c.id}`, c.en);
+  }
+  return out;
+}
 
 async function loadIndex(lang: Lang): Promise<Index> {
   const have = indexes.get(lang);
   if (have) return have;
-  const idx = await readJsonSafe<Index>(indexFile(lang), { lucide: `${LUCIDE}/${STROKE}`, entries: {} });
-  // Si cambió la versión de Lucide, los dibujos se rehacen (el sha va a cambiar
-  // igual, pero así no se sirven archivos viejos con el sha nuevo).
-  if (idx.lucide !== `${LUCIDE}/${STROKE}`) idx.entries = Object.fromEntries(Object.entries(idx.entries ?? {}).filter(([, e]) => e.kind !== "cards"));
-  idx.lucide = `${LUCIDE}/${STROKE}`;
+  const idx = await readJsonSafe<Index>(indexFile(lang), { art: ART_REV, entries: {} });
   idx.entries ??= {};
+  // Cambió el formato del dibujo (o de dónde salen): las tarjetas viejas no
+  // sirven más. La Biblia y los audios no se tocan.
+  if (idx.art !== ART_REV) {
+    idx.entries = Object.fromEntries(Object.entries(idx.entries).filter(([, e]) => e.kind !== "cards"));
+    idx.art = ART_REV;
+  }
+  // Cambió una palabra o el dibujo de una tarjeta: se cae solo lo que cambió.
+  const want = expectedTags();
+  idx.entries = Object.fromEntries(
+    Object.entries(idx.entries).filter(([id, e]) => {
+      if (!want.has(id)) return e.kind === "bible";  // ids de tarjetas que ya no existen
+      return e.tag === want.get(id);
+    }),
+  );
   indexes.set(lang, idx);
   return idx;
 }
@@ -114,19 +146,20 @@ async function writeAsset(file: string, data: Uint8Array): Promise<void> {
 
 // ── Dibujos de las tarjetas ─────────────────────────────────────────────────
 //
-// BMP de 1 bit por píxel con paleta de dos colores, que es lo que el lector de
-// BMP del firmware (`lib/GfxRenderer/Bitmap`) ya sabe dibujar: nada de formatos
-// propios. Filas de abajo hacia arriba (BMP clásico) y padding a 4 bytes; con
-// 320 px de ancho la fila mide 40 bytes y ya está alineada.
+// BMP de 2 bits por píxel con paleta de cuatro grises: el MISMO formato que ya
+// usan las fotos y los adjuntos (`toDeviceBmp` en photos.ts), o sea el que el
+// lector de BMP del firmware (`lib/GfxRenderer/Bitmap`) ya sabe leer. Filas de
+// abajo hacia arriba (BMP clásico) y padding a 4 bytes; con 320 px de ancho la
+// fila mide 80 bytes y ya está alineada.
 //
-//   14  BITMAPFILEHEADER  ("BM", tamaño, offset de los datos = 62)
-//   40  BITMAPINFOHEADER  (1 plano, 1 bpp, sin compresión, 2 colores)
-//    8  paleta            (índice 0 = negro, índice 1 = blanco)
-//   …   las filas, MSB primero: el bit en 1 es blanco
-export function packBmp1(gray: Uint8Array, w: number, h: number): Uint8Array {
-  const stride = ((Math.ceil(w / 8) + 3) >> 2) << 2;  // múltiplo de 4
+//   14  BITMAPFILEHEADER  ("BM", tamaño, offset de los datos = 70)
+//   40  BITMAPINFOHEADER  (1 plano, 2 bpp, sin compresión, 4 colores)
+//   16  paleta            (0 negro, 1 gris oscuro, 2 gris claro, 3 blanco)
+//   …   las filas, 4 píxeles por byte, el de más a la izquierda en los bits altos
+export function packBmp2(idx: Uint8Array, w: number, h: number): Uint8Array {
+  const stride = Math.ceil((w * 2) / 32) * 4;         // múltiplo de 4
   const dataSize = stride * h;
-  const offset = 14 + 40 + 8;
+  const offset = 14 + 40 + 16;
   const out = new Uint8Array(offset + dataSize);
   const dv = new DataView(out.buffer);
   out[0] = 0x42; out[1] = 0x4d;                       // "BM"
@@ -136,33 +169,26 @@ export function packBmp1(gray: Uint8Array, w: number, h: number): Uint8Array {
   dv.setInt32(18, w, true);
   dv.setInt32(22, h, true);                           // positivo = de abajo hacia arriba
   dv.setUint16(26, 1, true);                          // planos
-  dv.setUint16(28, 1, true);                          // bits por píxel
+  dv.setUint16(28, 2, true);                          // bits por píxel
   dv.setUint32(30, 0, true);                          // sin compresión
   dv.setUint32(34, dataSize, true);
   dv.setUint32(38, 2835, true);                       // 72 ppp
   dv.setUint32(42, 2835, true);
-  dv.setUint32(46, 2, true);                          // colores usados
-  dv.setUint32(50, 2, true);                          // colores importantes
-  // Paleta BGRA: 0 = negro, 1 = blanco.
-  out[54] = 0; out[55] = 0; out[56] = 0; out[57] = 0;
-  out[58] = 255; out[59] = 255; out[60] = 255; out[61] = 0;
+  dv.setUint32(46, 4, true);                          // colores usados
+  dv.setUint32(50, 4, true);                          // colores importantes
+  for (let i = 0; i < 4; i++) {                       // paleta BGRA en gris
+    const o = 54 + i * 4;
+    out[o] = LEVELS[i]; out[o + 1] = LEVELS[i]; out[o + 2] = LEVELS[i]; out[o + 3] = 0;
+  }
   for (let y = 0; y < h; y++) {
     const row = offset + (h - 1 - y) * stride;         // la primera fila del archivo es la de abajo
-    for (let xb = 0; xb * 8 < w; xb++) {
-      let byte = 0;
-      for (let b = 0; b < 8; b++) {
-        const x = xb * 8 + b;
-        const white = x < w && gray[y * w + x] < THRESHOLD ? 0 : 1;
-        byte |= white << (7 - b);
-      }
-      out[row + xb] = byte;
-    }
+    for (let x = 0; x < w; x++) out[row + (x >> 2)] |= (idx[y * w + x] & 3) << (6 - 2 * (x % 4));
   }
   return out;
 }
 
-// Los números no están en Lucide (no hay dígitos), así que el dibujo se arma
-// acá: N puntos para contar, que además es lo que de verdad sirve a esa edad.
+// Los emoji no traen dígitos, así que el dibujo de los números se arma acá: N
+// puntos para contar, que además es lo que de verdad sirve a esa edad.
 function numberSvg(n: number): string {
   const cols = n <= 3 ? n : n <= 6 ? 3 : n <= 8 ? 4 : 5;
   const rows = Math.ceil(n / cols);
@@ -174,24 +200,62 @@ function numberSvg(n: number): string {
     const inRow = Math.min(cols, n - row * cols);
     const cx = 12 + (i % cols - (inRow - 1) / 2) * cell;
     const cy = 12 + (row - (rows - 1) / 2) * cell;
-    circles.push(`<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${r.toFixed(2)}" fill="black"/>`);
+    circles.push(`<circle cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${r.toFixed(2)}"/>`);
   }
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">${circles.join("")}</svg>`;
+  return svgWrap(circles.join(""));
 }
+
+// Las formas también se dibujan acá: los emoji de formas son cuadraditos de
+// colores y en gris no se distinguen entre sí. Llenas en negro, que es lo que
+// más se lee en tinta electrónica.
+function starPoints(cx: number, cy: number, outer: number, inner: number): string {
+  const pts: string[] = [];
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? inner : outer;
+    const a = -Math.PI / 2 + (i * Math.PI) / 5;
+    pts.push(`${(cx + r * Math.cos(a)).toFixed(2)},${(cy + r * Math.sin(a)).toFixed(2)}`);
+  }
+  return pts.join(" ");
+}
+
+const SHAPES: Record<string, string> = {
+  circulo: `<circle cx="12" cy="12" r="10.5"/>`,
+  cuadrado: `<rect x="1.5" y="1.5" width="21" height="21" rx="1.2"/>`,
+  rectangulo: `<rect x="1" y="5.5" width="22" height="13" rx="1.2"/>`,
+  triangulo: `<polygon points="12,1.8 22.6,21.5 1.4,21.5"/>`,
+  ovalo: `<ellipse cx="12" cy="12" rx="11" ry="7.5"/>`,
+  rombo: `<polygon points="12,1.4 22.6,12 12,22.6 1.4,12"/>`,
+  estrella: `<polygon points="${starPoints(12, 12.6, 11, 4.6)}"/>`,
+  corazon: `<path d="M12 22.2 L2.4 12.2 A 5.6 5.6 0 1 1 12 6.0 A 5.6 5.6 0 1 1 21.6 12.2 Z"/>`,
+  cruz: `<polygon points="9,1.5 15,1.5 15,9 22.5,9 22.5,15 15,15 15,22.5 9,22.5 9,15 1.5,15 1.5,9 9,9"/>`,
+};
+
+const svgWrap = (body: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="#000">${body}</svg>`;
 
 const svgCache = new Map<string, string>();
 
+// El nombre del archivo en noto-emoji: emoji_u1f436.svg, y los de varios puntos
+// de código con "_" en el medio (emoji_u1f469_200d_1f373.svg).
+const notoFile = (cp: string) => `emoji_u${cp.split("-").join("_")}`;
+
 async function iconSvg(icon: string): Promise<string> {
   if (icon.startsWith("num:")) return numberSvg(Number(icon.slice(4)));
+  if (icon.startsWith("shape:")) {
+    const body = SHAPES[icon.slice(6)];
+    if (!body) throw new Error(`forma desconocida: ${icon}`);
+    return svgWrap(body);
+  }
   const have = svgCache.get(icon);
   if (have) return have;
+  const cp = icon.startsWith("emoji:") ? icon.slice(6) : icon;
   // Copia local primero: así una segunda generación (o un jsDelivr caído) no
-  // deja el paquete a medias.
-  const local = `${DIR}/svg/${icon}.svg`;
+  // deja el paquete a medias, y el original queda guardado en el volumen.
+  const local = `${DIR}/emoji/${cp}.svg`;
   let svg = await readFile(local, "utf8").catch(() => "");
   if (!svg) {
-    const res = await fetch(LUCIDE_URL(icon), { signal: AbortSignal.timeout(20_000) });
-    if (!res.ok) throw new Error(`lucide ${icon}: ${res.status}`);
+    const res = await fetch(NOTO_URL(notoFile(cp)), { signal: AbortSignal.timeout(20_000) });
+    if (!res.ok) throw new Error(`noto ${cp}: ${res.status}`);
     svg = await res.text();
     await writeAsset(local, new TextEncoder().encode(svg));
   }
@@ -199,19 +263,74 @@ async function iconSvg(icon: string): Promise<string> {
   return svg;
 }
 
-// SVG -> bitmap de 1 bpp. Rasteriza sharp (libvips ya trae el motor de SVG y
-// sharp ya está instalado para las fotos): sin Python, sin rsvg-convert.
+// SVG -> BMP de 2 bpp en 4 grises. Rasteriza sharp (libvips ya trae el motor de
+// SVG y sharp ya está instalado para las fotos): sin Python, sin rsvg-convert.
+//
+// Tres pasos, y los tres importan:
+//  1. se rasteriza CON transparencia, para saber qué píxel es figura y cuál es
+//     fondo;
+//  2. el tono de la figura se estira a [0, ART_HI] (ver ART_HI): un dibujo
+//     amarillo o blanco no puede quedar del color del papel;
+//  3. Floyd-Steinberg a los cuatro grises del panel, igual que las fotos.
 export async function renderCard(card: Card): Promise<Uint8Array> {
-  let svg = await iconSvg(card.icon);
-  // El trazo se engrosa ANTES de escalar (ver STROKE).
-  svg = svg.replace(/stroke-width\s*=\s*"[^"]*"/g, `stroke-width="${STROKE}"`);
-  const { data, info } = await sharp(Buffer.from(svg), { density: 384 })
-    .resize(CARD_PX, CARD_PX, { fit: "contain", background: { r: 255, g: 255, b: 255, alpha: 1 } })
-    .flatten({ background: "#ffffff" })
-    .greyscale()
+  const svg = await iconSvg(card.icon);
+  const inner = Math.round(CARD_PX * CARD_INSET);
+  const pad = (CARD_PX - inner) >> 1;
+  const { data, info } = await sharp(Buffer.from(svg), { density: 512 })
+    .resize(inner, inner, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .extend({ top: pad, bottom: CARD_PX - inner - pad, left: pad, right: CARD_PX - inner - pad, background: { r: 0, g: 0, b: 0, alpha: 0 } })
+    .ensureAlpha()
+    .toColourspace("srgb")
     .raw()
     .toBuffer({ resolveWithObject: true });
-  return packBmp1(new Uint8Array(data), info.width, info.height);
+  const w = info.width;
+  const h = info.height;
+  const n = w * h;
+  const ch = info.channels;
+  const lum = new Float32Array(n);
+  const alpha = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const o = i * ch;
+    lum[i] = ch >= 3 ? 0.299 * data[o] + 0.587 * data[o + 1] + 0.114 * data[o + 2] : data[o];
+    alpha[i] = ch === 4 || ch === 2 ? data[o + ch - 1] / 255 : 1;
+  }
+  // Percentiles 2/98 de la figura (no del fondo): un par de píxeles sueltos del
+  // antialias no tienen que decidir el contraste de toda la tarjeta.
+  const vals: number[] = [];
+  for (let i = 0; i < n; i++) if (alpha[i] > 0.6) vals.push(lum[i]);
+  vals.sort((a, b) => a - b);
+  let lo = 0;
+  let hi = 255;
+  if (vals.length > 50) {
+    lo = vals[Math.floor(vals.length * 0.02)];
+    hi = vals[Math.floor(vals.length * 0.98)];
+  }
+  if (hi - lo < 20) {                                  // dibujo de un solo tono
+    lo = Math.max(0, lo - 40);
+    hi = lo + 60;
+  }
+  const gray = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const v = Math.max(0, Math.min(ART_HI, ((lum[i] - lo) / (hi - lo)) * ART_HI));
+    gray[i] = 255 - alpha[i] * (255 - v);              // sobre blanco
+  }
+  const idx = new Uint8Array(n);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x;
+      const old = gray[p];
+      const q = Math.max(0, Math.min(3, Math.round(old / 85)));
+      idx[p] = q;
+      const err = old - LEVELS[q];
+      if (x + 1 < w) gray[p + 1] += (err * 7) / 16;
+      if (y + 1 < h) {
+        if (x > 0) gray[p + w - 1] += (err * 3) / 16;
+        gray[p + w] += (err * 5) / 16;
+        if (x + 1 < w) gray[p + w + 1] += (err * 1) / 16;
+      }
+    }
+  }
+  return packBmp2(idx, w, h);
 }
 
 // ── Rutas en la SD ──────────────────────────────────────────────────────────
@@ -256,7 +375,7 @@ const CATEGORY_LABEL: Record<string, string> = {
 // ── Generación ──────────────────────────────────────────────────────────────
 // Todo lo que hay que tener. El id lleva el idioma adentro para que un mismo
 // manifiesto no pueda mezclar el audio de dos idiomas.
-type Planned = { id: string; kind: AssetKind; path: string; make: () => Promise<Uint8Array | null> };
+type Planned = { id: string; kind: AssetKind; path: string; tag?: string; make: () => Promise<Uint8Array | null> };
 
 async function plan(lang: Lang): Promise<Planned[]> {
   const out: Planned[] = [];
@@ -277,10 +396,11 @@ async function plan(lang: Lang): Promise<Planned[]> {
     id: "cards/index",
     kind: "cards",
     path: CARD_INDEX_PATH,
+    tag: `index/${CARDS.length}`,
     make: async () => new TextEncoder().encode(cardIndexJson()),
   });
   for (const card of CARDS) {
-    out.push({ id: `cards/${card.id}`, kind: "cards", path: cardImagePath(card.id), make: () => renderCard(card) });
+    out.push({ id: `cards/${card.id}`, kind: "cards", path: cardImagePath(card.id), tag: card.icon, make: () => renderCard(card) });
   }
   // La voz de la tarjeta SIEMPRE en español y en inglés, sea cual sea el idioma
   // del aparato: la gracia del juego es que el bebé escuche la palabra en los
@@ -292,6 +412,7 @@ async function plan(lang: Lang): Promise<Planned[]> {
         id: `sounds/${voice}/${card.id}`,
         kind: "sounds",
         path: cardAudioPath(voice, card.id),
+        tag: voice === "en" ? card.en : card.es,
         make: () => synthesize(voice === "en" ? card.en : card.es, voice, 4),
       });
     }
@@ -302,7 +423,7 @@ async function plan(lang: Lang): Promise<Planned[]> {
 type Progress = { lang: Lang; done: number; total: number; building: boolean; error: string; startedAt: number; finishedAt: number; missing: number };
 const progress = new Map<Lang, Progress>();
 const running = new Map<Lang, Promise<void>>();
-// No se vuelve a revisar en cada pedido del manifiesto: repasar 783 archivos es
+// No se vuelve a revisar en cada pedido del manifiesto: repasar 786 archivos es
 // barato pero no gratis, y si Piper está apagado siempre va a faltar el audio.
 const RECHECK_MS = 10 * 60 * 1000;
 
@@ -349,7 +470,7 @@ export function buildAssets(lang: Lang): Promise<void> {
           continue;
         }
         await writeAsset(file, data);
-        idx.entries[item.id] = { id: item.id, kind: item.kind, path: item.path, bytes: data.length, sha: sha16(data) };
+        idx.entries[item.id] = { id: item.id, kind: item.kind, path: item.path, bytes: data.length, sha: sha16(data), ...(item.tag ? { tag: item.tag } : {}) };
         saveIndexSoon(lang);
       } catch (err) {
         p.error = `${item.id}: ${String(err instanceof Error ? err.message : err).slice(0, 120)}`;
@@ -457,7 +578,10 @@ assets.get("/status", async (c) => {
       error: p.error,
     });
   }
-  return c.json({ ok: true, lucide: LUCIDE, cards: CARDS.length, langs: rows });
+  // `lucide` sigue saliendo por compatibilidad: la tarjeta de /board todavía lo
+  // muestra (board.ts) y sin el campo diría "undefined". Cuando esa página diga
+  // "Dibujos: <art>", se saca de acá.
+  return c.json({ ok: true, art: ART_REV, lucide: ART_REV, cards: CARDS.length, langs: rows });
 });
 
 assets.post("/build", async (c) => {
@@ -503,7 +627,7 @@ assets.get("/file", async (c) => {
 });
 
 // Al arrancar, como el warmUp de Piper: la primera vez tarda unos minutos
-// (Piper dice 478 palabras) y queda en el volumen para siempre.
+// (Piper dice 480 palabras) y queda en el volumen para siempre.
 export function warmAssets(lang: Lang): void {
   if (!BUILD_ON_START) return;
   setTimeout(() => void buildAssets(lang).catch((err) => console.error("assets:", err)), 5_000);

@@ -45,6 +45,7 @@
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
+#include "voice/UiSound.h"
 #include "util/ScreenshotUtil.h"
 
 namespace {
@@ -1081,6 +1082,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
     if (section->currentPage < section->pageCount - 1 || section->isBuilding()) {
       section->currentPage++;
       lastPageTurnTime = millis();
+      UI_SOUND.play(uisound::Sound::Page);
       return true;
     } else if (currentSpineIndex + 1 < epub->getSpineItemsCount()) {
       RenderLock lock;
@@ -1088,16 +1090,19 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       currentSpineIndex++;
       section.reset();
       lastPageTurnTime = millis();
+      UI_SOUND.play(uisound::Sound::Page);
       return true;
     } else {
       currentSpineIndex = epub->getSpineItemsCount();
       lastPageTurnTime = millis();
+      UI_SOUND.play(uisound::Sound::Page);
       return true;
     }
   } else {
     if (section->currentPage > 0) {
       section->currentPage--;
       lastPageTurnTime = millis();
+      UI_SOUND.play(uisound::Sound::Page);
       return true;
     } else if (currentSpineIndex > 0) {
       RenderLock lock;
@@ -1106,6 +1111,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
       currentSpineIndex--;
       section.reset();
       lastPageTurnTime = millis();
+      UI_SOUND.play(uisound::Sound::Page);
       return true;
     }
   }

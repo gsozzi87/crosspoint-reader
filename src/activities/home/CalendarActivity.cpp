@@ -15,6 +15,7 @@
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "TripActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -193,9 +194,36 @@ void CalendarActivity::onEnter() {
     viewMonth = m;
     cursorDay = d;
   }
-  const bool cached = loadMonthFromCache();
+  // Se entra al menú (Hoy / Calendario / Viajes) sin pedir nada: el mes se baja
+  // recién cuando se abre el calendario, así entrar acá no prende el WiFi.
+  loadMonthFromCache();
+  state = HOME;
+  homeRow = ROW_TODAY;
+  requestUpdate();
+}
+
+// OK sobre el menú.
+void CalendarActivity::openHomeRow() {
+  switch (homeRow) {
+    case ROW_TODAY:
+      openToday();
+      return;
+    case ROW_TRIPS:
+      startActivityForResult(std::make_unique<TripActivity>(renderer, mappedInput),
+                             [this](const ActivityResult&) { requestUpdate(); });
+      return;
+    default:
+      break;
+  }
   state = MONTH;
   requestUpdate();
+  goToCurrentMonth();
+}
+
+// El mes en pantalla, bajado si la caché está vieja. Es lo que hacía onEnter
+// antes de que el calendario tuviera menú.
+void CalendarActivity::goToCurrentMonth() {
+  const bool cached = monthCached;
   // Sin caché del mes (o con una vieja) se busca; si falla queda lo que haya.
   time_t now = 0;
   const bool haveClock = halClock.getEpochUtc(now);
@@ -211,9 +239,157 @@ void CalendarActivity::onEnter() {
     }
   }
   if (stale) {
+    afterLoad = MONTH;
     pending = MONTH_FETCH;
     ensureConnected();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Hoy: lo del día y las sugerencias
+// ---------------------------------------------------------------------------
+
+// Se entra a Hoy con lo que haya en la tarjeta y, si del día de hoy no hay
+// nada guardado, se baja la agenda (eso sí es gratis). Las sugerencias NO se
+// piden solas: cuestan plata, las pide el usuario con OK.
+void CalendarActivity::openToday() {
+  int y = 0, m = 0, d = 0;
+  const bool haveClock = localToday(y, m, d);
+  const std::string date = haveClock ? isoDate(y, m, d) : "";
+  todayTop = 0;
+  state = TODAY;
+  if (date.empty()) {
+    dayItems.clear();
+    buildTodayLines();
+    requestUpdate();
+    return;
+  }
+  const bool cached = loadDayFromCache(date);
+  loadSuggestFromCache(date);
+  buildTodayLines();
+  requestUpdate();
+  // Solo se prende el WiFi si de verdad falta algo: con el mes en la tarjeta y
+  // hoy sin nada, no hay nada que bajar (si no, entrar a Hoy levantaría la red
+  // todos los días de por vida).
+  const DaySummary* s = summaryFor(d);
+  if (!cached && (!monthCached || (s && s->count > 0))) {
+    afterLoad = TODAY;
+    pending = DAY_FETCH;
+    ensureConnected();
+  }
+}
+
+// El texto de la pantalla Hoy, ya armado: la fecha, lo que hay agendado y las
+// sugerencias. Se rearma cada vez que cambia algo y después se pagina.
+void CalendarActivity::buildTodayLines() {
+  todayLines.clear();
+  const int width = renderer.getScreenWidth() - 2 * SIDE - 8;
+  auto push = [&](const std::string& text, const uint8_t style) { todayLines.push_back({text, style}); };
+  auto pushWrapped = [&](const std::string& text, const uint8_t style) {
+    const int font = style == 2 ? SMALL_FONT_ID : UI_10_FONT_ID;
+    for (const std::string& part : renderer.wrappedText(font, text.c_str(), width, 8)) push(part, style);
+  };
+
+  int y = 0, m = 0, d = 0;
+  if (localToday(y, m, d)) {
+    push(std::string(weekdayName(weekdayOfCivil(y, m, d))) + " " + std::to_string(d) + " " + monthName(m), 1);
+  } else {
+    push(tr(STR_CAL_NO_CLOCK), 1);
+  }
+
+  push(tr(STR_DAY_AGENDA), 1);
+  if (dayItems.empty()) {
+    push(tr(STR_CAL_NO_EVENTS), 2);
+  } else {
+    for (const Item& it : dayItems) {
+      std::string line = it.at.empty() ? it.title : it.at + "  " + it.title;
+      if (!it.place.empty()) line += "  · " + it.place;
+      pushWrapped(line, 0);
+    }
+  }
+
+  push("", 0);
+  push(tr(STR_SUGGEST_TITLE), 1);
+  if (!suggestError.empty()) {
+    pushWrapped(suggestError, 2);
+  } else if (suggestLines.empty()) {
+    pushWrapped(tr(STR_SUGGEST_EMPTY), 2);
+  } else {
+    for (const std::string& line : suggestLines) pushWrapped("• " + line, 0);
+    // Cuándo se calcularon: son de la última vez que se pidieron, no de ahora.
+    time_t now = 0;
+    if (suggestAt > 0 && halClock.getEpochUtc(now) && now > suggestAt) {
+      const long mins = static_cast<long>(now - suggestAt) / 60;
+      char buf[64];
+      if (mins < 60) snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
+      else snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
+      push(buf, 2);
+    }
+  }
+}
+
+// Las sugerencias del día viven en la misma caché del calendario, así que se
+// ven sin WiFi y no se vuelven a pedir por entrar y salir.
+bool CalendarActivity::loadSuggestFromCache(const std::string& date) {
+  suggestLines.clear();
+  suggestAt = 0;
+  suggestDate = date;
+  suggestError.clear();
+  JsonDocument doc;
+  if (!readCache(doc)) return false;
+  JsonVariantConst sv = doc["suggest"];
+  if (sv.isNull() || std::string(sv["date"] | "") != date) return false;
+  suggestAt = static_cast<time_t>(sv["at"] | (int64_t)0);
+  for (JsonVariantConst lv : sv["lines"].as<JsonArrayConst>()) {
+    const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
+    if (!line.empty()) suggestLines.push_back(line);
+  }
+  return !suggestLines.empty();
+}
+
+void CalendarActivity::saveSuggestToCache() const {
+  JsonDocument doc;
+  readCache(doc);
+  JsonObject sv = doc["suggest"].to<JsonObject>();
+  sv["date"] = suggestDate;
+  sv["at"] = static_cast<int64_t>(suggestAt);
+  JsonArray arr = sv["lines"].to<JsonArray>();
+  for (const std::string& line : suggestLines) arr.add(line);
+  writeCache(doc);
+}
+
+// GET /api/suggest/day. `refresh` solo cuando lo pidió el usuario con OK: cada
+// recálculo le cuesta plata al dueño del servidor.
+bool CalendarActivity::fetchSuggest(const bool refresh) {
+  int y = 0, m = 0, d = 0;
+  const std::string date = localToday(y, m, d) ? isoDate(y, m, d) : "";
+  std::string path = "/api/suggest/day?lang=" + std::string(uiLanguageCode());
+  if (!date.empty()) path += "&date=" + date;
+  if (refresh) path += "&refresh=1";
+  ServerClient::Response resp;
+  const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
+  suggestError.clear();
+  if (r != ServerClient::Result::Ok) {
+    // 429 = el servidor no quiere gastar más búsquedas hoy; se dice tal cual.
+    suggestError = resp.status == 429 ? tr(STR_SUGGEST_BUDGET) : tr(STR_SUGGEST_FAILED);
+    LOG_ERR(TAG, "GET /api/suggest/day: %s %d", ServerClient::resultName(r), resp.status);
+    return false;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+    suggestError = tr(STR_SUGGEST_FAILED);
+    return false;
+  }
+  suggestLines.clear();
+  for (JsonVariantConst lv : doc["lines"].as<JsonArrayConst>()) {
+    const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
+    if (!line.empty()) suggestLines.push_back(line);
+  }
+  suggestAt = static_cast<time_t>(doc["at"] | (int64_t)0);
+  suggestDate = date;
+  if (suggestLines.empty()) suggestError = tr(STR_SUGGEST_EMPTY);
+  else saveSuggestToCache();
+  return !suggestLines.empty();
 }
 
 void CalendarActivity::onExit() {
@@ -474,6 +650,7 @@ void CalendarActivity::openDay() {
     requestUpdate();
     return;
   }
+  afterLoad = DAY;
   pending = DAY_FETCH;
   ensureConnected();
 }
@@ -495,7 +672,11 @@ void CalendarActivity::onWifiSelectionComplete(const bool connected) {
     // que servir sin WiFi.
     wifiActivated = false;
     pending = NONE;
-    state = MONTH;
+    state = afterLoad == TODAY ? TODAY : MONTH;
+    if (state == TODAY) {
+      suggestError = tr(STR_SERVER_WIFI_FAILED);
+      buildTodayLines();
+    }
     requestUpdate();
     return;
   }
@@ -516,11 +697,20 @@ void CalendarActivity::loop() {
         if (!ok) LOG_ERR(TAG, "mes: %s", failureDetail.c_str());
         requestUpdate();
       } else if (p == DAY_FETCH) {
-        const bool ok = fetchDay(isoDate(viewYear, viewMonth, cursorDay));
+        const bool ok = fetchDay(dayDate.empty() ? isoDate(viewYear, viewMonth, cursorDay) : dayDate);
         WiFi.setSleep(true);
-        state = DAY;
+        state = afterLoad == TODAY ? TODAY : DAY;
         dayIndex = 0;
+        if (state == TODAY) buildTodayLines();
         if (!ok) LOG_ERR(TAG, "día: %s", failureDetail.c_str());
+        requestUpdate();
+      } else if (p == SUGGEST_FETCH) {
+        fetchSuggest(suggestRefresh);
+        suggestRefresh = false;
+        WiFi.setSleep(true);
+        state = TODAY;
+        todayTop = 0;
+        buildTodayLines();
         requestUpdate();
       } else {
         state = MONTH;
@@ -528,8 +718,50 @@ void CalendarActivity::loop() {
       }
       break;
     }
+    case HOME: {
+      buttonNavigator.onNext([this] {
+        homeRow = ButtonNavigator::nextIndex(homeRow, HOME_ROWS);
+        requestUpdate();
+      });
+      buttonNavigator.onPrevious([this] {
+        homeRow = ButtonNavigator::previousIndex(homeRow, HOME_ROWS);
+        requestUpdate();
+      });
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        openHomeRow();
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
+      break;
+    }
+    case TODAY: {
+      const int total = static_cast<int>(todayLines.size());
+      buttonNavigator.onNext([&] {
+        if (todayTop + todayPerPage < total) todayTop += todayPerPage;
+        requestUpdate();
+      });
+      buttonNavigator.onPrevious([&] {
+        todayTop = std::max(0, todayTop - todayPerPage);
+        requestUpdate();
+      });
+      // OK pide (o vuelve a pedir) las sugerencias: es la ÚNICA forma de que el
+      // servidor gaste una búsqueda, así no se van los pesos solos.
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        suggestRefresh = !suggestLines.empty();
+        afterLoad = TODAY;
+        pending = SUGGEST_FETCH;
+        ensureConnected();
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        state = HOME;
+        requestUpdate();
+      }
+      break;
+    }
     case MONTH: {
       if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, REFRESH_HOLD_MS)) {
+        afterLoad = MONTH;
         pending = MONTH_FETCH;
         ensureConnected();
         break;
@@ -540,7 +772,11 @@ void CalendarActivity::loop() {
         openDay();
         break;
       }
-      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) finish();
+      // Atrás vuelve al menú de Mi día, no al hub: siempre se sale o se vuelve.
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        state = HOME;
+        requestUpdate();
+      }
       break;
     }
     case DAY: {
@@ -563,12 +799,63 @@ void CalendarActivity::loop() {
     case FAILED:
       if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
           mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-        state = MONTH;
+        state = HOME;
         requestUpdate();
       }
       break;
     case CONNECTING:
       break;
+  }
+}
+
+// El menú de Mi día: tres filas grandes con lo que hay adentro.
+void CalendarActivity::renderHome() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int top = metrics.topPadding + metrics.headerHeight + 16;
+  const int rowH = 76;
+  const StrId titles[HOME_ROWS] = {StrId::STR_DAY_TODAY, StrId::STR_CAL_TITLE, StrId::STR_DAY_TRIPS};
+  const StrId subs[HOME_ROWS] = {StrId::STR_DAY_TODAY_SUB, StrId::STR_DAY_CALENDAR_SUB, StrId::STR_DAY_TRIPS_SUB};
+  for (int i = 0; i < HOME_ROWS; ++i) {
+    const int y = top + i * (rowH + 10);
+    const bool sel = i == homeRow;
+    if (sel) renderer.fillRoundedRect(SIDE, y, pageWidth - 2 * SIDE, rowH, 12, Color::Black);
+    else renderer.drawRoundedRect(SIDE, y, pageWidth - 2 * SIDE, rowH, 2, 12, true);
+    const int tw = pageWidth - 2 * SIDE - 32;
+    renderer.drawText(UI_12_FONT_ID, SIDE + 16, y + 14,
+                      renderer.truncatedText(UI_12_FONT_ID, I18N.get(titles[i]), tw, EpdFontFamily::BOLD).c_str(), !sel,
+                      EpdFontFamily::BOLD);
+    renderer.drawText(SMALL_FONT_ID, SIDE + 16, y + 44,
+                      renderer.truncatedText(SMALL_FONT_ID, I18N.get(subs[i]), tw).c_str(), !sel);
+  }
+}
+
+// Hoy: la agenda del día y las sugerencias, paginadas con la palanca.
+void CalendarActivity::renderToday() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int top = metrics.topPadding + metrics.headerHeight + 12;
+  // El margen de abajo lleva verticalSpacing además del alto de los hints.
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 18;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  todayPerPage = std::max(1, (bottom - top) / lineH);
+  if (todayLines.empty()) buildTodayLines();
+  const int total = static_cast<int>(todayLines.size());
+  if (todayTop >= total) todayTop = 0;
+  for (int i = 0; i < todayPerPage && todayTop + i < total; ++i) {
+    const Line& line = todayLines[todayTop + i];
+    if (line.text.empty()) continue;
+    const int font = line.style == 2 ? SMALL_FONT_ID : line.style == 1 ? UI_12_FONT_ID : UI_10_FONT_ID;
+    const auto style = line.style == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    renderer.drawText(font, SIDE, top + i * lineH,
+                      renderer.truncatedText(font, line.text.c_str(), pageWidth - 2 * SIDE, style).c_str(), true,
+                      style);
+  }
+  if (total > todayPerPage) {
+    char pages[16];
+    snprintf(pages, sizeof(pages), "%d/%d", todayTop / todayPerPage + 1, (total + todayPerPage - 1) / todayPerPage);
+    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom, pages);
   }
 }
 
@@ -709,7 +996,11 @@ void CalendarActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
   std::string title = tr(STR_CAL_TITLE);
-  if (state == DAY && viewYear != 0) {
+  if (state == HOME) {
+    title = tr(STR_HUB_DAY);
+  } else if (state == TODAY) {
+    title = tr(STR_DAY_TODAY);
+  } else if (state == DAY && viewYear != 0) {
     title = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " +
             std::to_string(cursorDay) + " " + monthName(viewMonth);
   } else if (viewYear != 0) {
@@ -718,6 +1009,12 @@ void CalendarActivity::render(RenderLock&&) {
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
   switch (state) {
+    case HOME:
+      renderHome();
+      break;
+    case TODAY:
+      renderToday();
+      break;
     case MONTH:
       renderMonth();
       break;
@@ -738,8 +1035,11 @@ void CalendarActivity::render(RenderLock&&) {
       break;
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), state == DAY ? tr(STR_BACK) : tr(STR_SELECT),
-                                            tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // En Hoy, OK es lo único que le pide sugerencias al servidor, así que lo dice.
+  const char* okLabel = state == DAY      ? tr(STR_BACK)
+                        : state == TODAY  ? (suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO))
+                                          : tr(STR_SELECT);
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // Regla del panel: refresco limpio cada 10-15 parciales o la cuadrícula fantasmea.
   const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;

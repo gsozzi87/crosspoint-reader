@@ -92,6 +92,21 @@ export async function loadTrips(): Promise<Trip[]> {
   return store.trips ?? [];
 }
 
+// Un viaje por id. Sin id devuelve el primero (que es como pide el aparato
+// cuando todavía no eligió ninguno). Lo usan las rutas de acá y `suggest.ts`.
+export async function getTrip(id?: string): Promise<Trip | null> {
+  const trips = await loadTrips();
+  if (!id) return trips[0] ?? null;
+  return trips.find((t) => t.id === id) ?? null;
+}
+
+// El viaje que contiene esa fecha (para las sugerencias del día: si hoy estoy
+// de viaje, lo del día sale del viaje y no de la agenda de casa).
+export async function tripOnDate(date: string): Promise<Trip | null> {
+  const trips = await loadTrips();
+  return trips.find((t) => t.start <= date && date <= t.end) ?? null;
+}
+
 function newId(): string {
   return Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0");
 }
