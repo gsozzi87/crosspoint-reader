@@ -11,6 +11,7 @@
 #include "HubStore.h"
 #include "util/WavHeader.h"
 #include "music/MusicPlayer.h"
+#include "TaskConfig.h"
 
 namespace {
 
@@ -61,9 +62,12 @@ void UiSound::play(const uisound::Sound sound) {
 bool UiSound::ensureTask() {
   if (task_ != nullptr) return true;
   TaskHandle_t handle = nullptr;
-  // Core 0, como la tarea de reproducción del SDK: el loop de Arduino (la UI)
-  // vive en el 1 y no se lo frena. Prioridad por debajo de la de audio (10).
-  if (xTaskCreatePinnedToCore(taskEntry, "ui_sound", 4096, this, 4, &handle, 0) != pdPASS) return false;
+  // Núcleo, prioridad y stack en src/TaskConfig.h (core 0 como la tarea de
+  // reproducción del SDK, por debajo de su prioridad 10).
+  if (xTaskCreatePinnedToCore(taskEntry, tasks::UI_SOUND_NAME, tasks::UI_SOUND_STACK, this, tasks::UI_SOUND_PRIO,
+                              &handle, tasks::CORE_AUDIO) != pdPASS) {
+    return false;
+  }
   task_ = handle;
   return true;
 }

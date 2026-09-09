@@ -27,6 +27,7 @@
 #include "util/BmpViewerActivity.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
+#include "TaskConfig.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -36,11 +37,9 @@ void ActivityManager::begin() {
 #else
   constexpr BaseType_t renderTaskCore = 0;
 #endif
-  xTaskCreatePinnedToCore(&renderTaskTrampoline, "ActivityManagerRender",
-                          8192,               // Stack size
-                          this,               // Parameters
-                          1,                  // Priority
-                          &renderTaskHandle,  // Task handle
+  // Núcleo, prioridad y stack viven en src/TaskConfig.h con las demás tareas.
+  xTaskCreatePinnedToCore(&renderTaskTrampoline, tasks::RENDER_NAME, tasks::RENDER_STACK, this, tasks::RENDER_PRIO,
+                          &renderTaskHandle,
                           renderTaskCore  // Keep long renders/cover decodes off CPU 0's idle watchdog when available
   );
   assert(renderTaskHandle != nullptr && "Failed to create render task");
