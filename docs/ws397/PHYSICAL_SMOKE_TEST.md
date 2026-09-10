@@ -50,21 +50,28 @@ Convención de botones: **ARRIBA/ABAJO** = palanca, **OK** = confirmar, **ATRÁS
 7. Ajustes → Prueba de audio: nivel pico > 30 % hablando a 15 cm.
 
 ## 5. Movimiento (IMU)
-1. Ajustes → Movimiento: los tres ejes se mueven al inclinar; en reposo sobre la mesa un eje marca ≈ ±1 g y los otros
-   ≈ 0 (anotar cuál: es el eje normal a la pantalla y su signo).
-2. Sacudir dos veces: "Último evento: SHAKE". Inclinar 30°: "TILT". Apoyar plano: "LEVEL". Dar dos golpecitos con el
-   dedo en la tapa: "DOUBLE_TAP" (si no aparece, anotar el estado del motor de tap que muestra la pantalla).
+1. Ajustes → Sistema → Movimiento: **primero "Calibrar ejes"** (tres pasos: apoyado boca arriba, inclinado a la
+   derecha, inclinado hacia uno). Sin eso, "inclinar a la derecha" puede ser cualquier eje. Anotar qué muestra la
+   línea de montaje al terminar (por ejemplo `n=+Z x=-X y=+Y`).
+2. En la misma pantalla: sacudir dos veces da "sacudir"; inclinar 30° da "inclinar" con la dirección correcta;
+   apoyar plano da "horizontal"; dos golpecitos con el dedo en la tapa dan "doble golpe" (si no aparece, anotar si la
+   pantalla dice que el motor de golpes responde o no).
 3. Con un recordatorio sonando, dar vuelta el aparato boca abajo: se pospone y se calla.
 4. Grabando en Hablar, sacudir: se cancela la grabación.
 5. En el hub, dos golpecitos: se abre Hablar.
-6. Juegos → Laberinto: la bolita responde a la inclinación; Juegos → 2048: una inclinación firme mueve las fichas.
+6. Juegos → Laberinto: cada inclinación hace rodar la bolita hasta la próxima bifurcación (es por turnos, no se mueve
+   sola); Juegos → 2048: una inclinación firme empuja las fichas. Los dos se juegan igual con la palanca y OK.
 7. Dormido, mover el aparato no lo despierta ni gasta batería (§2.8).
 8. Hub: el widget del clima muestra "Interior NN° · NN %" aunque no haya lugar cargado.
 
 ## 6. Visual
 1. En ninguna pantalla hay bloques negros macizos con texto blanco (salvo la barra de título de Música).
-2. Lo elegido se ve gris claro con marco y texto negro en: hub, Recordatorios, Notas, Calendario, Juegos, Ajustes,
-   Explorador de archivos, y en los menús de opciones.
+2. Lo elegido se ve con **pestaña negra a la izquierda, marco, y las franjas grises SOLO en los márgenes**: el texto
+   de la fila elegida queda sobre blanco y se lee igual de bien que el resto. Vale para hub, Recordatorios, Notas,
+   Calendario, Juegos, Ajustes, Explorador de archivos y los menús de opciones. **En ninguna pantalla puede haber
+   letras encima de la trama.**
+6. Los títulos y encabezados se ven un escalón más grandes que el cuerpo de las listas (fuente UI_14 nueva); los pies
+   en negrita se distinguen de los pies normales.
 3. Márgenes y encabezados iguales en todas las pantallas nuestras; Ajustes se ve del mismo estilo.
 4. Textos largos (ruso, alemán) se truncan con "…" sin salirse del ancho; nada escribe fuera de la pantalla (log sin
    `pixeles fuera de pantalla`).
