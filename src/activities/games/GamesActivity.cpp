@@ -8,6 +8,8 @@
 
 #include "BlackjackActivity.h"
 #include "CardsActivity.h"
+#include "Game2048Activity.h"
+#include "MazeActivity.h"
 #include "CheckersActivity.h"
 #include "ChessActivity.h"
 #include "ConnectFourActivity.h"
@@ -54,6 +56,10 @@ const GameSpec GAMES[] = {
     {StrId::STR_GAME_BLACKJACK, StrId::STR_GAME_BLACKJACK_DESC, &make<BlackjackActivity>},
     {StrId::STR_GAME_RUMMY, StrId::STR_GAME_RUMMY_DESC, &make<RummyActivity>},
     {StrId::STR_GAME_CARDS, StrId::STR_GAME_CARDS_DESC, &make<CardsActivity>},
+    // Los dos que usan el sensor de movimiento. Siguen siendo por turnos: una
+    // inclinación es una jugada y una repintada, igual que soltar una ficha.
+    {StrId::STR_GAME_MAZE, StrId::STR_MAZE_HINT, &make<MazeActivity>},
+    {StrId::STR_GAME_2048, StrId::STR_2048_HINT, &make<Game2048Activity>},
 };
 constexpr int GAME_COUNT = sizeof(GAMES) / sizeof(GAMES[0]);
 }  // namespace

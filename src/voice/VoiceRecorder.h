@@ -27,6 +27,11 @@ class VoiceRecorder {
   // recordatorio (ni el atajo de voz) encima de una grabación en curso, que
   // dejaba el micrófono colgado y la toma perdida.
   static bool anyRecording() { return s_open > 0; }
+  // Corta TODAS las grabaciones abiertas. Es el gesto de sacudir: "cancelá lo
+  // que estés haciendo", que tiene que funcionar desde el loop de main.cpp sin
+  // saber qué Activity abrió el micrófono. La Activity se entera porque
+  // isRecording() pasa a false y su pump() la da por terminada.
+  static void abortAll();
   // Closes the mic and finalises the WAV header.
   void stop();
   // Closes the mic and drops the take.
@@ -79,6 +84,11 @@ class VoiceRecorder {
   size_t recorded = 0;
   bool recording = false;
   static int s_open;  // grabadoras con el micrófono abierto ahora mismo
+  // Las grabadoras vivas, para poder cortarlas desde afuera (abortAll). Son una
+  // o dos: cada pantalla crea la suya y la suelta al salir.
+  static VoiceRecorder* s_live[4];
+  void registerLive();
+  void unregisterLive();
   bool blips = true;
   uint8_t* packed = nullptr;  // ADPCM view of the take
   uint8_t* tone = nullptr;    // opening tone, played while the mic is already open

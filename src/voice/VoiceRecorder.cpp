@@ -47,6 +47,28 @@ void fillTone(uint8_t* buf, size_t samples, uint16_t hz) {
 }  // namespace
 
 int VoiceRecorder::s_open = 0;
+VoiceRecorder* VoiceRecorder::s_live[4] = {nullptr, nullptr, nullptr, nullptr};
+
+void VoiceRecorder::registerLive() {
+  for (VoiceRecorder*& slot : s_live) {
+    if (!slot) {
+      slot = this;
+      return;
+    }
+  }
+}
+
+void VoiceRecorder::unregisterLive() {
+  for (VoiceRecorder*& slot : s_live) {
+    if (slot == this) slot = nullptr;
+  }
+}
+
+void VoiceRecorder::abortAll() {
+  for (VoiceRecorder* r : s_live) {
+    if (r) r->abort();
+  }
+}
 
 bool VoiceRecorder::start(StrId& why) {
   if (!BoardConfig::hasCodecMic()) {
@@ -103,6 +125,7 @@ bool VoiceRecorder::start(StrId& why) {
 
   recording = true;
   ++s_open;
+  registerLive();
   LOG_DBG(TAG, "Recording (max %u s, pre-roll %u ms = %u samples)", (unsigned)(maxSamples / SAMPLE_RATE),
           (unsigned)preRollMs, (unsigned)spokenStart);
   return true;
@@ -129,6 +152,7 @@ void VoiceRecorder::stop() {
   if (!recording) return;
   recording = false;
   if (s_open > 0) --s_open;
+  unregisterLive();
   audio.endCapture();
   freeTone();
   blip(TONE_CLOSE_HZ, TONE_CLOSE_MS);
@@ -148,6 +172,7 @@ void VoiceRecorder::abort() {
   if (recording) {
     recording = false;
     if (s_open > 0) --s_open;
+    unregisterLive();
     audio.endCapture();
     freeTone();
     audio.end();

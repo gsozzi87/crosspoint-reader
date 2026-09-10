@@ -44,6 +44,9 @@
 #if FREEINK_CAP_USB_MSC
 #include "activities/network/UsbDriveActivity.h"
 #include "DevicePairActivity.h"
+#include <HalTiltSensor.h>
+
+#include "MotionActivity.h"
 #endif
 
 namespace fui = freeink::ui;
@@ -162,6 +165,18 @@ void SettingsActivity::rebuildSettingsLists() {
     // iniciada. Es la única forma de asociarlo sin teclado.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_PAIR_TITLE, SettingAction::DevicePair));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
+    // Gestos del IMU: encender o apagar, ver qué lee el sensor y calibrar cómo
+    // está montado (sin eso, "inclinar a la derecha" puede ser cualquier eje).
+    if (halTiltSensor.isAvailable()) {
+      systemSettings.push_back(SettingInfo::DynamicEnum(
+          StrId::STR_MOTION_GESTURES, {StrId::STR_MOTION_OFF, StrId::STR_MOTION_ON},
+          []() -> uint8_t { return HUB_STORE.motionGestures ? 1 : 0; },
+          [](uint8_t value) {
+            HUB_STORE.motionGestures = value != 0;
+            HUB_STORE.saveToFile();
+          }));
+      systemSettings.push_back(SettingInfo::Action(StrId::STR_MOTION_TITLE, SettingAction::Motion));
+    }
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
     // Fondo de pantalla: elegir qué foto queda pintada cuando el aparato se suspende.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_WALLPAPER, SettingAction::Wallpaper));
@@ -456,6 +471,9 @@ void SettingsActivity::toggleCurrentSetting() {
 #endif
       case SettingAction::DevicePair:
         startActivityForResult(std::make_unique<DevicePairActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Motion:
+        startActivityForResult(std::make_unique<MotionActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::HubSync:
         startActivityForResult(std::make_unique<HubSyncActivity>(renderer, mappedInput), resultHandler);

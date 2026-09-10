@@ -7,6 +7,7 @@
 #include <Logging.h>
 #include <ServerClient.h>
 #include "HubStore.h"
+#include "input/MotionInput.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "components/icons/hubWidgetIcons.h"
@@ -99,6 +100,14 @@ void ReminderAlertActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    snooze();
+    return;
+  }
+  // Darlo vuelta es posponer sin buscar ningún botón: es el gesto de tapar el
+  // despertador. Sacudirlo también lo pospone (es "pará"), que es lo primero
+  // que hace cualquiera con un aparato que suena en la mano.
+  if (MOTION.take(MotionInput::Event::FaceDown) || MOTION.take(MotionInput::Event::Shake)) {
+    LOG_INF(TAG, "gesto: se pospone el recordatorio");
     snooze();
     return;
   }

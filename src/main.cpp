@@ -55,6 +55,8 @@
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
 #include "util/PowerKey.h"
+#include "util/Shtc3.h"
+#include "input/MotionInput.h"
 #include "util/ScreenshotUtil.h"
 #include "music/MusicPlayer.h"
 #include "voice/VoiceRecorder.h"
@@ -410,6 +412,57 @@ static void checkTimeAlarms() {
   }
 }
 
+// ws397: los gestos del IMU valen desde cualquier pantalla tranquila, igual que
+// el doble Atrás. Son tres, y los tres resuelven algo que con tres botones sale
+// incómodo:
+//
+//   boca abajo ...... callar lo que esté sonando (recordatorio, temporizador,
+//                     música). Es el gesto de "ahora no" de toda la vida.
+//   sacudir ......... cancelar: corta una grabación en curso o descarta la
+//                     alarma que quedó en pantalla.
+//   doble golpe ..... abrir Hablar, el mismo PTT del doble Atrás, sin buscar
+//                     ningún botón.
+//
+// El resto de los eventos (inclinar, girar) son de cada pantalla: acá se
+// consumen SOLO los tres globales, así el laberinto se queda con los suyos.
+static void checkMotionGestures() {
+  if (!MOTION.available()) return;
+  const MotionInput::Event pending = MOTION.pending();
+  if (pending == MotionInput::Event::None) return;
+
+  // Sacudir mientras se graba corta la toma, esté donde esté el usuario: es lo
+  // único que se atiende con una grabación abierta.
+  if (pending == MotionInput::Event::Shake && busyRecording()) {
+    MOTION.take(MotionInput::Event::Shake);
+    LOG_INF("MAIN", "sacudida: se cancela la grabación");
+    VoiceRecorder::abortAll();
+    return;
+  }
+
+  const char* name = activityManager.currentActivityName();
+  // El temporizador y el recordatorio que suenan se callan solos: el gesto se
+  // les deja pasar sin consumir, porque ahí "boca abajo" además pospone, y eso
+  // solo lo sabe hacer la Activity.
+  if (strcmp(name, "Timer") == 0 || strcmp(name, "ReminderAlert") == 0) return;
+
+  if (pending == MotionInput::Event::FaceDown && MUSIC.isActive() && !MUSIC.isPaused()) {
+    MOTION.take(MotionInput::Event::FaceDown);
+    LOG_INF("MAIN", "boca abajo: se pausa la música");
+    MUSIC.togglePause();
+    return;
+  }
+
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
+  if (busyRecording()) return;
+  if (!isCalmScreen(name)) return;
+
+  if (pending == MotionInput::Event::DoubleTap) {
+    MOTION.take(MotionInput::Event::DoubleTap);
+    LOG_INF("MAIN", "doble golpe: se abre Hablar desde %s", name);
+    activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
+  }
+}
+
 // ws397: fondo de pantalla. La foto que se eligió en Ajustes → Fondo de pantalla
 // se pinta acá, encima de la pantalla de sueño y con la SD todavía montada (más
 // adelante `Storage.prepareForDeepSleep()` la desmonta y `display.deepSleep()`
@@ -656,6 +709,9 @@ void setup() {
                                     mappedInputManager.isPressed(recoveryButton);
 
   halTiltSensor.begin();
+  // Los gestos comparten el mismo integrado que el giro para pasar página, así
+  // que van después y sobre la misma instancia (ver HalTiltSensor::imu()).
+  MOTION.begin();
   halClock.begin();
 
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3
@@ -926,6 +982,8 @@ void loop() {
   }
   mappedInputManager.update();
   POWER_KEY.pump();  // ws397: PMIC key state for this pass (no-op elsewhere)
+  MOTION.poll();     // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
+  shtc3::tick();     // temperatura de adentro, en dos tiempos y sin bloquear
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
@@ -1119,6 +1177,7 @@ void loop() {
   }
 
   checkVoiceShortcut();
+  checkMotionGestures();
 
   const unsigned long activityStartTime = millis();
   activityManager.loop();

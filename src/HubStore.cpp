@@ -103,6 +103,16 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["bibleBook"] = bibleBook;
   doc["bibleChapter"] = bibleChapter;
   doc["musicVolume"] = musicVolume;
+  doc["motionGestures"] = motionGestures;
+  if (imuMap.calibrated) {
+    JsonObject m = doc["imuMap"].to<JsonObject>();
+    m["na"] = imuMap.normalAxis;
+    m["ns"] = imuMap.normalSign;
+    m["xa"] = imuMap.xAxis;
+    m["xs"] = imuMap.xSign;
+    m["ya"] = imuMap.yAxis;
+    m["ys"] = imuMap.ySign;
+  }
   doc["wallpaperPath"] = wallpaperPath;
   doc["wallpaperName"] = wallpaperName;
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
@@ -147,6 +157,23 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   bibleBook = doc["bibleBook"] | 0;
   bibleChapter = doc["bibleChapter"] | 0;
   musicVolume = doc["musicVolume"] | 70;
+  motionGestures = doc["motionGestures"] | true;
+  JsonVariantConst m = doc["imuMap"];
+  if (!m.isNull()) {
+    imuMap.normalAxis = m["na"] | 2;
+    imuMap.normalSign = m["ns"] | 1;
+    imuMap.xAxis = m["xa"] | 0;
+    imuMap.xSign = m["xs"] | 1;
+    imuMap.yAxis = m["ya"] | 1;
+    imuMap.ySign = m["ys"] | 1;
+    imuMap.calibrated = true;
+    // Un mapa con dos ejes repetidos (archivo viejo o a mano) haría que dos
+    // direcciones de la pantalla lean el mismo número: se descarta entero.
+    if (imuMap.normalAxis > 2 || imuMap.xAxis > 2 || imuMap.yAxis > 2 || imuMap.normalAxis == imuMap.xAxis ||
+        imuMap.normalAxis == imuMap.yAxis || imuMap.xAxis == imuMap.yAxis) {
+      imuMap = ImuMap{};
+    }
+  }
   wallpaperPath = str(doc, "wallpaperPath");
   wallpaperName = str(doc, "wallpaperName");
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);

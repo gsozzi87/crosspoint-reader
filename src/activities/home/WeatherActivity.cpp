@@ -13,6 +13,9 @@
 #include <algorithm>
 
 #include "MappedInputManager.h"
+#include "util/Shtc3.h"
+
+#include <cmath>
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
@@ -308,6 +311,21 @@ void WeatherActivity::render(RenderLock&&) {
     if (!sunrise.empty()) {
       snprintf(line, sizeof(line), "%s %s   ·   %s %s", tr(STR_WEATHER_SUNRISE), sunrise.c_str(),
                tr(STR_WEATHER_SUNSET), sunset.c_str());
+      renderer.drawText(SMALL_FONT_ID, SIDE, y, renderer.truncatedText(SMALL_FONT_ID, line, w).c_str());
+      y += smallH + 4;
+    }
+    // Adentro: lo único de esta pantalla que no viene del servidor. Sale del
+    // SHTC3 de la placa y es, en la práctica, con lo que uno decide si prende
+    // la estufa.
+    const float inside = shtc3::cachedCelsius();
+    if (!std::isnan(inside)) {
+      const float insideRh = shtc3::cachedHumidity();
+      if (!std::isnan(insideRh)) {
+        snprintf(line, sizeof(line), "%s %d°   ·   %d%%", tr(STR_HUB_INDOOR), static_cast<int>(inside + 0.5f),
+                 static_cast<int>(insideRh + 0.5f));
+      } else {
+        snprintf(line, sizeof(line), "%s %d°", tr(STR_HUB_INDOOR), static_cast<int>(inside + 0.5f));
+      }
       renderer.drawText(SMALL_FONT_ID, SIDE, y, renderer.truncatedText(SMALL_FONT_ID, line, w).c_str());
       y += smallH + 4;
     }

@@ -120,6 +120,23 @@ class HubStore : public PersistableStore<HubStore> {
   // 1 suaves, 2 normales. Apagados de fábrica: nadie quiere que el aparato
   // empiece a hacer ruido solo después de una actualización.
   uint8_t uiSoundMode = 0;
+  // Cómo está montado el IMU: qué eje del chip es la normal a la pantalla y con
+  // qué signo mira cada uno. No está documentado en ninguna hoja de datos de la
+  // placa, así que se calibra en Ajustes → Movimiento y se guarda acá. Los
+  // valores de fábrica son la suposición razonable (Z hacia afuera).
+  struct ImuMap {
+    uint8_t normalAxis = 2;  // 0 = X, 1 = Y, 2 = Z del chip
+    int8_t normalSign = 1;   // +1 si boca arriba da positivo en ese eje
+    uint8_t xAxis = 0;       // eje del chip que va hacia la derecha de la pantalla
+    int8_t xSign = 1;
+    uint8_t yAxis = 1;       // eje del chip que va hacia el usuario
+    int8_t ySign = 1;
+    bool calibrated = false;
+  };
+  ImuMap imuMap;
+  // Gestos del IMU encendidos (Ajustes → Movimiento). Apagados, el aparato no
+  // consulta el chip: son ~142 uA que no todos quieren gastar.
+  bool motionGestures = true;
   // Ajustes cargados en /board. El servidor manda `settings.rev`; solo se
   // aplican cuando esa revisión es mayor a la última aplicada, así lo que se
   // cambia en el aparato no se pisa en cada sincronización.

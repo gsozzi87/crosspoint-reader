@@ -44,6 +44,11 @@ class HalTiltSensor {
   // Call after BoardConfig has selected the active device.
   void begin();
 
+  // El integrado es UNO SOLO: la capa de gestos (src/input/MotionInput) tiene
+  // que usar esta misma instancia, porque dos objetos configurando el mismo
+  // chip se pisan los registros (uno lo duerme mientras el otro lo consulta).
+  Imu& imu() const { return _sdkImu; }
+
   // Enables tilt polling state
   bool wake();
 

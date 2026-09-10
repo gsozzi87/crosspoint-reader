@@ -8,6 +8,7 @@
 #include <Logging.h>
 
 #include "HubStore.h"
+#include "input/MotionInput.h"
 #include "MappedInputManager.h"
 #include "components/SevenSegment.h"
 #include "components/UITheme.h"
@@ -258,7 +259,10 @@ void TimerActivity::loop() {
       speech.stop();
       beep.stop();
     }
-    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+    // Darlo vuelta o sacudirlo lo calla, igual que apretar un botón: cuando el
+    // aparato está sonando en la mesa eso es lo que sale solo.
+    const bool gesture = MOTION.take(MotionInput::Event::FaceDown) || MOTION.take(MotionInput::Event::Shake);
+    if (gesture || mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
         mappedInput.wasReleased(MappedInputManager::Button::Back)) {
       speech.stop();
       beep.stop();
