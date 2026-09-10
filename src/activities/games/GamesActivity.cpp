@@ -14,6 +14,7 @@
 #include "ChessActivity.h"
 #include "ConnectFourActivity.h"
 #include "MappedInputManager.h"
+#include "LuaAppsActivity.h"
 #include "MathActivity.h"
 #include "MemoryActivity.h"
 #include "RummyActivity.h"
@@ -61,6 +62,9 @@ const GameSpec GAMES[] = {
     // inclinación es una jugada y una repintada, igual que soltar una ficha.
     {StrId::STR_GAME_MAZE, StrId::STR_MAZE_HINT, &make<MazeActivity>},
     {StrId::STR_GAME_2048, StrId::STR_2048_HINT, &make<Game2048Activity>},
+    // Lo que no viene compilado: las apps en Lua que el usuario copia a /Apps
+    // de la tarjeta. Va última porque es la puerta a lo de afuera, no un juego.
+    {StrId::STR_LUA_APPS, StrId::STR_LUA_APPS_DESC, &make<LuaAppsActivity>},
 };
 constexpr int GAME_COUNT = sizeof(GAMES) / sizeof(GAMES[0]);
 }  // namespace
