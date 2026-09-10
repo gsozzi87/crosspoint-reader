@@ -18,16 +18,16 @@
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "WALLP";
 constexpr const char* DIR = "/Photos";
-constexpr int ROW_H = 40;
-constexpr int SIDE = 20;
+constexpr int PAGER_H = 24;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 
 bool isBmp(const char* name) {
@@ -432,37 +432,40 @@ void PhotosActivity::render(RenderLock&&) {
   switch (state) {
     case LIST: {
       const int count = rowCount();
+      const int x = listui::SIDE;
+      const int w = listui::contentWidth(renderer);
+      const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+      const int pagerY = hintY - PAGER_H;
       // Qué hay elegido ahora, arriba de todo: es lo primero que se pregunta el
-      // que entra acá.
-      const std::string current =
-          std::string(tr(STR_WALLPAPER_CURRENT)) + ": " +
-          (HUB_STORE.wallpaperPath.empty() ? std::string(tr(STR_NONE_OPT)) : HUB_STORE.wallpaperName);
-      const int currentY = metrics.topPadding + metrics.headerHeight + 6;
-      renderer.drawText(SMALL_FONT_ID, SIDE,
-                        currentY,
-                        renderer.truncatedText(SMALL_FONT_ID, current.c_str(), pageWidth - 2 * SIDE).c_str());
+      // que entra acá. Va como encabezado de sección, con el nombre a la derecha.
+      // El nombre viene del teléfono y puede tener 80 caracteres; el recorte a
+      // media caja lo hace `sectionHeader`, que es donde tiene que estar para
+      // que ninguna pantalla repita el defecto.
+      const char* current =
+          HUB_STORE.wallpaperPath.empty() ? tr(STR_NONE_OPT) : HUB_STORE.wallpaperName.c_str();
+      const int top =
+          listui::sectionHeader(renderer, x, listui::contentTop(), w, tr(STR_WALLPAPER_CURRENT), current) +
+          listui::GAP;
 
-      const int top = currentY + renderer.getLineHeight(SMALL_FONT_ID) + 8;
-      const int bottom = pageHeight - metrics.buttonHintsHeight - 30;
-      itemsPerPage = std::max(1, (bottom - top) / ROW_H);
-      const int first = (index / itemsPerPage) * itemsPerPage;
+      itemsPerPage = std::max(1, (pagerY - listui::GAP - top) / listui::ROW2_H);
+      const int page = index / itemsPerPage;
+      const int first = page * itemsPerPage;
       for (int i = first; i < count && i < first + itemsPerPage; ++i) {
-        const int y = top + (i - first) * ROW_H;
-        const bool sel = i == index;
+        const int y = top + (i - first) * listui::ROW2_H;
         const int photoIndex = photoAt(i);
-        if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
-        const char* label = photoIndex < 0 ? tr(STR_NONE_OPT) : photos[photoIndex].name.c_str();
-        renderer.drawText(UI_12_FONT_ID, SIDE, y + 8,
-                          renderer.truncatedText(UI_12_FONT_ID, label, pageWidth - 2 * SIDE - 30).c_str(), SELECTION_INK);
-        // Punto a la derecha = ésta es la que está de fondo.
         const bool marked = photoIndex < 0 ? HUB_STORE.wallpaperPath.empty() : isWallpaper(photos[photoIndex]);
-        if (marked) renderer.fillRoundedRect(pageWidth - SIDE - 12, y + ROW_H / 2 - 8, 12, 12, 6, Color::Black);
+        listui::RowSpec spec;
+        spec.selected = i == index;
+        spec.title = photoIndex < 0 ? tr(STR_NONE_OPT) : photos[photoIndex].name.c_str();
+        // El detalle dice si la foto ya está en la tarjeta o si hay que bajarla:
+        // es la diferencia entre abrirla al instante y esperar al servidor.
+        if (photoIndex >= 0) spec.detail = photos[photoIndex].local ? tr(STR_PHOTO_ON_CARD) : tr(STR_PHOTO_ON_SERVER);
+        if (marked) spec.meta = tr(STR_PHOTO_IN_USE);
+        listui::row(renderer, x, y, w, listui::ROW2_H, spec);
       }
       if (photos.empty()) renderer.drawCenteredText(UI_10_FONT_ID, mid + 40, tr(STR_WALLPAPER_EMPTY));
-      char pages[16];
-      snprintf(pages, sizeof(pages), "%d/%d", index / itemsPerPage + 1, (count + itemsPerPage - 1) / itemsPerPage);
-      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom + 4, pages);
-      renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4, tr(STR_PHOTOS_REFRESH_HINT));
+      listui::pager(renderer, x, pagerY, w, page + 1, count > 0 ? (count + itemsPerPage - 1) / itemsPerPage : 1);
+      listui::hint(renderer, hintY, tr(STR_PHOTOS_REFRESH_HINT));
       break;
     }
     case LOADING:

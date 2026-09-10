@@ -4,13 +4,15 @@
 #include <HalDisplay.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
+#include "GameUi.h"
 #include "MappedInputManager.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "components/Selection.h"
 
 namespace {
 
@@ -213,12 +215,11 @@ void buildPieceMask(const Mask& m, const int8_t type) {
   }
 }
 
-constexpr int INFO_HEIGHT = 96;
-constexpr int BOARD_MARGIN = 20;
 constexpr int FRAME_GAP = 7;
-constexpr int HATCH_STEP = 5;
 constexpr int ROW_H = 56;
-constexpr int SIDE = 20;
+constexpr int SIDE = gameui::SIDE;
+constexpr int MIN_CELL = 20;
+constexpr int COORD_H = 22;  // la fila de coordenadas de abajo del tablero
 
 }  // namespace
 
@@ -722,6 +723,26 @@ void ChessActivity::playAiMove(const Move& m) {
 
 // ============================================================== notación ===
 
+namespace {
+// La primera letra (el primer punto de código UTF-8) de un nombre traducido.
+// Copiar un solo byte partiría al medio la "Ф" de "Ферзь".
+void firstLetter(const char* name, char* out, const size_t outSize) {
+  if (outSize == 0) return;
+  out[0] = '\0';
+  if (!name || !*name) return;
+  const auto lead = static_cast<unsigned char>(name[0]);
+  size_t len = 1;
+  if (lead >= 0xF0) len = 4;
+  else if (lead >= 0xE0) len = 3;
+  else if (lead >= 0xC0) len = 2;
+  const size_t available = strlen(name);
+  if (len > available) len = available;
+  if (len >= outSize) len = outSize - 1;
+  memcpy(out, name, len);
+  out[len] = '\0';
+}
+}  // namespace
+
 void ChessActivity::formatMove(const Position& before, const Move& m, const Position& after, char* out,
                                const size_t outSize) {
   char body[24];
@@ -737,7 +758,13 @@ void ChessActivity::formatMove(const Position& before, const Move& m, const Posi
       if (m.promo == ROOK) name = StrId::STR_GAME_ROOK;
       if (m.promo == BISHOP) name = StrId::STR_GAME_BISHOP;
       if (m.promo == KNIGHT) name = StrId::STR_GAME_KNIGHT;
-      snprintf(body, sizeof(body), "%c%c%c%c=%s", fromFile, fromRank, toFile, toRank, I18N.get(name));
+      // La INICIAL de la pieza, no el nombre entero: "e7e8=Dama" (y peor,
+      // "e7e8=Springer") no entra en la columna de la franja de marcadores en
+      // ningún idioma, y lo que se recortaba era justo la pieza coronada. En
+      // los seis idiomas las cuatro piezas empiezan con letras distintas.
+      char initial[8];
+      firstLetter(I18N.get(name), initial, sizeof(initial));
+      snprintf(body, sizeof(body), "%c%c%c%c=%s", fromFile, fromRank, toFile, toRank, initial);
     } else {
       snprintf(body, sizeof(body), "%c%c%c%c", fromFile, fromRank, toFile, toRank);
     }
@@ -1001,16 +1028,6 @@ void ChessActivity::loop() {
 
 // ================================================================= dibujo ===
 
-// Trama de la casilla oscura: rayas en diagonal recortadas a mano contra la
-// casilla (drawLine no recorta sola). En negro macizo la pieza desaparece.
-void ChessActivity::hatchCell(const int x, const int y, const int cell) const {
-  for (int d = -cell; d < cell; d += HATCH_STEP) {
-    const int t0 = d < 0 ? -d : 0;
-    const int t1 = cell - d < cell ? cell - d : cell;
-    if (t1 > t0) renderer.drawLine(x + d + t0, y + t0, x + d + t1 - 1, y + t1 - 1, true);
-  }
-}
-
 void ChessActivity::drawCornerTicks(const int x, const int y, const int cell, const int arm,
                                     const int thickness) const {
   const int t = thickness;
@@ -1083,13 +1100,16 @@ void ChessActivity::drawBoard(const int left, const int top, const int cell) con
     sourceSq = m.from;
   }
 
-  // Fondo: trama en las oscuras, blanco en las claras. La casilla del cursor y
-  // la de la pieza elegida van sin trama: destramarlas las hace inconfundibles.
+  // Fondo: trama al 25 % en las oscuras y blanco en las claras. Van SIN trama la
+  // casilla del cursor, la de la pieza elegida y las dos de la última movida:
+  // destramarlas las hace inconfundibles, y el marco de 2 px de la última
+  // movida sobre la trama no se leería.
   for (int dr = 0; dr < 8; ++dr) {
     for (int dc = 0; dc < 8; ++dc) {
       const int sq = squareFromDisplay(dr, dc);
-      if (((rowOf(sq) + colOf(sq)) & 1) == 0 || sq == cursorSq || sq == sourceSq) continue;
-      hatchCell(left + dc * cell, top + dr * cell, cell);
+      if (((rowOf(sq) + colOf(sq)) & 1) == 0) continue;
+      if (sq == cursorSq || sq == sourceSq || sq == lastFrom || sq == lastTo) continue;
+      gameui::shadeCell(renderer, left + dc * cell, top + dr * cell, cell);
     }
   }
 
@@ -1098,24 +1118,25 @@ void ChessActivity::drawBoard(const int left, const int top, const int cell) con
     renderer.drawLine(left, top + i * cell, left + size - 1, top + i * cell, true);
   }
 
-  // La última movida: cuadraditos macizos en dos esquinas opuestas.
-  for (int sq = 0; sq < 128; ++sq) {
-    if (!onBoard(sq) || (sq != lastFrom && sq != lastTo)) continue;
-    const int x = left + displayCol(sq) * cell, y = top + displayRow(sq) * cell;
-    renderer.fillRect(x + 3, y + 3, 6, 6, true);
-    renderer.fillRect(x + cell - 9, y + cell - 9, 6, 6, true);
-  }
-
   for (int sq = 0; sq < 128; ++sq) {
     if (!onBoard(sq) || pos.squares[sq] == 0) continue;
     drawPiece(left + displayCol(sq) * cell, top + displayRow(sq) * cell, cell, pos.squares[sq]);
   }
 
-  // El rey en jaque: marco doble sobre su casilla.
+  // La última movida (la de la máquina, o la del otro jugador en el modo de a
+  // dos): marco de 2 px en el origen y en el destino, DESPUÉS de las piezas (el
+  // halo blanco de la pieza se comería el marco). Hasta 1.5.47 eran dos
+  // cuadraditos de 6 px, invisibles a un palmo.
+  for (int sq = 0; sq < 128; ++sq) {
+    if (!onBoard(sq) || (sq != lastFrom && sq != lastTo)) continue;
+    gameui::lastMoveFrame(renderer, left + displayCol(sq) * cell, top + displayRow(sq) * cell, cell);
+  }
+
+  // El rey en jaque: marco pegado al borde de la casilla, por fuera del de la
+  // última movida (que va 2 px adentro), así los dos se ven si coinciden.
   if (state != GAME_OVER && inCheck(pos, pos.side)) {
     const int sq = pos.kingSquare[pos.side];
-    const int x = left + displayCol(sq) * cell, y = top + displayRow(sq) * cell;
-    renderer.drawRect(x + 2, y + 2, cell - 4, cell - 4, 2, true);
+    renderer.drawRect(left + displayCol(sq) * cell, top + displayRow(sq) * cell, cell, cell, 2, true);
   }
 
   if (state == PICK_PIECE) {
@@ -1136,10 +1157,8 @@ void ChessActivity::drawBoard(const int left, const int top, const int cell) con
     const int x = left + displayCol(sourceSq) * cell, y = top + displayRow(sourceSq) * cell;
     renderer.drawRect(x + 1, y + 1, cell - 2, cell - 2, 2, true);
   }
-  if (cursorSq >= 0) {
-    const int x = left + displayCol(cursorSq) * cell, y = top + displayRow(cursorSq) * cell;
-    renderer.drawRect(x, y, cell, cell, 4, true);
-  }
+  if (cursorSq >= 0)
+    gameui::cursorFrame(renderer, left + displayCol(cursorSq) * cell, top + displayRow(cursorSq) * cell, cell);
 
   // Coordenadas afuera del marco: sirven para leer la última movida.
   char label[2] = {0, 0};
@@ -1158,31 +1177,36 @@ void ChessActivity::drawBoard(const int left, const int top, const int cell) con
 void ChessActivity::drawModeSelect() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
-  const int top = metrics.topPadding + metrics.headerHeight + 40;
+  const int width = pageWidth - 2 * SIDE;
+  const int top = metrics.topPadding + metrics.headerHeight + 2 * gameui::GAP;
 
-  renderer.drawCenteredText(UI_12_FONT_ID, top, tr(STR_GAME_MODE), true, EpdFontFamily::BOLD);
+  // Encabezado de sección: UI_14 alineado a la izquierda y una regla de 1 px al
+  // pie. Nada de marcos: la jerarquía la hace la tipografía.
+  renderer.drawText(UI_14_FONT_ID, SIDE, top, tr(STR_GAME_MODE));
+  const int listTop = top + renderer.getLineHeight(UI_14_FONT_ID) + gameui::GAP;
+  gameui::rule(renderer, SIDE, listTop - gameui::GAP / 2, width);
 
   static const StrId MODES[3] = {StrId::STR_GAME_VS_MACHINE_WHITE, StrId::STR_GAME_VS_MACHINE_BLACK,
                                  StrId::STR_GAME_TWO_PLAYERS};
-  const int listTop = top + 48;
-  const int width = pageWidth - 2 * SIDE;
+  const int textLine = renderer.getLineHeight(UI_12_FONT_ID);
   for (int i = 0; i < 3; ++i) {
     const int y = listTop + i * ROW_H;
-    const bool selected = i == modeCursor;
-    if (selected) {
-      drawSelectionRow(renderer, SIDE, y, width, ROW_H - 10, 12);
+    if (i == modeCursor) {
+      // Radio 0 y estilo Row: el resalte deja el centro BLANCO, así que el
+      // renglón elegido se lee igual que los otros dos.
+      drawSelectionRow(renderer, SIDE, y, width, ROW_H, 0);
     } else {
-      renderer.drawRoundedRect(SIDE, y, width, ROW_H - 10, 2, 12, true);
+      gameui::rule(renderer, SIDE, y + ROW_H - 1, width);
     }
+    // El texto arranca a 24 px del borde de la fila: por dentro de las franjas
+    // tramadas que dibuja el resalte, nunca encima.
     const char* label = I18N.get(MODES[i]);
-    const std::string shown = renderer.truncatedText(UI_12_FONT_ID, label, width - 24, EpdFontFamily::BOLD);
-    const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_12_FONT_ID, SIDE + (width - textWidth) / 2, y + 11, shown.c_str(), SELECTION_INK,
-                      EpdFontFamily::BOLD);
+    const std::string shown = renderer.truncatedText(UI_12_FONT_ID, label, width - 48);
+    renderer.drawText(UI_12_FONT_ID, SIDE + 24, y + (ROW_H - textLine) / 2, shown.c_str(), SELECTION_INK);
   }
 
   // Una muestra de las seis piezas, para que se vea cómo se distinguen.
-  const int sampleY = listTop + 3 * ROW_H + 24;
+  const int sampleY = listTop + 3 * ROW_H + 3 * gameui::GAP;
   const int cell = 44;
   const int startX = (pageWidth - 6 * cell) / 2;
   for (int i = 0; i < 6; ++i) {
@@ -1191,25 +1215,26 @@ void ChessActivity::drawModeSelect() const {
   }
 }
 
+// Las cuatro coronaciones, una al lado de la otra. La elegida usa el resalte de
+// filas (estilo Row, radio 0): las franjas tramadas quedan en los costados de la
+// celda y el texto, centrado, cae siempre sobre el blanco del medio.
 void ChessActivity::drawPromotionBar(const int top) const {
   const int pageWidth = renderer.getScreenWidth();
   const int width = (pageWidth - 2 * SIDE) / 4;
+  const int height = renderer.getLineHeight(UI_12_FONT_ID) + 2 * gameui::GAP;
   for (uint8_t i = 0; i < promoCount; ++i) {
     const int x = SIDE + i * width;
-    const bool selected = i == promoCursor;
-    if (selected) {
-      drawSelectionRow(renderer, x + 2, top, width - 4, 34, 8);
-    } else {
-      renderer.drawRoundedRect(x + 2, top, width - 4, 34, 2, 8, true);
-    }
+    if (i == promoCursor) drawSelectionRow(renderer, x + 2, top, width - 4, height, 0);
     const int8_t promo = legalMoves.items[promoMove[i]].promo;
     StrId name = StrId::STR_GAME_QUEEN;
     if (promo == ROOK) name = StrId::STR_GAME_ROOK;
     if (promo == BISHOP) name = StrId::STR_GAME_BISHOP;
     if (promo == KNIGHT) name = StrId::STR_GAME_KNIGHT;
-    const std::string shown = renderer.truncatedText(UI_10_FONT_ID, I18N.get(name), width - 12, EpdFontFamily::BOLD);
-    const int w = renderer.getTextWidth(UI_10_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_10_FONT_ID, x + (width - w) / 2, top + 8, shown.c_str(), SELECTION_INK, EpdFontFamily::BOLD);
+    // 42 = las dos franjas tramadas de 16 px del resalte más sus márgenes: el
+    // texto se queda con el blanco del medio y nunca cae sobre la trama.
+    const std::string shown = renderer.truncatedText(UI_12_FONT_ID, I18N.get(name), width - 42);
+    const int w = renderer.getTextWidth(UI_12_FONT_ID, shown.c_str());
+    renderer.drawText(UI_12_FONT_ID, x + (width - w) / 2, top + gameui::GAP, shown.c_str(), SELECTION_INK);
   }
 }
 
@@ -1218,13 +1243,19 @@ void ChessActivity::render(RenderLock&&) {
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const int headerBottom = metrics.topPadding + metrics.headerHeight;
-  const int reserved = metrics.buttonHintsHeight + metrics.verticalSpacing;
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentW = gameui::contentWidth(renderer);
 
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_GAME_CHESS));
 
+  // La ayuda reserva su alto SIEMPRE, en todos los estados: así el tablero no
+  // se mueve cuando cambia el renglón de abajo.
+  const int helpTop = bottom - gameui::helpHeight(renderer);
+
   if (state == MODE_SELECT) {
     drawModeSelect();
+    gameui::help(renderer, helpTop, tr(STR_GAME_HELP_MODE));
     const auto labels =
         mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
@@ -1234,18 +1265,24 @@ void ChessActivity::render(RenderLock&&) {
     return;
   }
 
-  const int availW = pageWidth - 2 * BOARD_MARGIN;
-  const int availH = pageHeight - headerBottom - INFO_HEIGHT - reserved - 26;
-  int cell = (availW < availH ? availW : availH) / 8;
-  if (cell > MAX_CELL) cell = MAX_CELL;
+  // De abajo hacia arriba: ayuda, marcadores (o la barra de coronación, que va
+  // en el mismo lugar), estado; lo que sobra es el tablero con su fila de
+  // coordenadas.
+  const int statsTop = helpTop - gameui::statsHeight(renderer);
+  const int statusTop = statsTop - gameui::GAP - gameui::statusHeight(renderer);
+  const int boardBand = statusTop - gameui::GAP - COORD_H - (headerBottom + gameui::GAP);
+  int cell = std::min(contentW / 8, boardBand / 8);
+  cell = std::min(cell, MAX_CELL);
+  cell = std::max(cell, MIN_CELL);
   const int size = cell * 8;
   const int boardLeft = (pageWidth - size) / 2;
-  int boardTop = headerBottom + (pageHeight - reserved - headerBottom - size - INFO_HEIGHT) / 2;
-  if (boardTop < headerBottom + 10) boardTop = headerBottom + 10;
+  int boardTop = headerBottom + gameui::GAP + (boardBand - size) / 2;
+  if (boardTop < headerBottom + FRAME_GAP) boardTop = headerBottom + FRAME_GAP;
 
   drawBoard(boardLeft, boardTop, cell);
 
-  const int infoTop = boardTop + size + 30;
+  // Estado: a quién le toca (y si está en jaque) a la izquierda, y a la derecha
+  // qué está eligiendo y en qué lugar de la lista va.
   const char* title = pos.side == 0 ? tr(STR_GAME_WHITE) : tr(STR_GAME_BLACK);
   if (state == AI_TURN) title = tr(STR_GAME_THINKING);
   if (state == GAME_OVER) {
@@ -1255,46 +1292,85 @@ void ChessActivity::render(RenderLock&&) {
       title = tr(STR_GAME_DRAW);
     }
   }
-  renderer.drawCenteredText(UI_12_FONT_ID, infoTop, title, true, EpdFontFamily::BOLD);
+  char titleBuf[96];
+  if (state != GAME_OVER && inCheck(pos, pos.side)) {
+    snprintf(titleBuf, sizeof(titleBuf), "%s · %s", title, tr(STR_GAME_CHECK));
+    title = titleBuf;
+  }
 
-  char sub[96] = "";
+  char detail[96] = "";
+  char counter[24];
   switch (state) {
     case PICK_PIECE:
-      if (pieceCount > 0) snprintf(sub, sizeof(sub), "%s  (%d/%d)", tr(STR_GAME_SELECT_PIECE), pieceCursor + 1,
-                                   pieceCount);
+      if (pieceCount > 0) {
+        snprintf(counter, sizeof(counter), tr(STR_GAME_OF_COUNT), pieceCursor + 1, pieceCount);
+        snprintf(detail, sizeof(detail), "%s · %s", tr(STR_GAME_SELECT_PIECE), counter);
+      }
       break;
     case PICK_MOVE:
-      if (destCount > 0)
-        snprintf(sub, sizeof(sub), "%s  (%d/%d)", tr(STR_GAME_SELECT_MOVE), destCursor + 1, destCount);
+      if (destCount > 0) {
+        snprintf(counter, sizeof(counter), tr(STR_GAME_OF_COUNT), destCursor + 1, destCount);
+        snprintf(detail, sizeof(detail), "%s · %s", tr(STR_GAME_SELECT_MOVE), counter);
+      }
       break;
     case PROMOTE:
-      snprintf(sub, sizeof(sub), "%s", tr(STR_GAME_PROMOTE));
+      snprintf(detail, sizeof(detail), "%s", tr(STR_GAME_PROMOTE));
       break;
     case GAME_OVER:
-      snprintf(sub, sizeof(sub), "%s",
-               endReason == END_MATE       ? tr(STR_GAME_CHECKMATE)
+      snprintf(detail, sizeof(detail), "%s",
+               endReason == END_MATE        ? tr(STR_GAME_CHECKMATE)
                : endReason == END_STALEMATE ? tr(STR_GAME_STALEMATE)
                                             : tr(STR_GAME_DRAW));
       break;
     default:
       break;
   }
-  if (sub[0] != '\0' && state != PROMOTE) renderer.drawCenteredText(UI_10_FONT_ID, infoTop + 30, sub);
+  gameui::status(renderer, SIDE, statusTop, contentW, title, detail);
 
   if (state == PROMOTE) {
-    renderer.drawCenteredText(UI_10_FONT_ID, infoTop + 28, tr(STR_GAME_PROMOTE));
-    drawPromotionBar(infoTop + 50);
+    // Misma regla de 1 px que abre la franja de marcadores: la coronación ocupa
+    // su lugar, no abre una superficie nueva.
+    gameui::rule(renderer, SIDE, statsTop, contentW);
+    drawPromotionBar(statsTop + gameui::GAP);
   } else {
-    char line[96];
-    if (state != GAME_OVER && inCheck(pos, pos.side)) {
-      renderer.drawCenteredText(UI_10_FONT_ID, infoTop + 52, tr(STR_GAME_CHECK), true, EpdFontFamily::BOLD);
-    } else if (lastMoveText[0] != '\0') {
-      snprintf(line, sizeof(line), "%d. %s", fullMoveNumber, lastMoveText);
-      renderer.drawCenteredText(SMALL_FONT_ID, infoTop + 54, line);
+    // Marcadores: el material de cada bando (peón 1, caballo y alfil 3, torre 5,
+    // dama 9) y la última movida en notación. Van en UI_14 porque es lo único
+    // que se mira entre jugada y jugada.
+    int whitePoints = 0, blackPoints = 0;
+    for (int sq = 0; sq < 128; ++sq) {
+      if (!onBoard(sq)) continue;
+      const int8_t p = pos.squares[sq];
+      if (p == 0) continue;
+      const int value = PIECE_VALUE[typeOf(p)] / 100;
+      if (p > 0) whitePoints += value;
+      else blackPoints += value;
     }
-    snprintf(line, sizeof(line), "%s %d", tr(STR_GAME_MOVES), fullMoveNumber);
-    renderer.drawCenteredText(SMALL_FONT_ID, infoTop + 74, line);
+    char vWhite[8], vBlack[8], vMove[32];
+    snprintf(vWhite, sizeof(vWhite), "%d", whitePoints);
+    snprintf(vBlack, sizeof(vBlack), "%d", blackPoints);
+    if (lastMoveText[0] != '\0') snprintf(vMove, sizeof(vMove), "%d. %s", fullMoveNumber, lastMoveText);
+    else snprintf(vMove, sizeof(vMove), "%d", fullMoveNumber);
+    // La columna de la movida pide el DOBLE de ancho: en tres columnas iguales
+    // (144 px) toda coronación y hasta "42. O-O-O+" salían con puntos
+    // suspensivos, o sea que lo que había que leer para entender la jugada era
+    // justo lo que desaparecía.
+    const gameui::Stat scoreboard[3] = {
+        {vWhite, tr(STR_GAME_WHITE)}, {vBlack, tr(STR_GAME_BLACK)}, {vMove, tr(STR_GAME_MOVES), 2}};
+    gameui::stats(renderer, SIDE, statsTop, contentW, scoreboard, 3);
   }
+
+  // La ayuda: qué hace la palanca ahora y qué significan los marcos del
+  // tablero. Repartida en renglones, nunca cortada.
+  char helpText[192];
+  const char* what = tr(STR_GAME_HELP_PIECE);
+  if (state == PICK_MOVE) what = tr(STR_GAME_HELP_MOVE);
+  else if (state == PROMOTE) what = tr(STR_GAME_HELP_PROMOTE);
+  else if (state == AI_TURN) what = tr(STR_GAME_HELP_WAIT);
+  else if (state == GAME_OVER) what = tr(STR_GAME_HELP_OVER);
+  const char* extra = tr(STR_GAME_HELP_RESTART);
+  if (state != GAME_OVER && lastFrom >= 0) extra = tr(STR_GAME_HELP_LAST_MOVE);
+  snprintf(helpText, sizeof(helpText), "%s %s", what, extra);
+  gameui::help(renderer, helpTop, helpText);
 
   // Las ayudas dicen siempre qué hace cada botón AHORA.
   const char* backLabel = state == PICK_MOVE || state == PROMOTE ? tr(STR_CANCEL) : tr(STR_GAME_QUIT);

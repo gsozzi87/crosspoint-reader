@@ -19,6 +19,7 @@
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "components/icons/weatherIcons.h"
 #include "fontIds.h"
@@ -33,15 +34,6 @@ constexpr int SIDE = 22;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr int BIG_FONT_ID = NOTOSANS_18_FONT_ID;  // la temperatura de ahora, bien grande
 
-void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y, bool ink = true) {
-  const int stride = (icon.w + 7) / 8;
-  for (int row = 0; row < icon.h; ++row) {
-    const uint8_t* line = icon.bits + row * stride;
-    for (int col = 0; col < icon.w; ++col) {
-      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, ink);
-    }
-  }
-}
 
 // Dibujo para cada código WMO de Open-Meteo (los mismos tramos que usa el
 // servidor en describeWeather()): 0 despejado, 1-2 algo nublado, 3 nublado,
@@ -294,7 +286,7 @@ void WeatherActivity::render(RenderLock&&) {
 
     // ---- Ahora: el dibujo grande a la izquierda, la temperatura al lado ----
     const freeink::Icon& nowIcon = iconForWmo(nowCode, true);
-    drawSdkIcon(renderer, nowIcon, SIDE, y);
+    BaseTheme::drawIconBitmap(renderer, nowIcon, SIDE, y);
     const int tx = SIDE + nowIcon.w + 20;
     snprintf(temp, sizeof(temp), "%d°", nowTemp);
     renderer.drawText(BIG_FONT_ID, tx, y, temp, true, EpdFontFamily::BOLD);
@@ -348,7 +340,7 @@ void WeatherActivity::render(RenderLock&&) {
         int tw = renderer.getTextWidth(SMALL_FONT_ID, h.at.c_str());
         renderer.drawText(SMALL_FONT_ID, cc - tw / 2, y, h.at.c_str());
         const freeink::Icon& ic = iconForWmo(h.code, false);
-        drawSdkIcon(renderer, ic, cc - ic.w / 2, iconY);
+        BaseTheme::drawIconBitmap(renderer, ic, cc - ic.w / 2, iconY);
         snprintf(temp, sizeof(temp), "%d°", h.temp);
         tw = renderer.getTextWidth(UI_10_FONT_ID, temp, EpdFontFamily::BOLD);
         renderer.drawText(UI_10_FONT_ID, cc - tw / 2, tempY, temp, true, EpdFontFamily::BOLD);
@@ -376,7 +368,7 @@ void WeatherActivity::render(RenderLock&&) {
         if (ry + rowH > bottom) break;  // nunca por encima de la barra de botones
         const int center = ry + rowH / 2;
         const freeink::Icon& ic = iconForWmo(d.code, false);
-        drawSdkIcon(renderer, ic, SIDE, center - ic.opticalCenterY);
+        BaseTheme::drawIconBitmap(renderer, ic, SIDE, center - ic.opticalCenterY);
 
         // Máxima (grande) y mínima (chica) pegadas al borde derecho.
         snprintf(temp, sizeof(temp), "%d°", d.min);

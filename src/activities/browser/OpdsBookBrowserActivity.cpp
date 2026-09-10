@@ -333,7 +333,7 @@ void OpdsBookBrowserActivity::render(RenderLock&&) {
       break;
     }
     case BrowserState::DOWNLOADING:
-      labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+      labels = mappedInput.mapLabels(tr(STR_HINT_CLOSE), "", "", "");
       break;
     case BrowserState::ERROR:
       labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_RETRY), "", "");

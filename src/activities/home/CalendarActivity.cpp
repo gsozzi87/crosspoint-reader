@@ -16,22 +16,22 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "TripActivity.h"
+#include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
-#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "CAL";
 constexpr const char* CACHE = "/.crosspoint/calendar.json";
-constexpr int SIDE = 12;
-constexpr int ROW_H = 56;                  // filas de la vista de día
+constexpr int SIDE = listui::SIDE;
+constexpr int PAGER_H = 24;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 constexpr unsigned long MENU_HOLD_MS = 1200;   // Atrás mantenido sobre una actividad
 constexpr uint32_t DICTATE_TIMEOUT_MS = 90000;  // el modelo parte el día dictado
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr time_t CACHE_MAX_AGE_S = 6 * 3600;
 constexpr int MAX_CACHED_MONTHS = 3;
 constexpr int MAX_CACHED_DAYS = 40;
@@ -1239,62 +1239,94 @@ void CalendarActivity::loop() {
   }
 }
 
-// El menú de Mi día: tres filas grandes con lo que hay adentro.
+// El menú de Mi día: tres filas de dos renglones con lo que hay adentro. Cada
+// una en su fila con regla al pie: los marcos de antes eran tres cajas para
+// tres cosas que ya se distinguen por el texto.
 void CalendarActivity::renderHome() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int top = metrics.topPadding + metrics.headerHeight + 16;
-  const int rowH = 76;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const int top = listui::contentTop();
   const StrId titles[HOME_ROWS] = {StrId::STR_DAY_TODAY, StrId::STR_CAL_TITLE, StrId::STR_DAY_TRIPS};
   const StrId subs[HOME_ROWS] = {StrId::STR_DAY_TODAY_SUB, StrId::STR_DAY_CALENDAR_SUB, StrId::STR_DAY_TRIPS_SUB};
   for (int i = 0; i < HOME_ROWS; ++i) {
-    const int y = top + i * (rowH + 10);
-    const bool sel = i == homeRow;
-    if (sel) drawSelectionRow(renderer, SIDE, y, pageWidth - 2 * SIDE, rowH, 12);
-    else renderer.drawRoundedRect(SIDE, y, pageWidth - 2 * SIDE, rowH, 2, 12, true);
-    const int tw = pageWidth - 2 * SIDE - 32;
-    renderer.drawText(UI_12_FONT_ID, SIDE + 16, y + 14,
-                      renderer.truncatedText(UI_12_FONT_ID, I18N.get(titles[i]), tw, EpdFontFamily::BOLD).c_str(), SELECTION_INK,
-                      EpdFontFamily::BOLD);
-    renderer.drawText(SMALL_FONT_ID, SIDE + 16, y + 44,
-                      renderer.truncatedText(SMALL_FONT_ID, I18N.get(subs[i]), tw).c_str(), SELECTION_INK);
+    listui::RowSpec spec;
+    spec.title = I18N.get(titles[i]);
+    spec.detail = I18N.get(subs[i]);
+    spec.bold = true;
+    spec.selected = i == homeRow;
+    listui::row(renderer, x, top + i * listui::ROW2_H, w, listui::ROW2_H, spec);
   }
 }
 
-// Hoy: la agenda del día y las sugerencias, paginadas con la palanca.
+// Hoy: la agenda del día y las sugerencias, paginadas con la palanca. Los
+// títulos van en UI_14 con su regla, así se ve dónde empieza cada bloque.
 void CalendarActivity::renderToday() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
-  // El margen de abajo lleva verticalSpacing además del alto de los hints.
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 18;
-  const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
-  todayPerPage = std::max(1, (bottom - top) / lineH);
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const int top = listui::contentTop();
+  const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+  const int pagerY = hintY - PAGER_H;
+  const int bottom = pagerY - listui::GAP;
   if (todayLines.empty()) buildTodayLines();
   const int total = static_cast<int>(todayLines.size());
   if (todayTop >= total) todayTop = 0;
-  for (int i = 0; i < todayPerPage && todayTop + i < total; ++i) {
-    const Line& line = todayLines[todayTop + i];
-    if (line.text.empty()) continue;
-    const int font = line.style == 2 ? SMALL_FONT_ID : line.style == 1 ? UI_12_FONT_ID : UI_10_FONT_ID;
-    const auto style = line.style == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-    renderer.drawText(font, SIDE, top + i * lineH,
-                      renderer.truncatedText(font, line.text.c_str(), pageWidth - 2 * SIDE, style).c_str(), true,
-                      style);
+
+  // Cada renglón mide lo suyo (un encabezado en UI_14 no entra en el paso de
+  // UI_10 y la regla le cortaría los descendentes), así que las páginas se
+  // arman midiendo y no dividiendo: con eso el "Página n de N" dice la verdad.
+  const auto advance = [&](const Line& line) {
+    if (line.style == 1) return renderer.getLineHeight(UI_14_FONT_ID) + 8;
+    return renderer.getLineHeight(line.style == 2 ? SMALL_FONT_ID : UI_10_FONT_ID) + 6;
+  };
+  int pages = 0;
+  int page = 0;
+  int pageStart = 0;
+  for (int i = 0; i < total;) {
+    const int start = i;
+    for (int y = top; i < total;) {
+      const int h = advance(todayLines[i]);
+      if (y + h > bottom && i > start) break;
+      y += h;
+      ++i;
+    }
+    // La página que se está mostrando es la que contiene a todayTop.
+    if (start <= todayTop && todayTop < i) {
+      page = pages;
+      pageStart = start;
+    }
+    ++pages;
   }
-  if (total > todayPerPage) {
-    char pages[16];
-    snprintf(pages, sizeof(pages), "%d/%d", todayTop / todayPerPage + 1, (total + todayPerPage - 1) / todayPerPage);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom, pages);
+  todayTop = pageStart;
+
+  int y = top;
+  int drawn = 0;
+  for (int i = todayTop; i < total; ++i) {
+    const Line& line = todayLines[i];
+    const int h = advance(line);
+    if (y + h > bottom && drawn > 0) break;
+    ++drawn;
+    if (!line.text.empty()) {
+      if (line.style == 1) {
+        // Encabezado de bloque: UI_14 y una regla de 1 px al pie, por debajo de
+        // los descendentes.
+        renderer.drawText(UI_14_FONT_ID, x, y, renderer.truncatedText(UI_14_FONT_ID, line.text.c_str(), w).c_str());
+        listui::rule(renderer, x, y + h - 2, w);
+      } else {
+        const int font = line.style == 2 ? SMALL_FONT_ID : UI_10_FONT_ID;
+        renderer.drawText(font, x, y, renderer.truncatedText(font, line.text.c_str(), w).c_str());
+      }
+    }
+    y += h;
   }
+  // Lo que se dibujó es lo que avanza la palanca: así la página siguiente
+  // empieza donde terminó ésta.
+  todayPerPage = std::max(1, drawn);
+  listui::pager(renderer, x, pagerY, w, page + 1, std::max(pages, 1));
   // El dictado está en Atrás mantenido y sin decirlo no lo encuentra nadie.
-  renderer.drawText(SMALL_FONT_ID, SIDE, bottom,
-                    renderer.truncatedText(SMALL_FONT_ID, tr(STR_DAY_DICTATE_HINT), pageWidth - 2 * SIDE - 60).c_str());
+  listui::hint(renderer, hintY, tr(STR_DAY_DICTATE_HINT));
 }
 
 void CalendarActivity::renderMonth() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
 
@@ -1307,14 +1339,16 @@ void CalendarActivity::renderMonth() {
   const int cols = 7;
   const int cellW = (pageWidth - 2 * SIDE) / cols;
   const int gridX = (pageWidth - cellW * cols) / 2;
-  const int dowY = metrics.topPadding + metrics.headerHeight + 8;
+  const int dowY = listui::contentTop();
   const int gridTop = dowY + renderer.getLineHeight(SMALL_FONT_ID) + 6;
   // Abajo van dos líneas: qué hay en el día marcado y la ayuda de los botones.
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int bottom = listui::contentBottom(renderer);
   // Abajo de la cuadrícula entran dos líneas (qué cae en el día marcado) y la
   // ayuda de los botones: si no se les reserva lugar, la última fila de la
   // cuadrícula se les encima.
-  const int infoH = 72;
+  // Abajo de la cuadrícula van la fila de dos renglones del día marcado y el
+  // renglón de ayuda: se les reserva el alto exacto.
+  const int infoH = listui::ROW2_H + listui::HINT_H + listui::GAP;
   const int cellH = std::max(34, (bottom - infoH - gridTop) / 6);
 
   for (int c = 0; c < cols; ++c) {
@@ -1322,6 +1356,9 @@ void CalendarActivity::renderMonth() {
     const int w = renderer.getTextWidth(SMALL_FONT_ID, label);
     renderer.drawText(SMALL_FONT_ID, gridX + c * cellW + (cellW - w) / 2, dowY, label);
   }
+  // Regla de 1 px bajo los nombres de los días: separa el encabezado de la
+  // cuadrícula sin encajonarla.
+  listui::rule(renderer, gridX, gridTop - 4, cellW * cols);
 
   const int firstDow = weekdayOfCivil(viewYear, viewMonth, 1);
   const int dim = daysInMonth(viewYear, viewMonth);
@@ -1335,24 +1372,33 @@ void CalendarActivity::renderMonth() {
     const int y = gridTop + (cell / cols) * cellH;
     const bool selected = day == cursorDay;
     const bool isToday = haveToday && todayY == viewYear && todayM == viewMonth && todayD == day;
-    if (selected) drawSelectionRow(renderer, x + 2, y + 2, cellW - 4, cellH - 6);
-    else if (isToday) renderer.drawRoundedRect(x + 2, y + 2, cellW - 4, cellH - 6, 2, 8, true);
+    // La celda elegida usa el estilo de mosaico (marco + trama, sin pestaña: en
+    // una celda cuadrada la pestaña queda torcida) y HOY, un marco fino.
+    if (selected) drawSelectionRow(renderer, x + 2, y + 2, cellW - 4, cellH - 6, 0, SelectionStyle::Tile);
+    else if (isToday) renderer.drawRect(x + 2, y + 2, cellW - 4, cellH - 6, 1, true);
 
     char num[4];
     snprintf(num, sizeof(num), "%d", day);
     const int nw = renderer.getTextWidth(UI_12_FONT_ID, num);
-    renderer.drawText(UI_12_FONT_ID, x + (cellW - nw) / 2, y + 8, num, SELECTION_INK);
+    const int numY = y + 8;
+    // Nunca hay letras sobre trama: el número de la celda elegida va sobre un
+    // plato blanco.
+    if (selected) {
+      drawTextPlate(renderer, x + (cellW - nw) / 2 - 4, numY - 2, nw + 8, renderer.getLineHeight(UI_12_FONT_ID));
+    }
+    renderer.drawText(UI_12_FONT_ID, x + (cellW - nw) / 2, numY, num, SELECTION_INK);
 
     const DaySummary* s = summaryFor(day);
     if (s && s->count > 0) {
       const int dotY = y + cellH - 22;
       if (s->count == 1) {
-        renderer.fillRoundedRect(x + cellW / 2 - 4, dotY, 8, 8, 4, Color::Black);
+        renderer.fillRect(x + cellW / 2 - 3, dotY, 6, 6, true);
       } else {
         char n[8];
         snprintf(n, sizeof(n), "%d", s->count);
         const int w = renderer.getTextWidth(SMALL_FONT_ID, n);
-        renderer.fillRoundedRect(x + cellW / 2 - w / 2 - 8, dotY - 1, 6, 6, 3, Color::Black);
+        if (selected) drawTextPlate(renderer, x + cellW / 2 - w / 2 - 12, dotY - 6, w + 18, 18);
+        renderer.fillRect(x + cellW / 2 - w / 2 - 8, dotY - 1, 5, 5, true);
         renderer.drawText(SMALL_FONT_ID, x + cellW / 2 - w / 2 + 2, dotY - 6, n, SELECTION_INK);
       }
     }
@@ -1360,15 +1406,14 @@ void CalendarActivity::renderMonth() {
 
   // Qué cae en el día marcado, en palabras: es lo que evita tener que entrar
   // para saber si el cursor quedó donde uno cree.
-  const int infoY = gridTop + 6 * cellH + 4;
+  const int infoY = gridTop + 6 * cellH + listui::GAP;
+  const int w = listui::contentWidth(renderer);
   std::string line = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " +
                      std::to_string(cursorDay);
   int ty = 0, tm = 0, td = 0;
   if (localToday(ty, tm, td) && ty == viewYear && tm == viewMonth && td == cursorDay) {
     line += " · " + std::string(tr(STR_CAL_TODAY));
   }
-  renderer.drawText(UI_10_FONT_ID, SIDE + 4, infoY,
-                    renderer.truncatedText(UI_10_FONT_ID, line.c_str(), pageWidth - 2 * SIDE - 8).c_str());
   const DaySummary* s = summaryFor(cursorDay);
   std::string detail = tr(STR_CAL_NO_EVENTS);
   if (s && s->count > 0) {
@@ -1379,61 +1424,57 @@ void CalendarActivity::renderMonth() {
       detail = std::string(n) + (detail.empty() ? "" : " · " + detail);
     }
   }
-  renderer.drawText(SMALL_FONT_ID, SIDE + 4, infoY + 22,
-                    renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), pageWidth - 2 * SIDE - 8).c_str());
-  renderer.drawCenteredText(SMALL_FONT_ID, bottom - 18,
-                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_CAL_HINT), pageWidth - 2 * SIDE).c_str());
+  // El día marcado y lo que cae en él, con el mismo ritmo de dos renglones que
+  // las listas: es lo que evita entrar para saber dónde quedó el cursor.
+  listui::RowSpec spec;
+  spec.title = line.c_str();
+  spec.detail = detail.c_str();
+  spec.bold = true;
+  spec.rule = false;
+  listui::rule(renderer, listui::SIDE, infoY, w);
+  listui::row(renderer, listui::SIDE, infoY, w, listui::ROW2_H, spec);
+  listui::hint(renderer, listui::contentBottom(renderer) - listui::HINT_H, tr(STR_CAL_HINT));
 }
 
 void CalendarActivity::renderDay() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  int top = metrics.topPadding + metrics.headerHeight + 12;
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  int top = listui::contentTop();
+  const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+  const int pagerY = hintY - PAGER_H;
   // Lo que contestó el servidor al dictado ("Cargué 3 actividades."), o por qué
   // no se pudo. Se va solo en cuanto se sale del día.
   if (!dayNotice.empty()) {
-    const auto lines = renderer.wrappedText(UI_10_FONT_ID, dayNotice.c_str(), pageWidth - 2 * SIDE, 2);
+    const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 2;
+    const auto lines = renderer.wrappedText(UI_10_FONT_ID, dayNotice.c_str(), w, 2);
     for (size_t i = 0; i < lines.size(); ++i) {
-      renderer.drawText(UI_10_FONT_ID, SIDE, top + static_cast<int>(i) * 20, lines[i].c_str(), true,
+      renderer.drawText(UI_10_FONT_ID, x, top + static_cast<int>(i) * lineH, lines[i].c_str(), true,
                         EpdFontFamily::BOLD);
     }
-    top += static_cast<int>(lines.size()) * 20 + 8;
+    top += static_cast<int>(lines.size()) * lineH + listui::GAP;
+    listui::rule(renderer, x, top - listui::GAP / 2, w);
   }
-  // Abajo de las filas van el "p/N" y la línea que dice qué hacen los botones.
-  const int hintH = 40;
-  itemsPerPage = std::max(1, (bottom - hintH - top) / ROW_H);
+  itemsPerPage = std::max(1, (pagerY - listui::GAP - top) / listui::ROW2_H);
   const int count = static_cast<int>(dayItems.size());
-  renderer.drawCenteredText(SMALL_FONT_ID, bottom - 18,
-                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_CAL_ITEM_HINT), pageWidth - 2 * SIDE).c_str());
+  listui::hint(renderer, hintY, tr(STR_CAL_ITEM_HINT));
   if (count == 0) {
-    renderer.drawCenteredText(UI_10_FONT_ID, (top + bottom) / 2 - 10, tr(STR_CAL_NO_EVENTS));
+    renderer.drawCenteredText(UI_10_FONT_ID, (top + pagerY) / 2 - 10, tr(STR_CAL_NO_EVENTS));
     return;
   }
-  const int first = (dayIndex / itemsPerPage) * itemsPerPage;
+  const int page = dayIndex / itemsPerPage;
+  const int first = page * itemsPerPage;
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
-    const int y = top + (i - first) * ROW_H;
-    const bool sel = i == dayIndex;
-    if (sel) drawSelectionRow(renderer, SIDE + 2, y, pageWidth - 2 * (SIDE + 2), ROW_H - 6);
     const Item& it = dayItems[i];
-    const int atW = it.at.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, it.at.c_str()) + 12;
-    if (atW) renderer.drawText(SMALL_FONT_ID, SIDE + 10, y + 10, it.at.c_str(), SELECTION_INK);
-    renderer.drawText(UI_12_FONT_ID, SIDE + 10 + atW, y + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - 20 - atW).c_str(),
-                      SELECTION_INK);
-    if (!it.place.empty()) {
-      renderer.drawText(SMALL_FONT_ID, SIDE + 10 + atW, y + 30,
-                        renderer.truncatedText(SMALL_FONT_ID, it.place.c_str(), pageWidth - 2 * SIDE - 20 - atW).c_str(),
-                        SELECTION_INK);
-    }
+    listui::RowSpec spec;
+    spec.title = it.title.c_str();
+    spec.detail = it.place.empty() ? nullptr : it.place.c_str();
+    // La hora en su columna, a la derecha: delante del título se leía como
+    // parte del nombre de la actividad.
+    spec.meta = it.at.empty() ? nullptr : it.at.c_str();
+    spec.selected = i == dayIndex;
+    listui::row(renderer, x, top + (i - first) * listui::ROW2_H, w, listui::ROW2_H, spec);
   }
-  if (count > itemsPerPage) {
-    char pages[16];
-    snprintf(pages, sizeof(pages), "%d/%d", dayIndex / itemsPerPage + 1, (count + itemsPerPage - 1) / itemsPerPage);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom - 38,
-                      pages);
-  }
+  listui::pager(renderer, x, pagerY, w, page + 1, (count + itemsPerPage - 1) / itemsPerPage);
 }
 
 // Grabando: qué se puede decir, para que no haya que adivinar el formato.
@@ -1547,8 +1588,6 @@ void CalendarActivity::render(RenderLock&&) {
                                            : tr(STR_SELECT);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la cuadrícula fantasmea.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partialCount = 0;
-  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // La cadencia de refrescos limpios la lleva el coordinador del panel.
+  renderer.displayBuffer();
 }

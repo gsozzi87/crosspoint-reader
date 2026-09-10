@@ -130,7 +130,6 @@ class CalendarActivity final : public Activity {
   std::string dayDate;  // "YYYY-MM-DD" de lo que hay en dayItems
   int dayIndex = 0;
   int itemsPerPage = 1;
-  int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
   bool wifiActivated = false;
   bool monthCached = false;  // el mes en pantalla salió de la caché o del servidor

@@ -101,6 +101,9 @@ PanelRefreshCoordinator::Plan PanelRefreshCoordinator::plan(const uint8_t* fb, c
       // First paint after begin(): the controller's differential baseline was
       // just destroyed by the init sequence, so it has to be an absolute clean.
       mode = HalDisplay::HALF_REFRESH;
+    } else if (cleanHold_) {
+      // El micrófono está abierto: ninguna promoción. Los contadores siguen
+      // corriendo, así que la limpieza sale en el primer refresco de después.
     } else if (hint == Hint::Ui && grayOnGlass_) {
       mode = HalDisplay::HALF_REFRESH;
     } else if (hint == Hint::Ui && fastSinceClean_ >= FAST_BEFORE_CLEAN) {

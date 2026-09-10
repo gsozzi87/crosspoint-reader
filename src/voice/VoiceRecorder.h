@@ -32,12 +32,19 @@ class VoiceRecorder {
   // saber qué Activity abrió el micrófono. La Activity se entera porque
   // isRecording() pasa a false y su pump() la da por terminada.
   static void abortAll();
+  // Mientras HAY un micrófono abierto, el panel no puede promover un refresco a
+  // limpieza: son cientos de ms de SPI contra un DMA de RX de 90 ms y ahí se
+  // pierden muestras (media palabra). main.cpp engancha acá el coordinador de
+  // refresco; la grabadora no conoce al renderer y así no lo tiene que conocer.
+  static void setCleanHoldHook(void (*hook)(bool));
   // Closes the mic and finalises the WAV header.
   void stop();
   // Closes the mic and drops the take.
   void abort();
   // Frees the buffer (after the upload).
   void release();
+
+  static void applyCleanHold();
 
   bool tooShort() const { return spokenSamples() < SAMPLE_RATE / 2; }  // < 0.5 s = accidental press
   // Short tones through the speaker when the mic opens (high) and closes (low),
@@ -84,6 +91,7 @@ class VoiceRecorder {
   size_t recorded = 0;
   bool recording = false;
   static int s_open;  // grabadoras con el micrófono abierto ahora mismo
+  static void (*s_cleanHold)(bool);
   // Las grabadoras vivas, para poder cortarlas desde afuera (abortAll). Son una
   // o dos: cada pantalla crea la suya y la suelta al salir.
   static VoiceRecorder* s_live[4];

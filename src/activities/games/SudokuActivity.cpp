@@ -7,10 +7,11 @@
 
 #include <cstdio>
 
+#include "GameUi.h"
 #include "MappedInputManager.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
-#include "components/Selection.h"
 
 namespace {
 // Pistas que quedan en el tablero según el nivel. Menos pistas = más difícil.
@@ -441,14 +442,18 @@ void SudokuActivity::drawPicker(const int gridLeft, const int cell, const int y)
   // Última opción: borrar lo que haya en la celda.
   const int clearY = y + boxHeight + 10;
   const int clearHeight = 44;
+  // Elegida va con el resalte común (pestaña + marco + franjas al costado) y el
+  // texto SIEMPRE en negro sobre blanco. Hasta 1.5.47 se pintaba de negro macizo
+  // con el texto invertido: un manchón del ancho de la grilla, que es lo que más
+  // fantasma deja en el parcial siguiente.
   const bool clearSelected = pickOption == CLEAR_OPTION;
   if (clearSelected) {
-    renderer.fillRoundedRect(gridLeft, clearY, size, clearHeight, 8, Color::Black);
+    drawSelectionRow(renderer, gridLeft, clearY, size, clearHeight, 8);
   } else {
     renderer.drawRoundedRect(gridLeft, clearY, size, clearHeight, 1, 8, true);
   }
   renderer.drawCenteredText(UI_10_FONT_ID, clearY + (clearHeight - renderer.getTextHeight(UI_10_FONT_ID)) / 2,
-                            tr(STR_GAME_EMPTY_CELL), !clearSelected, EpdFontFamily::BOLD);
+                            tr(STR_GAME_EMPTY_CELL), SELECTION_INK, EpdFontFamily::BOLD);
 }
 
 void SudokuActivity::render(RenderLock&&) {
@@ -514,14 +519,20 @@ void SudokuActivity::render(RenderLock&&) {
   const int highlight = (state == State::WON || editable.empty()) ? -1 : editable[cursor];
   drawBoard(gridLeft, gridTop, cell, highlight);
 
-  const int belowGrid = gridTop + gridSize + 18;
+  // Marcadores en UI_14: nivel, jugadas y tiempo son el dato que se mira entre
+  // jugada y jugada, así que no van en la fuente de los pies de página (hasta
+  // 1.5.47 iban en UI_10 y SMALL). Acá van en un solo renglón y no en la franja
+  // de columnas de `gameui::stats`: debajo de la grilla de 9x9 quedan poco más
+  // de 200 px y el selector de dígitos se los come casi todos.
+  const int belowGrid = gridTop + gridSize + gameui::GAP * 2;
+  const int lineH = renderer.getLineHeight(UI_14_FONT_ID);
+  snprintf(buf, sizeof(buf), "%s %d · %s %d · %02lu:%02lu", tr(STR_GAME_LEVEL), level + 1, tr(STR_GAME_MOVES),
+           moves, elapsedS / 60, elapsedS % 60);
+
   if (state == State::WON) {
-    renderer.drawCenteredText(UI_12_FONT_ID, belowGrid, tr(STR_GAME_WON), true, EpdFontFamily::BOLD);
-    snprintf(buf, sizeof(buf), "%s %02lu:%02lu   %s %d", tr(STR_GAME_TIME), elapsedS / 60, elapsedS % 60,
-             tr(STR_GAME_MOVES), moves);
-    renderer.drawCenteredText(UI_10_FONT_ID, belowGrid + 40, buf);
-    snprintf(buf, sizeof(buf), "%s %d", tr(STR_GAME_LEVEL), level + 1);
-    renderer.drawCenteredText(SMALL_FONT_ID, belowGrid + 70, buf);
+    renderer.drawCenteredText(UI_14_FONT_ID, belowGrid, tr(STR_GAME_WON));
+    renderer.drawCenteredText(UI_14_FONT_ID, belowGrid + lineH + gameui::GAP, buf);
+    gameui::help(renderer, belowGrid + 2 * (lineH + gameui::GAP), tr(STR_GAME_HELP_OVER));
     const auto wonLabels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_NEW), "", "");
     GUI.drawButtonHints(renderer, wonLabels.btn1, wonLabels.btn2, wonLabels.btn3, wonLabels.btn4);
     partialCount = 0;
@@ -529,13 +540,13 @@ void SudokuActivity::render(RenderLock&&) {
     return;
   }
 
-  snprintf(buf, sizeof(buf), "%s %d   %s %d", tr(STR_GAME_LEVEL), level + 1, tr(STR_GAME_MOVES), moves);
-  renderer.drawCenteredText(UI_10_FONT_ID, belowGrid, buf);
+  renderer.drawCenteredText(UI_14_FONT_ID, belowGrid, buf);
+  const int afterStats = belowGrid + lineH + gameui::GAP;
 
   if (state == State::PICK) {
-    drawPicker(gridLeft, cell, belowGrid + 36);
+    drawPicker(gridLeft, cell, afterStats);
   } else {
-    renderer.drawCenteredText(SMALL_FONT_ID, belowGrid + 36, tr(STR_GAME_SELECT_CELL));
+    renderer.drawCenteredText(UI_12_FONT_ID, afterStats, tr(STR_GAME_SELECT_CELL));
   }
 
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

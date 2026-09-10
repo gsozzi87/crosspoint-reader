@@ -10,12 +10,15 @@
 #include <WiFi.h>
 
 #include <algorithm>
+#include <string>
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"
+#include "components/SevenSegment.h"
 #include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -24,12 +27,23 @@
 
 namespace {
 constexpr const char* TAG = "NOTES";
-constexpr int ROW_H = 60;
-constexpr int SIDE = 20;
-constexpr int HINT_H = 20;  // línea de ayuda arriba de la barra de botones
+
 constexpr unsigned long MENU_HOLD_MS = 1200;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr uint32_t SAVE_TIMEOUT_MS = 30000;
+// Contador de la grabación y de la revisión: los mismos dígitos de segmentos
+// del temporizador y del reproductor, que se leen de lejos y no dependen de
+// ninguna cara cargada de la tarjeta.
+constexpr int DIGIT_W = 34;
+constexpr int DIGIT_H = 56;
+constexpr int DIGIT_T = 7;
+constexpr int DIGIT_GAP = 8;
+
+// Ancho que va a ocupar sevenseg::clock, para centrarlo sin dibujarlo dos veces.
+int clockWidth(const int seconds) {
+  const int m = (seconds < 0 ? 0 : seconds) / 60;
+  const int lead = m >= 10 ? 2 : 1;
+  return (lead + 1) * (DIGIT_W + DIGIT_GAP) + DIGIT_W / 2 + DIGIT_GAP + DIGIT_W;
+}
 }  // namespace
 
 // --- lista ------------------------------------------------------------------
@@ -494,174 +508,216 @@ void NotesActivity::loop() {
 
 // --- pantalla ---------------------------------------------------------------
 
+int NotesActivity::rowHeight(const int i) const {
+  if (i < 0 || i >= rowCount()) return listui::ROW1_H;
+  const Row::Kind kind = rows[i].kind;
+  // Las dos filas de agregar son de un renglón; una nota lleva su detalle
+  // debajo (cuándo se grabó, cuánto dura, si todavía no está transcripta).
+  return kind == Row::ADD_TEXT || kind == Row::ADD_VOICE ? listui::ROW1_H : listui::ROW2_H;
+}
+
+bool NotesActivity::needsSectionHeader(const int i) const {
+  // El encabezado va una sola vez, delante de la primera nota guardada: separa
+  // lo que se hace (las dos acciones) de lo que ya está.
+  return i == 2 && rowCount() > 2;
+}
+
+void NotesActivity::renderList(const int x, const int top, const int w, const int bottom) {
+  const int count = rowCount();
+  const auto block = [this](const int i) { return rowHeight(i) + (needsSectionHeader(i) ? listui::SECTION_H : 0); };
+
+  // La ventana se calcula MIDIENDO: con filas de altos distintos, dividir el
+  // alto disponible por un alto de fila deja la elegida medio tapada.
+  if (listTop > index) listTop = index;
+  if (listTop < 0 || listTop >= count) listTop = 0;
+  while (listTop < count - 1) {
+    int y = top;
+    int last = listTop;
+    for (int i = listTop; i < count; ++i) {
+      if (y + block(i) > bottom) break;
+      y += block(i);
+      last = i;
+    }
+    if (index <= last) break;
+    ++listTop;
+  }
+
+  char counter[48];
+  snprintf(counter, sizeof(counter), tr(STR_NOTES_COUNT_FORMAT), count - 2);
+
+  int y = top;
+  for (int i = listTop; i < count; ++i) {
+    if (y + block(i) > bottom) break;
+    if (needsSectionHeader(i)) y = listui::sectionHeader(renderer, x, y, w, tr(STR_NOTES_SAVED), counter);
+    const Row& row = rows[i];
+    const int h = rowHeight(i);
+    listui::RowSpec spec;
+    spec.selected = i == index;
+
+    std::string title;
+    std::string detail;
+    std::string meta;
+    switch (row.kind) {
+      case Row::ADD_TEXT:
+        title = tr(STR_NOTES_ADD);
+        spec.bold = true;
+        break;
+      case Row::ADD_VOICE:
+        title = tr(STR_NOTES_ADD_VOICE);
+        spec.bold = true;
+        break;
+      case Row::VOICE: {
+        const voicenotes::Note& note = voiceNotes[row.index];
+        title = tr(STR_NOTES_VOICE_TAG);
+        meta = voicenotes::mmss(note.seconds);  // la duración, en su columna de la derecha
+        detail = voicenotes::when(note);
+        if (detail.empty() && note.number > 0) detail = "#" + std::to_string(note.number);
+        // Una nota de voz no tiene texto hasta que alguien la escucha: decirlo
+        // acá evita buscarle el contenido que no tiene.
+        detail += detail.empty() ? tr(STR_NOTE_NO_TEXT) : std::string(" · ") + tr(STR_NOTE_NO_TEXT);
+        break;
+      }
+      case Row::TEXT: {
+        const std::string& text = HUB_STORE.notes[row.index].text;
+        title = renderer.truncatedText(UI_12_FONT_ID, text.c_str(), w - 2 * listui::PAD);
+        // Segundo renglón: sólo lo que quedó afuera del primero.
+        detail = listui::tailAfterEllipsis(title, text);
+        break;
+      }
+    }
+    spec.title = title.c_str();
+    spec.detail = detail.empty() ? nullptr : detail.c_str();
+    spec.meta = meta.empty() ? nullptr : meta.c_str();
+    listui::row(renderer, x, y, w, h, spec);
+    y += h;
+  }
+
+  if (count <= 2) renderer.drawCenteredText(UI_10_FONT_ID, y + 2 * listui::GAP, tr(STR_NOTES_NONE_YET));
+}
+
+void NotesActivity::renderReview(const int mid) {
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const char* title = state == REVIEW ? tr(STR_NOTE_REVIEW_TITLE) : tr(STR_NOTE_REVIEW_PLAYING);
+  renderer.drawCenteredText(UI_14_FONT_ID, mid - DIGIT_H - 4 * listui::GAP,
+                            renderer.truncatedText(UI_14_FONT_ID, title, w).c_str());
+
+  // Cuánto se grabó, con los mismos dígitos del temporizador.
+  const int seconds = recorder ? static_cast<int>(recorder->spokenSeconds() + 0.5f) : 0;
+  const int cx = x + (w - clockWidth(seconds)) / 2;
+  sevenseg::clock(renderer, seconds, cx, mid - DIGIT_H / 2, DIGIT_W, DIGIT_H, DIGIT_T, DIGIT_GAP);
+
+  int hy = mid + DIGIT_H / 2 + 4 * listui::GAP;
+  const int step = renderer.getLineHeight(UI_10_FONT_ID) + 4;
+  for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, tr(STR_NOTE_REVIEW_HINT), w, 3)) {
+    renderer.drawCenteredText(UI_10_FONT_ID, hy, line.c_str());
+    hy += step;
+  }
+}
+
 void NotesActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const int mid = pageHeight / 2;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
 
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_NOTES));
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
-  // El margen de abajo lleva verticalSpacing además del alto de los hints
-  // (misma cuenta que SettingsActivity), o la última fila queda pegada a la
-  // barra de botones.
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - HINT_H;
+  const int top = listui::contentTop();
+  const int bottom = listui::contentBottom(renderer);
+  const int hintY = bottom - listui::HINT_H;
   const char* confirmLabel = "";
-  const char* hint = "";
+  const char* hintText = "";
 
   switch (state) {
     case LIST: {
-      const int count = rowCount();
-      const int perPage = std::max(1, (bottom - top) / ROW_H);
-      if (listTop > index) listTop = index;
-      if (index >= listTop + perPage) listTop = index - perPage + 1;
-      if (listTop < 0 || listTop >= count) listTop = 0;
-      const int width = pageWidth - 2 * SIDE;
-      for (int i = listTop; i < count && i < listTop + perPage; ++i) {
-        const int y = top + (i - listTop) * ROW_H;
-        const Row& row = rows[i];
-        if (i == index) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
-        if (row.kind == Row::ADD_TEXT || row.kind == Row::ADD_VOICE) {
-          const char* label = row.kind == Row::ADD_TEXT ? tr(STR_NOTES_ADD) : tr(STR_NOTES_ADD_VOICE);
-          renderer.drawText(UI_12_FONT_ID, SIDE, y + 16,
-                            renderer.truncatedText(UI_12_FONT_ID, label, width, EpdFontFamily::BOLD).c_str(),
-                            SELECTION_INK, EpdFontFamily::BOLD);
-          continue;
-        }
-        if (row.kind == Row::VOICE) {
-          const voicenotes::Note& note = voiceNotes[row.index];
-          const std::string title =
-              std::string(tr(STR_NOTES_VOICE_TAG)) + "  ·  " + voicenotes::mmss(note.seconds);
-          renderer.drawText(UI_12_FONT_ID, SIDE, y + 6,
-                            renderer.truncatedText(UI_12_FONT_ID, title.c_str(), width).c_str(), SELECTION_INK);
-          std::string when = voicenotes::when(note);
-          if (when.empty() && note.number > 0) when = "#" + std::to_string(note.number);
-          if (!when.empty()) {
-            renderer.drawText(UI_10_FONT_ID, SIDE, y + 32,
-                              renderer.truncatedText(UI_10_FONT_ID, when.c_str(), width).c_str(), SELECTION_INK);
-          }
-          continue;
-        }
-        const std::string& text = HUB_STORE.notes[row.index].text;
-        const std::string line1 = renderer.truncatedText(UI_12_FONT_ID, text.c_str(), width);
-        renderer.drawText(UI_12_FONT_ID, SIDE, y + 6, line1.c_str(), SELECTION_INK);
-        // Segunda línea: lo que no entró en la primera (el helper corta con "...").
-        if (line1.size() >= 3 && line1.size() < text.size() + 3 &&
-            text.compare(0, line1.size() - 3, line1, 0, line1.size() - 3) == 0) {
-          const std::string rest = text.substr(line1.size() - 3);
-          if (!rest.empty()) {
-            renderer.drawText(UI_10_FONT_ID, SIDE, y + 32,
-                              renderer.truncatedText(UI_10_FONT_ID, rest.c_str(), width).c_str(), SELECTION_INK);
-          }
-        }
-      }
-      if (count <= 2) {
-        renderer.drawCenteredText(UI_10_FONT_ID, top + 2 * ROW_H + 40, tr(STR_NOTES_NONE_YET));
-      }
+      renderList(x, top, w, hintY - listui::GAP);
       const Row* row = currentRow();
       const bool onAdd = !row || row->kind == Row::ADD_TEXT || row->kind == Row::ADD_VOICE;
-      hint = onAdd ? tr(STR_NOTES_ADD_HINT) : tr(STR_NOTES_DELETE_HINT);
-      confirmLabel = !row                       ? ""
-                     : row->kind == Row::VOICE  ? tr(STR_NOTES_PLAY)
-                     : row->kind == Row::TEXT   ? tr(STR_SELECT)
-                                                : tr(STR_NOTES_RECORD);
+      hintText = onAdd ? tr(STR_NOTES_ADD_HINT) : tr(STR_NOTES_DELETE_HINT);
+      confirmLabel = !row                      ? ""
+                     : row->kind == Row::VOICE ? tr(STR_NOTES_PLAY)
+                     : row->kind == Row::TEXT  ? tr(STR_SELECT)
+                                               : tr(STR_NOTES_RECORD);
       break;
     }
     case RECORDING: {
       const int seconds = recorder ? static_cast<int>(recorder->seconds()) : 0;
       renderer.drawCenteredText(
-          UI_12_FONT_ID, mid - 90,
+          UI_14_FONT_ID, mid - DIGIT_H - 4 * listui::GAP,
           renderer
-              .truncatedText(UI_12_FONT_ID, take == TAKE_TEXT ? tr(STR_NOTES_REC_TEXT) : tr(STR_NOTES_REC_VOICE),
-                             pageWidth - 40, EpdFontFamily::BOLD)
-              .c_str(),
-          true, EpdFontFamily::BOLD);
-      // "0:12 / 1:30": los segundos que van y el tope de esta grabación.
-      const std::string counter = std::string(tr(STR_REC_ELAPSED)) + "   " + voicenotes::mmss(seconds) + " / " +
-                                  voicenotes::mmss(static_cast<int>(maxSeconds));
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 40, counter.c_str(), true, EpdFontFamily::BOLD);
-      // Barra: lo mismo, de un vistazo.
-      const int barW = pageWidth - 2 * SIDE - 40;
-      const int barX = (pageWidth - barW) / 2;
-      renderer.drawRoundedRect(barX, mid - 4, barW, 16, 2, 4, true);
-      const int filled = maxSeconds > 0 ? std::min(barW - 4, static_cast<int>((barW - 4) * seconds / static_cast<int>(maxSeconds))) : 0;
-      if (filled > 0) renderer.fillRect(barX + 2, mid - 2, filled, 12);
-      renderer.drawCenteredText(UI_10_FONT_ID, mid + 40, tr(STR_NOTES_REC_HINT));
+              .truncatedText(UI_14_FONT_ID, take == TAKE_TEXT ? tr(STR_NOTES_REC_TEXT) : tr(STR_NOTES_REC_VOICE), w)
+              .c_str());
+      const int cx = x + (w - clockWidth(seconds)) / 2;
+      sevenseg::clock(renderer, seconds, cx, mid - DIGIT_H / 2, DIGIT_W, DIGIT_H, DIGIT_T, DIGIT_GAP);
+      // Carril de 1 px con el tramo hecho en 3: una barra maciza de 16 px de
+      // alto es el manchón que fantasmea en el parcial siguiente.
+      const int railY = mid + DIGIT_H / 2 + 3 * listui::GAP;
+      renderer.fillRect(x, railY, w, 1, true);
+      const int done = maxSeconds > 0 ? std::min(w, static_cast<int>(w * seconds / static_cast<int>(maxSeconds))) : 0;
+      if (done > 0) renderer.fillRect(x, railY - 1, done, 3, true);
+      // "0:12 / 1:30": los segundos que van, a la izquierda, y el tope de esta
+      // grabación a la derecha, en la misma línea de base.
+      const int labelY = railY + 2 * listui::GAP;
+      renderer.drawText(UI_10_FONT_ID, x, labelY, tr(STR_REC_ELAPSED));
+      const std::string cap = voicenotes::mmss(static_cast<int>(maxSeconds));
+      renderer.drawText(UI_10_FONT_ID, x + w - renderer.getTextWidth(UI_10_FONT_ID, cap.c_str()), labelY, cap.c_str());
+      hintText = tr(STR_NOTES_REC_HINT);
       confirmLabel = tr(STR_SELECT);
       break;
     }
     case REVIEW:
-    case REVIEW_PLAYING: {
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 70,
-                                state == REVIEW ? tr(STR_NOTE_REVIEW_TITLE) : tr(STR_NOTE_REVIEW_PLAYING), true,
-                                EpdFontFamily::BOLD);
-      const int seconds = recorder ? static_cast<int>(recorder->spokenSeconds() + 0.5f) : 0;
-      char len[64];
-      snprintf(len, sizeof(len), tr(STR_NOTE_REVIEW_LENGTH), seconds);
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 20, len);
-      int hy = mid + 40;
-      for (const std::string& line :
-           renderer.wrappedText(UI_10_FONT_ID, tr(STR_NOTE_REVIEW_HINT), pageWidth - 60, 6)) {
-        renderer.drawCenteredText(UI_10_FONT_ID, hy, line.c_str());
-        hy += 26;
-      }
+    case REVIEW_PLAYING:
+      renderReview(mid);
       confirmLabel = tr(STR_SELECT);
       break;
-    }
     case CONNECTING:
       if (!wifiPicker) FriendlyWifi::drawStatus(renderer, wifi, mid);
       break;
     case SENDING:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10,
-                                sendStep == 0 ? tr(STR_NOTES_TRANSCRIBING) : tr(STR_NOTES_SAVING), true,
-                                EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_14_FONT_ID, mid - 10,
+                                sendStep == 0 ? tr(STR_NOTES_TRANSCRIBING) : tr(STR_NOTES_SAVING));
       break;
     case PLAYING: {
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, tr(STR_NOTES_PLAYING), true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_14_FONT_ID, mid - 30, tr(STR_NOTES_PLAYING));
       const Row* row = currentRow();
       if (row && row->kind == Row::VOICE) {
         const voicenotes::Note& note = voiceNotes[row->index];
         std::string line = voicenotes::mmss(note.seconds);
         const std::string when = voicenotes::when(note);
-        if (!when.empty()) line += "  ·  " + when;
-        renderer.drawCenteredText(UI_10_FONT_ID, mid + 6, line.c_str());
+        if (!when.empty()) line += " · " + when;
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + listui::GAP, line.c_str());
       }
-      renderer.drawCenteredText(UI_10_FONT_ID, mid + 40, tr(STR_NOTES_PLAY_STOP));
+      hintText = tr(STR_NOTES_PLAY_STOP);
       break;
     }
     case MESSAGE: {
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 60,
-                                renderer.truncatedText(UI_12_FONT_ID, I18N.get(messageId), pageWidth - 40,
-                                                       EpdFontFamily::BOLD)
-                                    .c_str(),
-                                true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_14_FONT_ID, mid - 60,
+                                renderer.truncatedText(UI_14_FONT_ID, I18N.get(messageId), w).c_str());
       int y = mid - 20;
-      for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, messageDetail.c_str(), pageWidth - 60, 6)) {
+      const int step = renderer.getLineHeight(UI_10_FONT_ID) + 4;
+      for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, messageDetail.c_str(), w, 6)) {
         renderer.drawCenteredText(UI_10_FONT_ID, y, line.c_str());
-        y += 26;
+        y += step;
       }
       confirmLabel = tr(STR_SELECT);
       break;
     }
   }
 
-  renderer.drawCenteredText(SMALL_FONT_ID, bottom + 4,
-                            renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
+  listui::hint(renderer, hintY, hintText);
 
   if (state == LIST && confirming && confirm.processRender(renderer, mappedInput)) return;
   const bool navigable = state == LIST;
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, navigable ? tr(STR_DIR_UP) : "",
                                             navigable ? tr(STR_DIR_DOWN) : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla
-  // fantasmea. Mientras el micrófono está abierto se evita: un refresco limpio
-  // es medio segundo de SPI y ahí se pierden muestras; en su lugar se pide uno
-  // al entrar y otro al salir de la grabación (forceClean).
-  const bool clean = forceClean || (state != RECORDING && ++partialCount >= PARTIALS_BEFORE_CLEAN);
-  if (clean) {
-    partialCount = 0;
-    forceClean = false;
-  }
+  // La cadencia de refrescos limpios la lleva el coordinador del panel; acá
+  // sólo se pide uno al entrar y al salir de la grabación (forceClean), porque
+  // con el micrófono abierto medio segundo de SPI se come muestras.
+  const bool clean = forceClean;
+  forceClean = false;
   renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

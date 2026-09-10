@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "cardIcons.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
 #include "components/Selection.h"
 
@@ -24,18 +25,6 @@ const freeink::Icon* const RANK_ICONS[13] = {
 
 const freeink::Icon* const SUIT_SMALL[4] = {&icon_suit_spade_16, &icon_suit_heart_16, &icon_suit_diamond_16,
                                             &icon_suit_club_16};
-
-// Los bitmaps se pintan pixel por pixel: así salen bien en cualquier orientación.
-void blitIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y) {
-  const int stride = (icon.w + 7) / 8;
-  for (int row = 0; row < icon.h; ++row) {
-    const uint8_t* line = icon.bits + row * stride;
-    for (int col = 0; col < icon.w; ++col) {
-      if ((line[col / 8] & (0x80 >> (col % 8))) != 0) continue;
-      renderer.drawPixel(x + col, y + row, true);
-    }
-  }
-}
 
 // ----------------------------------------------------------- combinaciones --
 
@@ -694,11 +683,11 @@ void RummyActivity::loop() {
 void RummyActivity::drawSuit(const int cx, const int cy, const int suit) const {
   const int index = suit >= 0 && suit < 4 ? suit : 0;
   const freeink::Icon& icon = *SUIT_SMALL[index];
-  blitIcon(renderer, icon, cx - icon.w / 2, cy - icon.h / 2);
+  BaseTheme::drawIconBitmap(renderer, icon, cx - icon.w / 2, cy - icon.h / 2);
 }
 
 void RummyActivity::drawRank(const int x, const int y, const uint8_t card) const {
-  blitIcon(renderer, *RANK_ICONS[rankOf(card)], x, y);
+  BaseTheme::drawIconBitmap(renderer, *RANK_ICONS[rankOf(card)], x, y);
 }
 
 // Carta chica: en 480 px no entran diez cartas del tamaño del blackjack, así que

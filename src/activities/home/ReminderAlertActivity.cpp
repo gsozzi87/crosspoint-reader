@@ -10,6 +10,7 @@
 #include "input/MotionInput.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "fontIds.h"
 #include "voice/SpeechCache.h"
@@ -17,15 +18,6 @@
 namespace {
 constexpr const char* TAG = "REMIND";
 
-void drawSdkIcon(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y) {
-  const int stride = (icon.w + 7) / 8;
-  for (int row = 0; row < icon.h; ++row) {
-    const uint8_t* line = icon.bits + row * stride;
-    for (int col = 0; col < icon.w; ++col) {
-      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, true);
-    }
-  }
-}
 }  // namespace
 
 void ReminderAlertActivity::onEnter() {
@@ -120,7 +112,7 @@ void ReminderAlertActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_REMINDERS));
-  drawSdkIcon(renderer, icon_hub_reminder_24, pageWidth / 2 - 12, pageHeight / 2 - 110);
+  BaseTheme::drawIconBitmap(renderer, icon_hub_reminder_24, pageWidth / 2 - 12, pageHeight / 2 - 110);
   // Title wrapped by the paged-text helper is overkill: two truncated lines.
   const std::string line1 = renderer.truncatedText(UI_12_FONT_ID, title.c_str(), pageWidth - 40, EpdFontFamily::BOLD);
   renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 60, line1.c_str(), true, EpdFontFamily::BOLD);

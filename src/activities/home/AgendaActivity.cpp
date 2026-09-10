@@ -15,21 +15,20 @@
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "VoiceActivity.h"
+#include "activities/ListStyle.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
+#include "components/icons/hubWidgetIcons.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
-#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "AGENDA";
-constexpr int ROW_H = 44;
-constexpr int REMINDER_ROW_H = 60;  // título arriba y "cuándo vuelve a sonar" abajo
-constexpr int EDIT_ROW_H = 48;
-constexpr int SIDE = 20;
 constexpr unsigned long MENU_HOLD_MS = 1200;
-constexpr int PAGER_H = 18;               // franja del indicador "p/N", debajo de las filas
-constexpr int HINT_H = 20;                // línea de ayuda dentro de una sección
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int PAGER_H = 24;   // franja del paginador, debajo de las filas
+constexpr int TABS_H = 40;    // barra de pestañas de la vista de ítems
+constexpr int TAB_GAP = 24;   // aire entre una pestaña y la siguiente
+constexpr int TAB_COUNT_GAP = 8;
 
 std::string dateOffset(int days) {
   time_t now = 0;
@@ -125,6 +124,29 @@ std::string AgendaActivity::sectionTitle(const int index) const {
   return "";
 }
 
+// La primera línea de lo que hay adentro. En Recordatorios, el próximo con su
+// cuándo; en una lista, los primeros ítems separados por comas.
+std::string AgendaActivity::sectionPreview(const int index) const {
+  switch (sections[index].kind) {
+    case REMINDERS: {
+      if (HUB_STORE.reminders.empty()) break;
+      const HubStore::Reminder& r = HUB_STORE.reminders[0];
+      return r.when.empty() ? r.title : r.title + " · " + r.when;
+    }
+    case LIST: {
+      const std::vector<HubStore::ListItem>& items = HUB_STORE.lists[sections[index].listIndex].items;
+      if (items.empty()) break;
+      std::string out;
+      for (int i = 0; i < static_cast<int>(items.size()) && i < 4; ++i) {
+        out += out.empty() ? items[i].text : ", " + items[i].text;
+      }
+      if (items.size() > 4) out += "...";
+      return out;
+    }
+  }
+  return tr(STR_AGENDA_EMPTY);
+}
+
 std::string AgendaActivity::itemText(const int index, std::string& detail) const {
   detail.clear();
   switch (current().kind) {
@@ -167,6 +189,10 @@ void AgendaActivity::tickCurrent() {
   const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/hub/done", body);
   LOG_INF(TAG, "done %s %d: %s", kind, id, ServerClient::resultName(r));
   if (itemIndex >= itemCount() && itemIndex > 0) itemIndex--;
+  // Tildar el último deja la sección vacía: en vez de una lista en blanco bajo
+  // las pestañas se vuelve a las tres secciones, que es la pantalla que dice
+  // qué hay en cada una.
+  if (itemCount() == 0) level = SECTIONS;
   requestUpdate();
 }
 
@@ -234,8 +260,11 @@ void AgendaActivity::onMenuPick(const int index) {
   requestUpdate();
 }
 
-// OK sobre una sección: abre su lista de ítems.
+// OK sobre una sección: abre su lista de ítems. Una sección vacía no se abre
+// (no hay nada que mostrar y la fila ya dice "Nada pendiente"): se queda en las
+// secciones, que es lo que explica qué hay adentro de cada una.
 void AgendaActivity::openSection() {
+  if (sectionItemCount(sectionIndex) == 0) return;
   level = ITEMS;
   itemIndex = 0;
   requestUpdate();
@@ -479,6 +508,12 @@ void AgendaActivity::deleteEditedReminder() {
 }
 
 void AgendaActivity::loop() {
+  // La caché puede vaciarse por debajo (una sincronización, un tilde desde el
+  // hub): sin sección que mostrar, la pantalla vuelve sola a las tres filas.
+  if (level == ITEMS && itemCount() == 0) {
+    level = SECTIONS;
+    requestUpdate();
+  }
   if (menuStep != NONE) {
     if (menu.handleInput(mappedInput, [this] { requestUpdate(); })) {
       if (!menu.isActive() && menuStep != NONE) {
@@ -566,16 +601,13 @@ void AgendaActivity::loop() {
 // Pantalla de edición: una fila por cosa que se puede cambiar, con el valor que
 // va a quedar a la derecha. Nada de teclados: la palanca recorre los valores.
 void AgendaActivity::renderEditor() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const int top = listui::contentTop();
 
   for (int row = 0; row < EDIT_ROWS; ++row) {
-    const int y = top + row * EDIT_ROW_H;
+    const int y = top + row * listui::ROW1_H;
     const bool sel = row == editRow;
-    if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), EDIT_ROW_H - 6);
     const char* label = tr(STR_REM_TITLE_ROW);
     std::string value;
     switch (row) {
@@ -599,29 +631,128 @@ void AgendaActivity::renderEditor() {
       case ROW_DELETE: label = tr(STR_REM_DELETE_ROW); break;
       default: break;
     }
-    renderer.drawText(UI_12_FONT_ID, SIDE, y + 12,
-                      renderer.truncatedText(UI_12_FONT_ID, label, pageWidth / 2 - SIDE).c_str(), SELECTION_INK);
-    if (!value.empty()) {
-      const std::string shown = renderer.truncatedText(UI_10_FONT_ID, value.c_str(), pageWidth / 2 - SIDE - 8);
-      renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, shown.c_str()), y + 15,
-                        shown.c_str(), SELECTION_INK);
-    }
+    listui::RowSpec spec;
+    spec.title = label;
+    spec.meta = value.empty() ? nullptr : value.c_str();
+    spec.selected = sel;
+    listui::row(renderer, x, y, w, listui::ROW1_H, spec);
   }
 
   const char* hint = editField != F_NONE ? tr(STR_REM_FIELD_HINT)
                      : editRow == ROW_TITLE ? tr(STR_REM_VOICE_HINT)
                                             : tr(STR_REM_ROW_HINT);
-  renderer.drawCenteredText(SMALL_FONT_ID, bottom - HINT_H + 2,
-                            renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
+  listui::hint(renderer, listui::contentBottom(renderer) - listui::HINT_H, hint);
+}
+
+// Las tres secciones (Recordatorios, Compras, Tareas) con una vista previa de
+// lo que hay adentro y la cuenta a la derecha. Es la pantalla de entrada y la
+// que se muestra cuando la sección elegida se quedó sin nada: una lista en
+// blanco bajo las pestañas no dice nada, esto sí.
+// Campana, carrito y lista de tareas: las tres secciones se distinguen de un
+// vistazo sin leer, que es lo que pide la maqueta.
+const freeink::Icon* AgendaActivity::sectionIcon(const int index) const {
+  if (sections[index].kind == REMINDERS) return &icon_hub_bell_24;
+  // "Compras" es la clave canónica del store del servidor (server/src/store.ts),
+  // no el nombre traducido: el carrito no depende del idioma.
+  return HUB_STORE.lists[sections[index].listIndex].key == "Compras" ? &icon_hub_cart_24 : &icon_hub_tasks_24;
+}
+
+void AgendaActivity::renderSections(const int x, const int top, const int w, const int bottom) {
+  const int count = sectionCount();
+  itemsPerPage = std::max(1, (bottom - top) / listui::ROW2_H);
+  const int first = count > 0 ? (sectionIndex / itemsPerPage) * itemsPerPage : 0;
+  for (int i = first; i < count && i < first + itemsPerPage; ++i) {
+    const int y = top + (i - first) * listui::ROW2_H;
+    const std::string title = sectionTitle(i);
+    const std::string preview = sectionPreview(i);
+    const std::string countText = std::to_string(sectionItemCount(i));
+    listui::RowSpec spec;
+    spec.title = title.c_str();
+    spec.icon = sectionIcon(i);
+    spec.detail = preview.c_str();
+    spec.meta = countText.c_str();
+    spec.metaBox = true;
+    spec.bold = true;
+    spec.selected = i == sectionIndex;
+    listui::row(renderer, x, y, w, listui::ROW2_H, spec);
+  }
+}
+
+// La barra de pestañas de la vista de ítems: dice en cuál estamos y cuánto hay
+// en las otras (la palanca mueve la selección, no la pestaña; a las otras se
+// llega con Atrás). Si los nombres no entran, queda sola la activa.
+int AgendaActivity::drawTabs(const int x, const int y, const int w) {
+  const int count = sectionCount();
+  int total = 0;
+  for (int i = 0; i < count; ++i) {
+    const std::string title = sectionTitle(i);
+    const std::string n = std::to_string(sectionItemCount(i));
+    total += renderer.getTextWidth(UI_10_FONT_ID, title.c_str(), EpdFontFamily::BOLD) + TAB_COUNT_GAP +
+             renderer.getTextWidth(UI_10_FONT_ID, n.c_str());
+  }
+  total += TAB_GAP * (count - 1);
+  const bool all = total <= w;
+
+  const int textY = y + (TABS_H - renderer.getLineHeight(UI_10_FONT_ID)) / 2 - 2;
+  int cx = x;
+  for (int i = 0; i < count; ++i) {
+    if (!all && i != sectionIndex) continue;
+    const bool active = i == sectionIndex;
+    const auto style = active ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    const std::string title = sectionTitle(i);
+    const std::string n = std::to_string(sectionItemCount(i));
+    const int titleW = renderer.getTextWidth(UI_10_FONT_ID, title.c_str(), style);
+    const int nW = renderer.getTextWidth(UI_10_FONT_ID, n.c_str());
+    renderer.drawText(UI_10_FONT_ID, cx, textY, title.c_str(), true, style);
+    renderer.drawText(UI_10_FONT_ID, cx + titleW + TAB_COUNT_GAP, textY, n.c_str());
+    if (active) renderer.fillRect(cx, y + TABS_H - 4, titleW, 3, true);
+    cx += titleW + TAB_COUNT_GAP + nW + TAB_GAP;
+  }
+  listui::rule(renderer, x, y + TABS_H - 1, w);
+  return y + TABS_H + listui::GAP;
+}
+
+// Los ítems de la sección. Los de una lista llevan casilla vacía a la izquierda:
+// es lo que dice, sin manual, que OK los tilda. Los recordatorios NO la llevan,
+// porque ahí OK abre el editor de cuándo suena: una casilla prometería un tilde
+// que no va a pasar.
+void AgendaActivity::renderItems(const int x, const int top, const int w, const int bottom, const int pagerY) {
+  const bool reminders = current().kind == REMINDERS;
+  const int rowH = reminders ? listui::ROW2_H : listui::ROW1_H;
+  const int count = itemCount();
+  itemsPerPage = std::max(1, (bottom - top) / rowH);
+  const int page = count > 0 ? itemIndex / itemsPerPage : 0;
+  const int first = page * itemsPerPage;
+
+  for (int i = first; i < count && i < first + itemsPerPage; ++i) {
+    const int y = top + (i - first) * rowH;
+    std::string when;
+    const std::string text = itemText(i, when);
+    std::string repeat;
+    if (reminders) {
+      const HubStore::Reminder& r = HUB_STORE.reminders[i];
+      repeat = r.repeatText.empty() ? repeatFromCode(r.repeat, r.weekday, r.interval) : r.repeatText;
+    }
+    listui::RowSpec spec;
+    spec.title = text.c_str();
+    spec.detail = repeat.empty() ? nullptr : repeat.c_str();
+    spec.meta = when.empty() ? nullptr : when.c_str();
+    spec.check = !reminders;
+    spec.selected = i == itemIndex;
+    listui::row(renderer, x, y, w, rowH, spec);
+  }
+  listui::pager(renderer, x, pagerY, w, page + 1, (count + itemsPerPage - 1) / itemsPerPage);
 }
 
 void AgendaActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
-  std::string title = level == SECTIONS ? std::string(tr(STR_HUB_REMINDERS)) : sectionTitle(sectionIndex);
+  // Sin nada adentro se muestran las secciones, aunque el nivel diga ITEMS: la
+  // pantalla en blanco bajo las pestañas no explica nada.
+  const bool sectionsView = level == SECTIONS || (level == ITEMS && itemCount() == 0);
+  std::string title = sectionsView ? std::string(tr(STR_HUB_REMINDERS)) : sectionTitle(sectionIndex);
   if (level == EDIT) title = edit.title.empty() ? std::string(tr(STR_REM_EDIT)) : edit.title;
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
@@ -629,108 +760,35 @@ void AgendaActivity::render(RenderLock&&) {
     renderEditor();
     const auto editLabels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, editLabels.btn1, editLabels.btn2, editLabels.btn3, editLabels.btn4);
-    const bool cleanEdit = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-    if (cleanEdit) partialCount = 0;
-    renderer.displayBuffer(cleanEdit ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+    renderer.displayBuffer();
     return;
   }
 
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
-  // El margen de abajo lleva verticalSpacing además del alto de los hints (misma
-  // cuenta que SettingsActivity): con un 8 fijo la última fila quedaba pegada a la
-  // barra de botones (verticalSpacing es 16 en Lyra, no 8).
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  // Dentro de una sección hay una línea de ayuda abajo (qué hace OK acá), asi
-  // que las filas terminan más arriba todavía.
-  const int hintH = level == ITEMS ? HINT_H : 0;
-  // El indicador "p/N" tiene su propia franja abajo: si las filas llegaran hasta
-  // `bottom` se le encimarían.
-  const int rowsBottom = bottom - PAGER_H - hintH;
-  // Un recordatorio ocupa dos líneas: el título y, debajo, cada cuánto vuelve a
-  // sonar. Es la respuesta a "¿me despierta mañana o de lunes a viernes?".
-  const bool reminderRows = level == ITEMS && current().kind == REMINDERS;
-  const int rowH = reminderRows ? REMINDER_ROW_H : ROW_H;
-  itemsPerPage = std::max(1, (rowsBottom - top) / rowH);
-  const int count = level == SECTIONS ? sectionCount() : itemCount();
-  const int selected = level == SECTIONS ? sectionIndex : itemIndex;
-  const int page = count > 0 ? selected / itemsPerPage : 0;
-  const int first = page * itemsPerPage;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  // El margen de abajo lleva verticalSpacing además del alto de los hints, o la
+  // última fila queda pegada a la barra de botones y parece tapada.
+  const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+  const int pagerY = hintY - PAGER_H;
+  const int rowsBottom = pagerY - listui::GAP;
 
-  if (count == 0) {
-    const char* empty = tr(STR_HUB_NO_REMINDERS);
-    if (level == ITEMS) {
-      switch (current().kind) {
-        case REMINDERS:
-          empty = tr(STR_HUB_NO_REMINDERS);
-          break;
-        case LIST:
-          empty = tr(STR_AGENDA_EMPTY);
-          break;
-      }
-    }
-    // Centrado y más ancho que la pantalla = "[GFX] !! Outside range": el
-    // cartel de vacío va cortado en líneas contra el ancho real.
-    int emptyY = pageHeight / 2 - 10;
-    for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, empty, pageWidth - 2 * SIDE, 3)) {
-      renderer.drawCenteredText(UI_10_FONT_ID, emptyY, line.c_str());
-      emptyY += 26;
-    }
+  const char* hint = tr(STR_AGENDA_OPEN_HINT);
+  if (sectionsView) {
+    renderSections(x, listui::contentTop(), w, rowsBottom);
+  } else {
+    const int top = drawTabs(x, listui::contentTop(), w);
+    renderItems(x, top, w, rowsBottom, pagerY);
+    hint = current().kind == REMINDERS ? tr(STR_REM_OPEN_HINT) : tr(STR_AGENDA_ITEM_HINT);
   }
-  for (int i = first; i < count && i < first + itemsPerPage; ++i) {
-    const int y = top + (i - first) * rowH;
-    const bool isSelected = i == selected;
-    if (isSelected) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), rowH - 4);
-    const bool ink = SELECTION_INK;
-    std::string detail;
-    std::string text;
-    std::string second;  // segunda línea: la repetición del recordatorio
-    if (level == SECTIONS) {
-      const int n = sectionItemCount(i);
-      text = sectionTitle(i);
-      detail = n >= 0 ? std::to_string(n) : std::string();
-    } else {
-      text = itemText(i, detail);
-      if (reminderRows) {
-        const HubStore::Reminder& r = HUB_STORE.reminders[i];
-        second = r.repeatText.empty() ? repeatFromCode(r.repeat, r.weekday, r.interval) : r.repeatText;
-      }
-    }
-    const int detailW = detail.empty() ? 0 : renderer.getTextWidth(UI_10_FONT_ID, detail.c_str());
-    const int textW = pageWidth - 2 * SIDE - detailW - (detailW ? 12 : 0);
-    renderer.drawText(UI_12_FONT_ID, SIDE, y + 8, renderer.truncatedText(UI_12_FONT_ID, text.c_str(), textW).c_str(),
-                      ink);
-    if (detailW) renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - detailW, y + 11, detail.c_str(), ink);
-    if (!second.empty()) {
-      renderer.drawText(SMALL_FONT_ID, SIDE, y + 34,
-                        renderer.truncatedText(SMALL_FONT_ID, second.c_str(), pageWidth - 2 * SIDE).c_str(), ink);
-    }
-  }
-  if (count > itemsPerPage) {
-    char pages[16];
-    snprintf(pages, sizeof(pages), "%d/%d", page + 1, (count + itemsPerPage - 1) / itemsPerPage);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages),
-                      bottom - hintH - 16, pages);
-  }
-
-  // Línea de ayuda: qué hace OK en esta sección (los ítems se tachan) y el
-  // menú del ítem, que estaba escondido.
-  if (level == ITEMS) {
-    const char* hint = tr(STR_AGENDA_DONE_HINT);
-    if (current().kind == LIST) hint = tr(STR_AGENDA_ITEM_HINT);
-    else if (current().kind == REMINDERS) hint = tr(STR_REM_OPEN_HINT);
-    renderer.drawCenteredText(SMALL_FONT_ID, bottom - HINT_H + 2,
-                              renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
-  }
+  listui::hint(renderer, hintY, hint);
 
   if (menuStep != NONE && menu.processRender(renderer, mappedInput)) return;
   const char* okLabel = tr(STR_SELECT);
-  if (level == ITEMS) {
-    okLabel = current().kind == REMINDERS ? tr(STR_SELECT) : tr(STR_AGENDA_DONE);
-  }
+  if (!sectionsView) okLabel = current().kind == REMINDERS ? tr(STR_SELECT) : tr(STR_AGENDA_DONE);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la lista fantasmea.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partialCount = 0;
-  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // La cadencia de refrescos limpios la lleva el coordinador del panel
+  // (PanelRefreshCoordinator): acá ya no hay contador propio que se reiniciaba
+  // en cada cambio de pantalla.
+  renderer.displayBuffer();
 }

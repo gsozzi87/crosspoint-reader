@@ -2,6 +2,7 @@
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <BoardConfig.h>
+#include <FreeInkUIIcon.h>  // bitmapFromIcon: la pestaña del resalte va como marcador de la lista
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <Logging.h>
@@ -50,6 +51,15 @@
 #endif
 
 namespace fui = freeink::ui;
+
+namespace {
+// La pestaña negra de 5 px del resalte (components/Selection.h) en formato de
+// icono del SDK, para que la lista de fui la dibuje como marcador de la fila
+// elegida: 1 bpp, bit 0 = tinta, asi que la fila entera de ceros es tinta y
+// solo se usan los primeros 5 bits de cada byte.
+constexpr uint8_t kSelectionTabBits[26] = {0};
+constexpr freeink::Icon kSelectionTab = {5, 26, 13, kSelectionTabBits};
+}  // namespace
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
@@ -169,12 +179,13 @@ void SettingsActivity::rebuildSettingsLists() {
     // está montado (sin eso, "inclinar a la derecha" puede ser cualquier eje).
     if (halTiltSensor.isAvailable()) {
       systemSettings.push_back(SettingInfo::DynamicEnum(
-          StrId::STR_MOTION_GESTURES, {StrId::STR_MOTION_OFF, StrId::STR_MOTION_ON},
-          []() -> uint8_t { return HUB_STORE.motionGestures ? 1 : 0; },
-          [](uint8_t value) {
-            HUB_STORE.motionGestures = value != 0;
-            HUB_STORE.saveToFile();
-          }));
+                                   StrId::STR_MOTION_GESTURES, {StrId::STR_MOTION_OFF, StrId::STR_MOTION_ON},
+                                   []() -> uint8_t { return HUB_STORE.motionGestures ? 1 : 0; },
+                                   [](uint8_t value) {
+                                     HUB_STORE.motionGestures = value != 0;
+                                     HUB_STORE.saveToFile();
+                                   })
+                                   .withSwitch());
       systemSettings.push_back(SettingInfo::Action(StrId::STR_MOTION_TITLE, SettingAction::Motion));
     }
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
@@ -278,6 +289,10 @@ void SettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
+    // Los si/no van con interruptor dibujado en vez de la palabra "Activado":
+    // se reconoce del telefono sin leerlo. Estructural (que la fila SEA un
+    // interruptor); el estado lo pone buildScreen en cada pasada.
+    item.toggle = settings[i].type == SettingType::TOGGLE || settings[i].switchStyle;
     rowItems_.push_back(item);
   }
 }
@@ -579,8 +594,18 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+// Un ajuste que abre OTRA pantalla lleva galon a la derecha; el que cambia un
+// valor ahi mismo muestra el valor. Es la unica diferencia entre las dos
+// clases de fila y hasta 1.5.47 no se veia en ningun lado.
+const char* const SettingsActivity::chevronGlyph = "\xE2\x80\xBA";  // U+203A
+
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.type == SettingType::ACTION) {
+    return chevronGlyph;
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
+    // La fila lo dibuja como interruptor; el texto queda de respaldo para el
+    // caso raro de un TOGGLE sin puntero, que cae abajo en "".
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }
   if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
@@ -637,6 +662,14 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // render.
   const auto& settings = *currentSettings;
   for (size_t i = 0; i < settings.size(); i++) {
+    if (rowItems_[i].toggle) {
+      rowItems_[i].toggleChecked = settings[i].valuePtr != nullptr ? SETTINGS.*(settings[i].valuePtr) != 0
+                                   : settings[i].valueGetter    ? settings[i].valueGetter() != 0
+                                                                : false;
+      rowValues_[i].clear();
+      rowItems_[i].value = nullptr;
+      continue;
+    }
     rowValues_[i] = settingValueText(settings[i]);
     rowItems_[i].value = rowValues_[i].empty() ? nullptr : rowValues_[i].c_str();
   }
@@ -647,13 +680,44 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.valueInset = 8;               // air between the value and the row edge
-  // Titles match the value's font size (smallText) so both sides of a row
-  // read as one unit; labels that still don't fit wrap onto a second line.
-  // maxLines=2 also marks the style explicitly set (an all-default smallText
-  // fails textStyleUnset and the list would substitute bodyText back); the
-  // common fits-on-one-line case takes the renderer's fast path anyway.
-  props.labelText = screen.theme().smallText;
+  // Jerarquia dentro de la fila: el NOMBRE en el cuerpo de la lista (UI_12) y
+  // el VALOR mas chico a la derecha (UI_10), en el mismo renglon. Hasta 1.5.47
+  // los dos iban en UI_10 y la fila no tenia jerarquia ninguna. maxLines=2
+  // ademas marca el estilo como puesto a mano (un smallText todo por omision
+  // falla textStyleUnset y la lista volveria a poner bodyText).
+  props.labelText = screen.theme().bodyText;
   props.labelText.maxLines = 2;
+  props.valueText = screen.theme().smallText;
+  // El texto de la fila arranca despues de la pestaña de 5 px del resalte.
+  props.sidePadding = 16;
+  // Interruptor de 36x20: marco redondeado y perilla llena a un lado, como el
+  // del telefono. Encendido la lista rellena la via (fill negro + perilla
+  // blanca): son 720 px de tinta, del orden de un icono de 24 px, que es lo
+  // que la regla del negro macizo deja pasar, y es la unica forma de que se
+  // vea encendido de un vistazo sin leer la palabra.
+  props.toggleWidth = 36;
+  props.toggleHeight = 20;
+  props.toggleRadius = 10;
+  props.toggleKnobRadius = 7;
+  props.toggleKnobInset = 3;
+  props.toggleBorderWidth = 1;
+  // El resalte: NADA de pastilla tramada debajo del texto (es lo que hacia el
+  // estilo LightPill del tema y dejaba la fila elegida como la menos legible
+  // de la pantalla). Centro blanco, marco de 2 px y la pestaña negra de 5 px
+  // de Selection.h llevada a la lista de fui como bitmap de marcador.
+  fui::StyleSet rows = screen.theme().listRow.unset() ? fui::defaultListRowStyles() : screen.theme().listRow;
+  rows.selected = rows.normal;
+  rows.selected.background = fui::Paint::solid(fui::Color::White);
+  rows.selected.foreground = fui::Paint::solid(fui::Color::Black);
+  rows.selected.border = fui::Paint::solid(fui::Color::Black);
+  rows.selected.borderWidth = 2;
+  rows.focused = rows.selected;
+  rows.active = rows.selected;
+  props.rowStyles = rows;
+  props.selectionMarker = fui::SelectionMarker::Bitmap;
+  props.markerBitmap = fui::bitmapFromIcon(kSelectionTab);
+  props.markerInset = 4;
+  props.markerPaint = fui::Paint::solid(fui::Color::Black);
   syncTabListViewport(screen, props);
 
   // Una etiqueta que envuelve en dos renglones hace crecer SU fila, así que en
@@ -703,10 +767,18 @@ void SettingsActivity::render(RenderLock&&) {
   }
 
   const int ring = ringPos();
-  const auto confirmLabel =
-      (ring == 0) ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-                  : (ring > 0 && (*currentSettings)[ring - 1].nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
-                                                                                                 : tr(STR_TOGGLE));
+  // El nombre de la categoria siguiente no entra en un hueco de la barra
+  // ("Controles" mide 93 px en UI_10 y manda a las CUATRO ayudas al modo
+  // apilado): el verbo corto alcanza, la pestaña que se va a abrir ya se ve
+  // resaltada arriba.
+  const char* confirmLabel = tr(STR_SELECT);
+  if (ring > 0) {
+    const SettingInfo& row = (*currentSettings)[ring - 1];
+    // Abrir otra pantalla o elegir un valor = "Selecc."; cambiar el ajuste ahi
+    // mismo = "Editar".
+    const bool opensScreen = row.type == SettingType::ACTION || row.nameId == StrId::STR_TIME_TO_SLEEP;
+    confirmLabel = opensScreen ? tr(STR_SELECT) : tr(STR_TOGGLE);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

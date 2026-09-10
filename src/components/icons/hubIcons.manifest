@@ -20,3 +20,4 @@ hub_photos = image
 hub_weather = cloud-sun
 hub_games = gamepad-2
 hub_day = calendar-days
+hub_units = arrow-left-right

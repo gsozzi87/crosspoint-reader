@@ -63,6 +63,10 @@ class MusicActivity final : public Activity {
   std::vector<std::string> folders;    // rutas completas
   std::vector<std::string> tracks;     // rutas de la carpeta que se está mirando
   std::vector<std::string> trackNames;
+  // Duración de cada pista, en segundos. -1 = todavía no se midió; 0 = se midió
+  // y el archivo no lo dice. Se llena SOLO con las filas que se ven (una lectura
+  // de cabecera por archivo, no las 200 de la carpeta al abrirla).
+  std::vector<int> trackSeconds;
   std::string folderName;
   std::string folderPath;
   std::vector<Row> rows;
@@ -84,6 +88,9 @@ class MusicActivity final : public Activity {
   const char* confirmLabel() const;
   std::string rowLabel(const Row& row) const;
   std::string rowValue(const Row& row) const;  // lo que va a la derecha de la fila
+  // Duración de la pista `index`, medida y cacheada la primera vez que la fila
+  // se ve. Devuelve 0 cuando el archivo no permite calcularla.
+  int trackDuration(int index);
 
   void drawTitleBar(int x, int y, int w, int h) const;
   void drawDisplay(int x, int y, int w, int h) const;

@@ -69,7 +69,6 @@ class NotesActivity final : public Activity {
   Take take = TAKE_TEXT;
   int index = 0;
   int listTop = 0;
-  int partialCount = 0;   // parciales desde el último refresco limpio
   bool forceClean = false;  // entrar o salir de la grabación pide uno limpio
   std::vector<Row> rows;
   std::vector<voicenotes::Note> voiceNotes;
@@ -110,6 +109,13 @@ class NotesActivity final : public Activity {
   void onWifiSelectionComplete(bool connected);
   void transcribeTake();
   void saveTextNote();
+
+  // Las filas no miden todas lo mismo: las dos de agregar son de un renglón y
+  // las notas de dos, así que la ventana se calcula midiendo.
+  int rowHeight(int i) const;
+  bool needsSectionHeader(int i) const;
+  void renderList(int x, int top, int w, int bottom);
+  void renderReview(int mid);
 
   void openCurrent();
   void playCurrent();

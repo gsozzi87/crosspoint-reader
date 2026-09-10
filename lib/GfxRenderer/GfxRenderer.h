@@ -208,6 +208,10 @@ class GfxRenderer {
   // coordinator whether this is a UI repaint or a reader page turn.
   HalDisplay::RefreshMode displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH,
                                         PanelRefreshCoordinator::Hint hint = PanelRefreshCoordinator::Hint::Ui) const;
+  // Mientras el micrófono está abierto: el coordinador no promueve ningún FAST
+  // a limpieza (cientos de ms de SPI contra el DMA de RX de 90 ms se comen
+  // muestras). La cadencia sigue contando y limpia apenas se suelta.
+  void holdCleanRefreshes(const bool hold) const { refresh_.setCleanHold(hold); }
   // Read-only view of the coordinator (diagnostics: counters, skipped frames).
   const PanelRefreshCoordinator& refreshCoordinator() const { return refresh_; }
   // One-shot: the next displayBuffer()/displayBufferAsync() call uses `mode`

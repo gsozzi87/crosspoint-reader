@@ -55,6 +55,10 @@ struct SettingInfo {
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
   bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
   bool inTextSettings = false;           // Surfaced in the Text Settings screen; hidden from the flat Reader list
+  // Se dibuja como interruptor aunque no sea SettingType::TOGGLE: un ENUM de
+  // dos valores que en realidad es un si/no (los gestos del IMU). Los TOGGLE
+  // de verdad no necesitan la marca.
+  bool switchStyle = false;
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
   size_t stringOffset = 0;
@@ -73,6 +77,11 @@ struct SettingInfo {
 
   SettingInfo& withTextSettings() {
     inTextSettings = true;
+    return *this;
+  }
+
+  SettingInfo& withSwitch() {
+    switchStyle = true;
     return *this;
   }
 
@@ -218,6 +227,8 @@ class SettingsActivity final : public UiTabListActivity {
   bool handleButtons() override;
   bool handleCustomInput() override;
 
+  // Galon (U+203A) de las filas que abren otra pantalla.
+  static const char* const chevronGlyph;
   static std::string settingValueText(const SettingInfo& setting);
   void selectCategory(int categoryIndex);
   void applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr);

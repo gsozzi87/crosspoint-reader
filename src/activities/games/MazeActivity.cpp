@@ -6,6 +6,7 @@
 
 #include <algorithm>
 
+#include "GameUi.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
@@ -13,7 +14,7 @@
 #include "input/MotionInput.h"
 
 namespace {
-constexpr int SIDE = 20;
+constexpr int SIDE = gameui::SIDE;
 constexpr int PARTIALS_BEFORE_CLEAN = 10;
 constexpr unsigned long BACK_HOLD_MS = 1000;
 constexpr int MAX_COLS = 15;
@@ -166,10 +167,15 @@ void MazeActivity::layout() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 16;
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 80;
+  const int top = metrics.topPadding + metrics.headerHeight + gameui::GAP;
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+
+  helpTop = bottom - gameui::helpHeight(renderer);
+  statsTop = helpTop - gameui::statsHeight(renderer);
+  statusTop = statsTop - gameui::GAP - gameui::statusHeight(renderer);
+
   const int availW = pageWidth - 2 * SIDE;
-  const int availH = bottom - top;
+  const int availH = statusTop - gameui::GAP - top;
   cell = std::max(8, std::min(availW / cols, availH / rows));
   originX = (pageWidth - cell * cols) / 2;
   originY = top + (availH - cell * rows) / 2;
@@ -206,40 +212,51 @@ void MazeActivity::drawMaze() {
   renderer.fillRoundedRect(bx - r, by - r, r * 2, r * 2, r, Black);
 }
 
-void MazeActivity::drawInfo() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int y = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing - 62;
-  char line[96];
-  if (won) {
-    renderer.drawCenteredText(UI_12_FONT_ID, y, tr(STR_MAZE_WON), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(UI_10_FONT_ID, y + 34, tr(STR_GAME_AGAIN));
-    return;
-  }
-  snprintf(line, sizeof(line), tr(STR_MAZE_LEVEL), level);
-  renderer.drawText(UI_10_FONT_ID, SIDE, y, line, true, EpdFontFamily::BOLD);
-
-  // La flecha de dirección, dibujada como flecha y no escrita: se entiende sin
-  // leer y sin saber el idioma.
-  const int ax = pageWidth - SIDE - 30;
-  const int ay = y + 12;
+// La flecha de dirección, dibujada como flecha y no escrita: se entiende sin
+// leer y sin saber el idioma.
+void MazeActivity::drawAim(const int cx, const int cy) const {
   const int r = 14;
-  int tipX = ax, tipY = ay, baseX = ax, baseY = ay;
+  int tipX = cx, tipY = cy, baseX = cx, baseY = cy;
   switch (aim) {
-    case Dir::Up: tipY = ay - r; baseY = ay + r; break;
-    case Dir::Down: tipY = ay + r; baseY = ay - r; break;
-    case Dir::Left: tipX = ax - r; baseX = ax + r; break;
-    case Dir::Right: tipX = ax + r; baseX = ax - r; break;
+    case Dir::Up: tipY = cy - r; baseY = cy + r; break;
+    case Dir::Down: tipY = cy + r; baseY = cy - r; break;
+    case Dir::Left: tipX = cx - r; baseX = cx + r; break;
+    case Dir::Right: tipX = cx + r; baseX = cx - r; break;
   }
-  renderer.drawLine(baseX, baseY, tipX, tipY, true);
+  renderer.drawLine(baseX, baseY, tipX, tipY, 2, true);
   const int wx = (aim == Dir::Up || aim == Dir::Down) ? 7 : 0;
   const int wy = (aim == Dir::Up || aim == Dir::Down) ? 0 : 7;
   const int backX = tipX + (baseX - tipX) / 2;
   const int backY = tipY + (baseY - tipY) / 2;
-  renderer.drawLine(tipX, tipY, backX + wx, backY + wy, true);
-  renderer.drawLine(tipX, tipY, backX - wx, backY - wy, true);
+  renderer.drawLine(tipX, tipY, backX + wx, backY + wy, 2, true);
+  renderer.drawLine(tipX, tipY, backX - wx, backY - wy, 2, true);
+}
 
-  renderer.drawCenteredText(SMALL_FONT_ID, y + 36, useMotion ? tr(STR_MAZE_HINT) : tr(STR_2048_HINT_LEVER));
+void MazeActivity::drawInfo() {
+  const int contentW = gameui::contentWidth(renderer);
+
+  // Estado en UI_14: es el renglón que se mira entre tirada y tirada.
+  gameui::status(renderer, SIDE, statusTop, contentW, won ? tr(STR_MAZE_WON) : tr(STR_GAME_YOUR_TURN), nullptr);
+  if (!won) drawAim(SIDE + contentW - 20, statusTop + gameui::statusHeight(renderer) / 2);
+
+  char vLevel[8], vMoves[8];
+  snprintf(vLevel, sizeof(vLevel), "%d", level);
+  snprintf(vMoves, sizeof(vMoves), "%d", moves);
+  const gameui::Stat scoreboard[2] = {{vLevel, tr(STR_GAME_LEVEL)}, {vMoves, tr(STR_GAME_MOVES)}};
+  gameui::stats(renderer, SIDE, statsTop, contentW, scoreboard, 2);
+
+  // Terminada la partida el loop() ni mira la palanca, así que anunciar el
+  // control de movimiento sería mentir: queda sólo lo que SÍ se puede hacer.
+  // Y los dos pedazos van unidos por " · ", como el resto de la línea, no por
+  // un espacio pelado.
+  char helpText[192];
+  if (won) {
+    snprintf(helpText, sizeof(helpText), "%s", tr(STR_GAME_AGAIN));
+  } else {
+    snprintf(helpText, sizeof(helpText), "%s · %s", useMotion ? tr(STR_MAZE_HINT) : tr(STR_2048_HINT_LEVER),
+             tr(STR_GAME_HELP_RESTART));
+  }
+  gameui::help(renderer, helpTop, helpText);
 }
 
 void MazeActivity::render(RenderLock&&) {

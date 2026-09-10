@@ -42,6 +42,22 @@ class MotionInput {
   // (que dura ~300 ms) sin gastar batería ni pelearse con el bus I2C.
   static constexpr unsigned long POLL_MS = 80;
 
+  // Umbrales de los gestos, en mg / dps / ms. Públicos porque la pantalla de
+  // diagnóstico (Ajustes → Movimiento) los muestra como referencia de lectura
+  // de los medidores: si se afinan acá y allá quedan literales viejos, la
+  // pantalla miente.
+  static constexpr int TH_TILT_MG = 550;
+  static constexpr int TH_SHAKE_MG = 420;
+  static constexpr int TH_ROTATE_DPS = 120;
+  static constexpr int TH_LEVEL_MG = 150;
+  static constexpr int TH_STILL_MG = 20;
+  static constexpr int TH_DEBOUNCE_MS = 350;
+
+  // La enciende la pantalla de diagnóstico mientras está abierta: con los
+  // gestos apagados el chip no se lee, y ahí los medidores quedan en cero justo
+  // cuando hay que revisar si el sensor está vivo.
+  void setDiagnostics(const bool on) { diagnostics_ = on; }
+
   // Después de que halTiltSensor.begin() haya encontrado el chip: comparte esa
   // misma instancia, porque el integrado es uno solo y dos configuraciones a la
   // vez se pisan.
@@ -93,6 +109,7 @@ class MotionInput {
   void emit(Event e);
 
   bool available_ = false;
+  bool diagnostics_ = false;
   bool tapTrusted_ = false;
   bool gyroOn_ = false;
   unsigned long lastPollMs_ = 0;

@@ -43,6 +43,7 @@ class MazeActivity final : public Activity {
   void roll(Dir d);
   void layout();
   void drawMaze();
+  void drawAim(int cx, int cy) const;
   void drawInfo();
 
   int cols = 9;
@@ -56,8 +57,11 @@ class MazeActivity final : public Activity {
   Dir aim = Dir::Right;  // la flecha, para el modo sin sensor
   bool useMotion = false;
 
-  // Geometría calculada en cada pintada (depende del tema).
+  // Geometría calculada en cada pintada (depende del tema). El bloque de abajo
+  // se arma de abajo hacia arriba y con alto fijo: el laberinto queda siempre
+  // del mismo tamaño aunque cambie el texto de la ayuda.
   int originX = 0, originY = 0, cell = 0;
+  int statusTop = 0, statsTop = 0, helpTop = 0;
   int partialCount = 0;
   bool forceClean = true;
   unsigned long backHeldSince = 0;

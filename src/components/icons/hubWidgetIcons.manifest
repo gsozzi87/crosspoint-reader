@@ -7,3 +7,6 @@ hub_reminder = bell-ring
 hub_calendar = calendar
 hub_music = music
 hub_sync = refresh-cw
+hub_bell = bell
+hub_cart = shopping-cart
+hub_tasks = list-checks

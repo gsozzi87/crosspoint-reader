@@ -71,6 +71,13 @@ class PanelRefreshCoordinator {
   // Record a refresh skipped because the frame was identical to the shadow.
   void commitSkip(HalDisplay::RefreshMode requested, Hint hint);
 
+  // Mientras el micrófono está abierto, una limpieza (HALF/FULL) son cientos
+  // de ms de SPI con el DMA de RX de 90 ms: se pierden muestras y se come
+  // media palabra. Con el hold puesto, la cadencia NO promueve un FAST; el
+  // contador sigue corriendo y la limpieza sale apenas se suelta.
+  void setCleanHold(bool hold) { cleanHold_ = hold; }
+  bool cleanHold() const { return cleanHold_; }
+
   // A 4-gray pass was written on top of the current base. Neutral for the
   // counter; arms the "gray on glass" promotion for the next UI FAST.
   void noteGrayPass();
@@ -116,6 +123,7 @@ class PanelRefreshCoordinator {
   bool shadowValid_ = false;
   bool shadowInverted_ = false;
   bool grayOnGlass_ = false;
+  bool cleanHold_ = false;
   bool firstPaint_ = true;
   int fastSinceClean_ = 0;
   int cleansSinceFull_ = 0;

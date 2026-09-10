@@ -151,27 +151,25 @@ void UiTabListActivity::buildTabBar(UiScreen& screen) {
   const int16_t preferredTabHeight =
       mappedInput.hasTouch() ? TOUCH_TAB_BAR_HEIGHT : static_cast<int16_t>(metrics.tabBarHeight);
   const int16_t tabBand = preferredTabHeight > tabLineHeight + 10 ? preferredTabHeight : tabLineHeight + 10;
-  // Legacy Lyra two-state treatment: with the selection on the tab band, the
-  // band fills gray and the active tab is a solid pill; with the selection
-  // down in the list, the band is plain and the active tab keeps a gray box
-  // with an underline. The 1px rule under the band is always there.
+  // La pestaña activa se marca con un SUBRAYADO, no con un fondo: hasta 1.5.47
+  // era una pastilla negra maciza con el texto en blanco (o una trama con las
+  // letras encima), que es justo lo que el rediseño saca — el negro grande deja
+  // fantasma en el parcial siguiente y las letras sobre trama se ensucian.
+  // Con el foco en la banda el subrayado engorda y la pestaña se enmarca; con
+  // el foco abajo, en la lista, queda sólo el subrayado fino. La regla de 1 px
+  // al pie de la banda está siempre.
   tabProps.divider = true;
   fui::StyleSet tabStyles;
   tabStyles.explicitlySet = true;
   tabStyles.normal.foreground = fui::Paint::solid(fui::Color::Black);
+  tabStyles.selected.background = fui::Paint::solid(fui::Color::White);
+  tabStyles.selected.foreground = fui::Paint::solid(fui::Color::Black);
+  tabStyles.selected.radius = screen.theme().listRowRadius;
   if (tabsFocused) {
-    tabStyles.selected.background = fui::Paint::solid(fui::Color::Black);
-    tabStyles.selected.foreground = fui::Paint::solid(fui::Color::White);
-    tabStyles.selected.radius = screen.theme().listRowRadius;
-  } else if (metrics.tabPillFullSlot) {
-    // Legacy RoundedRaff unfocused treatment: same pill, dimmed to dark gray,
-    // text stays inverted; no underline.
-    tabStyles.selected.background = fui::Paint::dither(fui::Color::DarkGray);
-    tabStyles.selected.foreground = fui::Paint::solid(fui::Color::White);
-    tabStyles.selected.radius = screen.theme().listRowRadius;
+    tabStyles.selected.border = fui::Paint::solid(fui::Color::Black);
+    tabStyles.selected.borderWidth = 1;
+    tabProps.selectedUnderline = 3;
   } else {
-    tabStyles.selected.background = fui::Paint::dither(fui::Color::LightGray);
-    tabStyles.selected.foreground = fui::Paint::solid(fui::Color::Black);
     tabProps.selectedUnderline = 2;
   }
   // Focus/flash states keep the pill instead of falling back to an unset
@@ -184,11 +182,9 @@ void UiTabListActivity::buildTabBar(UiScreen& screen) {
   // Tab chrome is a full-width screen band like the legacy GUI tab bar. The
   // remaining list content still stays inside the device safe area.
   const fui::Rect tabRect{frameRect.x, contentTabRect.y, frameRect.width, contentTabRect.height};
-  // Focused band wash is the Lyra treatment; legacy RoundedRaff keeps the
-  // band plain in both states.
-  if (tabsFocused && !metrics.tabPillFullSlot) {
-    screen.target().fill(tabRect, fui::Paint::dither(fui::Color::LightGray));
-  }
+  // La banda con foco ya NO se lava con una trama: las etiquetas de las
+  // pestañas quedaban escritas encima de los puntos. El foco lo dice el marco
+  // y el subrayado grueso de la pestaña activa.
   fui::tabBar(screen.frame(), tabRect, tabProps);
   screen.spacer(static_cast<int16_t>(metrics.verticalSpacing));
 }

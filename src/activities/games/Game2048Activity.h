@@ -19,7 +19,9 @@
 // El tablero es de 4x4 y los números van en cajas: el valor se dibuja con el
 // tamaño de letra que entre, y el fondo se trama más oscuro cuanto más alto el
 // número, que en blanco y negro es la única forma de que se vea el progreso de
-// un vistazo.
+// un vistazo. El número NUNCA cae sobre la trama: lleva un plato blanco debajo
+// (`drawTextPlate`), que es la regla del rediseño para todo texto sobre algo
+// tramado.
 class Game2048Activity final : public Activity {
  public:
   explicit Game2048Activity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -39,6 +41,7 @@ class Game2048Activity final : public Activity {
   bool movesLeft() const;
   void layout();
   void drawBoard();
+  void drawAim(int cx, int cy) const;
   void drawInfo();
 
   std::array<uint16_t, N * N> grid{};
@@ -48,7 +51,10 @@ class Game2048Activity final : public Activity {
   Dir aim = Dir::Left;
   bool useMotion = false;
 
+  // El bloque de abajo se arma de abajo hacia arriba y con alto fijo: el
+  // tablero no cambia de tamaño cuando cambia el texto de la ayuda.
   int originX = 0, originY = 0, cell = 0;
+  int statusTop = 0, statsTop = 0, helpTop = 0;
   int partialCount = 0;
   bool forceClean = true;
   unsigned long backHeldSince = 0;

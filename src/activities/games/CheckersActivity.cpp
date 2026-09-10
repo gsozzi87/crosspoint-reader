@@ -4,8 +4,10 @@
 #include <HalDisplay.h>
 #include <I18n.h>
 
+#include <algorithm>
 #include <cstdio>
 
+#include "GameUi.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -22,11 +24,9 @@ constexpr int ADVANCE_VALUE = 6;   // por fila avanzada de un peón
 constexpr int BACK_ROW_VALUE = 5;  // peón que se queda cuidando la fila propia
 constexpr int CENTER_VALUE = 3;
 
-constexpr int INFO_HEIGHT = 108;
-constexpr int BOARD_MARGIN = 24;   // deja lugar al marco doble del tablero
 constexpr int MAX_CELL = 54;
-constexpr int FRAME_GAP = 8;       // separación entre el marco de afuera y el tablero
-constexpr int HATCH_STEP = 5;      // paso de la trama de las casillas oscuras
+constexpr int MIN_CELL = 20;
+constexpr int FRAME_GAP = 8;  // separación entre el marco de afuera y el tablero
 }  // namespace
 
 void CheckersActivity::onEnter() {
@@ -413,16 +413,6 @@ void CheckersActivity::drawCrown(const int cx, const int cy, const int r, const 
   renderer.fillRect(cx - r, cy + half - 1, 2 * r + 1, r / 2 + 2, state);
 }
 
-// Trama de la casilla oscura: rayas en diagonal recortadas a mano contra la
-// casilla (drawLine no recorta sola). En negro macizo la ficha desaparecía.
-void CheckersActivity::hatchCell(const int x, const int y, const int cell) const {
-  for (int d = -cell; d < cell; d += HATCH_STEP) {
-    const int t0 = d < 0 ? -d : 0;
-    const int t1 = cell - d < cell ? cell - d : cell;
-    if (t1 > t0) renderer.drawLine(x + d + t0, y + t0, x + d + t1 - 1, y + t1 - 1, true);
-  }
-}
-
 // Escuadras en las cuatro esquinas de una casilla: marcan los candidatos sin
 // tapar la ficha ni confundirse con el marco del cursor.
 void CheckersActivity::drawCornerTicks(const int x, const int y, const int cell, const int arm,
@@ -438,18 +428,35 @@ void CheckersActivity::drawCornerTicks(const int x, const int y, const int cell,
   renderer.fillRect(x + cell - t, y + cell - arm, t, arm, true);
 }
 
-// Jugador: disco lleno. Máquina: anillo hueco. Las dos con un halo blanco
-// alrededor para despegarlas de la trama de la casilla. La dama lleva una
-// corona en el medio, en el color contrario al de la ficha.
+// Jugador: disco negro con un ANILLO BLANCO adentro. Máquina: anillo hueco.
+// Las dos con un halo blanco alrededor para despegarlas de la trama.
+//
+// El anillo blanco de adentro (r ≈ 15 con la casilla de 54) es de 1.5.48: el
+// disco macizo se confundía con el marco del cursor y, al moverse, dejaba una
+// mancha uniforme en el parcial siguiente. Con el anillo la ficha tiene una
+// forma propia que se reconoce aunque el papel esté lavado.
+//
+// La dama lleva una corona en el medio, en el color contrario al de la ficha:
+// es la de siempre, dibujada con primitivas. El ícono Lucide "crown" existe en
+// el proyecto pero sólo a 48 y 64 px (src/activities/games/memoryIcons.h), no a
+// 20 px y no en src/components/icons/, así que no hay ícono que usar acá.
 void CheckersActivity::drawPiece(const int cx, const int cy, const int cell, const int8_t piece) const {
   const int r = cell / 2 - 5;
   if (r < 4) return;
   fillCircle(cx, cy, r + 2, false);  // halo: la trama no toca la ficha
+  fillCircle(cx, cy, r, true);
   if (piece > 0) {
-    fillCircle(cx, cy, r, true);
-    if (isKing(piece)) drawCrown(cx, cy, r / 2, false);
+    // La dama ya tiene forma propia con la corona; el peón la consigue con el
+    // anillo. Poner las dos cosas deja un blanco sobre negro sobre blanco que
+    // no se lee.
+    const int ring = r * 2 / 3;  // 15 con la casilla de 54
+    if (isKing(piece)) {
+      drawCrown(cx, cy, r / 2, false);
+    } else if (ring - 2 > 2) {
+      fillCircle(cx, cy, ring, false);
+      fillCircle(cx, cy, ring - 2, true);
+    }
   } else {
-    fillCircle(cx, cy, r, true);
     fillCircle(cx, cy, r - 5 > 2 ? r - 5 : 2, false);
     if (isKing(piece)) drawCrown(cx, cy, r / 2 - 1, true);
   }
@@ -471,13 +478,16 @@ void CheckersActivity::drawBoard(const int left, const int top, const int cell) 
     sourceSq = humanMoves.items[destMove[0]].from();
   }
 
-  // Fondo: trama en las oscuras y blanco en las claras. Las dos casillas que
-  // importan (la ficha elegida y el cursor) van sin trama: destramarlas es lo
-  // que las hace inconfundibles sobre cualquier casilla.
+  // Fondo: trama al 25 % en las oscuras y blanco en las claras. Las casillas
+  // que importan van SIN trama: la ficha elegida, el cursor y las dos de la
+  // última jugada de la máquina. Destramarlas es lo que las hace inconfundibles
+  // sobre cualquier casilla, y sin destramar el origen el marco de 2 px queda
+  // apoyado sobre los puntos y no se lee.
   for (int sq = 0; sq < CELLS; ++sq) {
     const int r = rowOf(sq), c = colOf(sq);
-    if (((r + c) & 1) == 0 || sq == cursorSq || sq == sourceSq) continue;
-    hatchCell(left + c * cell, top + r * cell, cell);
+    if (((r + c) & 1) == 0) continue;
+    if (sq == cursorSq || sq == sourceSq || sq == lastFrom || sq == lastTo) continue;
+    gameui::shadeCell(renderer, left + c * cell, top + r * cell, cell);
   }
 
   // Grilla: una línea por casilla, así se cuentan las filas de un vistazo.
@@ -486,18 +496,16 @@ void CheckersActivity::drawBoard(const int left, const int top, const int cell) 
     renderer.drawLine(left, top + i * cell, left + size - 1, top + i * cell, true);
   }
 
-  // La última movida de la máquina: un cuadradito macizo en dos esquinas
-  // opuestas de la casilla, que no se confunde con las marcas del jugador.
-  for (int sq = 0; sq < CELLS; ++sq) {
-    if (sq != lastFrom && sq != lastTo) continue;
-    const int x = left + colOf(sq) * cell, y = top + rowOf(sq) * cell;
-    renderer.fillRect(x + 3, y + 3, 7, 7, true);
-    renderer.fillRect(x + cell - 10, y + cell - 10, 7, 7, true);
-  }
-
   for (int sq = 0; sq < CELLS; ++sq) {
     if (board[sq] == 0) continue;
     drawPiece(left + colOf(sq) * cell + cell / 2, top + rowOf(sq) * cell + cell / 2, cell, board[sq]);
+  }
+
+  // La última movida de la máquina: marco de 2 px en el origen y en el destino,
+  // después de las fichas (el halo blanco de la ficha se comería el marco).
+  for (int sq = 0; sq < CELLS; ++sq) {
+    if (sq != lastFrom && sq != lastTo) continue;
+    gameui::lastMoveFrame(renderer, left + colOf(sq) * cell, top + rowOf(sq) * cell, cell);
   }
 
   if (state != PICK_PIECE && state != PICK_MOVE) return;
@@ -524,11 +532,8 @@ void CheckersActivity::drawBoard(const int left, const int top, const int cell) 
     renderer.drawRect(x + 1, y + 1, cell - 2, cell - 2, 2, true);
   }
 
-  // El cursor: marco macizo pegado al borde de la casilla, sobre fondo blanco.
-  if (cursorSq >= 0) {
-    const int x = left + colOf(cursorSq) * cell, y = top + rowOf(cursorSq) * cell;
-    renderer.drawRect(x, y, cell, cell, 4, true);
-  }
+  // El cursor: marco de 4 px pegado al borde de la casilla, sobre fondo blanco.
+  if (cursorSq >= 0) gameui::cursorFrame(renderer, left + colOf(cursorSq) * cell, top + rowOf(cursorSq) * cell, cell);
 }
 
 void CheckersActivity::render(RenderLock&&) {
@@ -536,52 +541,82 @@ void CheckersActivity::render(RenderLock&&) {
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
   const int headerBottom = metrics.topPadding + metrics.headerHeight;
-  const int reserved = metrics.buttonHintsHeight + metrics.verticalSpacing;
+  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int contentW = gameui::contentWidth(renderer);
 
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_GAME_CHECKERS));
 
-  const int availW = pageWidth - 2 * BOARD_MARGIN;
-  const int availH = pageHeight - headerBottom - INFO_HEIGHT - reserved - 24;
-  int cell = (availW < availH ? availW : availH) / 8;
-  if (cell > MAX_CELL) cell = MAX_CELL;
+  // El bloque de abajo se arma DE ABAJO HACIA ARRIBA y con alto fijo (la ayuda
+  // reserva sus tres renglones se usen o no): así el tablero queda siempre en el
+  // mismo lugar y del mismo tamaño, y un cambio de texto no obliga a repintarlo.
+  const int helpTop = bottom - gameui::helpHeight(renderer);
+  // Dos renglones RESERVADOS para las etiquetas: con cuatro columnas cada una
+  // tiene 100 px y "ваши фигуры" (ru) o "as tuas peças" (pt-PT) no entran en
+  // uno solo — hasta 1.5.48 salían con puntos suspensivos debajo del número.
+  const int statsTop = helpTop - gameui::statsHeight(renderer, STATS_LABEL_LINES);
+  const int statusTop = statsTop - gameui::GAP - gameui::statusHeight(renderer);
+
+  const int boardBand = statusTop - gameui::GAP - (headerBottom + gameui::GAP);
+  int cell = std::min(contentW / 8, boardBand / 8);
+  cell = std::min(cell, MAX_CELL);
+  cell = std::max(cell, MIN_CELL);
   const int size = cell * 8;
   const int boardLeft = (pageWidth - size) / 2;
-  int boardTop = headerBottom + (pageHeight - reserved - headerBottom - size - INFO_HEIGHT) / 2;
-  if (boardTop < headerBottom + 8) boardTop = headerBottom + 8;
+  int boardTop = headerBottom + gameui::GAP + (boardBand - size) / 2;
+  if (boardTop < headerBottom + FRAME_GAP) boardTop = headerBottom + FRAME_GAP;
 
   drawBoard(boardLeft, boardTop, cell);
 
-  // Estado de la partida, debajo del tablero.
-  const int infoTop = boardTop + size + 14;
+  // Estado: de qué se trata el turno, y a la derecha en qué lugar de la lista
+  // va el cursor (sin eso no se sabe si la palanca hizo algo).
   const char* title = tr(STR_GAME_YOUR_TURN);
   if (state == AI_TURN) title = tr(STR_GAME_THINKING);
   if (state == GAME_OVER)
     title = result == WON ? tr(STR_GAME_WON) : result == LOST ? tr(STR_GAME_LOST) : tr(STR_GAME_DRAW);
-  renderer.drawCenteredText(UI_12_FONT_ID, infoTop, title, true, EpdFontFamily::BOLD);
 
-  // Debajo, qué está eligiendo el jugador y en qué lugar de la lista va: sin eso
-  // no se sabe si la palanca hizo algo.
-  char sub[96] = "";
+  char detail[96] = "";
+  char counter[24];
   if (state == PICK_PIECE && pieceCount > 0) {
-    snprintf(sub, sizeof(sub), "%s  (%d/%d)", tr(STR_GAME_SELECT_PIECE), pieceCursor + 1, pieceCount);
+    snprintf(counter, sizeof(counter), tr(STR_GAME_OF_COUNT), pieceCursor + 1, pieceCount);
+    snprintf(detail, sizeof(detail), "%s · %s", tr(STR_GAME_SELECT_PIECE), counter);
   } else if (state == PICK_MOVE && destCount > 0) {
-    snprintf(sub, sizeof(sub), "%s  (%d/%d)", tr(STR_GAME_SELECT_MOVE), destCursor + 1, destCount);
+    snprintf(counter, sizeof(counter), tr(STR_GAME_OF_COUNT), destCursor + 1, destCount);
+    snprintf(detail, sizeof(detail), "%s · %s", tr(STR_GAME_SELECT_MOVE), counter);
   } else if (state == GAME_OVER) {
-    snprintf(sub, sizeof(sub), "%s", tr(STR_GAME_OVER));
+    snprintf(detail, sizeof(detail), "%s", tr(STR_GAME_OVER));
   }
-  if (sub[0] != '\0') renderer.drawCenteredText(UI_10_FONT_ID, infoTop + 32, sub);
+  gameui::status(renderer, gameui::SIDE, statusTop, contentW, title, detail);
 
+  // Marcadores: es lo que se mira entre jugada y jugada, así que el número va
+  // en UI_14 y no en la fuente de los pies de página.
   int human = 0, machine = 0;
   for (int sq = 0; sq < CELLS; ++sq) {
     if (board[sq] > 0) human++;
     if (board[sq] < 0) machine++;
   }
-  char line[96];
-  snprintf(line, sizeof(line), "%s  %d - %d", tr(STR_GAME_SCORE), human, machine);
-  renderer.drawCenteredText(SMALL_FONT_ID, infoTop + 58, line);
-  snprintf(line, sizeof(line), "%s %d   %s %d", tr(STR_GAME_MOVES), moveNumber, tr(STR_GAME_BEST), wins);
-  renderer.drawCenteredText(SMALL_FONT_ID, infoTop + 80, line);
+  char vHuman[8], vMachine[8], vMoves[8], vWins[8];
+  snprintf(vHuman, sizeof(vHuman), "%d", human);
+  snprintf(vMachine, sizeof(vMachine), "%d", machine);
+  snprintf(vMoves, sizeof(vMoves), "%d", moveNumber);
+  snprintf(vWins, sizeof(vWins), "%d", wins);
+  const gameui::Stat scoreboard[4] = {{vHuman, tr(STR_GAME_YOUR_PIECES)},
+                                      {vMachine, tr(STR_GAME_MACHINE)},
+                                      {vMoves, tr(STR_GAME_MOVES)},
+                                      {vWins, tr(STR_GAME_BEST)}};
+  gameui::stats(renderer, gameui::SIDE, statsTop, contentW, scoreboard, 4, STATS_LABEL_LINES);
+
+  // La ayuda: qué hace la palanca ahora y qué significan los marcos del
+  // tablero. Va repartida en renglones, nunca cortada.
+  char helpText[192];
+  const char* what = tr(STR_GAME_HELP_PIECE);
+  if (state == PICK_MOVE) what = tr(STR_GAME_HELP_MOVE);
+  else if (state == AI_TURN) what = tr(STR_GAME_HELP_WAIT);
+  else if (state == GAME_OVER) what = tr(STR_GAME_HELP_OVER);
+  const char* extra = tr(STR_GAME_HELP_RESTART);
+  if (state != GAME_OVER && lastFrom >= 0) extra = tr(STR_GAME_HELP_LAST_MOVE);
+  snprintf(helpText, sizeof(helpText), "%s %s", what, extra);
+  gameui::help(renderer, helpTop, helpText);
 
   // Las ayudas dicen siempre lo que hace cada botón AHORA: eligiendo la movida,
   // Atrás cancela la ficha en vez de salir del juego.

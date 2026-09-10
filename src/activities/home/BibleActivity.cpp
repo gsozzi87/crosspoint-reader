@@ -10,6 +10,8 @@
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "HubStore.h"
 #include <cstring>
 
@@ -24,12 +26,12 @@
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 #include "voice/VoiceNotes.h"  // mmss(): el contador de la grabación
+#include "activities/ListStyle.h"
 #include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "BIBLE";
-constexpr int ROW_H = 40;
-constexpr int SIDE = 20;
+constexpr int PAGER_H = 24;  // franja del paginador, debajo de las filas
 constexpr unsigned long VOICE_HOLD_MS = 1200;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr uint32_t ASK_TIMEOUT_MS = 90000;   // transcripción + LLM del lado del servidor
@@ -382,7 +384,12 @@ void BibleActivity::showChapter(const std::string& text) {
   }
   state = READING;
   const std::string title = books[bookIndex].name + " " + std::to_string(chapterIndex + 1);
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, title, body),
+  // El capítulo va al visor de lectura con la referencia de título (UI_14) y en
+  // modo versículos: el número que abre cada uno sale en SMALL negrita, así se
+  // sigue una cita sin que un número del tamaño del texto corte la lectura.
+  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, title, body,
+                                                                        /*htmlDefinition=*/false,
+                                                                        /*verseNumbers=*/true),
                          [this](const ActivityResult&) {
                            state = CHAPTERS;
                            requestUpdate();
@@ -781,55 +788,55 @@ void BibleActivity::render(RenderLock&&) {
   switch (state) {
     case BOOKS:
     case CHAPTERS: {
+      // Las dos listas de la Biblia con la fila común de todas las nuestras:
+      // margen de 24, fila de 48 y el paginador con su frase entera abajo. El
+      // "1/66" en la esquina, que era lo que había, no lo entendía nadie.
       const bool inBooks = state == BOOKS;
       const int count = inBooks ? static_cast<int>(books.size()) : books[bookIndex].chapters;
       const int selected = inBooks ? bookIndex : chapterIndex;
-      const int top = metrics.topPadding + metrics.headerHeight + 10;
+      const int x = listui::SIDE;
+      const int w = listui::contentWidth(renderer);
+      const int top = listui::contentTop();
       // Sin la Biblia entera en la tarjeta, abajo va el aviso de que viene en el
       // paquete de contenido: hay que dejarle un renglón.
       const bool notice = inBooks && !bibleComplete();
-      const int bottom = pageHeight - metrics.buttonHintsHeight - (notice ? 52 : 30);
-      const int perPage = (bottom - top) / ROW_H;
-      if (perPage > 0) {
-        if (listTop > selected) listTop = selected;
-        if (selected >= listTop + perPage) listTop = selected - perPage + 1;
-        if (listTop < 0 || listTop >= count) listTop = 0;
-      }
+      const int noticeY = listui::contentBottom(renderer) - listui::HINT_H;
+      const int hintY = notice ? noticeY - listui::HINT_H : noticeY;
+      const int pagerY = hintY - PAGER_H;
+      const int bottom = pagerY - listui::GAP;
+      const int perPage = std::max(1, (bottom - top) / listui::ROW1_H);
+      if (listTop > selected) listTop = selected;
+      if (selected >= listTop + perPage) listTop = selected - perPage + 1;
+      if (listTop < 0 || listTop >= count) listTop = 0;
+
       int y = top;
-      for (int i = listTop; i < count && y + ROW_H <= bottom; ++i) {
-        const bool sel = i == selected;
-        if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
+      for (int i = listTop; i < count && y + listui::ROW1_H <= bottom; ++i) {
         const int book = inBooks ? i : bookIndex;
         const std::string label = inBooks ? books[book].name
                                           : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
-        renderer.drawText(UI_12_FONT_ID, SIDE, y + 7,
-                          renderer.truncatedText(UI_12_FONT_ID, label.c_str(), pageWidth - 2 * SIDE - 40).c_str(),
-                          SELECTION_INK);
-        if (inBooks) {
-          const std::string n = std::to_string(books[book].chapters);
-          renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 10,
-                            n.c_str(), SELECTION_INK);
-        } else if (chapterCached(bookIndex, i + 1)) {
-          renderer.fillRect(pageWidth - SIDE - 6, y + ROW_H / 2 - 5, 6, 6);  // cacheado: se lee sin WiFi
-        }
-        y += ROW_H;
+        // En los capítulos el metadato dice si se lee sin WiFi; antes era un
+        // cuadradito de 6 px que no se entendía sin manual.
+        const std::string meta = inBooks ? std::to_string(books[book].chapters)
+                                         : (chapterCached(bookIndex, i + 1) ? std::string(tr(STR_PHOTO_ON_CARD))
+                                                                            : std::string());
+        listui::RowSpec spec;
+        spec.title = label.c_str();
+        spec.meta = meta.empty() ? nullptr : meta.c_str();
+        spec.selected = i == selected;
+        listui::row(renderer, x, y, w, listui::ROW1_H, spec);
+        y += listui::ROW1_H;
       }
-      char pos[16];
-      snprintf(pos, sizeof(pos), "%d/%d", selected + 1, count);
-      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pos), bottom + 4, pos);
-      renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4,
-                        renderer
-                            .truncatedText(SMALL_FONT_ID, inBooks ? tr(STR_BIBLE_VOICE_HINT) : tr(STR_BIBLE_CHAPTER_HINT),
-                                           pageWidth - 2 * SIDE - 60)
-                            .c_str());
+
+      listui::pager(renderer, x, pagerY, w, selected / perPage + 1, (count + perPage - 1) / perPage);
+      listui::hint(renderer, hintY, inBooks ? tr(STR_BIBLE_VOICE_HINT) : tr(STR_BIBLE_CHAPTER_HINT));
       if (notice) {
         // La Biblia entera ya no se baja desde acá: viene en el paquete.
         std::string line = tr(STR_BIBLE_FROM_PACKAGE);
         if (booksOnCard > 0) {
           line = std::to_string(booksOnCard) + "/" + std::to_string(books.size()) + "  ·  " + line;
         }
-        renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 26,
-                          renderer.truncatedText(SMALL_FONT_ID, line.c_str(), pageWidth - 2 * SIDE).c_str());
+        renderer.drawCenteredText(SMALL_FONT_ID, noticeY,
+                                  renderer.truncatedText(SMALL_FONT_ID, line.c_str(), w).c_str());
       }
       break;
     }

@@ -31,6 +31,13 @@ constexpr int VOLUME_STEP = 5;
 // apilado: título, visor, posición, botonera, volumen y la lista abajo.
 constexpr int SIDE = 10;
 constexpr int ROW_H = 34;        // fila de la lista de pistas
+// Borde del panel de la lista -> texto. Tiene que ser >= 22 px: el resalte pone
+// franjas tramadas de 16 px por dentro del marco de la fila y la regla del
+// rediseño es que NUNCA hay letras sobre trama.
+constexpr int LIST_PAD = 24;
+constexpr int LIST_HEADER_H = 28;  // cabecera de la lista + su regla de 1 px
+constexpr int LIST_META_GAP = 12;  // título de la pista -> duración de la derecha
+constexpr int LIST_TAIL = 4;       // aire entre la última fila y el marco del panel
 constexpr int TITLEBAR_H = 30;
 constexpr int DISPLAY_H = 148;
 constexpr int POS_H = 20;
@@ -77,6 +84,69 @@ void inset(const GfxRenderer& r, const int x, const int y, const int w, const in
   r.drawRect(x, y, w, h, 2, true);
   r.fillRectDither(x + 2, y + 2, w - 4, 1, Color::DarkGray);
   r.fillRectDither(x + 2, y + 2, 1, h - 4, Color::DarkGray);
+}
+
+// Duración de un MP3 sin levantar el decodificador: se saltea la etiqueta ID3v2,
+// se lee la cabecera del primer cuadro y, si el archivo trae Xing/Info (los VBR),
+// se usa la cuenta de cuadros; si no, tamaño sobre bitrate, que es exacto en CBR.
+// Es media lectura de sector por archivo y solo se hace con las filas que se ven.
+// Devuelve 0 cuando el archivo no permite calcularla.
+int mp3DurationSeconds(const std::string& path) {
+  static const int V1L3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+  static const int V2L3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+  static const int RATES[4][3] = {{11025, 12000, 8000}, {0, 0, 0}, {22050, 24000, 16000}, {44100, 48000, 32000}};
+
+  HalFile f;
+  if (!Storage.openFileForRead(TAG, path, f)) return 0;
+  const size_t fileSize = f.size();
+  size_t audioStart = 0;
+  uint8_t head[10];
+  if (f.read(head, sizeof(head)) == static_cast<int>(sizeof(head)) && memcmp(head, "ID3", 3) == 0) {
+    const size_t tag = (static_cast<size_t>(head[6] & 0x7F) << 21) | (static_cast<size_t>(head[7] & 0x7F) << 14) |
+                       (static_cast<size_t>(head[8] & 0x7F) << 7) | static_cast<size_t>(head[9] & 0x7F);
+    audioStart = 10 + tag + ((head[5] & 0x10) ? 10 : 0);  // pie de la etiqueta, si lo hay
+  }
+  if (audioStart + 4 >= fileSize || !f.seek(audioStart)) {
+    f.close();
+    return 0;
+  }
+  // 512 bytes alcanzan de sobra (el primer sync suele estar en el byte 0 y la
+  // cabecera Xing 36 más adelante) y la tarea de dibujo tiene 8 KB de pila.
+  uint8_t buf[512];
+  const int got = f.read(buf, sizeof(buf));
+  f.close();
+  if (got < 4) return 0;
+
+  for (int i = 0; i + 4 <= got; ++i) {
+    if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) continue;
+    const int version = (buf[i + 1] >> 3) & 3;  // 0 = MPEG2.5, 2 = MPEG2, 3 = MPEG1
+    const int layer = (buf[i + 1] >> 1) & 3;    // 1 = Layer III
+    const int bitrateIdx = (buf[i + 2] >> 4) & 0x0F;
+    const int rateIdx = (buf[i + 2] >> 2) & 3;
+    if (version == 1 || layer != 1 || bitrateIdx == 0 || bitrateIdx == 15 || rateIdx == 3) continue;
+    const int rate = RATES[version][rateIdx];
+    const int kbps = version == 3 ? V1L3[bitrateIdx] : V2L3[bitrateIdx];
+    if (rate <= 0 || kbps <= 0) continue;
+    const int perFrame = version == 3 ? 1152 : 576;
+
+    // Cabecera Xing/Info: va en el hueco del primer cuadro, a una distancia que
+    // depende de la versión y de si es mono.
+    const bool mono = ((buf[i + 3] >> 6) & 3) == 3;
+    const int xing = i + 4 + (version == 3 ? (mono ? 17 : 32) : (mono ? 9 : 17));
+    if (xing + 12 <= got && (memcmp(buf + xing, "Xing", 4) == 0 || memcmp(buf + xing, "Info", 4) == 0)) {
+      const uint32_t flags = (static_cast<uint32_t>(buf[xing + 4]) << 24) | (buf[xing + 5] << 16) |
+                             (buf[xing + 6] << 8) | buf[xing + 7];
+      if (flags & 1) {
+        const uint32_t frames = (static_cast<uint32_t>(buf[xing + 8]) << 24) | (buf[xing + 9] << 16) |
+                                (buf[xing + 10] << 8) | buf[xing + 11];
+        if (frames > 0) return static_cast<int>(static_cast<uint64_t>(frames) * perFrame / rate);
+      }
+    }
+    // El sync está en `audioStart + i`: el audio de verdad empieza ahí.
+    const size_t audioBytes = fileSize - audioStart - static_cast<size_t>(i);
+    return static_cast<int>(static_cast<uint64_t>(audioBytes) * 8 / (static_cast<uint64_t>(kbps) * 1000));
+  }
+  return 0;
 }
 
 const std::string& resolveMusicRoot() {
@@ -157,6 +227,7 @@ void MusicActivity::openFolder(const int index) {
     n.resize(n.size() - 4);
     trackNames.push_back(n);
   }
+  trackSeconds.assign(tracks.size(), -1);  // se miden a medida que las filas se ven
   level = PLAYLIST;
   buildRows();
   // Se entra parado en la pista que suena (o en la primera): la botonera queda
@@ -191,10 +262,13 @@ void MusicActivity::buildRows() {
   }
 }
 
+// Cuántas filas entran de verdad. La cuenta tiene que ser LA MISMA que la del
+// bucle de dibujo (`listH / ROW_H`): si acá sale una de más, `clampScroll` deja
+// la fila elegida justo abajo del borde del panel y parece que se perdió.
 int MusicActivity::visibleRows(const int listTop) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int bottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  return std::max(1, (bottom - listTop) / ROW_H);
+  return std::max(1, (bottom - LIST_TAIL - listTop) / ROW_H);
 }
 
 // `scroll` es la PRIMERA fila de la lista que se ve, siempre de la parte de
@@ -344,6 +418,15 @@ std::string MusicActivity::rowLabel(const Row& row) const {
       return "";
   }
   return "";
+}
+
+// La duración se lee de la cabecera del archivo la primera vez que la fila
+// aparece en pantalla y se guarda: pasar la lista no vuelve a tocar la tarjeta,
+// y abrir una carpeta de 200 pistas no paga 200 lecturas de golpe.
+int MusicActivity::trackDuration(const int index) {
+  if (index < 0 || index >= static_cast<int>(trackSeconds.size())) return 0;
+  if (trackSeconds[index] < 0) trackSeconds[index] = mp3DurationSeconds(tracks[index]);
+  return trackSeconds[index];
 }
 
 std::string MusicActivity::rowValue(const Row& row) const {
@@ -568,30 +651,40 @@ void MusicActivity::drawVolume(const int x, const int y, const int w, const int 
 void MusicActivity::drawPlaylist(const int x, const int y, const int w, const int h) {
   const bool inFolders = level == FOLDERS;
   renderer.drawRect(x, y, w, h, 2, true);
-  // Encabezado del panel.
-  renderer.fillRect(x + 2, y + 2, w - 4, 22, true);
+  // Cabecera de la lista: sobre BLANCO y separada por una regla de 1 px. La
+  // barra negra con el texto en blanco era el único bloque macizo de esta mitad
+  // de la pantalla y dejaba fantasma en el parcial siguiente; la regla no.
   const std::string header = inFolders ? std::string(tr(STR_MUSIC_CHOOSE_FOLDER)) : folderName;
-  renderer.drawText(SMALL_FONT_ID, x + 8, y + 5,
-                    renderer.truncatedText(SMALL_FONT_ID, header.c_str(), w - 80).c_str(), false,
-                    EpdFontFamily::BOLD);
+  const int headerY = y + 3;
+  const int right = x + w - LIST_PAD;
   const int listCount = static_cast<int>(rows.size()) - (TRANSPORT_COUNT + 1);
+  int headerRoom = w - 2 * LIST_PAD;
   if (listCount > 0 && selected > TRANSPORT_COUNT) {
     char pager[16];
-    snprintf(pager, sizeof(pager), "%d/%d", selected - TRANSPORT_COUNT, listCount);
-    const int pw = renderer.getTextWidth(SMALL_FONT_ID, pager);
-    renderer.drawText(SMALL_FONT_ID, x + w - 8 - pw, y + 5, pager, false);
+    snprintf(pager, sizeof(pager), "%d / %d", selected - TRANSPORT_COUNT, listCount);
+    const int pw = renderer.getTextWidth(UI_10_FONT_ID, pager);
+    renderer.drawText(UI_10_FONT_ID, right - pw, headerY, pager);
+    headerRoom -= pw + LIST_META_GAP;
   }
+  if (headerRoom > 0) {
+    renderer.drawText(
+        UI_10_FONT_ID, x + LIST_PAD, headerY,
+        renderer.truncatedText(UI_10_FONT_ID, header.c_str(), headerRoom, EpdFontFamily::BOLD).c_str(), true,
+        EpdFontFamily::BOLD);
+  }
+  renderer.fillRect(x + 2, y + LIST_HEADER_H, w - 4, 1, true);
 
-  const int top = y + 28;
-  const int listH = h - 32;
+  const int top = y + LIST_HEADER_H + 4;
+  const int listH = h - (LIST_HEADER_H + 4) - LIST_TAIL;
   if ((inFolders && folders.empty()) || (!inFolders && tracks.empty())) {
-    renderer.drawText(UI_10_FONT_ID, x + 10, top + 8, tr(STR_MUSIC_EMPTY), true, EpdFontFamily::BOLD);
-    renderer.drawText(SMALL_FONT_ID, x + 10, top + 34,
-                      renderer.truncatedText(SMALL_FONT_ID, tr(STR_MUSIC_EMPTY_HELP), w - 20).c_str());
+    renderer.drawText(UI_10_FONT_ID, x + LIST_PAD, top + 8, tr(STR_MUSIC_EMPTY), true, EpdFontFamily::BOLD);
+    renderer.drawText(SMALL_FONT_ID, x + LIST_PAD, top + 34,
+                      renderer.truncatedText(SMALL_FONT_ID, tr(STR_MUSIC_EMPTY_HELP), w - 2 * LIST_PAD).c_str());
     return;
   }
 
   clampScroll(top);
+  const int numW = renderer.getTextWidth(UI_10_FONT_ID, "00");
   const int visible = std::min(listH / ROW_H, static_cast<int>(rows.size()) - scroll);
   for (int i = 0; i < visible; ++i) {
     const int idx = scroll + i;
@@ -608,10 +701,12 @@ void MusicActivity::drawPlaylist(const int x, const int y, const int w, const in
       snprintf(num, sizeof(num), "%02d", row.index + 1);
       label = trackNames[row.index];
     }
-    int textX = x + 12;
+    // El texto arranca a LIST_PAD del borde del panel, o sea por FUERA de las
+    // franjas tramadas que el resalte pone en los costados de la fila elegida.
+    int textX = x + LIST_PAD;
     if (num[0]) {
-      renderer.drawText(UI_10_FONT_ID, textX, ry + 6, num);
-      textX += renderer.getTextWidth(UI_10_FONT_ID, "00") + 10;
+      renderer.drawText(UI_10_FONT_ID, textX, ry + 6, num, SELECTION_INK);
+      textX += numW + 10;
     }
     const bool sounding =
         row.kind == ROW_TRACK && MUSIC.isActive() && MUSIC.folderPath() == folderPath && MUSIC.index() == row.index;
@@ -619,9 +714,25 @@ void MusicActivity::drawPlaylist(const int x, const int y, const int w, const in
       triangle(renderer, textX, ry + 8, 6);
       textX += 14;
     }
+    // Cuánto dura, alineado a la derecha en su columna: es el dato que uno mira
+    // para elegir, y pegado al título no se lee ("Chan Chan 4:17").
+    int metaW = 0;
+    if (row.kind == ROW_TRACK) {
+      const int seconds = trackDuration(row.index);
+      if (seconds > 0) {
+        char time[16];
+        formatTime(time, sizeof(time), seconds);
+        metaW = renderer.getTextWidth(UI_10_FONT_ID, time);
+        renderer.drawText(UI_10_FONT_ID, right - metaW, ry + 6, time, SELECTION_INK);
+        metaW += LIST_META_GAP;
+      }
+    }
+    const int labelW = right - metaW - textX;
+    if (labelW <= 0) continue;
+    const EpdFontFamily::Style style = sounding ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
     renderer.drawText(UI_10_FONT_ID, textX, ry + 6,
-                      renderer.truncatedText(UI_10_FONT_ID, label.c_str(), x + w - 12 - textX).c_str(), SELECTION_INK,
-                      sounding ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+                      renderer.truncatedText(UI_10_FONT_ID, label.c_str(), labelW, style).c_str(), SELECTION_INK,
+                      style);
   }
 }
 

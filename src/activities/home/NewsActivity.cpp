@@ -10,24 +10,26 @@
 #include <WiFi.h>
 
 #include <algorithm>
+#include <string>
 
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
+#include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
-#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "NEWS";
+
 constexpr const char* DIR = "/.crosspoint/rss";
 constexpr const char* CACHE = "/.crosspoint/rss/feeds.json";
-constexpr int ROW_H = 44;
-constexpr int SIDE = 20;
+constexpr int SIDE = listui::SIDE;
+constexpr int PAGER_H = 24;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 // Un trozo de lectura: una frase entera que entre en la pantalla y que el
 // servidor pueda sintetizar de una (su tope es 4000 caracteres).
 // 700 caracteres son unos 45 s de voz: 350 KB de ADPCM y 1,4 MB de WAV ya
@@ -470,42 +472,57 @@ void NewsActivity::renderArticle() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  int top = metrics.topPadding + metrics.headerHeight + 10;
+  int top = metrics.topPadding + metrics.headerHeight + listui::GAP;
   const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
   const int total = static_cast<int>(chunks.size());
+  const int w = pageWidth - 2 * SIDE;
 
-  // Franja de estado: por dónde va y si está leyendo.
-  char part[48];
-  snprintf(part, sizeof(part), tr(STR_NEWS_PART_FORMAT), total ? chunkIndex + 1 : 0, total);
-  renderer.drawText(SMALL_FONT_ID, SIDE, top, part);
+  // Arriba queda sólo si está leyendo: por dónde va lo dice el paginador de
+  // abajo, que es el mismo de todas las listas.
   if (speaking) {
     const char* label = paused ? tr(STR_NEWS_PAUSED) : tr(STR_NEWS_READING);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, label), top, label);
+    renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, label), top, label);
   }
   top += 26;
 
   if (!notice.empty()) {
-    for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, notice.c_str(), pageWidth - 2 * SIDE, 2)) {
+    for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, notice.c_str(), w, 2)) {
       renderer.drawText(UI_10_FONT_ID, SIDE, top, line.c_str(), true, EpdFontFamily::BOLD);
       top += 22;
     }
     top += 6;
   }
 
-  const int hintY = bottom - 18;
-  const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
-  const int maxLines = std::max(1, (hintY - 8 - top) / lineH);
+  const int hintY = bottom - listui::HINT_H;
+  const int pagerY = hintY - PAGER_H;
+  const int room = pagerY - listui::GAP - top;
   const std::string text = chunkText(chunkIndex);
-  int y = top;
-  for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, text.c_str(), pageWidth - 2 * SIDE, maxLines)) {
-    renderer.drawText(UI_10_FONT_ID, SIDE, y, line.c_str());
-    y += lineH;
+
+  // El cuerpo va en la cara de lectura y con el paso de renglón del visor
+  // (40 px): en UI_10 pegado a 26 era la pantalla más incómoda de leer del
+  // aparato. Pero acá el trozo ya está cortado por el servidor y NO se puede
+  // perder el final, así que si no entra se aprieta el interlineado y recién
+  // después se baja de cara. La cuenta se hace midiendo, no a ojo.
+  const auto fits = [&](const int font, const int step) {
+    const int lines = std::max(1, room / step);
+    return static_cast<int>(renderer.wrappedText(font, text.c_str(), w, lines + 1).size()) <= lines;
+  };
+  int font = UI_12_FONT_ID;
+  int step = std::max(40, renderer.getLineHeight(UI_12_FONT_ID));
+  if (!fits(font, step)) step = renderer.getLineHeight(UI_12_FONT_ID) + 6;
+  if (!fits(font, step)) {
+    font = UI_10_FONT_ID;
+    step = renderer.getLineHeight(UI_10_FONT_ID) + 4;
   }
-  renderer.drawCenteredText(
-      SMALL_FONT_ID, hintY,
-      renderer.truncatedText(SMALL_FONT_ID, speaking ? tr(STR_NEWS_READING_HINT) : tr(STR_NEWS_ARTICLE_HINT),
-                             pageWidth - 2 * SIDE)
-          .c_str());
+
+  int y = top;
+  for (const std::string& line : renderer.wrappedText(font, text.c_str(), w, std::max(1, room / step))) {
+    renderer.drawText(font, SIDE, y, line.c_str());
+    y += step;
+  }
+
+  listui::pager(renderer, SIDE, pagerY, w, total ? chunkIndex + 1 : 0, total, tr(STR_NEWS_PART_FORMAT));
+  listui::hint(renderer, hintY, speaking ? tr(STR_NEWS_READING_HINT) : tr(STR_NEWS_ARTICLE_HINT));
 }
 
 void NewsActivity::render(RenderLock&&) {
@@ -531,36 +548,45 @@ void NewsActivity::render(RenderLock&&) {
       const bool inFeeds = state == FEEDS;
       const int count = inFeeds ? static_cast<int>(feeds.size()) : static_cast<int>(feeds[feedIndex].items.size());
       const int selected = inFeeds ? feedIndex : itemIndex;
-      const int top = metrics.topPadding + metrics.headerHeight + 10;
-      const int bottom = pageHeight - metrics.buttonHintsHeight - 30;
-      itemsPerPage = std::max(1, (bottom - top) / ROW_H);
-      const int first = count > 0 ? (selected / itemsPerPage) * itemsPerPage : 0;
+      const int x = listui::SIDE;
+      const int w = listui::contentWidth(renderer);
+      const int top = listui::contentTop();
+      const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+      const int pagerY = hintY - PAGER_H;
+      itemsPerPage = std::max(1, (pagerY - listui::GAP - top) / listui::ROW2_H);
+      const int page = count > 0 ? selected / itemsPerPage : 0;
+      const int first = page * itemsPerPage;
       if (count == 0) renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, inFeeds ? tr(STR_NEWS_NO_FEEDS) : tr(STR_NEWS_NO_ITEMS));
       for (int i = first; i < count && i < first + itemsPerPage; ++i) {
-        const int y = top + (i - first) * ROW_H;
-        const bool sel = i == selected;
-        if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 4);
+        const int y = top + (i - first) * listui::ROW2_H;
+        listui::RowSpec spec;
+        spec.selected = i == selected;
+        std::string title;
+        std::string detail;
+        std::string meta;
         if (inFeeds) {
           const Feed& f = feeds[i];
-          renderer.drawText(UI_12_FONT_ID, SIDE, y + 9, renderer.truncatedText(UI_12_FONT_ID, f.name.c_str(), pageWidth - 2 * SIDE - 40).c_str(), SELECTION_INK);
-          const std::string n = std::to_string(f.items.size());
-          renderer.drawText(UI_10_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(UI_10_FONT_ID, n.c_str()), y + 12, n.c_str(), SELECTION_INK);
+          title = f.name;
+          spec.bold = true;
+          // El primer titular como vista previa: dice de qué va el feed sin
+          // tener que entrar.
+          if (!f.items.empty()) detail = f.items[0].title;
+          meta = std::to_string(f.items.size());
         } else {
           const Item& it = feeds[feedIndex].items[i];
-          const int whenW = it.when.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, it.when.c_str()) + 10;
-          renderer.drawText(UI_10_FONT_ID, SIDE, y + 4, renderer.truncatedText(UI_10_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - whenW).c_str(), SELECTION_INK);
-          // Second line: the rest of a long headline
-          const std::string first1 = renderer.truncatedText(UI_10_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - whenW);
-          if (first1.size() >= 3 && first1.size() < it.title.size() + 3 && it.title.compare(0, first1.size() - 3, first1, 0, first1.size() - 3) == 0) {
-            renderer.drawText(UI_10_FONT_ID, SIDE, y + 22, renderer.truncatedText(UI_10_FONT_ID, it.title.substr(first1.size() - 3).c_str(), pageWidth - 2 * SIDE).c_str(), SELECTION_INK);
-          }
-          if (whenW) renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - whenW + 10, y + 6, it.when.c_str(), SELECTION_INK);
+          meta = it.when;
+          const int metaW = meta.empty() ? 0 : renderer.getTextWidth(UI_10_FONT_ID, meta.c_str()) + listui::META_GAP;
+          title = renderer.truncatedText(UI_12_FONT_ID, it.title.c_str(), w - 2 * listui::PAD - metaW);
+          // Segunda línea: sólo lo que quedó afuera del titular.
+          detail = listui::tailAfterEllipsis(title, it.title);
         }
+        spec.title = title.c_str();
+        spec.detail = detail.empty() ? nullptr : detail.c_str();
+        spec.meta = meta.empty() ? nullptr : meta.c_str();
+        listui::row(renderer, x, y, w, listui::ROW2_H, spec);
       }
-      char pages[16];
-      snprintf(pages, sizeof(pages), "%d/%d", count ? selected / itemsPerPage + 1 : 0, (count + itemsPerPage - 1) / itemsPerPage);
-      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom + 4, pages);
-      renderer.drawText(SMALL_FONT_ID, SIDE, bottom + 4, tr(STR_NEWS_REFRESH_HINT));
+      listui::pager(renderer, x, pagerY, w, page + 1, count > 0 ? (count + itemsPerPage - 1) / itemsPerPage : 1);
+      listui::hint(renderer, hintY, tr(STR_NEWS_REFRESH_HINT));
       break;
     }
     case LOADING:
@@ -579,8 +605,6 @@ void NewsActivity::render(RenderLock&&) {
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la pantalla fantasmea.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partialCount = 0;
-  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // La cadencia de refrescos limpios la lleva el coordinador del panel.
+  renderer.displayBuffer();
 }

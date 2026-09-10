@@ -302,14 +302,22 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   Pausa = volumen 0.
 - Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se
   cargan en `/board`, artículo limpiado a texto sin LLM); titulares y artículos leídos cacheados en `/.crosspoint/rss/`.
-  El hub pasa a 3x4: Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos,
-  Ajustes (Juegos todavía dice "Próximamente").
+  El hub quedó en 14 mosaicos (1.5.48): fila ancha "Mi día" + Conversor, y debajo 4x3 con Leer, Hablar, Traductor,
+  Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos, Ajustes. **Ya no hay "Próximamente"**: los
+  catorce abren de verdad.
 - Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`). La
   foto se sube **tal como sale del teléfono** y la convierte el servidor con `sharp` (`toDeviceBmp`: rota por EXIF,
   escala a 480x800, 4 grises con Floyd-Steinberg y BMP de 2 bpp, ~150 ms); el navegador ya no arma nada. El aparato
   pide la lista al servidor cada vez que se entra, baja a `/Photos` de la SD y dibuja con el **pipeline de grises**
   del SDK (base BW + pasada LSB + pasada MSB + `displayGrayBuffer`): una sola pasada en modo BW pintaba de negro todo
   lo que no fuera blanco puro y la foto salía como una mancha.
+- Conversor de unidades (`UnitsActivity`, mosaico Conversor, 1.5.48): **la cuenta es toda del aparato**; lo único
+  que necesita servidor es pasar la voz a texto. Siete familias — longitud, peso, temperatura, volumen, superficie,
+  velocidad y **cocina** (con ingrediente, para pasar tazas a gramos) — con la cantidad en dígitos de 7 segmentos,
+  la equivalencia grande y el resto de la familia en una lista debajo. La palanca cambia el dígito o el campo y OK
+  pasa al siguiente; sólo la temperatura admite signo. Se dicta ("doce pulgadas a centímetros") por
+  `POST /api/transcribe` y lo resuelve `parseSpoken()` en el aparato, tomando la familia de la pantalla cuando el
+  dictado no nombra unidad. La última familia, unidad e ingrediente se guardan en un archivo propio de la SD.
 - Clima: Open-Meteo primero y **met.no de respaldo** (`server/src/metno.ts`, mismo formato traducido con
   `wmoFromSymbol`, User-Agent obligatorio): desde Railway Open-Meteo devolvía 502 sin parar y el hub quedaba vacío.
 - Clima detallado (`WeatherActivity`, mosaico Clima): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y seis
@@ -326,8 +334,11 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   acepta `audio/adpcm` o `audio/wav` (`toWav` en `transcribe.ts`) y devuelve tiempos por etapa en `ms`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
-- Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos) y, en la barra, lo que se está
-  reproduciendo. Íconos de 24 px en `src/components/icons/hubWidgetIcons.h`. Pendiente: temperatura interior (SHTC3).
+- Widgets del hub (sumario de cuatro renglones separados por reglas de 1 px, 1.5.48): clima (temperatura en UI_14,
+  interior del SHTC3 con humedad a la derecha), próximo recordatorio, **música-o-libro** y agenda de hoy (o la frase
+  si no hay eventos). El renglón de medios es uno solo: con música sonando muestra la pista y "3 / 14 · 4:12", y si
+  no suena nada muestra el libro abierto — **la música salió de la barra de estado**. Íconos de 24 px en
+  `src/components/icons/hubWidgetIcons.h`.
 - **Los mensajes se sacaron del sistema en 1.5.44** ("me parece algo irrelevante"): no están más ni en el aparato,
   ni en `GET /api/hub`, ni en la Pizarra, ni como intención de voz (lo que el modelo clasifique como mensaje se
   guarda como nota).
@@ -337,6 +348,14 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   el centro blanco y el texto negro: el negro macizo con texto invertido pegaba un salto de contraste enorme y dejaba
   fantasma, y la trama sobre toda la fila dejaba el renglón elegido como el menos legible de la pantalla. Estilos
   `Row` (listas) y `Tile` (mosaicos). Vale para el hub y para toda lista nuestra.
+- **El sistema visual se aplicó a TODAS las pantallas nuestras en 1.5.48** (ola B, siete paquetes en paralelo con
+  revisión adversarial: 51 hallazgos, 24 refutados, 19 arreglados). Lo compartido vive en dos archivos:
+  `src/activities/ListStyle.h` (namespace `listui`: margen de 24 px, grilla de 8, fila de dos renglones
+  título UI_12 + detalle UI_10, metadato a la derecha, casilla de 18x18, encabezado UI_14 con regla, paginador
+  "Página 2 de 5") y `src/activities/games/GameUi.{h,cpp}` para los juegos. Pasaron por ahí: hub, Recordatorios,
+  Notas, Noticias, Fotos, Viajes, Mi día, Música, visores, diálogos y popups, Ajustes → Movimiento y los doce juegos.
+  Se fueron las pastillas negras macizas con texto blanco (pestañas, distintivos, cartas emparejadas) y los
+  paginadores "1/12" en una esquina.
 - **Escala tipográfica**: `SevenSegment` para los números grandes, **UI_14** (Ubuntu 14 bold, nueva en 1.5.48) para
   títulos, UI_12 para el cuerpo, UI_10 para etiquetas, SMALL (NotoSans 8, **ahora con negrita**) para pies. Las dos
   caras nuevas cuestan 122 KB de flash y se generan con `lib/EpdFont/scripts/convert-builtin-fonts.sh` +

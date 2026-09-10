@@ -217,7 +217,6 @@ class ChessActivity final : public Activity {
   int displayRow(const int sq) const { return boardFlipped ? 7 - rowOf(sq) : rowOf(sq); }
   int displayCol(const int sq) const { return boardFlipped ? 7 - colOf(sq) : colOf(sq); }
   int squareFromDisplay(int dr, int dc) const;
-  void hatchCell(int x, int y, int cell) const;
   void drawCornerTicks(int x, int y, int cell, int arm, int thickness) const;
   void drawPiece(int x, int y, int cell, int8_t piece) const;
   void drawBoard(int left, int top, int cell) const;

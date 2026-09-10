@@ -18,14 +18,20 @@
 //     ejecuta la movida. En fin de partida arranca una nueva.
 //   - Atrás: cancela la ficha elegida y, si no hay nada elegido, sale.
 //   - Atrás mantenido (1 s): partida nueva en cualquier momento.
-// Dibujo del tablero (blanco y negro, sin grises): las casillas oscuras van
-// tramadas en diagonal (en negro macizo la ficha desaparece), la grilla lleva
-// línea propia y el tablero un marco doble bien grueso. Las fichas del jugador
-// son discos llenos y las de la máquina anillos huecos, las dos con un halo
-// blanco para que se despeguen de la trama; la dama lleva una corona adentro.
-// La casilla del cursor se destrama (queda blanca) y se marca con un marco
-// grueso, la ficha elegida con un marco doble y los candidatos con escuadras en
-// las esquinas: los tres se distinguen sobre cualquier casilla.
+// Dibujo del tablero (ver src/activities/games/GameUi.h): las casillas oscuras
+// van tramadas al 25 % (al 50 % el tablero vibra y se come la ficha), la grilla
+// lleva línea propia y el tablero un marco doble bien grueso. Las fichas del
+// jugador son discos con un anillo BLANCO adentro —el disco macizo se confundía
+// con el cursor y al moverse dejaba una mancha uniforme— y las de la máquina
+// anillos huecos, las dos con halo blanco para despegarlas de la trama; la dama
+// lleva una corona adentro. La casilla del cursor se destrama (queda blanca) y
+// se marca con un marco de 4 px, la ficha elegida con un marco fino y los
+// candidatos con escuadras en las esquinas.
+//
+// La ÚLTIMA JUGADA DE LA MÁQUINA va con un marco de 2 px en la casilla de
+// origen y en la de destino, las dos destramadas. Hasta 1.5.47 eran dos
+// cuadraditos de 7 px en las esquinas: invisibles, así que el usuario no sabía
+// qué había movido el aparato.
 //
 // Reglas: movimiento diagonal simple, captura OBLIGATORIA cuando existe,
 // capturas múltiples encadenadas (la cadena termina al coronar), coronación en
@@ -61,6 +67,9 @@ class CheckersActivity final : public Activity {
   static constexpr unsigned long RESTART_HOLD_MS = 1000;
   static constexpr unsigned long ROOT_BUDGET_MS = 320;  // si una movida raíz tarda más, se baja la profundidad
   static constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 12 parciales
+  // La franja de marcadores es de CUATRO columnas: cada etiqueta tiene 100 px y
+  // hay idiomas donde no entra en un renglón, así que se reservan dos.
+  static constexpr int STATS_LABEL_LINES = 2;
 
   // Casilla: fila * 8 + columna, fila 0 arriba (máquina) y fila 7 abajo (jugador).
   // Valores: 0 vacío, +1 peón del jugador, +2 dama del jugador, -1/-2 la máquina.
@@ -151,7 +160,6 @@ class CheckersActivity final : public Activity {
   // Dibujo
   void fillCircle(int cx, int cy, int r, bool state) const;
   void drawCrown(int cx, int cy, int r, bool state) const;
-  void hatchCell(int x, int y, int cell) const;
   void drawCornerTicks(int x, int y, int cell, int arm, int thickness) const;
   void drawPiece(int cx, int cy, int cell, int8_t piece) const;
   void drawBoard(int left, int top, int cell) const;

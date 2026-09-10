@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <Icon.h>
+
 #include "activities/Activity.h"
 #include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
@@ -45,7 +47,6 @@ class AgendaActivity final : public Activity {
   int sectionIndex = 0;
   int itemIndex = 0;
   int itemsPerPage = 1;
-  int partialCount = 0;  // parciales desde el último refresco limpio
   OptionPopup menu;                   // Move / Date / Delete, then the sub-choice
   enum MenuStep { NONE, MAIN, MOVE, DATE };
   MenuStep menuStep = NONE;
@@ -80,9 +81,20 @@ class AgendaActivity final : public Activity {
   int sectionCount() const { return static_cast<int>(sections.size()); }
   int itemCount() const;
   const Section& current() const { return sections[sectionIndex]; }
+  const freeink::Icon* sectionIcon(int index) const;
   std::string sectionTitle(int index) const;
   int sectionItemCount(int index) const;
+  // Lo que hay adentro de la sección, en una línea: es lo que convierte la
+  // lista de secciones en la pantalla que explica qué hay en cada una.
+  std::string sectionPreview(int index) const;
   std::string itemText(int index, std::string& detail) const;
+  // Las tres secciones como filas de dos renglones (vista previa y cuenta).
+  void renderSections(int x, int top, int w, int bottom);
+  // La lista de una sección, con la casilla de "OK lo tilda" en cada fila.
+  void renderItems(int x, int top, int w, int bottom, int pagerY);
+  // Barra de pestañas: en cuál estamos y cuánto hay en las otras. Devuelve la
+  // y donde arrancan las filas.
+  int drawTabs(int x, int y, int w);
   void tickCurrent();
   void openItemMenu();
   void onMenuPick(int index);

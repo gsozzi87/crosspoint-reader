@@ -6,14 +6,16 @@
 
 #include <algorithm>
 
+#include "GameUi.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "input/MotionInput.h"
 
 namespace {
-constexpr int SIDE = 20;
+constexpr int SIDE = gameui::SIDE;
 constexpr int PARTIALS_BEFORE_CLEAN = 10;
 constexpr unsigned long BACK_HOLD_MS = 1000;
 }  // namespace
@@ -174,10 +176,16 @@ void Game2048Activity::layout() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 40;
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 90;
+  const int top = metrics.topPadding + metrics.headerHeight + 2 * gameui::GAP;
+  const int screenBottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+
+  helpTop = screenBottom - gameui::helpHeight(renderer);
+  statsTop = helpTop - gameui::statsHeight(renderer);
+  statusTop = statsTop - gameui::GAP - gameui::statusHeight(renderer);
+
+  const int bottom = statusTop - gameui::GAP;
   const int avail = std::min(pageWidth - 2 * SIDE, bottom - top);
-  cell = avail / N;
+  cell = std::max(24, avail / N);
   originX = (pageWidth - cell * N) / 2;
   originY = top + ((bottom - top) - cell * N) / 2;
 }
@@ -201,45 +209,61 @@ void Game2048Activity::drawBoard() {
       // Los números de cuatro cifras no entran en el cuerpo grande.
       const int font = v >= 1024 ? UI_10_FONT_ID : UI_12_FONT_ID;
       const int tw = renderer.getTextWidth(font, text, EpdFontFamily::BOLD);
-      renderer.drawText(font, px + (cell - tw) / 2, py + cell / 2 - 14, text, true, EpdFontFamily::BOLD);
+      const int th = renderer.getLineHeight(font);
+      const int tx = px + (cell - tw) / 2;
+      const int ty = py + (cell - th) / 2;
+      // Plato blanco debajo del número: la regla del rediseño es que NUNCA hay
+      // letras sobre trama, y del 32 para arriba la celda está tramada.
+      if (v >= 32) drawTextPlate(renderer, tx - 6, ty - 2, tw + 12, th + 4);
+      renderer.drawText(font, tx, ty, text, true, EpdFontFamily::BOLD);
     }
   }
 }
 
-void Game2048Activity::drawInfo() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int y = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing - 70;
-  char line[64];
-  snprintf(line, sizeof(line), tr(STR_2048_SCORE), score);
-  renderer.drawText(UI_12_FONT_ID, SIDE, y, line, true, EpdFontFamily::BOLD);
-
-  if (over) {
-    renderer.drawCenteredText(UI_12_FONT_ID, y + 34, tr(STR_2048_OVER), true, EpdFontFamily::BOLD);
-    renderer.drawCenteredText(SMALL_FONT_ID, y + 66, tr(STR_GAME_AGAIN));
-    return;
-  }
-
-  // La flecha del empuje, igual que en el laberinto.
-  const int ax = pageWidth - SIDE - 30;
-  const int ay = y + 12;
+// La flecha del empuje, igual que en el laberinto.
+void Game2048Activity::drawAim(const int cx, const int cy) const {
   const int r = 14;
-  int tipX = ax, tipY = ay, baseX = ax, baseY = ay;
+  int tipX = cx, tipY = cy, baseX = cx, baseY = cy;
   switch (aim) {
-    case Dir::Up: tipY = ay - r; baseY = ay + r; break;
-    case Dir::Down: tipY = ay + r; baseY = ay - r; break;
-    case Dir::Left: tipX = ax - r; baseX = ax + r; break;
-    case Dir::Right: tipX = ax + r; baseX = ax - r; break;
+    case Dir::Up: tipY = cy - r; baseY = cy + r; break;
+    case Dir::Down: tipY = cy + r; baseY = cy - r; break;
+    case Dir::Left: tipX = cx - r; baseX = cx + r; break;
+    case Dir::Right: tipX = cx + r; baseX = cx - r; break;
   }
-  renderer.drawLine(baseX, baseY, tipX, tipY, true);
+  renderer.drawLine(baseX, baseY, tipX, tipY, 2, true);
   const int wx = (aim == Dir::Up || aim == Dir::Down) ? 7 : 0;
   const int wy = (aim == Dir::Up || aim == Dir::Down) ? 0 : 7;
   const int backX = tipX + (baseX - tipX) / 2;
   const int backY = tipY + (baseY - tipY) / 2;
-  renderer.drawLine(tipX, tipY, backX + wx, backY + wy, true);
-  renderer.drawLine(tipX, tipY, backX - wx, backY - wy, true);
+  renderer.drawLine(tipX, tipY, backX + wx, backY + wy, 2, true);
+  renderer.drawLine(tipX, tipY, backX - wx, backY - wy, 2, true);
+}
 
-  renderer.drawCenteredText(SMALL_FONT_ID, y + 44, useMotion ? tr(STR_2048_HINT) : tr(STR_2048_HINT_LEVER));
+void Game2048Activity::drawInfo() {
+  const int contentW = gameui::contentWidth(renderer);
+
+  gameui::status(renderer, SIDE, statusTop, contentW, over ? tr(STR_2048_OVER) : tr(STR_GAME_YOUR_TURN), nullptr);
+  if (!over) drawAim(SIDE + contentW - 20, statusTop + gameui::statusHeight(renderer) / 2);
+
+  // El puntaje en UI_14: es el dato que se mira entre jugada y jugada.
+  char vScore[12], vBest[12];
+  snprintf(vScore, sizeof(vScore), "%d", score);
+  snprintf(vBest, sizeof(vBest), "%d", best);
+  const gameui::Stat scoreboard[2] = {{vScore, tr(STR_GAME_SCORE)}, {vBest, tr(STR_GAME_BEST)}};
+  gameui::stats(renderer, SIDE, statsTop, contentW, scoreboard, 2);
+
+  // Terminada la partida el loop() ni mira la palanca, así que anunciar el
+  // control de movimiento sería mentir: queda sólo lo que SÍ se puede hacer.
+  // Y los dos pedazos van unidos por " · ", como el resto de la línea, no por
+  // un espacio pelado.
+  char helpText[192];
+  if (over) {
+    snprintf(helpText, sizeof(helpText), "%s", tr(STR_GAME_AGAIN));
+  } else {
+    snprintf(helpText, sizeof(helpText), "%s · %s", useMotion ? tr(STR_2048_HINT) : tr(STR_2048_HINT_LEVER),
+             tr(STR_GAME_HELP_RESTART));
+  }
+  gameui::help(renderer, helpTop, helpText);
 }
 
 void Game2048Activity::render(RenderLock&&) {

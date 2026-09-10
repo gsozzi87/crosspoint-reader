@@ -441,6 +441,11 @@ static void checkMotionGestures() {
   const MotionInput::Event pending = MOTION.pending();
   if (pending == MotionInput::Event::None) return;
 
+  // La pantalla de diagnóstico se queda con TODOS los eventos: es la que los
+  // cuenta. Si acá se consume "boca abajo" para pausar la música, el gesto no
+  // llega nunca al contador y la pantalla parece rota.
+  if (strcmp(activityManager.currentActivityName(), "Motion") == 0) return;
+
   // Sacudir mientras se graba corta la toma, esté donde esté el usuario: es lo
   // único que se atiende con una grabación abierta.
   if (pending == MotionInput::Event::Shake && busyRecording()) {
@@ -641,6 +646,10 @@ void setupDisplayAndFonts(bool seamless = false) {
   display.begin(seamless);
   renderer.begin();
   activityManager.begin();
+  // Con un micrófono abierto el panel no puede promover un refresco a limpieza:
+  // son cientos de ms de SPI contra el DMA de RX de 90 ms. La grabadora avisa
+  // acá cuando abre y cuando cierra, y vale para TODA pantalla que grabe.
+  VoiceRecorder::setCleanHoldHook([](const bool hold) { renderer.holdCleanRefreshes(hold); });
   LOG_DBG("MAIN", "Display initialized");
 
   // Initialize font decompressor for compressed reader fonts

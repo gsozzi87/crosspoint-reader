@@ -47,6 +47,17 @@ void fillTone(uint8_t* buf, size_t samples, uint16_t hz) {
 }  // namespace
 
 int VoiceRecorder::s_open = 0;
+void (*VoiceRecorder::s_cleanHold)(bool) = nullptr;
+
+void VoiceRecorder::setCleanHoldHook(void (*hook)(bool)) {
+  s_cleanHold = hook;
+  applyCleanHold();
+}
+
+void VoiceRecorder::applyCleanHold() {
+  if (s_cleanHold) s_cleanHold(s_open > 0);
+}
+
 VoiceRecorder* VoiceRecorder::s_live[4] = {nullptr, nullptr, nullptr, nullptr};
 
 void VoiceRecorder::registerLive() {
@@ -125,6 +136,7 @@ bool VoiceRecorder::start(StrId& why) {
 
   recording = true;
   ++s_open;
+  applyCleanHold();
   registerLive();
   LOG_DBG(TAG, "Recording (max %u s, pre-roll %u ms = %u samples)", (unsigned)(maxSamples / SAMPLE_RATE),
           (unsigned)preRollMs, (unsigned)spokenStart);
@@ -152,6 +164,7 @@ void VoiceRecorder::stop() {
   if (!recording) return;
   recording = false;
   if (s_open > 0) --s_open;
+  applyCleanHold();
   unregisterLive();
   audio.endCapture();
   freeTone();
@@ -172,6 +185,7 @@ void VoiceRecorder::abort() {
   if (recording) {
     recording = false;
     if (s_open > 0) --s_open;
+    applyCleanHold();
     unregisterLive();
     audio.endCapture();
     freeTone();

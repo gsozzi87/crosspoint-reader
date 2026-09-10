@@ -15,17 +15,19 @@ constexpr const char* TAG = "MOTION";
 // Umbrales, en g y deg/s. Salen del proyecto de referencia en Rust para esta
 // misma placa (imu_events), que es el único número medido en este hardware que
 // tenemos; el resto es geometría.
-constexpr float TILT_ON = 0.55f;    // pasa de acá y es una inclinación
+// Los seis que la pantalla de diagnóstico muestra viven en MotionInput.h (en
+// mg / dps / ms): acá se convierten a g, que es la unidad de las cuentas.
+constexpr float TILT_ON = MotionInput::TH_TILT_MG / 1000.0f;  // pasa de acá y es una inclinación
 constexpr float TILT_OFF = 0.25f;   // vuelve de acá y se puede inclinar de nuevo
-constexpr float SHAKE_DEV = 0.42f;  // desvío de 1 g que cuenta como sacudón
-constexpr float ROTATE_DPS = 120.0f;
-constexpr float LEVEL_FLAT = 0.15f;  // x e y por debajo de esto = apoyado
+constexpr float SHAKE_DEV = MotionInput::TH_SHAKE_MG / 1000.0f;  // desvío de 1 g que cuenta como sacudón
+constexpr float ROTATE_DPS = MotionInput::TH_ROTATE_DPS;
+constexpr float LEVEL_FLAT = MotionInput::TH_LEVEL_MG / 1000.0f;  // x e y por debajo de esto = apoyado
 constexpr float FACE_DOWN_N = -0.70f;
 constexpr float FACE_UP_N = -0.10f;
 constexpr float FACE_DOWN_SIDE = 0.30f;
-constexpr float STILL_DELTA = 0.020f;  // suma de cambios por muestra para "quieto"
+constexpr float STILL_DELTA = MotionInput::TH_STILL_MG / 1000.0f;  // suma de cambios por muestra para "quieto"
 constexpr unsigned long FACE_DOWN_STILL_MS = 500;
-constexpr unsigned long DEBOUNCE_MS = 350;
+constexpr unsigned long DEBOUNCE_MS = MotionInput::TH_DEBOUNCE_MS;
 constexpr unsigned long SHAKE_WINDOW_MS = 400;
 constexpr uint8_t SHAKE_HITS = 2;
 
@@ -128,7 +130,10 @@ void MotionInput::emit(const Event e) {
 }
 
 void MotionInput::poll() {
-  if (!available_ || !HUB_STORE.motionGestures) return;
+  // La pantalla de diagnóstico necesita leer el sensor aunque los gestos estén
+  // apagados: si no, muestra ceros congelados justo cuando hay que revisar si
+  // el chip está vivo.
+  if (!available_ || (!HUB_STORE.motionGestures && !diagnostics_)) return;
   const unsigned long now = millis();
   if (now - lastPollMs_ < POLL_MS) return;
   lastPollMs_ = now;

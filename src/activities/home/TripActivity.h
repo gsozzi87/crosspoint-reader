@@ -88,7 +88,6 @@ class TripActivity final : public Activity {
   int itemIndex = 0;
   int packIndex = 0;
   int itemsPerPage = 1;
-  int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
   bool wifiActivated = false;
   StrId failureId = StrId::STR_ASK_FAILED;

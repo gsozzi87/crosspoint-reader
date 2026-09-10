@@ -17,21 +17,21 @@
 #include "MappedInputManager.h"
 #include "PhotosActivity.h"
 #include "SilentRestart.h"
+#include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
-#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "TRIP";
 constexpr const char* CACHE = "/.crosspoint/trips.json";
 constexpr const char* ATT_DIR = "/.crosspoint/att";
-constexpr int ROW_H = 56;
-constexpr int SIDE = 18;
-constexpr int HINT_H = 20;
+constexpr int SIDE = listui::SIDE;
+constexpr int HINT_H = listui::HINT_H;
+constexpr int PAGER_H = 24;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 
 // El día del viaje se muestra como "Lunes 14 · Madrid": la fecha en palabras
 // sale de las mismas tablas que el calendario.
@@ -778,14 +778,16 @@ void TripActivity::layoutAttachmentText() {
 }
 
 void TripActivity::renderList() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const int top = listui::contentTop();
   // El margen de abajo lleva verticalSpacing además del alto de los hints, o la
   // última fila queda pegada a la barra de botones.
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - HINT_H;
-  itemsPerPage = std::max(1, (bottom - top) / ROW_H);
+  const int hintY = listui::contentBottom(renderer) - HINT_H;
+  const int pagerY = hintY - PAGER_H;
+  itemsPerPage = std::max(1, (pagerY - listui::GAP - top) / listui::ROW2_H);
 
   int count = 0;
   int selected = 0;
@@ -818,87 +820,78 @@ void TripActivity::renderList() {
                               renderer.truncatedText(UI_10_FONT_ID, empty, pageWidth - 2 * SIDE).c_str());
   }
 
-  const int first = count > 0 ? (selected / itemsPerPage) * itemsPerPage : 0;
+  const int page = count > 0 ? selected / itemsPerPage : 0;
+  const int first = page * itemsPerPage;
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
-    const int y = top + (i - first) * ROW_H;
-    const bool sel = i == selected;
-    if (sel) drawSelectionRow(renderer, SIDE - 6, y, pageWidth - 2 * (SIDE - 6), ROW_H - 6);
+    const int y = top + (i - first) * listui::ROW2_H;
     std::string title;
     std::string detail;
-    std::string right;
+    std::string meta;
+    listui::RowSpec spec;
+    spec.selected = i == selected;
     switch (state) {
       case TRIPS:
         title = trips[i].title;
         detail = trips[i].when;
+        spec.bold = true;
         break;
       case DAYS:
         if (i == DAY_ROW_SUGGEST) {
           title = tr(STR_SUGGEST_TITLE);
           detail = tr(STR_TRIP_SUGGEST_SUB);
-          if (!suggestPacking.empty()) right = "+" + std::to_string(suggestPacking.size());
+          if (!suggestPacking.empty()) meta = "+" + std::to_string(suggestPacking.size());
         } else if (i == DAY_ROW_PACKING) {
           title = tr(STR_TRIP_PACKING);
           int done = 0;
           for (const PackItem& p : packing) done += p.done ? 1 : 0;
-          right = std::to_string(done) + "/" + std::to_string(packing.size());
+          meta = std::to_string(done) + "/" + std::to_string(packing.size());
         } else {
           const TripDay& d = days[i - DAY_ROW_FIRST];
           title = dayHeading(d.date, d.label);
           if (title.empty()) title = d.date;
-          right = std::to_string(d.items.size());
+          meta = std::to_string(d.items.size());
         }
+        spec.bold = true;
         break;
       case ITEMS: {
         const TripItem& it = currentDay()->items[i];
         title = it.title;
         detail = it.place;
-        if (!it.attachmentIds.empty()) right = tr(STR_TRIP_ATTACHMENT);
+        // La hora va a la derecha, en su columna: pegada al título se lee como
+        // parte del nombre de la actividad.
+        meta = it.at;
+        if (!it.attachmentIds.empty()) detail += (detail.empty() ? "" : " · ") + std::string(tr(STR_TRIP_ATTACHMENT));
         break;
       }
       case PACKING:
-        // Primero lo que ya está anotado y después lo que sugirió el modelo,
-        // marcado con "+" para que se vea que todavía NO está en la lista.
+        // Primero lo que ya está anotado, con su casilla (OK la tilda), y
+        // después lo que sugirió el modelo, que TODAVÍA no está en la lista y
+        // por eso no lleva casilla sino "Agregar".
         if (i < static_cast<int>(packing.size())) {
           title = packing[i].text;
-          right = packing[i].done ? "OK" : "";
+          spec.check = true;
+          spec.checked = packing[i].done;
         } else {
-          title = "+ " + suggestPacking[i - packing.size()];
+          title = suggestPacking[i - packing.size()];
           detail = tr(STR_TRIP_SUGGEST_ADD);
         }
         break;
       default:
         break;
     }
-    const int rightW = right.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, right.c_str()) + 12;
-    int x = SIDE;
-    if (state == ITEMS) {
-      const TripItem& it = currentDay()->items[i];
-      if (!it.at.empty()) {
-        renderer.drawText(SMALL_FONT_ID, x, y + 10, it.at.c_str(), SELECTION_INK);
-        x += renderer.getTextWidth(SMALL_FONT_ID, it.at.c_str()) + 12;
-      }
-    }
-    renderer.drawText(UI_12_FONT_ID, x, y + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, title.c_str(), pageWidth - x - SIDE - rightW).c_str(), SELECTION_INK);
-    if (!detail.empty()) {
-      renderer.drawText(SMALL_FONT_ID, x, y + 30,
-                        renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), pageWidth - x - SIDE - rightW).c_str(),
-                        SELECTION_INK);
-    }
-    if (rightW) {
-      renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - rightW + 12, y + 14, right.c_str(), SELECTION_INK);
-    }
+    spec.title = title.c_str();
+    spec.detail = detail.empty() ? nullptr : detail.c_str();
+    spec.meta = meta.empty() ? nullptr : meta.c_str();
+    listui::row(renderer, x, y, w, listui::ROW2_H, spec);
   }
+  listui::pager(renderer, x, pagerY, w, page + 1, count > 0 ? (count + itemsPerPage - 1) / itemsPerPage : 1);
 
   const char* hint = nullptr;
   if (state == ITEMS) hint = tr(STR_TRIP_ATTACH_HINT);
   else if (state == PACKING && !suggestPacking.empty()) hint = tr(STR_TRIP_SUGGEST_HINT);
   else if (state == PACKING) hint = tr(STR_TRIP_PACK_HINT);
   else if (state == DAYS) hint = tr(STR_CAL_REFRESH_HINT);
-  if (hint) {
-    renderer.drawCenteredText(SMALL_FONT_ID, bottom + 2,
-                              renderer.truncatedText(SMALL_FONT_ID, hint, pageWidth - 2 * SIDE).c_str());
-  }
+  listui::hint(renderer, hintY, hint);
 }
 
 // Las sugerencias del viaje, paginadas. Abajo dice cuándo se calcularon: son de
@@ -1054,8 +1047,6 @@ void TripActivity::render(RenderLock&&) {
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la lista fantasmea.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partialCount = 0;
-  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // La cadencia de refrescos limpios la lleva el coordinador del panel.
+  renderer.displayBuffer();
 }

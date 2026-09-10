@@ -2,16 +2,20 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "activities/Activity.h"
 #include "util/ButtonNavigator.h"
 
-// ws397 home: a grid of big tiles (Read, Ask, Reminders, Bible, Music,
-// Settings) under a status line (clock, battery), plus a "continue reading"
-// widget. The classic CrossPoint home (file browser, recents, transfer) sits
-// behind the Read tile; the reader is unchanged. UP/DOWN walk the tiles, OK
-// opens, Back resumes the last book. Ready for the trackball: the tile order
-// is row-major so a 2D cursor maps onto the same index.
+// ws397 home: la primera pantalla y la que más se mira. De arriba a abajo:
+// barra de estado (hora grande, fecha, temporizador, WiFi, batería), sumario
+// (clima, próximo recordatorio, lo que suena o el libro abierto, agenda o
+// frase) y la grilla de mosaicos. Cada franja se separa de la siguiente con una
+// regla de 1 px: cuesta nada de tinta y no fantasmea, que es lo que sí hacían
+// los marcos y los bloques rellenos.
+//
+// La palanca ARRIBA/ABAJO recorre los mosaicos en orden de lectura, OK abre y
+// Atrás no hace nada (el hub es el fondo de todo; Atrás mantenido sincroniza).
 class HubActivity final : public Activity {
  public:
   explicit HubActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, bool cleanInitialRefresh = false)
@@ -23,19 +27,16 @@ class HubActivity final : public Activity {
   bool isHomeActivity() const override { return true; }
 
  private:
-  // Clima es un mosaico propio: en esta placa OK no tiene pulsación larga (OK
-  // mantenido apaga), así que el "OK largo: clima" del hub nunca se podía usar.
-  // Fotos salió del hub: dejó de ser un visor y es "elegir fondo de pantalla"
-  // en Ajustes.
+  // Catorce mosaicos en tres columnas no dan filas parejas, así que la primera
+  // fila la comparten "Mi día" — ancho, ocupa dos columnas, con su subtítulo —
+  // y "Conversor". Debajo quedan las cuatro filas de tres de siempre. El orden
+  // del enum ES el orden de lectura: la palanca recorre índices, no coordenadas.
   //
-  // Con "Mi día" (calendario, viajes y las sugerencias del día) son 13, y trece
-  // no entra parejo en tres columnas. En vez de dejar una fila coja, "Mi día"
-  // es un mosaico ANCHO arriba de todo (una fila entera, con su subtítulo) y
-  // abajo quedan los 12 de siempre en 3 columnas x 4 filas. Los iconos de esos
-  // 12 bajan de 64 a 48 px: con 64 la etiqueta se sale del borde del mosaico
-  // (probado en el simulador, `hub-C48-info130.png`).
+  // Ningún mosaico dice ya "Próximamente": Juegos abre los juegos desde 1.5.47 y
+  // el Conversor abre la app de unidades.
   enum Tile {
-    TILE_DAY = 0,  // el ancho de arriba
+    TILE_DAY = 0,  // fila 0, columnas 0 y 1
+    TILE_UNITS,    // fila 0, columna 2
     TILE_READ,
     TILE_TALK,
     TILE_TRANSLATOR,
@@ -50,25 +51,31 @@ class HubActivity final : public Activity {
     TILE_SETTINGS,
     TILE_COUNT
   };
-  static constexpr int COLUMNS = 3;     // los 12 mosaicos de abajo
-  static constexpr int GRID_ROWS = 4;
+  static constexpr int COLUMNS = 3;
+  static constexpr int GRID_ROWS = 5;  // la de "Mi día" + Conversor, y cuatro de mosaicos
 
   ButtonNavigator buttonNavigator;
   const bool cleanInitialRefresh;
-  int selected = TILE_READ;  // el ancho es el 0, pero se arranca en Leer
+  int selected = TILE_READ;  // se arranca en Leer, no en el ancho
   bool firstRenderDone = false;
-  bool comingSoon = false;  // a not-yet-built tile was opened: show the notice
   bool autoSyncPending = false;  // cache stale at entry: run HubSyncActivity after the first paint
-  unsigned long lastClockMinuteTick = 0;
-  // El hub es la pantalla que más tiempo queda a la vista y el reloj la repinta
-  // sola cada minuto: sin este contador acumula parciales para siempre y fantasmea.
-  int partialCount = 0;
-  char lastClock[9] = {0};
-  char lastTimeChip[40] = {0};  // lo último dibujado del temporizador/cronómetro
+  unsigned long lastTick = 0;
+  // El hub es la pantalla que más tiempo queda a la vista y se repinta sola
+  // cuando cambia el minuto: sin este contador acumula parciales y fantasmea.
+  // Lo último que se dibujó de lo que cambia solo (hora, temporizador, música):
+  // el tick repinta únicamente cuando esto cambia.
+  char lastSignature[96] = {0};
+  void screenSignature(char* out, size_t size) const;
   // Texto del temporizador o el cronómetro para la barra de estado ("" si no hay nada).
   void formatTimeChip(char* out, size_t size) const;
+  // Fechas para la barra de estado, de más larga a más corta ("Miércoles 9
+  // Septiembre", "Mi 9 Septiembre", "Mi 9/9"). Se dibuja la primera que entra
+  // en el hueco que quede; vacío si el aparato no está en hora.
+  std::vector<std::string> dateCandidates() const;
+  // "Interior 23° · 45 %" del SHTC3, o "" si el sensor todavía no midió.
+  std::string indoorLine() const;
 
-  // Most recent book still on the card (the Back shortcut + the widget).
+  // Most recent book still on the card (el renglón del sumario y el mosaico Leer).
   std::string lastBookPath;
   std::string lastBookTitle;
   std::string lastBookAuthor;
@@ -78,8 +85,12 @@ class HubActivity final : public Activity {
   void startSync();
   void activate(int tile);
   void drawStatusLine(int y, int height) const;
+  void drawSummary(int x, int y, int w, int h) const;
+  void drawWeatherRow(int x, int y, int w, int h) const;
+  void drawReminderRow(int x, int y, int w, int h) const;
+  void drawMediaRow(int x, int y, int w, int h) const;
+  void drawAgendaRow(int x, int y, int w, int h) const;
+  void drawGrid(int x, int y, int w, int h) const;
   void drawTile(int index, int x, int y, int w, int h) const;
   void drawWideTile(int index, int x, int y, int w, int h) const;
-  void drawContinueWidget(int x, int y, int w, int h) const;
-  void drawInfoWidgets(int x, int y, int w, int h) const;
 };
