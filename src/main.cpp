@@ -56,6 +56,8 @@
 #include "util/ButtonNavigator.h"
 #include "util/PowerKey.h"
 #include "util/Shtc3.h"
+#include "util/IdleSleep.h"
+#include "util/RtcAlarm.h"
 #include "input/MotionInput.h"
 #include "util/ScreenshotUtil.h"
 #include "music/MusicPlayer.h"
@@ -407,20 +409,48 @@ static void checkVoiceShortcut() {
   activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
 }
 
-static void checkTimeAlarms() {
-  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
-  if (busyRecording()) return;
-  if (!isCalmScreen(activityManager.currentActivityName())) return;
+// Devuelve true cuando puso una alarma en pantalla: el llamador tiene que
+// tratar eso como actividad, o el reposo se lo lleva puesto antes de pintarlo.
+static bool checkTimeAlarms() {
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;
+  if (busyRecording()) return false;
+  if (!isCalmScreen(activityManager.currentActivityName())) return false;
   time_t now = 0;
-  if (!halClock.getEpochUtc(now)) return;
+  if (!halClock.getEpochUtc(now)) return false;
   if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= now) {
     activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
-    return;
+    return true;
   }
   if (const HubStore::Reminder* due = HUB_STORE.dueReminder(now)) {
     activityManager.pushActivity(
         std::make_unique<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
+    return true;
   }
+  return false;
+}
+
+// Cuánto falta para lo próximo que tiene que sonar (recordatorio o fin del
+// temporizador), en ms, o 0 si no hay nada. El reposo lo usa como tope del
+// ciclo: dormir 2 s de más no se nota, dormir 10 minutos de más sí.
+static unsigned long msUntilNextAlarm() {
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now)) return 0;
+  time_t due = HUB_STORE.nextDueAt(now);
+  if (HUB_STORE.timerRunning() && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
+  // La alarma del chip es la que aguanta las esperas largas: el timer del light
+  // sleep se corta a la hora (más allá de eso no vale la pena estar
+  // recontando), pero el PCF85063 despierta por GPIO45 en el segundo exacto
+  // aunque el aparato lleve ocho horas reposando.
+  if (due > now) {
+    RTC_ALARM.armAt(due, now);
+  } else if (RTC_ALARM.armedAt() != 0) {
+    RTC_ALARM.disarm();
+  }
+  if (due == 0) return 0;
+  if (due <= now) return 1;
+  const time_t seconds = due - now;
+  if (seconds > 3600) return 0;
+  return static_cast<unsigned long>(seconds) * 1000UL;
 }
 
 // ws397: los gestos del IMU valen desde cualquier pantalla tranquila, igual que
@@ -734,6 +764,9 @@ void setup() {
   // que van después y sobre la misma instancia (ver HalTiltSensor::imu()).
   MOTION.begin();
   halClock.begin();
+  // Después de los botones y del IMU: prueba los pines que despiertan del reposo.
+  IDLE_SLEEP.begin();
+  RTC_ALARM.begin();
 
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");
@@ -1053,7 +1086,7 @@ void loop() {
   // Check for any user activity (button press or release) or active background work
   static unsigned long lastActivityTime = millis();
   if (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity() ||
-      activityManager.preventAutoSleep() || MUSIC.isActive()) {
+      activityManager.preventAutoSleep() || MUSIC.isActive() || POWER_KEY.pressed()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
@@ -1066,7 +1099,16 @@ void loop() {
   static unsigned long lastAlarmCheck = 0;
   if (millis() - lastAlarmCheck >= 5000) {
     lastAlarmCheck = millis();
-    checkTimeAlarms();
+    // La bandera AF del RTC deja la línea INT en bajo hasta que se limpie, y
+    // con GPIO45 en bajo el light sleep se rechaza siempre: limpiarla no es
+    // opcional, es lo que evita que el aparato gire en falso gastando de más.
+    if (RTC_ALARM.fired()) {
+      RTC_ALARM.clearFlag();
+      RTC_ALARM.disarm();  // se re-arma sola con el próximo vencimiento
+      LOG_INF("MAIN", "alarma del RTC: venció");
+      lastActivityTime = millis();
+    }
+    if (checkTimeAlarms()) lastActivityTime = millis();
   }
 
   // Let wake continue as soon as its hold has been verified. The release can
@@ -1128,6 +1170,37 @@ void loop() {
     enterDeepSleep(true);
     // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
     return;
+  }
+
+  // ws397: la etapa del medio. Si no pasa nada pero todavía falta para el deep
+  // sleep, el aparato reposa en light sleep: la pantalla queda como está (el
+  // panel es biestable) y vuelve en menos de 10 ms con todo el estado intacto.
+  // Va DESPUÉS del deep sleep a propósito: el deep sleep tiene precedencia, y
+  // así el reposo nunca puede impedirlo.
+  if (BoardConfig::isWS397()) {
+    // Nada de reposar con el I2S abierto, la red arriba, la tarjeta prestada o
+    // una pantalla que se pinta sola: ahí el light sleep corta lo que está en
+    // curso. El USB enchufado también lo bloquea (el CDC no sobrevive, y
+    // enchufado la batería no es el problema).
+    const bool restBlocked = activityManager.preventAutoSleep() || activityManager.skipLoopDelay() ||
+                             MUSIC.isActive() || busyRecording() || POWER_KEY.pressed() || gpio.isUsbConnected() ||
+                             WiFi.getMode() != WIFI_MODE_NULL;
+    IDLE_SLEEP.capNextRest(msUntilNextAlarm());
+    switch (IDLE_SLEEP.tick(millis() - lastActivityTime, restBlocked)) {
+      case IdleSleep::Woke::Button:
+      case IdleSleep::Woke::Motion:
+        // El botón que despertó se lee en la pasada siguiente (la entrada de
+        // ESTA pasada se leyó antes de dormir): salir ya y empezar de nuevo.
+        lastActivityTime = millis();
+        powerManager.setPowerSaving(false);
+        return;
+      case IdleSleep::Woke::Timer:
+        // Sigue reposando: nada que pintar, y el deep sleep se decide arriba en
+        // la pasada siguiente con el ocio ya más grande.
+        return;
+      case IdleSleep::Woke::NotSlept:
+        break;
+    }
   }
 
   // A hold that woke the device (or, on the ws397, a PWR hold that powered the
