@@ -158,7 +158,18 @@ EpdFontFamily notosans18FontFamily(&notosans18RegularFont, &notosans18BoldFont, 
 #endif  // OMIT_FONTS
 
 EpdFont smallFont(&notosans_8_regular);
-EpdFontFamily smallFontFamily(&smallFont);
+// SMALL en negrita: mismo advanceY/ascender/descender que la regular (23/18/-5),
+// así entra en los mismos renglones sin tocar ningún layout. Además arregla los
+// lugares que ya pedían SMALL + BOLD y hasta ahora pintaban regular sin avisar.
+EpdFont smallBoldFont(&notosans_8_bold);
+EpdFontFamily smallFontFamily(&smallFont, &smallBoldFont);
+
+// UI_14: el escalón de título que faltaba entre UI_12 (alto de mayúscula 17 px)
+// y los dígitos de siete segmentos. Solo negrita: la familia se arma con una
+// sola cara y el pedido de regular cae en la misma, que es lo correcto para un
+// rol que siempre es título.
+EpdFont ui14BoldFont(&ubuntu_14_bold);
+EpdFontFamily ui14FontFamily(&ui14BoldFont);
 
 EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
@@ -651,6 +662,7 @@ void setupDisplayAndFonts(bool seamless = false) {
 #endif  // OMIT_FONTS
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
+  renderer.insertFont(UI_14_FONT_ID, ui14FontFamily);
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 
   // Discover and load SD card fonts
