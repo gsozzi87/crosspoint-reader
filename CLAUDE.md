@@ -19,22 +19,30 @@ REGLA FIJA: el aparato NUNCA tiene entrada por teclado (ni en pantalla ni físic
 usuario tenga que ingresar entra por voz (mic → servidor → transcripción). Las respuestas pueden ser texto en
 pantalla. No usar `KeyboardEntryActivity` en nada nuestro.
 
-## Estado (2026-09-04)
+## Estado (2026-09-10)
 
 Funciona: boot, pantalla (orientación y polaridad correctas), botones, SD, WiFi, web UI, deep sleep,
-batería vía PMIC, RTC, OTA desde servidor propio.
+batería vía PMIC, RTC, OTA desde servidor propio, audio (graba y reproduce), música, voz, hub.
 
-Pendiente de verificar en hardware: refresco periódico de un solo destello (parche `halfrefresh`), porcentaje de
-batería real, hora tras apagado sin WiFi.
+**Pendiente de verificar en hardware (1.5.47, lo más nuevo y lo más riesgoso):**
 
-Audio verificado en hardware (1.5.9): graba y reproduce bien, se escucha bajo. Pendiente: control de volumen (DAC reg 0x32,
-hoy fijo en 0xB2 = vendor 70 %; PGA del mic reg 0x14). Detalle: Settings → System → Audio test graba 3 s por el mic del ES8311 y
-los reproduce; captura por `AudioManager::beginCapture`, DIN GPIO21, MCLK-fed init del vendor).
+- **PWR por el PMIC** (`src/util/PowerKey`): toque corto = limpiar pantalla, mantener 3 s = dormir con la
+  barrita. La polaridad del flanco se APRENDE en caliente y se loguea (`press edge = …` en `/board/log`),
+  porque ni la hoja de datos ni el proyecto de referencia coinciden. Si el botón no responde, ahí está la
+  respuesta. El corte duro del PMIC está programado a los 10 s como escape de emergencia.
+- **Coordinador de refresco** (`lib/GfxRenderer/PanelRefreshCoordinator`): 12 parciales → HALF, cada 2 HALF
+  un FULL, y una sombra de 48 KB en PSRAM que saltea el pintado cuando el cuadro es idéntico. Falta medir si
+  0xD7 restaura el blanco o hace falta bajar `CLEANS_BEFORE_FULL`.
+- **Pre-roll de grabación**: el micrófono abre ANTES del pitido y las muestras del tono se recortan
+  (`spokenStart`). Falta confirmar que la primera palabra ya no se pierde.
+- **IMU**: hay que calibrar los ejes en Ajustes → Movimiento antes de creerle a los gestos, y confirmar que
+  el motor de golpes del chip contesta (la pantalla lo dice).
+- Lo de siempre: porcentaje de batería real, hora tras apagado sin WiFi.
 
-Pendiente de implementar (Fase 0): trackball + 2 botones vía PCF8574 en I²C (SDA 41 / SCL 42, INT GPIO44) cuando
-llegue el hardware.
+Descartado: trackball + 2 botones vía PCF8574. El usuario decidió que el aparato va con la palanca y el
+botón del costado, y nada más ("me acomodé bien con la palanca y el botón del costado").
 
-## Build y release
+## Build y release## Build y release
 
 - `pio run -e ws397` — env en `platformio.ini`. Versión = `1.5.<WS397_BUILD>-ws397` desde `include/ws397_version.h`
   (NO ponerla en un -D flag: fuerza rebuild completo).
@@ -203,13 +211,29 @@ llegue el hardware.
   `ReminderAlertActivity` sobre las pantallas tranquilas (hub, home, agenda, notas, ajustes, clima), no solo desde el
   tick del hub. Todo camino de deep sleep pasa por `sleepNow()`, que arma el wake: antes el re-sleep por wake espurio
   del botón dormía sin nada armado y el temporizador quedaba mudo para siempre.
-- OJO con los botones: en esta placa OK es confirm+power compartidos, así que `wasLongPressed(Confirm, ...)` NUNCA es
-  cierto (mantener OK apaga). Las funciones que estaban colgadas de "OK largo" no existían: el Clima quedó como
-  mosaico propio (en el lugar de Juegos, que decía "Próximamente").
+- OJO con los botones: **OK largo NUNCA llega**. Hasta 1.5.46 era porque OK era confirm+power compartidos (mantenerlo
+  apagaba); desde 1.5.47 el encendido es un botón aparte contra el PMIC y OK es solo confirmar, pero
+  `wasLongPressed(Confirm, ...)` sigue sin dispararse. Ninguna función puede colgar de ahí. El Clima quedó como
+  mosaico propio por ese motivo.
+- **El botón PWR es del PMIC, no un GPIO** (`src/util/PowerKey`, singleton `POWER_KEY`, `pump()` desde el loop):
+  está cableado al PWRKEY del AXP2101 y el chip lo reporta por su IRQ (GPIO38, `pmicIrq` en el perfil). Toque corto =
+  limpiar pantalla (el próximo pintado sale FULL 0xF7); mantener 3 s = barrita y a dormir; el corte duro del PMIC está
+  a los 10 s como escape. NO pasa por el `InputManager` del SDK a propósito: su antirrebote de 5 ms se come una
+  pulsación entera que aparece y desaparece entre dos lecturas. La polaridad del flanco se aprende en caliente y se
+  guarda en RTC RAM. GPIO38 no es RTC GPIO, así que **el que despierta sigue siendo OK** (GPIO5), y eso ahora está en
+  el perfil de la placa (`InputPins.wakePin`) en vez de escondido en el código.
 - Atajo de voz global: **dos toques de Atrás** abren Hablar desde cualquier pantalla tranquila
   (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 500 ms). ARRIBA/ABAJO es una palanca física
-  (arriba XOR abajo, nunca las dos), OK es el botón de encendido y Atrás mantenido ya sincroniza o actualiza.
+  (arriba XOR abajo, nunca las dos) y Atrás mantenido ya sincroniza o actualiza.
   Atrás en el hub no hace nada: el hub es el fondo (antes abría el último libro y no había forma de quedarse).
+- **El movimiento es una entrada más** (`src/input/MotionInput`, singleton `MOTION`, `poll()` cada 80 ms desde el
+  loop): inclinar, sacudir, girar, horizontal, boca abajo y doble golpe. Tres son globales y salen de
+  `checkMotionGestures()` en `main.cpp`: boca abajo calla lo que suena, sacudir cancela (corta la grabación abierta o
+  descarta la alarma), doble golpe abre Hablar. El resto los consume cada pantalla con `MOTION.take(Event)`.
+  El INT1 del IMU está cableado al enable del amplificador (GPIO39), así que **no se puede usar la interrupción**: se
+  consulta. El doble golpe lo detecta el motor del propio chip, porque a 80 ms no hay forma de ver un golpe de 10 ms.
+  **Cómo está montado el sensor no está documentado**: hay que calibrar los ejes en Ajustes → Movimiento
+  (`HubStore::imuMap`) o "inclinar a la derecha" puede ser cualquier eje.
 - OJO con el audio: el I2S es uno solo y cada clase (`SpeechOut`, `AlertBeep`, `VoiceRecorder`) tiene su propio
   `AudioManager`. Abrir el micrófono mientras habla el parlante da "Falló la captura del micrófono", y navegar
   mientras habla corta la frase. Regla: `speech.stop()` antes de grabar, y si hay que hacer algo después de hablar,
@@ -307,9 +331,16 @@ llegue el hardware.
 - **Los mensajes se sacaron del sistema en 1.5.44** ("me parece algo irrelevante"): no están más ni en el aparato,
   ni en `GET /api/hub`, ni en la Pizarra, ni como intención de voz (lo que el modelo clasifique como mensaje se
   guarda como nota).
-- **El resalte de lo elegido va en GRIS, no en negro** (`src/components/Selection.h`: `drawSelectionRow()` y
-  `SELECTION_INK`). El negro macizo con texto invertido pegaba un salto de contraste enorme y dejaba fantasma; ahora
-  es gris claro tramado con marco fino y el texto sigue en negro. Vale para el hub y para toda lista nuestra.
+- **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
+  jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
+  `drawSelectionRow()`) es pestaña negra de 5 px a la izquierda + marco + franjas tramadas SOLO en los márgenes, con
+  el centro blanco y el texto negro: el negro macizo con texto invertido pegaba un salto de contraste enorme y dejaba
+  fantasma, y la trama sobre toda la fila dejaba el renglón elegido como el menos legible de la pantalla. Estilos
+  `Row` (listas) y `Tile` (mosaicos). Vale para el hub y para toda lista nuestra.
+- **Escala tipográfica**: `SevenSegment` para los números grandes, **UI_14** (Ubuntu 14 bold, nueva en 1.5.48) para
+  títulos, UI_12 para el cuerpo, UI_10 para etiquetas, SMALL (NotoSans 8, **ahora con negrita**) para pies. Las dos
+  caras nuevas cuestan 122 KB de flash y se generan con `lib/EpdFont/scripts/convert-builtin-fonts.sh` +
+  `build-font-ids.sh`.
 - `GfxRenderer::drawPixel` ya NO escribe una línea de log por píxel fuera de pantalla: los cuenta y avisa una vez por
   segundo. Un solo cartel más ancho que la pantalla dejaba miles de líneas de "Outside range" y se comía el log
   entero (el que mandó el usuario en 1.5.43 tenía 2900 líneas y 2877 eran eso).
@@ -319,8 +350,9 @@ llegue el hardware.
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
 (fusión de lo planeado con lo que hacen el reTerminal Sticky y el ZecTrix Note 4). Resumen:
 
-0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido, IMU
-   por polling (boca abajo = silenciar, doble golpe = PTT, sacudir = cancelar; modo atril horizontal para el hub).
+0. Hardware: volumen (hecho), botón PWR por el PMIC (hecho, 1.5.47), coordinador de refresco (hecho), driver SHTC3
+   en dos tiempos (hecho), IMU por polling con boca abajo = silenciar, doble golpe = PTT y sacudir = cancelar
+   (hecho). Falta: wake por alarma del RTC, deep sleep medido. Descartado: trackball y botones PCF8574.
 1. Hub + preguntarle al libro + cliente HTTP + sincronización con `GET /api/hub` y widgets + Hablar con
    clasificador de intención (hecho). Falta: pizarra de mensajes desde el teléfono (1.8), ajustes del hub en la web UI.
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
