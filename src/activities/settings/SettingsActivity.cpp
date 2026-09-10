@@ -47,6 +47,7 @@
 #include "DevicePairActivity.h"
 #include <HalTiltSensor.h>
 
+#include "TaskStatsActivity.h"
 #include "MotionActivity.h"
 #endif
 
@@ -188,6 +189,9 @@ void SettingsActivity::rebuildSettingsLists() {
                                    .withSwitch());
       systemSettings.push_back(SettingInfo::Action(StrId::STR_MOTION_TITLE, SettingAction::Motion));
     }
+    // La contracara de src/TaskConfig.h: acá se ve cuánto stack usó de verdad
+    // cada tarea contra lo que tiene declarado, y cómo va el heap interno.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_SETTING_MEMORY, SettingAction::Memory));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
     // Fondo de pantalla: elegir qué foto queda pintada cuando el aparato se suspende.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_WALLPAPER, SettingAction::Wallpaper));
@@ -486,6 +490,9 @@ void SettingsActivity::toggleCurrentSetting() {
 #endif
       case SettingAction::DevicePair:
         startActivityForResult(std::make_unique<DevicePairActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Memory:
+        startActivityForResult(std::make_unique<TaskStatsActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::Motion:
         startActivityForResult(std::make_unique<MotionActivity>(renderer, mappedInput), resultHandler);

@@ -767,6 +767,10 @@ void setup() {
   // Después de los botones y del IMU: prueba los pines que despiertan del reposo.
   IDLE_SLEEP.begin();
   RTC_ALARM.begin();
+  // El loop de Arduino es la tarea que más cerca está del límite (por acá pasan
+  // el TLS, el parseo de EPUB y todo lo que no tiene tarea propia): se anota
+  // para poder medirle el stack desde Ajustes -> Sistema -> Memoria.
+  tasks::attach(tasks::Id::Loop);
 
 #if FREEINK_DEVICE_X4 || FREEINK_DEVICE_X3
   LOG_INF("MAIN", "Hardware detect: %s", gpio.deviceIsX3() ? "X3" : "X4");

@@ -72,7 +72,10 @@ bool UiSound::ensureTask() {
   return true;
 }
 
-void UiSound::taskEntry(void* self) { static_cast<UiSound*>(self)->taskLoop(); }
+void UiSound::taskEntry(void* self) {
+  tasks::attach(tasks::Id::UiSound);
+  static_cast<UiSound*>(self)->taskLoop();
+}
 
 void UiSound::taskLoop() {
   for (;;) {

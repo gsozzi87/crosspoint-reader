@@ -34,6 +34,7 @@ enum class SettingAction {
   UsbDrive,        // ws397: la tarjeta como disco en la computadora, por cable
   DevicePair,      // ws397: vincular el aparato con una cuenta de la web
   Motion,          // ws397: gestos del IMU, valores en vivo y calibración de ejes
+  Memory,          // ws397: stack declarado contra usado por tarea, heap y reposo
 };
 
 struct SettingInfo {

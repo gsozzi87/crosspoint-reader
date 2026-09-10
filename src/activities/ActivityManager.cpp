@@ -46,6 +46,7 @@ void ActivityManager::begin() {
 }
 
 void ActivityManager::renderTaskTrampoline(void* param) {
+  tasks::attach(tasks::Id::Render);  // para medir su stack (Ajustes -> Memoria)
   auto* self = static_cast<ActivityManager*>(param);
   self->renderTaskLoop();
 }
