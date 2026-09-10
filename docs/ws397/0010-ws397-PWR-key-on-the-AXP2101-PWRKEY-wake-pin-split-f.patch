@@ -1,0 +1,329 @@
+From d3d753298e2ddab0cdd768346d48dfdb09cfc94d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 10 Sep 2026 14:14:22 +0000
+Subject: [PATCH 10/12] ws397: PWR key on the AXP2101 PWRKEY, wake pin split
+ from the power pin
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The ws397 has a separate PWR button wired to the PMIC PWRKEY input, not to a
+GPIO, so OK stops being the power key (InputStyle::DigitalButtons) and the
+profile grows two fields:
+
+  InputPins.wakePin  the RTC-capable key that arms the deep-sleep wake when the
+                     power key is not a GPIO (ws397: OK on GPIO5). Every other
+                     board leaves it unassigned and keeps waking on `power`.
+  BoardProfile.pmicIrq  the PMIC interrupt line (ws397: GPIO38, open-drain,
+                     active-low, NOT an RTC GPIO — hence wakePin).
+
+PowerManager::wakeSourcePin() exposes the choice, armWakeOnPins() now returns
+whether it actually armed (it silently did nothing when a pin was not
+RTC-capable on ext1 parts) and InputManager::isWakePinPhysicallyPressed()
+verifies the post-wake hold on the right pin.
+
+Also: the first paint after begin() is promoted out of the `!turnOff` branch in
+Ssd1677Driver, and an explicit FULL is no longer downgraded to HALF.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../src/driver/Ssd1677Driver.cpp              | 37 +++++++++-------
+ .../BoardConfig/include/BoardConfig.h         | 36 ++++++++++++---
+ .../InputManager/include/InputManager.h       |  7 +++
+ .../InputManager/src/InputManager.cpp         |  8 ++++
+ .../PowerManager/include/PowerManager.h       | 20 ++++++---
+ .../PowerManager/src/PowerManager.cpp         | 44 +++++++++++++++----
+ 6 files changed, 115 insertions(+), 37 deletions(-)
+
+diff --git a/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp b/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
+index 8b4cb27..85c0b8f 100644
+--- a/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
++++ b/libs/display/FreeInkDisplay/src/driver/Ssd1677Driver.cpp
+@@ -433,24 +433,29 @@ void Ssd1677Driver::displayImpl(EpdBus& bus, const uint8_t* fb, const uint8_t* p
+   // the single-pass HALF (0xD7 "_updateFull"); it never runs the multi-flash OTP
+   // full waveform (0xF7 is a dead fallback branch there). Promote to HALF where
+   // the board has one; boards without (Sticky) promote to their vendor FULL.
+-  if (!turnOff) {
+-    if (_needsInitialFull) {
+-      // First paint after boot/wake must not be a differential FAST: it only drives
+-      // pixels that differ from the RED baseline, so it can't clear whatever is
+-      // physically on the panel (the boot screen) and that ghosts through. But a HALF
+-      // or FULL the caller already asked for is non-differential (BYPASS_RED) and
+-      // clears the panel + seeds the baseline on its own — honor it and just consume
+-      // the one-shot. Only upgrade a FAST request. This keeps the boot logo (a HALF)
+-      // from paying an extra multi-inversion FULL-waveform flash on top of its own.
+-      if (mode == RefreshMode::Fast) mode = RefreshMode::Full;
+-      _needsInitialFull = false;
++  if (_needsInitialFull) {
++    // First paint after boot/wake must not be a differential FAST: it only drives
++    // pixels that differ from the RED baseline, so it can't clear whatever is
++    // physically on the panel (the boot screen) and that ghosts through. But a HALF
++    // or FULL the caller already asked for is non-differential (BYPASS_RED) and
++    // clears the panel + seeds the baseline on its own — honor it AS ASKED and just
++    // consume the one-shot (an explicit FULL must never come out as a HALF). Only
++    // upgrade a FAST request, to the single-pass HALF where the board has one. This
++    // keeps the boot logo (a HALF) from paying an extra multi-inversion FULL-waveform
++    // flash on top of its own.
++    // Independent of turnOff: the sunlight fading fix routes every display through
++    // the turn-off path, and skipping the promotion there made the first paint after
++    // boot/wake a differential FAST against a baseline the init sequence had just
++    // filled with 0xF7 — the sleep image ghosted through.
++    _needsInitialFull = false;
++    if (mode == RefreshMode::Fast) {
+       mode = (_cfg.halfSeqOverride != 0) ? RefreshMode::Half : RefreshMode::Full;
+-    } else if (!_isScreenOn && _cfg.fullSeqOverride == 0) {
+-      // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override
+-      // boards skip this — their fast sequence self-powers, so _isScreenOn is false
+-      // every page and forcing HALF would make every page a slow full-waveform flash.
+-      mode = RefreshMode::Half;
+     }
++  } else if (!turnOff && !_isScreenOn && _cfg.fullSeqOverride == 0) {
++    // X4-class cold start: panel asleep -> a (warmed) HALF full-clear. Override
++    // boards skip this — their fast sequence self-powers, so _isScreenOn is false
++    // every page and forcing HALF would make every page a slow full-waveform flash.
++    mode = RefreshMode::Half;
+   }
+ 
+   // Leaving grayscale content without the firmware's cleanup: stock parity — the
+diff --git a/libs/hardware/BoardConfig/include/BoardConfig.h b/libs/hardware/BoardConfig/include/BoardConfig.h
+index 383b534..b705397 100644
+--- a/libs/hardware/BoardConfig/include/BoardConfig.h
++++ b/libs/hardware/BoardConfig/include/BoardConfig.h
+@@ -510,6 +510,13 @@ struct InputPins {
+   int8_t power;
+   bool powerActiveHigh;  // true = pressed reads HIGH (INPUT_PULLDOWN); false = active-LOW (INPUT_PULLUP)
+   int8_t adcLadderPin = PIN_UNASSIGNED;  // ADC pin for single resistor ladder (e.g. OnePage GPIO4)
++  // Deep-sleep wake key when it is NOT the power key. PIN_UNASSIGNED = wake on
++  // `power` (every earlier board). Set on boards whose power key sits behind a
++  // PMIC on a non-RTC IRQ line (WS397: PWR -> AXP2101 PWRKEY, IRQ on GPIO38),
++  // so a plain RTC-capable key (WS397: OK on GPIO5) arms the EXT1/GPIO wake
++  // instead. Read through PowerManager::wakeSourcePin(); same polarity flag as
++  // `power` (powerActiveHigh).
++  int8_t wakePin = PIN_UNASSIGNED;
+ };
+ 
+ // Capacitive touch panel description (TouchController::None disables it).
+@@ -746,6 +753,10 @@ struct BoardProfile {
+   // I2C frontlight (LM3630A). Defaulted so existing profiles need no change;
+   // a board with one sets it (EEGO A4).
+   I2cFrontlightConfig i2cFrontlight = NO_I2C_FRONTLIGHT;
++  // PMIC interrupt line (open-drain, active-low, pulled up by the host). Documents
++  // the wiring for boards whose power key is a PMIC PWRKEY input (WS397: AXP2101
++  // IRQ on GPIO38); the consumer owns the key decoding. PIN_UNASSIGNED = none.
++  int8_t pmicIrq = PIN_UNASSIGNED;
+ };
+ 
+ constexpr TouchConfig NO_TOUCH = {TouchController::None,
+@@ -1788,11 +1799,15 @@ constexpr AudioConfig WS397_AUDIO = {AudioOutput::I2sEs8311,
+ constexpr BoardProfile WS397 = {
+     Board::WS397,
+     "ws397",
+-    // UP4 / OK5 / DOWN6 / BOOT0, all active-low. OK doubles as the power key:
+-    // click = confirm, hold = sleep, press = wake (GPIO5 is RTC-capable, so the
+-    // EXT1 wake arms on it). BOOT is NOT used for wake: GPIO0 is the boot strap,
+-    // and holding it low through the wake reset would drop into the ROM loader.
+-    InputStyle::DigitalConfirmPowerHold,
++    // UP4 / OK5 / DOWN6 / BOOT0, all active-low, plain buttons: OK is confirm
++    // only. The physical PWR key is wired to the AXP2101 PWRKEY input, not to a
++    // GPIO: the PMIC reports it on its IRQ line (GPIO38, `pmicIrq`) and the
++    // consumer decodes INTSTS2 — so `power` is unassigned. GPIO38 is not an RTC
++    // GPIO and cannot wake the chip from deep sleep; OK (GPIO5, RTC-capable) is
++    // the wake key (`wakePin`). BOOT is NOT used for wake: GPIO0 is the boot
++    // strap, and holding it low through the wake reset would drop into the ROM
++    // loader.
++    InputStyle::DigitalButtons,
+     DisplayController::SSD1677,
+     800,
+     480,
+@@ -1801,8 +1816,9 @@ constexpr BoardProfile WS397 = {
+     20000000,  // panel datasheet: 20 MHz max write clock
+     // SD is 4-bit SDMMC (below), not SPI
+     {PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, PIN_UNASSIGNED, false, 0},
+-    // back(BOOT strap: pull-up input is safe), confirm, left, right, up, down, power(=confirm)
+-    {0, 5, PIN_UNASSIGNED, PIN_UNASSIGNED, 4, 6, 5, false},
++    // back(BOOT strap: pull-up input is safe), confirm, left, right, up, down,
++    // power (none: PMIC PWRKEY), powerActiveHigh, adcLadderPin, wakePin (=OK)
++    {0, 5, PIN_UNASSIGNED, PIN_UNASSIGNED, 4, 6, PIN_UNASSIGNED, false, PIN_UNASSIGNED, 5},
+     PIN_UNASSIGNED,  // batteryAdc: battery telemetry comes from the AXP2101-class PMIC (below)
+     PIN_UNASSIGNED,  // batteryChargeStatus: idem
+     2.0f,
+@@ -1823,6 +1839,12 @@ constexpr BoardProfile WS397 = {
+     // SensorsConfig maps SHT40), imu QMI8658
+     {41, 42, 400000, 0x51, 0, 0x6B, 0, RtcType::Pcf85063, ImuType::Qmi8658},
+     1.0f,
++    {},                 // power latches: none (PMIC-managed rails)
++    0,                  // displayControllerVariant
++    {},                 // viewableInsets: default
++    false,              // batteryChargeStatusActiveHigh: unused (no /STAT pin)
++    NO_I2C_FRONTLIGHT,
++    38,                 // pmicIrq: AXP2101 IRQ (open-drain, active-low), not an RTC GPIO
+ };
+ 
+ constexpr uint32_t panelBytes(const BoardProfile& p) {
+diff --git a/libs/hardware/InputManager/include/InputManager.h b/libs/hardware/InputManager/include/InputManager.h
+index a8092c4..0974c8e 100644
+--- a/libs/hardware/InputManager/include/InputManager.h
++++ b/libs/hardware/InputManager/include/InputManager.h
+@@ -32,6 +32,13 @@ class InputManager {
+   // logical click/hold classification. False when the board has no such GPIO.
+   bool isPowerButtonPhysicallyPressed() const;
+ 
++  // Current electrical level of the deep-sleep wake GPIO: `input.wakePin` when
++  // the board assigns one (its power key is not a GPIO), else `input.power` —
++  // the same pin PowerManager::wakeSourcePin() arms. Same polarity flag as the
++  // power key (powerActiveHigh; the wake keys assigned so far are active-low).
++  // False when the board has neither. Used by the post-wake hold verification.
++  bool isWakePinPhysicallyPressed() const;
++
+   // Press edge since the previous update().
+   bool wasPressed(uint8_t buttonIndex) const;
+ 
+diff --git a/libs/hardware/InputManager/src/InputManager.cpp b/libs/hardware/InputManager/src/InputManager.cpp
+index 3e50f1e..510a46f 100644
+--- a/libs/hardware/InputManager/src/InputManager.cpp
++++ b/libs/hardware/InputManager/src/InputManager.cpp
+@@ -553,6 +553,14 @@ bool InputManager::isPowerButtonPhysicallyPressed() const {
+   return digitalRead(pin) == activeLevel;
+ }
+ 
++bool InputManager::isWakePinPhysicallyPressed() const {
++  const auto& in = BoardConfig::ACTIVE.input;
++  const int8_t pin = in.wakePin >= 0 ? in.wakePin : in.power;
++  if (pin < 0) return false;
++  const int activeLevel = in.powerActiveHigh ? HIGH : LOW;
++  return digitalRead(pin) == activeLevel;
++}
++
+ bool InputManager::wasPressed(const uint8_t buttonIndex) const { return pressedEvents & (1 << buttonIndex); }
+ 
+ bool InputManager::wasAnyPressed() const { return pressedEvents > 0; }
+diff --git a/libs/hardware/PowerManager/include/PowerManager.h b/libs/hardware/PowerManager/include/PowerManager.h
+index 5622437..e44ce3e 100644
+--- a/libs/hardware/PowerManager/include/PowerManager.h
++++ b/libs/hardware/PowerManager/include/PowerManager.h
+@@ -19,19 +19,27 @@ namespace freeink {
+ 
+ class PowerManager {
+  public:
++  // The GPIO that wakes the chip from deep sleep: `input.wakePin` when a board
++  // assigns one (its power key is not a GPIO — WS397's PWR is an AXP2101 PWRKEY
++  // input reported on a non-RTC IRQ line, so OK on GPIO5 wakes instead), else
++  // `input.power` as before. PIN_UNASSIGNED when the board has neither.
++  static int8_t wakeSourcePin();
++
+   // Arm wake-on-power-button using the SoC-correct wakeup source and the active
+-  // board's power pin + polarity (powerActiveHigh -> wake on HIGH, else LOW).
+-  // Returns false if the board has no power pin (PIN_UNASSIGNED); nothing armed.
++  // board's wake pin (wakeSourcePin()) + polarity (powerActiveHigh -> wake on
++  // HIGH, else LOW). Returns false if the board has no wake pin (PIN_UNASSIGNED)
++  // or the SoC refused to arm it (not an RTC GPIO on ext1 parts); nothing armed.
+   static bool armPowerButtonWakeup();
+ 
+   // Arm deep-sleep wake on an arbitrary set of GPIOs (gpioMask, wakeLow = wake on
+   // the low level) using the SoC-correct source (ext1 on Xtensa, gpio on RISC-V).
+   // Use for extra wake lines beyond the power button — a touch INT, a second
+-  // button, an IO-expander INT. The pins must be RTC-capable on ext1 parts.
+-  static void armWakeOnPins(uint64_t gpioMask, bool wakeLow = true);
++  // button, an IO-expander INT. The pins must be RTC-capable on ext1 parts:
++  // returns false (nothing armed) when a pin is not, or when the IDF call fails.
++  static bool armWakeOnPins(uint64_t gpioMask, bool wakeLow = true);
+ 
+-  // Poll the power-button GPIO (raw read, with the matching pull) until released,
+-  // so deep sleep isn't immediately cancelled by a still-held press.
++  // Poll the wake GPIO (wakeSourcePin(); raw read, with the matching pull) until
++  // released, so deep sleep isn't immediately cancelled by a still-held press.
+   static void waitForPowerButtonRelease();
+ 
+   // Drive every assigned peripheral power-rail enable in the active board
+diff --git a/libs/hardware/PowerManager/src/PowerManager.cpp b/libs/hardware/PowerManager/src/PowerManager.cpp
+index e361c63..30ed864 100644
+--- a/libs/hardware/PowerManager/src/PowerManager.cpp
++++ b/libs/hardware/PowerManager/src/PowerManager.cpp
+@@ -3,18 +3,36 @@
+ #include <Arduino.h>
+ #include <BoardConfig.h>
+ #include <driver/gpio.h>
++#include <esp_err.h>
+ #include <esp_sleep.h>
+ #include <soc/soc_caps.h>
++#if SOC_PM_SUPPORT_EXT1_WAKEUP
++#include <driver/rtc_io.h>
++#endif
+ 
+ namespace freeink {
+ namespace {
+-int8_t powerPin() { return BoardConfig::ACTIVE.input.power; }
+ bool powerActiveHigh() { return BoardConfig::ACTIVE.input.powerActiveHigh; }
+ }  // namespace
+ 
+-void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
++int8_t PowerManager::wakeSourcePin() {
++  const auto& in = BoardConfig::ACTIVE.input;
++  return in.wakePin >= 0 ? in.wakePin : in.power;
++}
++
++bool PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
++  if (gpioMask == 0) return false;
+ #if SOC_PM_SUPPORT_EXT1_WAKEUP
+-  // Xtensa (S3/S2, classic ESP32): RTC ext1. Pins must be RTC GPIOs.
++  // Xtensa (S3/S2, classic ESP32): RTC ext1. Pins must be RTC GPIOs — the IDF
++  // rejects the whole mask otherwise (ESP_ERR_INVALID_ARG) and nothing is armed,
++  // so check up front and name the offending pin. (S3: GPIO0-21 are RTC.)
++  for (int pin = 0; pin < 64; ++pin) {
++    if (!(gpioMask & (1ULL << pin))) continue;
++    if (pin >= GPIO_NUM_MAX || !rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(pin))) {
++      log_e("wake pin GPIO%d is not an RTC GPIO: deep-sleep wake NOT armed", pin);
++      return false;
++    }
++  }
+   //
+   // The classic ESP32 RTC has no "any low" mode — only ESP_EXT1_WAKEUP_ALL_LOW
+   // ("wake when ALL selected pins are low"). For a single wake pin (the common
+@@ -25,28 +43,38 @@ void PowerManager::armWakeOnPins(uint64_t gpioMask, bool wakeLow) {
+ #else
+   const esp_sleep_ext1_wakeup_mode_t lowMode = ESP_EXT1_WAKEUP_ANY_LOW;
+ #endif
+-  esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
++  const esp_err_t err = esp_sleep_enable_ext1_wakeup(gpioMask, wakeLow ? lowMode : ESP_EXT1_WAKEUP_ANY_HIGH);
+ #elif SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
+   // RISC-V (C3/C6/H2): the deep-sleep "gpio" wakeup source.
+-  esp_deep_sleep_enable_gpio_wakeup(gpioMask, wakeLow ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH);
++  const esp_err_t err =
++      esp_deep_sleep_enable_gpio_wakeup(gpioMask, wakeLow ? ESP_GPIO_WAKEUP_GPIO_LOW : ESP_GPIO_WAKEUP_GPIO_HIGH);
+ #else
+ #error "FreeInk PowerManager: target has no supported deep-sleep GPIO wakeup source"
+ #endif
++  if (err != ESP_OK) {
++    log_e("deep-sleep GPIO wake NOT armed (mask 0x%08lx%08lx): %s", static_cast<unsigned long>(gpioMask >> 32),
++          static_cast<unsigned long>(gpioMask), esp_err_to_name(err));
++    return false;
++  }
++  return true;
+ }
+ 
+ bool PowerManager::armPowerButtonWakeup() {
+-  const int8_t pin = powerPin();
++  const int8_t pin = wakeSourcePin();
+   if (pin < 0) return false;
+   const bool activeHigh = powerActiveHigh();
+ 
+   // Hold the idle level with the opposite pull so the line is defined in sleep.
+   pinMode(pin, activeHigh ? INPUT_PULLDOWN : INPUT_PULLUP);
+-  armWakeOnPins(1ULL << pin, /*wakeLow=*/!activeHigh);
++  if (!armWakeOnPins(1ULL << pin, /*wakeLow=*/!activeHigh)) {
++    log_e("power/wake button on GPIO%d could not be armed as a deep-sleep wake source", pin);
++    return false;
++  }
+   return true;
+ }
+ 
+ void PowerManager::waitForPowerButtonRelease() {
+-  const int8_t pin = powerPin();
++  const int8_t pin = wakeSourcePin();
+   if (pin < 0) return;
+   const bool activeHigh = powerActiveHigh();
+ 
+-- 
+2.43.0
+
