@@ -217,8 +217,11 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   mosaico propio por ese motivo.
 - **El botón PWR es del PMIC, no un GPIO** (`src/util/PowerKey`, singleton `POWER_KEY`, `pump()` desde el loop):
   está cableado al PWRKEY del AXP2101 y el chip lo reporta por su IRQ (GPIO38, `pmicIrq` en el perfil). Toque corto =
-  limpiar pantalla (el próximo pintado sale FULL 0xF7); mantener 3 s = barrita y a dormir; el corte duro del PMIC está
-  a los 10 s como escape. NO pasa por el `InputManager` del SDK a propósito: su antirrebote de 5 ms se come una
+  **menú de pantalla** (limpiar, bloquear, dormir; se dibuja encima de lo que haya y sin pasar por una Activity, así
+  funciona también dentro del lector, que es donde se acumula el fantasma); mantener 3 s = barrita y a dormir; el corte
+  duro del PMIC está a los 10 s como escape. Bloqueada, PWR es lo único que llega: ni la palanca, ni OK, ni los gestos,
+  y los botones dejan de contar como actividad (el aparato en la mochila puede reposar aunque la palanca se apriete
+  sola). Un recordatorio desbloquea. NO pasa por el `InputManager` del SDK a propósito: su antirrebote de 5 ms se come una
   pulsación entera que aparece y desaparece entre dos lecturas. La polaridad del flanco se aprende en caliente y se
   guarda en RTC RAM. GPIO38 no es RTC GPIO, así que **el que despierta sigue siendo OK** (GPIO5), y eso ahora está en
   el perfil de la placa (`InputPins.wakePin`) en vez de escondido en el código.
@@ -364,6 +367,61 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   segundo. Un solo cartel más ancho que la pantalla dejaba miles de líneas de "Outside range" y se comía el log
   entero (el que mandó el usuario en 1.5.43 tenía 2900 líneas y 2877 eran eso).
 
+## Energía: el reposo en tres etapas (1.5.48)
+
+- Hasta 1.5.47 había dos estados y nada en el medio: despierto (~40 mA, el loop cada 10 ms) o deep sleep, que es
+  un reset al volver. `src/util/IdleSleep` (singleton `IDLE_SLEEP`, `tick()` desde el loop) agrega la etapa del
+  medio: a los **45 s** de quietud entra en `esp_light_sleep_start()` por **ciclos de 2 s**. La pantalla queda
+  como estaba (el panel es biestable: retener no cuesta nada), el estado sigue vivo y vuelve en menos de 10 ms.
+- Despiertan: los cuatro botones (arriba 4, OK 5, abajo 6, BOOT 0) por nivel bajo, la IRQ del PMIC (GPIO38, por
+  ahí entra PWR), el INT del RTC (GPIO45) y el timer. **En light sleep no hace falta que el pin sea RTC GPIO**:
+  eso es lo que destraba GPIO38 y GPIO45, que para el deep sleep no sirven.
+- Cada ciclo mira el acelerómetro: si se movió más de 60 mg entre muestras, o si el chip dejó un gesto latcheado
+  (un doble golpe dura 10 ms y entre dos muestras de 2 s no se ve como diferencia), despierta. Levantar el
+  aparato lo enciende.
+- **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
+  de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
+  decide DESPUÉS, así nunca puede impedirlo.
+- **Alarma del RTC** (`src/util/RtcAlarm`, singleton `RTC_ALARM`): PCF85063, registros 0x0B-0x0F, AIE/AF en
+  Control_2 (0x01). Se arma al próximo recordatorio o al fin del temporizador con la hora en UTC, que es lo que
+  guarda el RTC. El timer del light sleep se corta a la hora; la alarma del chip aguanta las esperas largas y
+  despierta en el segundo exacto. **La bandera AF se limpia siempre**: si queda puesta, GPIO45 se queda en bajo,
+  el light sleep se rechaza en bucle y el aparato gasta más despierto que sin reposo. Sigue sin servir para el
+  deep sleep (GPIO45 no es RTC GPIO): eso lo arma `armReminderWake()` con el timer, y así queda.
+
+## Disciplina de tareas (1.5.48)
+
+- `src/TaskConfig.h` declara núcleo, prioridad, stack y para qué de cada tarea, y ahora eso se puede **medir**:
+  cada una se anota al arrancar (`tasks::attach`) y `usage()` devuelve la marca de agua del stack. Las del SDK,
+  que nacen y mueren solas (`audio_play`), se buscan por nombre. El loop de Arduino está en el registro porque es
+  el que más cerca está del límite: por ahí pasan el TLS, el parseo de EPUB y todo lo que no tiene tarea propia.
+- `tasks::runBounded(nombre, stack, fn, arg)` corre trabajo pesado en una tarea de vida corta con el stack
+  declarado y devuelve cuántos bytes usó. **No** es para no frenar la UI (el llamador espera, igual que antes):
+  es para que un stack grande exista sólo mientras dura ese trabajo en vez de estar reservado para siempre en el
+  loop. Su primer usuario de verdad son las apps en Lua.
+- **Ajustes → Sistema → Memoria** (`TaskStatsActivity`): heap interno con su mínimo histórico y el bloque
+  contiguo mayor (el número que decide si una asignación grande entra), PSRAM, el stack usado contra el declarado
+  de cada tarea, y cómo va el reposo. Se repinta sólo si algún número se movió más de 2 KB.
+
+## Apps en Lua desde la tarjeta (1.5.48)
+
+- Una app es **un archivo** en `/Apps` de la tarjeta (`/Apps/dados.lua`). Se copia por el modo memoria USB y se
+  abre en **Juegos → Apps de la tarjeta**. Contrato de callbacks (`on_open`, `on_key`, `on_tick`, `on_draw`), no
+  de bucle propio: en tinta el refresco lo decide el firmware, y una app con su `while true` se comería el loop,
+  los recordatorios y el reposo. El contrato entero está en `docs/ws397/APPS_LUA.md` y hay ejemplos en
+  `examples/Apps/`.
+- **El cajón** (`src/lua/LuaSandbox.cpp`): están `math`, `string`, `table`, `utf8`, `coroutine` y la base; NO
+  están `io`, `os`, `package`, `debug`, `require`, `load`, `loadstring`, `dofile`, `loadfile` ni `string.dump`
+  (los `.c` de esas bibliotecas ni se copiaron a `lib/Lua`). Topes: 192 KB de memoria desde PSRAM, 400.000
+  instrucciones por llamada (un `while true do end` termina en error de la app, no en un aparato colgado) y
+  32 KB de stack en un worker de `runBounded`.
+- Está separado de `LuaApp` justamente para poder probarlo sin placa: **`./test/lua_sandbox/run.sh`** verifica de
+  escritorio que lo que tiene que estar está, que lo que no, no, que la guardia corta un bucle infinito sin tocar
+  uno normal, que el techo de memoria aguanta y que las apps de ejemplo corren sus callbacks sin error.
+- Lua 5.4.7 con `LUA_32BITS` (el S3 tiene FPU de simple precisión) cuesta **108 KB** de flash. La configuración va
+  editada en `lib/Lua/src/luaconf.h` y no con un `-D`: ese archivo define `LUA_32BITS` sin protección, un `-D`
+  quedaría pisado, y además lo incluyen tanto el intérprete como nuestro código.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
@@ -371,7 +429,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 
 0. Hardware: volumen (hecho), botón PWR por el PMIC (hecho, 1.5.47), coordinador de refresco (hecho), driver SHTC3
    en dos tiempos (hecho), IMU por polling con boca abajo = silenciar, doble golpe = PTT y sacudir = cancelar
-   (hecho). Falta: wake por alarma del RTC, deep sleep medido. Descartado: trackball y botones PCF8574.
+   (hecho), reposo en tres etapas con light sleep y alarma del RTC por GPIO45 (hecho, 1.5.48), consumo y stacks
+   medidos desde Ajustes → Sistema → Memoria (hecho, 1.5.48). Descartado: trackball y botones PCF8574.
 1. Hub + preguntarle al libro + cliente HTTP + sincronización con `GET /api/hub` y widgets + Hablar con
    clasificador de intención (hecho). Falta: pizarra de mensajes desde el teléfono (1.8), ajustes del hub en la web UI.
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
@@ -381,7 +440,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 3. Contenido: Biblia (hecha, capítulos cacheados; falta descarga por libro e índice offline), MP3 estilo Winamp
    (hecho), versículo/frase del día, RSS/lectura web, álbum de imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria
-   (parejas, Simón), Tetris experimental, ajedrez opcional.
+   (parejas, Simón), Tetris experimental, ajedrez opcional. Y lo que no viene compilado: apps en Lua desde la
+   tarjeta (hecho, 1.5.48).
 
 Descartado: radio por streaming, Casa Cerebro, lectura en voz alta de libros, Spotify (DRM; solo Connect online
 con cspot, no offline), auto-rotación por IMU, chino.

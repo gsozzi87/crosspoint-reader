@@ -92,3 +92,56 @@ Convención de botones: **ARRIBA/ABAJO** = palanca, **OK** = confirmar, **ATRÁS
 1. Abrir un EPUB, pasar 20 páginas: refresco limpio según la cadencia de Ajustes; volver al hub y "Continuar leyendo"
    abre en la misma página.
 2. Preguntarle al libro: pregunta por voz y respuesta paginada.
+
+## 9. Reposo, alarma del RTC y menú de PWR (1.5.48, lo más nuevo)
+
+**Reposo (light sleep).** Es lo más difícil de ver, porque cuando funciona no se nota nada.
+
+1. Dejar el aparato quieto en el hub **45 segundos** sin tocarlo. La pantalla no cambia (es lo correcto: el panel
+   retiene la imagen). Apretar cualquier botón: tiene que responder **al instante**, sin parpadeo ni arranque.
+   Si tarda o si la pantalla se rehace entera, no estaba reposando: estaba durmiendo de verdad.
+2. Ajustes → Sistema → **Memoria**, sección Reposo: tiene que decir cuántos ciclos lleva y cuánto tiempo estuvo.
+   Si dice **"todavía no entró"** después de un rato quieto, hay algo bloqueándolo siempre — mirar el log
+   (`/board/log`, etiqueta `REST`).
+3. Con el aparato quieto y reposando, **levantarlo**: se despierta solo. En el log, `despertó por movimiento`.
+4. Apretar **PWR** con el aparato reposando: abre el menú de pantalla. (Esto es lo que prueba que la IRQ del PMIC
+   despierta: PWR no es un GPIO.)
+5. Poner música y dejarlo quieto un minuto: **no** tiene que reposar (la música se cortaría). Igual con el cable
+   USB enchufado y con el modo memoria USB.
+6. Batería: anotar el porcentaje, dejarlo quieto una hora en el hub y volver a anotar. Contra 1.5.47 la caída
+   tiene que ser bastante menor. **Es la medición que más importa de este release.**
+
+**Alarma del RTC.**
+
+7. Al arrancar, el log tiene que decir `alarma del RTC lista`. Si en cambio dice `INT del RTC (GPIO45) en bajo al
+   arrancar`, la alarma no se va a usar y hay que avisar: ese pin quedaría rechazando el reposo.
+8. Poner un recordatorio para dentro de **10 minutos** y dejar el aparato quieto. El log dice `alarma armada
+   para …`. A los 10 minutos tiene que sonar sin que nadie lo toque.
+9. Lo mismo con un temporizador de 3 minutos: salir del temporizador (Atrás, que lo deja corriendo), dejarlo
+   quieto y esperar.
+
+**Menú de pantalla y bloqueo.**
+
+10. Toque corto de **PWR**: aparece el menú de tres (Limpiar pantalla, Bloquear pantalla, Dormir ahora). La
+    palanca mueve, OK elige, Atrás o PWR de nuevo lo cierra. Solo, se cierra a los diez segundos.
+11. **Limpiar pantalla**: el próximo pintado sale completo y se va el fantasma. Probarlo **leyendo un EPUB**, que
+    es donde más se acumula (el menú tiene que funcionar ahí adentro también).
+12. **Bloquear pantalla**: sale el cartel. Ahora la palanca, OK y Atrás no hacen NADA; sacudir tampoco. Sólo PWR
+    desbloquea, y al desbloquear vuelve la pantalla que estaba abajo.
+13. Bloqueado, poner un recordatorio para dentro de un minuto: cuando vence, **desbloquea solo** y suena.
+14. Bloqueado y quieto: tiene que reposar igual (ver Memoria). Apretar botones bloqueado no lo despierta del todo.
+
+## 10. Apps en Lua (1.5.48)
+
+1. Copiar `examples/Apps/contador.lua` y `examples/Apps/dados.lua` a `/Apps` de la tarjeta (Ajustes → Sistema →
+   Modo memoria USB). Sin la carpeta `/Apps`, la pantalla tiene que decir que no hay apps, no romperse.
+2. Juegos → **Apps de la tarjeta**: aparecen las dos con su ruta debajo.
+3. **contador**: la palanca suma y resta, OK vuelve a cero. Salir con Atrás y volver a entrar: se acordó del
+   número (`cp.save`/`cp.load`).
+4. **dados**: la palanca cambia cuántos dados, OK tira, **sacudir el aparato** también tira. Los dados se dibujan
+   con sus puntos.
+5. **Atrás mantenido un segundo** sale de cualquier app, siempre. Es la salida de emergencia: probarla.
+6. Una app rota: crear `/Apps/mala.lua` con `esto no es lua` adentro. Tiene que abrir la pantalla de error con el
+   mensaje del intérprete (archivo y línea), y Atrás vuelve al catálogo. **El aparato no se reinicia.**
+7. Una app colgada: crear `/Apps/colgada.lua` con `function on_open() while true do end end`. Después de un rato
+   corto tiene que aparecer el error "la app tardó demasiado", no un aparato trabado.

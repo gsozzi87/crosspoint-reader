@@ -7,6 +7,30 @@ teclado nunca (todo ingreso por voz), lo pesado en el servidor Hono, el aparato 
 
 Estado: ✅ hecho · 🔧 en curso · ⬜ pendiente · ❌ descartado.
 
+## Los otros dos firmwares de ESTA placa
+
+El Sticky y el Note 4 son otros aparatos. Sobre la Waveshare ESP32-S3-ePaper-3.97 corren, además del nuestro,
+dos firmwares más, y son la comparación que de verdad vale:
+
+- **rustmix-wave** (Rust sobre ESP-IDF, `aimindseye/rustmix-wave`): alcance parecido al nuestro — lector
+  TXT/EPUB, calendario, notas de voz, diccionario, conversor, alarmas, juegos, portal de transferencia por LAN.
+  Sus juegos son **paquetes Lua en la SD**, no código compilado, y tiene control remoto por BLE con un reloj
+  Wear OS (dos builds separados, porque la radio es una sola).
+- **folloup** (C++/ESP-IDF, rama `folloup-waveshare`): una sola cosa y bien hecha — capturar ideas por voz,
+  mandarlas a Gemini para transcribir y resumir, y dejar las importantes pegadas en la pantalla como stickies.
+
+**Qué les tomamos** (1.5.48): el reposo en tres etapas con detección de inactividad por el IMU es de folloup
+(su `device_sleep_service`); el reparto de workers acotados y las apps en Lua desde la tarjeta son de
+rustmix-wave; el menú de mantenimiento de la pantalla en el toque de PWR es de rustmix y el bloqueo de pantalla
+es de folloup.
+
+**Qué NO**: el remoto por BLE (el usuario no lo quiere, y cuesta un build aparte porque WiFi y BLE se pelean el
+mismo módem).
+
+**Qué tenemos nosotros que ellos no**: servidor propio con proveedor de IA configurable, TTS con Piper,
+traductor conversacional, Biblia entera offline, música MP3, RSS, fotos, doce juegos, siete idiomas, OTA propio,
+modo memoria USB, clasificador de intención por voz y cuentas con vinculación sin teclado.
+
 ## Principios de interacción
 
 - **Un solo botón de voz (PTT).** Como el botón AI del Sticky y el Note 4: mantener graba, soltar manda.
