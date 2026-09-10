@@ -748,6 +748,12 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
 }
 
 Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) const {
+  const Rect layout = composePopup(renderer, message);
+  renderer.displayBuffer();
+  return layout;
+}
+
+Rect BaseTheme::composePopup(const GfxRenderer& renderer, const char* message) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int marginX = metrics.popupMarginX;
   const int marginY = metrics.popupMarginY;
@@ -799,7 +805,6 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) cons
                       popupFontFamily);
     textY += lineHeight;
   }
-  renderer.displayBuffer();
   return Rect{x, y, w, h};
 }
 

@@ -21,6 +21,7 @@ class SdCardFont;
 #include <vector>
 
 #include "Bitmap.h"
+#include "PanelRefreshCoordinator.h"
 
 // Color representation: uint8_t mapped to 4x4 Bayer matrix dithering levels
 // 0 = transparent, 1-16 = gray levels (white to black)
@@ -70,6 +71,12 @@ class GfxRenderer {
   mutable HalDisplay::RefreshMode promotedRefresh_ = HalDisplay::FAST_REFRESH;
   // Swap in (and clear) the promoted mode, if one is pending.
   HalDisplay::RefreshMode applyPromotedRefresh(HalDisplay::RefreshMode refreshMode) const;
+
+  // Device-wide FAST/HALF/FULL policy + shadow of the last frame the panel
+  // shows. Every path to the panel (displayBuffer, displayBufferAsync,
+  // displayGrayscaleBase) goes through it. Mutable because the render path is
+  // const; it carries its own mutex.
+  mutable PanelRefreshCoordinator refresh_;
 
   // Tiled grayscale strip target. When active, drawPixel()/clearScreen()
   // operate on a caller-owned scratch holding one horizontal band of physical
@@ -193,7 +200,16 @@ class GfxRenderer {
   int getScreenWidth() const;
   int getScreenHeight() const;
   void tapToLogical(float nx, float ny, int& outX, int& outY) const;
-  void displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
+  // Push the framebuffer to the panel. `refreshMode` is what the caller wants;
+  // the refresh coordinator may promote it (clean cadence, first paint, gray
+  // residue) or skip the panel write when a UI frame is byte-identical to what
+  // the panel already shows. Returns the EFFECTIVE mode so callers with their
+  // own cadence bookkeeping (the reader) can resync to it. `hint` tells the
+  // coordinator whether this is a UI repaint or a reader page turn.
+  HalDisplay::RefreshMode displayBuffer(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH,
+                                        PanelRefreshCoordinator::Hint hint = PanelRefreshCoordinator::Hint::Ui) const;
+  // Read-only view of the coordinator (diagnostics: counters, skipped frames).
+  const PanelRefreshCoordinator& refreshCoordinator() const { return refresh_; }
   // One-shot: the next displayBuffer()/displayBufferAsync() call uses `mode`
   // instead of what its caller asked for, then the override clears itself.
   // Lets a closing overlay (the control center's refresh tile) hand a
@@ -208,7 +224,11 @@ class GfxRenderer {
   // framebuffer must stay untouched until waitRefreshComplete(). Falls back to
   // a blocking refresh when fadingFix is enabled or the panel lacks deferral
   // support. See HalDisplay::displayBufferAsync for the baseline contract.
-  void displayBufferAsync(HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH) const;
+  // Never skipped by the coordinator (gray planes follow); may be promoted.
+  // Returns the effective mode like displayBuffer().
+  HalDisplay::RefreshMode displayBufferAsync(
+      HalDisplay::RefreshMode refreshMode = HalDisplay::FAST_REFRESH,
+      PanelRefreshCoordinator::Hint hint = PanelRefreshCoordinator::Hint::Ui) const;
   void waitRefreshComplete() const;
   // True when displayBufferAsync() genuinely overlaps: panel defers and
   // fadingFix isn't forcing the blocking path. Callers can skip overlap
@@ -325,7 +345,12 @@ class GfxRenderer {
   // Display the framebuffer as the base frame for a grayscale overlay that
   // follows (X3: OEM differential base waveform; others: plain display with
   // `fallback`).
-  void displayGrayscaleBase(HalDisplay::RefreshMode fallback = HalDisplay::HALF_REFRESH) const;
+  // Goes through the refresh coordinator like displayBuffer() (never skipped:
+  // the gray planes that follow need the base on the glass); returns the
+  // effective mode.
+  HalDisplay::RefreshMode displayGrayscaleBase(
+      HalDisplay::RefreshMode fallback = HalDisplay::HALF_REFRESH,
+      PanelRefreshCoordinator::Hint hint = PanelRefreshCoordinator::Hint::Ui) const;
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;
   void displayGrayBuffer() const;

@@ -216,22 +216,38 @@ bool HalGPIO::verifyPowerButtonWakeup() {
   // wheel click, so a click wake is always released before this samples and
   // verification would re-sleep on every wake. Its wheel has hard external
   // pull-ups, so the ghost-wake debounce this implements is not needed.
-  if (BoardConfig::isPaperMono() || BoardConfig::isM5PaperV11() || BoardConfig::ACTIVE.input.power < 0) {
+  // The pin sampled is the one armed as the deep-sleep wake source: the power
+  // key, or the board's dedicated wake key when the power key is not a GPIO
+  // (ws397: OK on GPIO5; PWR lives behind the AXP2101).
+  if (BoardConfig::isPaperMono() || BoardConfig::isM5PaperV11() || freeink::PowerManager::wakeSourcePin() < 0) {
     return true;
   }
 
   constexpr unsigned long POWER_WAKE_STABILITY_MS = 10;
-  const bool heldAtFirstSample = inputMgr.isPowerButtonPhysicallyPressed();
+  const bool heldAtFirstSample = inputMgr.isWakePinPhysicallyPressed();
   const unsigned long sampleStart = millis();
   inputMgr.update();
   while (millis() - sampleStart < POWER_WAKE_STABILITY_MS || inputMgr.isDebouncePending()) {
     delay(1);
     inputMgr.update();
   }
-  return heldAtFirstSample && inputMgr.isPowerButtonPhysicallyPressed();
+  return heldAtFirstSample && inputMgr.isWakePinPhysicallyPressed();
 }
 
 bool HalGPIO::isUsbConnected() const {
+  // ws397: the charging state is a PMIC register (I2C) and this is polled from
+  // update() every 10 ms and from every render for the battery icon. One read
+  // per second is plenty for a cable state; keep other boards as they were.
+  constexpr unsigned long USB_CACHE_MS = 1000;
+  if (BoardConfig::isWS397()) {
+    const unsigned long now = millis();
+    if (usbCacheValid && now - usbCacheAt < USB_CACHE_MS) return usbCached;
+    static const BatteryMonitor wsBattery;
+    usbCached = wsBattery.isCharging();
+    usbCacheAt = now;
+    usbCacheValid = true;
+    return usbCached;
+  }
   if (deviceIsX3()) {
     // X3: infer USB/charging via BQ27220 Current() register (0x0C, signed mA).
     // Positive current means charging.

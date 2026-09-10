@@ -10,6 +10,7 @@
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
+#include <PowerManager.h>
 #include <HalStorage.h>
 #include <HalSystem.h>
 #include <HalTiltSensor.h>
@@ -38,6 +39,10 @@
 #include "activities/home/VoiceActivity.h"
 #include "util/DeviceLog.h"
 #include <esp_sleep.h>
+#include <soc/soc_caps.h>
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+#include <driver/rtc_io.h>
+#endif
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "activities/Activity.h"
@@ -49,6 +54,7 @@
 #include "images/LoadingIcon.h"
 #include "platform/UsbSerialJtagHandoff.h"
 #include "util/ButtonNavigator.h"
+#include "util/PowerKey.h"
 #include "util/ScreenshotUtil.h"
 #include "music/MusicPlayer.h"
 #include "voice/VoiceRecorder.h"
@@ -67,15 +73,33 @@ namespace {
 constexpr unsigned long X4PRO_POWER_DOUBLE_CLICK_MS = 500;
 constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 
-// ws397: tiempos del mantenido de OK/encendido (ver handlePowerHold más abajo).
-constexpr unsigned long POWER_HOLD_ACTION_MS = 600;   // desde acá se ve la barrita del apagado
-constexpr unsigned long POWER_HOLD_WARN_MS = 2200;    // segundo cartel: ya casi apaga
-constexpr unsigned long POWER_HOLD_SLEEP_MS = 3000;   // acá se apaga
+// ws397: PWR hold timings (see handlePowerHold below). The key is the AXP2101
+// PWRKEY decoded by PowerKey, not a GPIO.
+constexpr unsigned long POWER_HOLD_ACTION_MS = PowerKey::SHORT_PRESS_MAX_MS;  // 600 ms: the sleep bar appears
+constexpr unsigned long POWER_HOLD_WARN_MS = 2200;    // second banner: about to sleep
+constexpr unsigned long POWER_HOLD_SLEEP_MS = 3000;   // sleep
 }  // namespace
 
-// A wake hold must never become an in-app power-button action.  Boot may continue
-// while the button is held; swallow the one release that ends that wake gesture.
-static bool wakePowerReleasePending = false;
+// A wake hold must never become an in-app button action. Boot may continue
+// while the wake key is held; swallow the one release that ends that wake
+// gesture. The wake key is the power button on most boards and OK on the
+// ws397 (its PWR key sits behind the PMIC and cannot wake the chip), so this
+// watches HalGPIO::BTN_CONFIRM there — see wakeKeyIndex().
+static bool wakeKeyReleasePending = false;
+
+static uint8_t wakeKeyIndex() {
+  return BoardConfig::isWS397() ? HalGPIO::BTN_CONFIRM : HalGPIO::BTN_POWER;
+}
+
+// The logical front button the wake key is mapped to (the front buttons can be
+// remapped in settings, so physical OK is not always logical Confirm).
+static MappedInputManager::Button wakeKeyLogicalButton() {
+  const uint8_t hw = wakeKeyIndex();
+  if (SETTINGS.frontButtonBack == hw) return MappedInputManager::Button::Back;
+  if (SETTINGS.frontButtonLeft == hw) return MappedInputManager::Button::Left;
+  if (SETTINGS.frontButtonRight == hw) return MappedInputManager::Button::Right;
+  return MappedInputManager::Button::Confirm;
+}
 
 // Fonts
 EpdFont notoserif14RegularFont(&notoserif_14_regular);
@@ -275,12 +299,16 @@ static bool loadSleepFrameBuffer() {
 // the chip through the PCF85063 alarm. The deep-sleep timer does it instead:
 // armed to the next pending reminder (from the hub cache), the boot path then
 // shows ReminderAlertActivity. Needs the RTC set (server clock or NTP).
+static bool reminderWakeArmed = false;  // enterDeepSleep() arms with the log; sleepNow() only fills the gap
 static void armReminderWake(const bool quiet = false) {
+  if (reminderWakeArmed) return;
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) {
+    // Not latched: the second caller gets another go at the shared I2C bus.
     if (!quiet) LOG_ERR("MAIN", "no clock: nothing armed, the timer will not ring asleep");
     return;
   }
+  reminderWakeArmed = true;
   time_t due = HUB_STORE.nextDueAt(now);
   // A running timer wakes the device too, and wins when it fires first.
   if (HUB_STORE.timerEndAt > 0 && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
@@ -305,6 +333,21 @@ static void sleepNow() {
   // en un estado conocido antes de apagar.
   MUSIC.stop();
   armReminderWake(/*quiet=*/true);
+  // ws397: the wake key is OK (GPIO5, RTC-capable, EXT1 low). PWR cannot wake:
+  // the PMIC IRQ is on GPIO38, which is not an RTC GPIO. A PWR press while
+  // asleep only latches status in the AXP2101 (flushed by PowerKey::begin()
+  // on the next boot); a 10 s PWR hold makes the PMIC cut the rails (PressOff,
+  // the deliberate hardware escape), after which PWR held 1 s powers it back on.
+  const int8_t wakePin = freeink::PowerManager::wakeSourcePin();
+  if (wakePin < 0) {
+    LOG_ERR("MAIN", "no wake pin in the board profile: only the timer can wake the device");
+  }
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+  else if (!rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(wakePin))) {
+    // The SDK refuses to arm it (and says so only on the serial console).
+    LOG_ERR("MAIN", "wake pin GPIO%d is not an RTC GPIO: the button will NOT wake the device", wakePin);
+  }
+#endif
   powerManager.startDeepSleep(gpio);
 }
 
@@ -434,32 +477,23 @@ void enterDeepSleep(bool fromTimeout = false) {
   sleepNow();
 }
 
-// ws397: el botón de encendido es el MISMO OK (InputStyle::DigitalConfirmPowerHold),
-// así que hasta ahora cualquier mantenido de más de 400 ms dormía el aparato y la
-// pulsación larga de OK no servía para nada más. Ahora el mantenido se reparte por
-// tiempos:
-//   toque corto ................. confirmar (lo resuelve el SDK: menos de
-//                                 CONFIRM_POWER_HOLD_MS = 400 ms)
-//   soltar antes de 1,2 s ....... nada, se puede arrepentir sin consecuencias
-//   soltar entre 1,2 s y 3 s .... Hablar, el mismo PTT del doble toque de Atrás
-//   mantener 3 s ................ apagar
-// El umbral de los 400 ms lo maneja el SDK y NO se toca: es el que decide entre
-// confirmar y encendido. Lo que cambia es cuándo duerme, que siempre estuvo acá.
-// 1.5.43: el usuario SI quiere la barrita, pero solo para apagar: "el boton PWR
-// es el que al mantenerlo apretado tiene que mostrar esa barrita de carga de 3s
-// para apagarse". O sea que vuelve el indicador, pero SIN el tramo del medio que
-// abria Hablar (eso era idea mia y terminaba apagando cuando no correspondia).
-// Mantener OK 3 s apaga, y mientras tanto se ve cuanto falta.
-static bool usePowerHoldTiers() {
-  return BoardConfig::ACTIVE.board == BoardConfig::Board::WS397 &&
-         SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP;
-}
+// ws397: the physical PWR key is the AXP2101 PWRKEY (PowerKey, src/util),
+// separate from OK, which is now plain Confirm (InputStyle::DigitalButtons).
+// The hold is split by time:
+//   short press (< 600 ms) .... "clean screen": next paint is a FULL refresh
+//   600 ms .................... the sleep bar appears
+//   2.2 s ..................... second banner: about to sleep
+//   3 s ....................... deep sleep (enterDeepSleep)
+// The PMIC's own hard cut is programmed at 10 s (PowerKey::begin), so it can
+// never race the bar. The web setting shortPwrBtn is forced to IGNORE on this
+// board (setup/loop): Button::Power never fires here, so the reader/page-turn/
+// footnote/force-refresh bindings are inert whatever the web says.
+static bool usePowerHoldTiers() { return BoardConfig::isWS397(); }
 
-
-// Cartel del mantenido, para que se vea que algo está pasando y hasta dónde hay
-// que seguir apretando. Se pinta ENCIMA de lo que haya (no se limpia la pantalla)
-// y son dos pasadas como mucho por gesto: cada repintada de tinta electrónica
-// cuesta medio segundo, y la regla del panel es no gastar parciales al pedo.
+// Hold banner, so the user sees something is happening and how far to keep
+// holding. Painted OVER whatever is on screen (no clear) and at most two
+// paints per gesture: every e-ink repaint costs half a second, and the panel
+// rule is not to burn partial refreshes for nothing.
 static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSleep) {
   RenderLock lock;
   const int screenW = renderer.getScreenWidth();
@@ -475,7 +509,7 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   const StrId what = aboutToSleep ? StrId::STR_PWR_HOLD_SLEEPING : StrId::STR_PWR_HOLD_OFF;
   renderer.drawCenteredText(UI_12_FONT_ID, y + 30, I18N.get(what), true, EpdFontFamily::BOLD);
 
-  // Barra: cuánto falta para el apagado.
+  // Bar: how much is left until sleep.
   const int barX = x + 24;
   const int barW = boxW - 48;
   const int barY = y + 76;
@@ -487,38 +521,40 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
 }
 
-// Devuelve true cuando se quedó con la pasada del loop (hay cartel en pantalla o
-// ya se disparó la acción), así la Activity de abajo no repinta encima.
+// Returns true when it kept the loop pass (banner on screen, or the action
+// already fired) so the activity underneath does not repaint over it. The key
+// state comes from POWER_KEY, pumped at the top of loop(): a release seen late
+// (the loop was inside a refresh) is still a release, never a sleep.
 static bool handlePowerHold(const bool gateOpen) {
-  static int bannerStage = 0;  // 0 sin cartel, 1 con el cartel, 2 avisando el apagado
+  static int bannerStage = 0;  // 0 no banner, 1 banner, 2 warning
 
-  const bool pressed = gpio.isPressed(HalGPIO::BTN_POWER);
-  const unsigned long held = gpio.getPowerButtonHeldTime();
+  const bool pressed = POWER_KEY.pressed();
+  const unsigned long held = POWER_KEY.heldMs();
 
   if (pressed) {
-    // Sin el permiso de dormir (recién despertó) o con ABAJO apretado (captura
-    // de pantalla) el mantenido no es nuestro.
+    // No sleep permission yet (just woke / just booted) or DOWN held (screenshot
+    // combo): the hold is not ours.
     if (!gateOpen || gpio.isPressed(HalGPIO::BTN_DOWN)) return false;
     if (held >= POWER_HOLD_SLEEP_MS) {
-      LOG_DBG("MAIN", "Power button held %lums, sleeping", held);
+      LOG_DBG("MAIN", "PWR held %lums, sleeping", held);
       bannerStage = 0;
       enterDeepSleep();
-      // No se llega: enterDeepSleep() termina en esp_deep_sleep_start.
+      // Not reached: enterDeepSleep() ends in esp_deep_sleep_start.
       return true;
     }
     if (bannerStage == 0 && held >= POWER_HOLD_ACTION_MS) {
       bannerStage = 1;
+      POWER_KEY.consumeHold();  // the release after the bar is not a short press
       drawPowerHoldBanner(held, false);
     } else if (bannerStage == 1 && held >= POWER_HOLD_WARN_MS) {
       bannerStage = 2;
-      drawPowerHoldBanner(held, true);  // segunda y última repintada: la tinta cuesta
+      drawPowerHoldBanner(held, true);  // second and last repaint: ink is expensive
     }
     return bannerStage != 0;
   }
 
   if (bannerStage == 0) return false;
-  // Solto antes de los 3 s: no pasa nada, solo se saca el cartel. El atajo de
-  // voz vive en el doble toque de Atras, no aca.
+  // Released before 3 s: nothing happens, the banner just goes away.
   bannerStage = 0;
   activityManager.requestUpdate();
   return true;
@@ -600,6 +636,10 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+  // ws397: PMIC power key. Configures 0x27/0x10/0x22 and the interrupt enables
+  // and flushes whatever the key latched while we slept (the PMIC does not
+  // reset with the ESP), so the first pump() never sees a phantom press.
+  POWER_KEY.begin();
 
   const auto wakeupReason = gpio.getWakeupReason();
   // Sample the wake hold now — a click wake is released within milliseconds of
@@ -657,6 +697,11 @@ void setup() {
   KOREADER_STORE.loadFromFile();
   devlog::begin();  // from here every LOG_* line also goes to the SD
   setLogSink(&devlog::write);
+  POWER_KEY.logSnapshot();  // the PMIC register dump, now that it reaches /board/log
+  // ws397: the short-press binding is meaningless here (PWR short = clean
+  // screen, and OK is plain Confirm), and SLEEP would make a 10 ms wake tap
+  // count as verified. Force it whatever the file (or the web) says.
+  if (BoardConfig::isWS397()) SETTINGS.shortPwrBtn = CrossPointSettings::SHORT_PWRBTN::IGNORE;
   SERVER_STORE.loadFromFile();
   // El aparato tiene identidad propia desde el primer arranque: si no hay token
   // guardado se genera uno al azar y se persiste. Después se vincula a una
@@ -687,7 +732,11 @@ void setup() {
         Storage.prepareForDeepSleep();
         sleepNow();
       }
-      wakePowerReleasePending = true;
+      wakeKeyReleasePending = true;
+      // ws397: the OK hold that woke us is BTN_CONFIRM now. Do not let the
+      // reader's wasLongPressed(Confirm) (bookmark/dictionary) or any release
+      // handler act on it: absorb it until it is released.
+      if (BoardConfig::isWS397()) mappedInputManager.absorbHeldButton(wakeKeyLogicalButton());
       break;
     case HalGPIO::WakeupReason::AfterUSBPower:
       // Most devices return to sleep after a USB-powered cold boot.
@@ -867,12 +916,22 @@ void loop() {
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
 
-  gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
+  if (BoardConfig::isWS397()) {
+    // OK is plain Confirm here (DigitalButtons): the shared confirm/power
+    // toggle does not apply, and the short-press binding stays IGNORE even if
+    // the web settings page writes something else at runtime.
+    SETTINGS.shortPwrBtn = CrossPointSettings::SHORT_PWRBTN::IGNORE;
+  } else {
+    gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
+  }
   mappedInputManager.update();
+  POWER_KEY.pump();  // ws397: PMIC key state for this pass (no-op elsewhere)
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
-    // sleep, shortcuts, or normal navigation while its filesystem is detached.
+    // sleep, shortcuts, music (it streams from the SD) or normal navigation
+    // while its filesystem is detached. A PWR tap is dropped, not queued.
+    POWER_KEY.tookShortPress();
     activityManager.loop();
     if (activityManager.preventAutoSleep()) {
       powerManager.setPowerSaving(false);
@@ -920,17 +979,35 @@ void loop() {
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
 
+  // Music and alarms run BEFORE any early return below (wake release,
+  // screenshot combo, hold banner): holding PWR must not freeze the track or
+  // silence a reminder. The music player lives outside the Activity; this is
+  // what chains the next track when one ends, wherever the user is.
+  MUSIC.pump();
+  static unsigned long lastAlarmCheck = 0;
+  if (millis() - lastAlarmCheck >= 5000) {
+    lastAlarmCheck = millis();
+    checkTimeAlarms();
+  }
+
   // Let wake continue as soon as its hold has been verified. The release can
   // arrive after setup, so consume that one input frame rather than making it
-  // a page turn, refresh, or other short power-button action.
-  if (wakePowerReleasePending && !gpio.isPressed(HalGPIO::BTN_POWER)) {
-    wakePowerReleasePending = false;
+  // a page turn, refresh, confirm, or other short-press action. The absorbed
+  // release (absorbHeldButton) is cleared here too, otherwise it would swallow
+  // the next genuine release instead.
+  if (wakeKeyReleasePending && !gpio.isPressed(wakeKeyIndex())) {
+    wakeKeyReleasePending = false;
+    mappedInputManager.consumeSuppressedRelease();
     return;
   }
 
+  // Screenshot combo: POWER + DOWN. On the ws397 POWER is the PMIC key
+  // (POWER_KEY.pressed() holds between its real edges); elsewhere it is the
+  // GPIO power button. handlePowerHold() already yields to DOWN.
+  const bool powerHeld = BoardConfig::isWS397() ? POWER_KEY.pressed() : gpio.isPressed(HalGPIO::BTN_POWER);
   static bool screenshotButtonsReleased = true;
   static bool screenshotComboActive = false;
-  if (gpio.isPressed(HalGPIO::BTN_POWER) && gpio.isPressed(HalGPIO::BTN_DOWN)) {
+  if (powerHeld && gpio.isPressed(HalGPIO::BTN_DOWN)) {
     screenshotComboActive = true;
     if (screenshotButtonsReleased) {
       screenshotButtonsReleased = false;
@@ -942,14 +1019,11 @@ void loop() {
     return;
   }
   if (screenshotComboActive) {
-    if (gpio.isPressed(HalGPIO::BTN_POWER)) return;
-    if (gpio.wasReleased(HalGPIO::BTN_POWER)) {
-      screenshotButtonsReleased = true;
-      screenshotComboActive = false;
-      return;
-    }
+    if (powerHeld) return;
     screenshotButtonsReleased = true;
     screenshotComboActive = false;
+    POWER_KEY.tookShortPress();  // the release that ends the combo is not a tap
+    if (BoardConfig::isWS397() || gpio.wasReleased(HalGPIO::BTN_POWER)) return;
   }
 
   // Consume the second X4 Pro power-button release so it does not also run a
@@ -977,19 +1051,28 @@ void loop() {
     return;
   }
 
-  // A hold that woke the device must be released before it can count as a new
-  // in-app long press. Otherwise a user who keeps holding after wake would put
-  // the device straight back to sleep once allowSleepAt expires.
+  // A hold that woke the device (or, on the ws397, a PWR hold that powered the
+  // PMIC on and was still down when the key decoder started) must be released
+  // before it can count as a new in-app long press. Otherwise a user who keeps
+  // holding after wake would put the device straight back to sleep once
+  // allowSleepAt expires.
   static bool powerReleasedSinceWake = false;
-  if (!gpio.isPressed(HalGPIO::BTN_POWER)) powerReleasedSinceWake = true;
+  if (!powerHeld) powerReleasedSinceWake = true;
 
   const bool powerGateOpen = powerReleasedSinceWake && millis() >= allowSleepAt;
 
   if (usePowerHoldTiers()) {
-    // ws397: el mantenido se reparte entre Hablar y apagar (handlePowerHold).
+    // ws397: PWR short = clean screen, PWR hold = bar then sleep (handlePowerHold).
     if (handlePowerHold(powerGateOpen)) {
-      delay(10);  // con el cartel en pantalla no hace falta girar en vacío
+      delay(10);  // banner on screen: no need to spin
       return;
+    }
+    if (POWER_KEY.tookShortPress()) {
+      // "Clean screen": the next paint of whatever is on screen goes out as a
+      // FULL (0xF7) refresh, which is what clears accumulated ghosting.
+      LOG_INF("MAIN", "PWR short press: clean refresh");
+      renderer.promoteNextRefresh(HalDisplay::FULL_REFRESH);
+      activityManager.requestUpdate();
     }
   } else if (powerGateOpen && gpio.isPressed(HalGPIO::BTN_POWER) &&
              gpio.getPowerButtonHeldTime() > SETTINGS.getPowerButtonDuration()) {
@@ -1035,18 +1118,7 @@ void loop() {
     activityManager.requestUpdate();
   }
 
-  // La música vive fuera de la Activity (MusicPlayer): esto es lo que engancha
-  // la pista siguiente cuando termina la anterior, esté abierto el reproductor
-  // o esté el usuario en el hub.
-  MUSIC.pump();
-
   checkVoiceShortcut();
-
-  static unsigned long lastAlarmCheck = 0;
-  if (millis() - lastAlarmCheck >= 5000) {
-    lastAlarmCheck = millis();
-    checkTimeAlarms();
-  }
 
   const unsigned long activityStartTime = millis();
   activityManager.loop();

@@ -216,6 +216,9 @@ void TimerActivity::ring() {
   running = false;
   finished = true;
   finishedAt = millis();
+  // The alarm screen replaces the ticking digits: one clean refresh so no
+  // countdown ghost stays under "Done" (the coordinator honors and counts it).
+  renderer.promoteNextRefresh(HalDisplay::HALF_REFRESH);
   HUB_STORE.clearTimer();
   HUB_STORE.saveToFile();
   spoken = !speech.playFile(speechcache::clipPath(tr(STR_TIMER_DONE)).c_str());
@@ -378,7 +381,9 @@ void TimerActivity::render(RenderLock&&) {
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   // Mostly partial refreshes; a clean one now and then keeps the digits crisp.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN || finished;
+  // The finished screen gets its clean via promoteNextRefresh() in ring(), not
+  // on every repaint while ringing.
+  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
   if (clean) partialCount = 0;
   renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

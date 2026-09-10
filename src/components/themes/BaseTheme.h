@@ -245,6 +245,12 @@ class BaseTheme {
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
+  // Compose the message popup into the framebuffer WITHOUT refreshing the
+  // panel; returns its rect. For hosts that paint more after it (hints) and
+  // refresh once themselves.
+  virtual Rect composePopup(const GfxRenderer& renderer, const char* message) const;
+  // composePopup() + one refresh. Callers that block right after (silent
+  // restart, "Loading..." before a long operation) rely on it reaching the panel.
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,

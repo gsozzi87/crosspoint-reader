@@ -330,6 +330,14 @@ bool MappedInputManager::wasLongPressed(const Button button, const unsigned long
   return true;
 }
 
+void MappedInputManager::absorbHeldButton(const Button button) const {
+  const uint16_t bit = 1u << static_cast<uint8_t>(button);
+  longPressFiredButtons |= bit;  // update() clears it once the button is up
+  // Only arm the release swallow while the key is actually down: a suppression
+  // left armed with nothing held would eat the NEXT genuine release instead.
+  if (isPressed(button)) suppressNextRelease(button);
+}
+
 void MappedInputManager::suppressNextRelease(const Button button) const {
   suppressedReleaseButtons |= 1u << static_cast<uint8_t>(button);
 }

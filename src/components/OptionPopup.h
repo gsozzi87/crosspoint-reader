@@ -1,8 +1,11 @@
 #pragma once
 #include <I18n.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
@@ -24,8 +27,23 @@
 // one render is mid-rebuilding. uiReady closes when show() replaces the
 // popup's data, then stays open across ordinary repaints after the first
 // publication so a release cannot be dropped during a highlight repaint.
+//
+// Background under the popup: processRender() snapshots the WHOLE framebuffer
+// (48 KB, PSRAM) the first time it paints after show() and restores it before
+// every repaint while the popup is open, so whatever third parties paint into
+// the shared framebuffer in the meantime (an alarm Activity pushed on top and
+// popped, the power-hold banner) never shows through around the dialog. Hosts
+// may call processRender() before or after painting their page; either way
+// the page under the popup is what the panel showed when the popup opened.
+// The snapshot is freed on the first render after the popup closes, or with
+// the popup; closing costs the host exactly one refresh (its own repaint).
 class OptionPopup {
  public:
+  OptionPopup() = default;
+  ~OptionPopup() { freeUnderlay(); }
+  OptionPopup(const OptionPopup&) = delete;
+  OptionPopup& operator=(const OptionPopup&) = delete;
+
   void show(StrId titleId, const StrId* optionIds, int optionCount, int currentIndex,
             std::function<void(int)> onSelect) {
     title = I18N.get(titleId);
@@ -132,10 +150,35 @@ class OptionPopup {
   }
 
   bool processRender(GfxRenderer& renderer, const MappedInputManager& input) const {
-    if (!active) return false;
+    if (!active) {
+      // Closed: the host repaints its page now; the snapshot is done with.
+      freeUnderlay();
+      return false;
+    }
+    uint8_t* fb = renderer.getFrameBuffer();
+    const size_t size = renderer.getBufferSize();
+    if (fb && size > 0) {
+      if (!underlay_ || underlaySize_ != size) {
+        // First paint after show(): what is in the framebuffer now is the page
+        // under the popup. Keep it whole; a rectangle would not survive a
+        // third party repainting the rest of the frame while we are open.
+        freeUnderlay();
+        underlay_ = static_cast<uint8_t*>(heap_caps_malloc(size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!underlay_) underlay_ = static_cast<uint8_t*>(malloc(size));
+        if (underlay_) {
+          underlaySize_ = size;
+          memcpy(underlay_, fb, size);
+        }
+      } else {
+        memcpy(fb, underlay_, size);
+      }
+    }
     const auto popupLabels = input.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
     GUI.drawButtonHints(renderer, popupLabels.btn1, popupLabels.btn2, popupLabels.btn3, popupLabels.btn4);
     render(renderer);
+    // A cursor move repaints the same page + dialog with one row moved: a
+    // plain FAST, which the refresh coordinator counts (and skips if nothing
+    // changed at all).
     renderer.displayBuffer();
     return true;
   }
@@ -234,9 +277,21 @@ class OptionPopup {
   void dismiss() {
     active = false;
     onSelectCallback = nullptr;
+    // The snapshot is released by the render task (next processRender) or the
+    // destructor, never here: dismiss() runs on the loop task and a render
+    // may be reading the snapshot right now.
   }
 
  private:
+  // Frees the background snapshot. Only called from the render task
+  // (processRender) or when the popup itself dies.
+  void freeUnderlay() const {
+    uint8_t* p = underlay_;
+    underlay_ = nullptr;
+    underlaySize_ = 0;
+    if (p) free(p);
+  }
+
   // The dialog has no scrolling, so options past MAX_OPTIONS would render off
   // screen anyway; a fixed cap keeps the DialogOption array on the stack and
   // the interaction table small. +1 slot for the chrome guard rect.
@@ -254,4 +309,8 @@ class OptionPopup {
   // uiReady closes the rebuild window exactly like UiListActivity::uiReady.
   mutable freeink::ui::InteractionBuffer<INTERACTION_CAPACITY> interactions;
   mutable std::atomic<bool> uiReady{false};
+  // Whole-framebuffer snapshot of the page under the popup (see class doc).
+  // Owned by the render task; mutable because processRender() is const.
+  mutable uint8_t* underlay_ = nullptr;
+  mutable size_t underlaySize_ = 0;
 };

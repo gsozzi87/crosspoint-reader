@@ -45,6 +45,12 @@ class HalGPIO {
 
   bool lastUsbConnected = false;
   bool usbStateChanged = false;
+  // ws397: the USB state comes from the PMIC over I2C (no detect GPIO) and
+  // isUsbConnected() is called from every update() (10 ms) and every render.
+  // Cache it for USB_CACHE_MS so the bus is not hit for the battery icon.
+  mutable bool usbCacheValid = false;
+  mutable bool usbCached = false;
+  mutable unsigned long usbCacheAt = 0;
 
  public:
   enum class DeviceType : uint8_t { X4, X3 };
@@ -105,12 +111,15 @@ class HalGPIO {
   bool wasTouchActivity() const;
   void setSharedConfirmPowerShortPressEmitsPower(bool enabled);
 
-  // Verify that the physical power button remains held through input debounce.
+  // Verify that the physical wake button (PowerManager::wakeSourcePin(): the
+  // power key, or the dedicated wake key on boards whose power key is behind a
+  // PMIC) remains held through input debounce.
   // Returns true if verification succeeded, false if device should return to sleep.
   // Should only be called when wakeup reason is PowerButton.
   bool verifyPowerButtonWakeup();
 
-  // Check if USB is connected
+  // Check if USB is connected. On WS397 the answer is cached for ~1 s (see
+  // usbCacheValid): the value comes from the PMIC over I2C.
   bool isUsbConnected() const;
 
   // Whether a cold boot with no USB detected can be trusted to mean a held

@@ -128,6 +128,10 @@ void GfxRenderer::begin() {
   panelWidthBytes = display.getDisplayWidthBytes();
   frameBufferSize = display.getBufferSize();
   bwBufferChunks.assign((frameBufferSize + BW_BUFFER_CHUNK_SIZE - 1) / BW_BUFFER_CHUNK_SIZE, nullptr);
+  // The device-wide refresh policy is a WS397 thing (its panel facts: 0xFF
+  // differential FAST, 0xD7 single-flash HALF that does not restore contrast,
+  // 0xF7 FULL); other boards keep their upstream behaviour (pass-through).
+  refresh_.begin(frameBufferSize, BoardConfig::ACTIVE.board == BoardConfig::Board::WS397);
 }
 
 void GfxRenderer::releaseFrameBufferForBuild() {
@@ -1704,22 +1708,46 @@ HalDisplay::RefreshMode GfxRenderer::applyPromotedRefresh(const HalDisplay::Refr
   return promotedRefresh_;
 }
 
-void GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode) const {
+HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode,
+                                                   const PanelRefreshCoordinator::Hint hint) const {
   auto elapsed = millis() - start_ms;
   LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
+  // A promoted mode is consumed BEFORE the coordinator plans, so a HALF/FULL
+  // handed over by a closing overlay is never skipped as "identical".
   refreshMode = applyPromotedRefresh(refreshMode);
-  display.displayBuffer(refreshMode, fadingFix);
+  if (!frameBuffer) return refreshMode;  // lent to a build: nothing to show (contract: no display while lent)
+  PanelRefreshCoordinator::Guard guard(refresh_);
+  const bool inverted = display.isInverted();
+  const PanelRefreshCoordinator::Plan p = refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/false);
+  if (p.skip) {
+    refresh_.commitSkip(refreshMode, hint);
+    return p.mode;
+  }
+  display.displayBuffer(p.mode, fadingFix);
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false);
+  return p.mode;
 }
 
-void GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode refreshMode) const {
+HalDisplay::RefreshMode GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode refreshMode,
+                                                        const PanelRefreshCoordinator::Hint hint) const {
   refreshMode = applyPromotedRefresh(refreshMode);
+  if (!frameBuffer) return refreshMode;
+  PanelRefreshCoordinator::Guard guard(refresh_);
+  const bool inverted = display.isInverted();
   // The async path has no turn-off-screen hook, which the sunlight fading fix
-  // relies on; keep those users on the blocking path.
+  // relies on; keep those users on the blocking path. The frame is still the
+  // base of a gray pass, so it is never skipped.
   if (fadingFix) {
-    display.displayBuffer(refreshMode, fadingFix);
-    return;
+    const PanelRefreshCoordinator::Plan p =
+        refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/false, /*allowSkip=*/false);
+    display.displayBuffer(p.mode, fadingFix);
+    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false);
+    return p.mode;
   }
-  display.displayBufferAsync(refreshMode);
+  const PanelRefreshCoordinator::Plan p = refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/true);
+  display.displayBufferAsync(p.mode);
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/true);
+  return p.mode;
 }
 
 void GfxRenderer::waitRefreshComplete() const { display.waitRefreshComplete(); }
@@ -2225,8 +2253,19 @@ size_t GfxRenderer::getBufferSize() const { return frameBufferSize; }
 // unused
 // void GfxRenderer::grayscaleRevert() const { display.grayscaleRevert(); }
 
-void GfxRenderer::displayGrayscaleBase(HalDisplay::RefreshMode fallback) const {
-  display.displayGrayscaleBase(fallback, fadingFix);
+HalDisplay::RefreshMode GfxRenderer::displayGrayscaleBase(const HalDisplay::RefreshMode fallback,
+                                                          const PanelRefreshCoordinator::Hint hint) const {
+  // No promoted-refresh consumption here (upstream never did; the promotion is
+  // for the next plain displayBuffer). The base is never skipped: the gray
+  // planes written right after need it on the glass.
+  if (!frameBuffer) return fallback;
+  PanelRefreshCoordinator::Guard guard(refresh_);
+  const bool inverted = display.isInverted();
+  const PanelRefreshCoordinator::Plan p =
+      refresh_.plan(frameBuffer, fallback, hint, inverted, /*async=*/false, /*allowSkip=*/false);
+  display.displayGrayscaleBase(p.mode, fadingFix);
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false);
+  return p.mode;
 }
 
 void GfxRenderer::preconditionGrayscale() const { display.preconditionGrayscale(); }
@@ -2253,7 +2292,12 @@ void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuff
 
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
 
-void GfxRenderer::displayGrayBuffer() const { display.displayGrayBuffer(fadingFix); }
+void GfxRenderer::displayGrayBuffer() const {
+  display.displayGrayBuffer(fadingFix);
+  // Inverted output renders a crisp BW page (the facade skips the gray
+  // planes), so only a real gray pass leaves residue for the coordinator.
+  if (!display.isInverted()) refresh_.noteGrayPass();
+}
 
 void GfxRenderer::writeGrayscalePlaneStrip(bool lsbPlane, const uint8_t* scratch, int yStart, int numRows) const {
   // Guard the uint16_t casts below: a negative would wrap to a huge length.
@@ -2336,6 +2380,12 @@ void GfxRenderer::restoreBwBuffer(const bool resyncPanelBaseline) {
 
   if (resyncPanelBaseline) {
     display.cleanupGrayscaleBuffers(frameBuffer);
+    // The framebuffer is the BW plane that is on the glass again (plus grays,
+    // which the coordinator tracks as grayOnGlass): the shadow follows it.
+    // resyncPanelBaseline == false means the glass shows overlay chrome painted
+    // after the store, so the shadow deliberately keeps that (the next FAST
+    // must differ against it to erase the chrome).
+    refresh_.resyncShadow(frameBuffer, display.isInverted());
   }
 
   freeBwBufferChunks();
@@ -2349,6 +2399,9 @@ void GfxRenderer::restoreBwBuffer(const bool resyncPanelBaseline) {
 void GfxRenderer::cleanupGrayscaleWithFrameBuffer() const {
   if (frameBuffer) {
     display.cleanupGrayscaleBuffers(frameBuffer);
+    // Tiled path: the framebuffer never left the BW base, which is what the
+    // glass shows under the grays; the shadow is valid again.
+    refresh_.resyncShadow(frameBuffer, display.isInverted());
   }
 }
 
