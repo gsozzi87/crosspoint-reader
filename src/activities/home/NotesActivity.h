@@ -37,7 +37,10 @@ class NotesActivity final : public Activity {
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return state == RECORDING; }
   // Mientras graba, sube o reproduce no se duerme; en la lista sí.
-  bool preventAutoSleep() override { return state != LIST && state != MESSAGE; }
+  // REVIEW espera al usuario sin nada abierto (el micrófono ya cerró): que el
+  // aparato se duerma ahí es correcto, y descarta la toma como cualquier otra
+  // pantalla que se abandona.
+  bool preventAutoSleep() override { return state != LIST && state != MESSAGE && state != REVIEW; }
 
  private:
   // Lo que se le pide al `VoiceRecorder`. Lo que queda de verdad lo decide
@@ -51,6 +54,8 @@ class NotesActivity final : public Activity {
     CONNECTING, // subiendo el WiFi para transcribir
     SENDING,    // transcribiendo y guardando en el servidor
     PLAYING,    // sonando una nota de voz
+    REVIEW,         // la nota recién grabada, antes de guardarla
+    REVIEW_PLAYING, // escuchando esa nota recién grabada
     MESSAGE,    // un cartel (error o aviso) con OK/Atrás para volver
   };
   enum Take { TAKE_TEXT, TAKE_VOICE };

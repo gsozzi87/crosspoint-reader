@@ -17,6 +17,12 @@ constexpr uint32_t TRANSCRIBE_TIMEOUT_MS = 60000;  // Whisper on a 10 s clip
 bool SpeechToText::transcribe(const VoiceRecorder& take, std::string& text, std::string& detail) {
   text.clear();
   detail.clear();
+  // Sala en silencio: el viaje al servidor devuelve una transcripción vacía y
+  // el usuario espera diez segundos para leer "no se entendió". Se corta acá.
+  if (!take.hasSpeech()) {
+    detail = tr(STR_VOICE_NO_SPEECH);
+    return false;
+  }
   WiFi.setSleep(false);
   const uint8_t* body = const_cast<VoiceRecorder&>(take).adpcm();
   const size_t bytes = take.adpcmBytes();

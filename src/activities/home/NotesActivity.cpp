@@ -124,7 +124,11 @@ void NotesActivity::stopRecording() {
     return;
   }
   if (take == TAKE_VOICE) {
-    saveVoiceNote();
+    // La nota de voz se escucha antes de guardarse: sin teclado, lo único que
+    // el usuario puede corregir es volver a decirla, y para eso primero tiene
+    // que saber qué quedó grabado.
+    state = REVIEW;
+    requestUpdate();
     return;
   }
   wifiActivated = true;
@@ -405,6 +409,49 @@ void NotesActivity::loop() {
       }
       break;
     }
+    case REVIEW: {
+      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+        saveVoiceNote();
+        break;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        if (recorder) recorder->abort();
+        recorder.reset();
+        forceClean = true;
+        state = LIST;
+        requestUpdate();
+        break;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
+        if (recorder && recorder->playSpoken()) {
+          playStartedAt = millis();
+          state = REVIEW_PLAYING;
+          requestUpdate();
+        }
+        break;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
+        recorder.reset();  // suelta la PSRAM de la toma vieja antes de pedir otra
+        startRecording(TAKE_VOICE);
+        break;
+      }
+      break;
+    }
+    case REVIEW_PLAYING: {
+      if (mappedInput.wasAnyPressed()) {
+        if (recorder) recorder->stopPlayback();
+        state = REVIEW;
+        forceClean = true;
+        requestUpdate();
+        break;
+      }
+      // 400 ms de gracia: la tarea de audio tarda un toque en arrancar.
+      if (millis() - playStartedAt > 400 && (!recorder || !recorder->isPlayingBack())) {
+        state = REVIEW;
+        requestUpdate();
+      }
+      break;
+    }
     case CONNECTING:
       if (!wifiPicker && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
         WiFi.disconnect();
@@ -541,6 +588,24 @@ void NotesActivity::render(RenderLock&&) {
       const int filled = maxSeconds > 0 ? std::min(barW - 4, static_cast<int>((barW - 4) * seconds / static_cast<int>(maxSeconds))) : 0;
       if (filled > 0) renderer.fillRect(barX + 2, mid - 2, filled, 12);
       renderer.drawCenteredText(UI_10_FONT_ID, mid + 40, tr(STR_NOTES_REC_HINT));
+      confirmLabel = tr(STR_SELECT);
+      break;
+    }
+    case REVIEW:
+    case REVIEW_PLAYING: {
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 70,
+                                state == REVIEW ? tr(STR_NOTE_REVIEW_TITLE) : tr(STR_NOTE_REVIEW_PLAYING), true,
+                                EpdFontFamily::BOLD);
+      const int seconds = recorder ? static_cast<int>(recorder->spokenSeconds() + 0.5f) : 0;
+      char len[64];
+      snprintf(len, sizeof(len), tr(STR_NOTE_REVIEW_LENGTH), seconds);
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 20, len);
+      int hy = mid + 40;
+      for (const std::string& line :
+           renderer.wrappedText(UI_10_FONT_ID, tr(STR_NOTE_REVIEW_HINT), pageWidth - 60, 6)) {
+        renderer.drawCenteredText(UI_10_FONT_ID, hy, line.c_str());
+        hy += 26;
+      }
       confirmLabel = tr(STR_SELECT);
       break;
     }
