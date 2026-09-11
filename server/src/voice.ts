@@ -399,15 +399,17 @@ voice.post("/", async (c) => {
       const dueAt = await parseTimeReply(text, lang, pendingDate);
       const aligned = rollForwardIfPast(dueAt ? alignToRepeat(dueAt.slice(0, 10), pendingRepeat) + dueAt.slice(10) : null, pendingRepeat);
       // parseTimeReply (que llama al modelo) queda AFUERA del candado.
-      await mutate(acc, (store) => {
-        store.reminders.push({ id: nextId(store), title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });
+      const pendingId = await mutate(acc, (store) => {
+        const id = nextId(store);
+        store.reminders.push({ id, title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });
+        return id;
       });
       const label = whenLabel(aligned, lang);
       const repText = repeatText(pendingRepeat, aligned, lang);
       const reply = aligned ? `${pending} — ${label}` : pending;
       const audio = speak !== "none" ? await synthesize(reply, lang, 8) : null;
       console.log(`voice: hora de "${pending}" -> ${aligned} (${repText})`);
-      return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", title: pending, when: label, repeatText: repText }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
+      return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", id: pendingId, title: pending, when: label, repeatText: repText }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
     }
     const parsed = await classify(acc, text, lang);
     // Recordatorio sin hora (con día o sin día): se pregunta en vez de inventarla,

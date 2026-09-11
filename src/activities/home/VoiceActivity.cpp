@@ -264,19 +264,15 @@ void VoiceActivity::performRequest() {
   // hora, fecha y repeticion a la vista, y OK lo confirma. Antes se guardaba y
   // se mostraba un cartel, asi que una hora mal entendida no se veia hasta que
   // sonaba (o hasta que no sonaba).
-  if (savedId > 0) {
-    if (savedKind == "reminder") {
-      speakThen(AFTER_AGENDA);
-      return;
-    }
-    if (savedKind == "task" || savedKind == "shopping") {
-      speakThen(AFTER_AGENDA);
-      return;
-    }
-    if (savedKind == "note") {
-      speakThen(AFTER_NOTES);
-      return;
-    }
+  if (savedKind == "reminder" || savedKind == "task" || savedKind == "shopping") {
+    // Sin id (servidor viejo) igual se abre la pantalla, sin foco: ver la lista
+    // donde quedó la cosa es infinitamente mejor que un cartel que dice "listo".
+    speakThen(AFTER_AGENDA);
+    return;
+  }
+  if (savedKind == "note") {
+    speakThen(AFTER_NOTES);
+    return;
   }
   showReply();
 }

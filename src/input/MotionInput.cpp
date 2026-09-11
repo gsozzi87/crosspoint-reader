@@ -34,6 +34,12 @@ constexpr uint8_t SHAKE_HITS = 2;
 // Parámetros del motor de golpes del chip (hoja de datos 10.2/10.3), pensados
 // para un golpe con la yema sobre la tapa a 250 Hz de muestreo.
 constexpr uint8_t TAP_PRIORITY = 4;      // Z > X > Y: el golpe entra por la tapa
+// Tiempo muerto entre dos dobles golpes que damos por buenos, y cuánto puede
+// haber pasado desde el sacudón que lo acompaña. Un golpe con la yema mueve el
+// acelerómetro bastante más que el ruido de tenerlo en la mano.
+constexpr unsigned long TAP_REFRACTORY_MS = 1500;
+constexpr unsigned long JOLT_WINDOW_MS = 600;
+constexpr float JOLT_DEV = 0.12f;  // g de desvío sobre 1 g que cuenta como golpe
 constexpr uint8_t TAP_PEAK_WINDOW = 10;  // muestras
 constexpr uint16_t TAP_WINDOW = 25;
 constexpr uint16_t TAP_DTAP_WINDOW = 125;  // medio segundo a 250 Hz
@@ -196,10 +202,29 @@ void MotionInput::poll() {
   }
 
   // --- 2. Doble golpe: lo dice el motor del chip ----------------------------
+  //
+  // Pero el registro NO se limpia al leerlo: se queda con el último evento. Si
+  // se pregunta cada 80 ms y se cree la respuesta, un solo golpe de hace media
+  // hora sigue contestando que sí para siempre. Hasta 1.5.54 eso quedaba tapado
+  // porque el gesto sólo valía en nueve pantallas; en cuanto valió en todas, el
+  // aparato se metía solo en Hablar sin parar.
+  //
+  // Tres condiciones, y las tres hacen falta:
+  //   1. el byte del registro CAMBIÓ (es un evento nuevo, no el mismo de antes),
+  //   2. pasó el tiempo muerto desde el último doble golpe que dimos por bueno,
+  //   3. el acelerómetro vio un sacudón hace poco — un golpe de verdad mueve la
+  //      lectura, y un registro viejo no mueve nada.
+  if (deviation > JOLT_DEV) lastJoltMs_ = now;
   if (tapTrusted_) {
     uint8_t tap = 0;
-    if (imu.readTapStatus(tap) && (tap & 0x03) == 0x02) {
-      if (!debounced) {
+    if (imu.readTapStatus(tap)) {
+      const bool isDouble = (tap & 0x03) == 0x02;
+      const bool fresh = !tapStatusSeen_ || tap != lastTapStatus_;
+      lastTapStatus_ = tap;
+      tapStatusSeen_ = true;
+      if (isDouble && fresh && !debounced && now - lastTapEmitMs_ >= TAP_REFRACTORY_MS &&
+          now - lastJoltMs_ <= JOLT_WINDOW_MS) {
+        lastTapEmitMs_ = now;
         emit(Event::DoubleTap);
         return;
       }

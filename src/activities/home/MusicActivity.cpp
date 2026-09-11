@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "MappedInputManager.h"
+#include "HubStore.h"
 #include "components/Selection.h"
 #include "components/SevenSegment.h"
 #include "components/UITheme.h"
@@ -171,16 +172,23 @@ void MusicActivity::onEnter() {
   volumeMode = false;
   selected = TRANSPORT_COUNT + 1;
   scroll = TRANSPORT_COUNT + 1;
-  // Si ya hay algo sonando se entra directo a esa carpeta: es lo que uno espera
-  // al volver al reproductor.
-  if (MUSIC.isActive() && !MUSIC.folderPath().empty()) {
+  // A que carpeta entrar, en orden: la que esta sonando, la ultima que se abrio
+  // y, si hay una sola, esa. Antes habia que elegirla a mano CADA vez y el
+  // reproductor no se acordaba de nada, ni siquiera cuando habia una carpeta y
+  // nada mas.
+  const std::string wanted =
+      MUSIC.isActive() && !MUSIC.folderPath().empty() ? MUSIC.folderPath() : HUB_STORE.musicFolder;
+  bool opened = false;
+  if (!wanted.empty()) {
     for (size_t i = 0; i < folders.size(); ++i) {
-      if (folders[i] == MUSIC.folderPath()) {
+      if (folders[i] == wanted) {
         openFolder(static_cast<int>(i));
+        opened = true;
         break;
       }
     }
   }
+  if (!opened && folders.size() == 1) openFolder(0);
   buildRows();
   forceClean = true;
   requestUpdate();
@@ -210,6 +218,10 @@ void MusicActivity::openFolder(const int index) {
   tracks.clear();
   trackNames.clear();
   folderPath = folders[index];
+  if (HUB_STORE.musicFolder != folderPath) {
+    HUB_STORE.musicFolder = folderPath;
+    HUB_STORE.saveToFile();
+  }
   folderName = folderPath == resolveMusicRoot() ? std::string("/") : folderPath.substr(folderPath.find_last_of('/') + 1);
   auto dir = Storage.open(folderPath.c_str());
   if (dir && dir.isDirectory()) {

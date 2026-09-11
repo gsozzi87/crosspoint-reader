@@ -116,6 +116,17 @@ class MotionInput {
   bool available_ = false;
   bool diagnostics_ = false;
   bool tapTrusted_ = false;
+  // EL REGISTRO DE GOLPES DEL QMI8658 QUEDA LATCHEADO: guarda el último evento
+  // y NO se limpia al leerlo. Preguntarle "¿hubo doble golpe?" cada 80 ms
+  // devuelve que sí para siempre desde el primero, así que con la lista blanca
+  // fuera (1.5.55) el aparato se metía solo en Hablar doce veces por segundo.
+  // Se emite sólo cuando el byte CAMBIA (evento nuevo) y con un tiempo muerto,
+  // y además hay que haber visto un sacudón de verdad en el acelerómetro: un
+  // golpe mueve la lectura, un registro viejo no.
+  uint8_t lastTapStatus_ = 0;
+  bool tapStatusSeen_ = false;
+  unsigned long lastTapEmitMs_ = 0;
+  unsigned long lastJoltMs_ = 0;
   const char* tapFailure_ = nullptr;
   bool gyroOn_ = false;
   unsigned long lastPollMs_ = 0;

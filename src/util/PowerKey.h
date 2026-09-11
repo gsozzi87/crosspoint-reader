@@ -58,6 +58,15 @@ class PowerKey {
   // conforma con dormir, que es lo que hacía antes).
   bool powerOff() const;
 
+  // ¿Hay cable? VBUS_GOOD del AXP2101 (bit5 de 0x00), que es una cosa distinta
+  // de "está cargando": con la batería llena el PMIC deja de cargar y el cable
+  // sigue puesto. `HalGPIO::isUsbConnected()` en esta placa pregunta si carga,
+  // así que con la batería llena decía que no había cable, el aparato entraba
+  // en reposo con el USB enchufado y el CDC se caía — del lado de la compu eso
+  // se ve como que el aparato se desconecta y se reconecta cada tanto.
+  // Devuelve false si el PMIC no contesta.
+  bool vbusPresent() const;
+
  private:
   static constexpr uint8_t BIT_POSITIVE = 0x01;  // INTSTS2 bit0: PWRKEY positive edge
   static constexpr uint8_t BIT_NEGATIVE = 0x02;  // INTSTS2 bit1: PWRKEY negative edge

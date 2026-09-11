@@ -75,6 +75,10 @@ class HubStore : public PersistableStore<HubStore> {
   int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
   int bibleChapter = 0;
   int musicVolume = 70;  // MP3 player volume, 0-100
+  // Ultima carpeta de musica abierta. Sin esto habia que entrar a la carpeta a
+  // mano CADA vez, aunque hubiera una sola: el reproductor abria siempre la
+  // lista de carpetas y no se acordaba de nada.
+  std::string musicFolder;
   // Fondo de pantalla: la foto que se pinta al suspenderse (Ajustes → Fondo de
   // pantalla, `PhotosActivity`). Vacío = pantalla de sueño de siempre.
   std::string wallpaperPath;  // "/Photos/<id>.bmp" en la SD

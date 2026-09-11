@@ -115,6 +115,7 @@ void HubStore::toJson(JsonDocument& doc) const {
     m["ya"] = imuMap.yAxis;
     m["ys"] = imuMap.ySign;
   }
+  doc["musicFolder"] = musicFolder;
   doc["wallpaperPath"] = wallpaperPath;
   doc["wallpaperName"] = wallpaperName;
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
@@ -177,6 +178,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
       imuMap = ImuMap{};
     }
   }
+  musicFolder = str(doc, "musicFolder");
   wallpaperPath = str(doc, "wallpaperPath");
   wallpaperName = str(doc, "wallpaperName");
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);

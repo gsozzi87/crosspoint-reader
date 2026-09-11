@@ -1432,8 +1432,24 @@ void loop() {
     // una pantalla que se pinta sola: ahí el light sleep corta lo que está en
     // curso. El USB enchufado también lo bloquea (el CDC no sobrevive, y
     // enchufado la batería no es el problema).
+    // "Hay cable" es VBUS, no "está cargando". `isUsbConnected()` en esta placa
+    // pregunta si el PMIC está cargando, y con la batería llena eso da false
+    // con el cable puesto: el aparato reposaba enchufado, el USB CDC se caía y
+    // del lado de la compu se veía como que se desconecta y se reconecta cada
+    // tanto. Se pregunta lo uno O lo otro: si el registro de VBUS no contesta,
+    // queda el criterio de antes.
+    const bool cablePuesto = POWER_KEY.vbusPresent() || gpio.isUsbConnected();
+    // Queda en el log para poder confirmarlo sin cable: si VBUS dice una cosa y
+    // "está cargando" otra, es justamente el caso que rompía el reposo.
+    static int lastCableState = -1;
+    const int cableState = cablePuesto ? 1 : 0;
+    if (cableState != lastCableState) {
+      lastCableState = cableState;
+      LOG_INF("MAIN", "cable %s (vbus=%d cargando=%d)", cablePuesto ? "puesto" : "sacado",
+              POWER_KEY.vbusPresent() ? 1 : 0, gpio.isUsbConnected() ? 1 : 0);
+    }
     const bool restBlocked = activityManager.preventAutoSleep() || activityManager.skipLoopDelay() ||
-                             MUSIC.isActive() || busyRecording() || POWER_KEY.pressed() || gpio.isUsbConnected() ||
+                             MUSIC.isActive() || busyRecording() || POWER_KEY.pressed() || cablePuesto ||
                              WiFi.getMode() != WIFI_MODE_NULL || screenMenuOpen;
     // Red de seguridad del modo "siempre encendido" (sleepTimeoutMs == 0): ahí
     // nadie va a mandar el aparato a dormir, así que si algo bloquea el reposo
@@ -1442,7 +1458,7 @@ void loop() {
     // sin haber podido reposar ni una vez, se duerme igual y queda dicho en el
     // log por qué. Enchufado no aplica: ahí la batería no es el problema.
     static unsigned long restBlockedSince = 0;
-    if (restBlocked && !gpio.isUsbConnected() && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
+    if (restBlocked && !cablePuesto && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
       if (restBlockedSince == 0) restBlockedSince = millis();
       if (sleepTimeoutMs == 0 && millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS) {
         LOG_ERR("MAIN", "siempre encendido: el reposo lleva %lu ms bloqueado, se duerme igual",

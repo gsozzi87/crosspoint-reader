@@ -16,6 +16,7 @@ constexpr const char* TAG = "PWRKEY";
 // the PMIC configured them (CLAUDE.md rule).
 constexpr uint8_t REG_IC_TYPE = 0x03;        // 0x4A
 constexpr uint8_t REG_COMMON_CONFIG = 0x10;  // bit0 soft off, bit1 reset, bit2 PWRON shuts the PMIC
+constexpr uint8_t REG_STATUS1 = 0x00;        // bit5 VBUS_GOOD: hay cable, cargue o no
 constexpr uint8_t REG_PWRON_STATUS = 0x20;   // what powered the PMIC on (log only)
 constexpr uint8_t REG_PWROFF_STATUS = 0x21;  // what powered it off last time (log only)
 constexpr uint8_t REG_PWROFF_EN = 0x22;      // bit1 PWRON > OFFLEVEL powers off, bit0 1 = restart / 0 = off
@@ -165,6 +166,13 @@ void PowerKey::begin() {
   heldMs_ = 0;
   lastPollMs_ = millis();
   available_ = true;
+}
+
+bool PowerKey::vbusPresent() const {
+  if (!available_) return false;
+  uint8_t st = 0;
+  if (!readReg(REG_STATUS1, st)) return false;
+  return (st & 0x20) != 0;
 }
 
 bool PowerKey::powerOff() const {
