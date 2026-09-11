@@ -12,7 +12,7 @@
 // cual. Las notas pueden ser largas: hasta 20.000 caracteres, y lo que pase de
 // ahí se corta con puntos suspensivos en vez de rebotar el pedido.
 import { Hono } from "hono";
-import { load, save, nextId } from "./store";
+import { mutate, nextId } from "./store";
 import { readBody } from "./net";
 import { accountOf, type AppEnv } from "./tenant";
 
@@ -30,10 +30,11 @@ notes.post("/", async (c) => {
   const text = clampNote(b.text);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const acc = accountOf(c);
-  const store = await load(acc);
-  const id = nextId(store);
-  store.notes.push({ id, text, createdAt: new Date().toISOString() });
-  await save(acc, store);
+  const id = await mutate(acc, (store) => {
+    const newId = nextId(store);
+    store.notes.push({ id: newId, text, createdAt: new Date().toISOString() });
+    return newId;
+  });
   console.log(`nota nueva #${id} (${text.length} caracteres)`);
   return c.json({ ok: true, id });
 });

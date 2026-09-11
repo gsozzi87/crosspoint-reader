@@ -17,7 +17,7 @@
 //   POST /api/board/settings {lang, speak, musicVolume, translatorLang}
 //   (leer, tildar y borrar: GET /api/hub, POST /api/hub/done, POST /api/hub/edit)
 import { Hono } from "hono";
-import { load, save, nextId, resolveList, upsertReminder, refreshTimeZone, repeatText, DEFAULT_SETTINGS, type Settings } from "./store";
+import { load, mutate, nextId, resolveList, upsertReminder, refreshTimeZone, repeatText, DEFAULT_SETTINGS, type Settings } from "./store";
 import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
 import { config, saveConfig, publicConfig, MODEL_PRICES, STT_PRICES, SEARCH_PRICE_ANTHROPIC, QUERY_SHAPE, deepSeekPeak, queryCost, type Config } from "./config";
@@ -37,14 +37,12 @@ boardApi.post("/reminder", async (c) => {
   const acc = accountOf(c);
   await refreshTimeZone(acc);
   const b = await readBody(c);
-  const store = await load(acc);
-  const res = upsertReminder(store, b);
+  const res = await mutate(acc, (store) => upsertReminder(store, b));
   if (!res.ok) {
     return res.error === "not_found"
       ? c.json({ ok: false, error: "no existe ese recordatorio" }, 404)
       : c.json({ ok: false, error: "title required" }, 400);
   }
-  await save(acc, store);
   const r = res.reminder;
   return c.json({ ok: true, reminder: { id: r.id, title: r.title, at: r.dueAt, repeatSpec: r.repeat, repeatText: repeatText(r.repeat, r.dueAt, "es") } });
 });
@@ -54,10 +52,11 @@ boardApi.post("/item", async (c) => {
   const text = (b.text ?? "").toString().trim().slice(0, 200);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const acc = accountOf(c);
-  const store = await load(acc);
-  const list = resolveList(store, b.list);
-  store.lists[list].push({ id: nextId(store), text, done: false, dueDate: null, createdAt: new Date().toISOString() });
-  await save(acc, store);
+  const list = await mutate(acc, (store) => {
+    const l = resolveList(store, b.list);
+    store.lists[l].push({ id: nextId(store), text, done: false, dueDate: null, createdAt: new Date().toISOString() });
+    return l;
+  });
   return c.json({ ok: true, list });
 });
 
@@ -79,15 +78,19 @@ boardApi.post("/feed", async (c) => {
     return c.json({ ok: false, error: `no se pudo leer el feed: ${String(err instanceof Error ? err.message : err).slice(0, 160)}` }, 400);
   }
   const acc = accountOf(c);
-  const store = await load(acc);
-  store.feeds ??= [];
-  if (store.feeds.some((f) => f.url === probe.url)) return c.json({ ok: false, error: "ese feed ya está cargado" }, 400);
   const name =
     (b.name ?? "").toString().trim().slice(0, 40) ||
     probe.title ||
     new URL(probe.url).hostname.replace(/^www\./, "");
-  store.feeds.push({ id: nextId(store), name, url: probe.url });
-  await save(acc, store);
+  // El "ya está cargado" se comprueba DENTRO del candado: dos altas del mismo
+  // feed a la vez entraban las dos.
+  const dup = await mutate(acc, (store) => {
+    store.feeds ??= [];
+    if (store.feeds.some((f) => f.url === probe.url)) return true;
+    store.feeds.push({ id: nextId(store), name, url: probe.url });
+    return false;
+  });
+  if (dup) return c.json({ ok: false, error: "ese feed ya está cargado" }, 400);
   return c.json({ ok: true, name, url: probe.url, count: probe.count });
 });
 
@@ -154,15 +157,16 @@ boardApi.get("/extra", async (c) => {
 boardApi.post("/settings", async (c) => {
   const acc = accountOf(c);
   const b = await readBody(c);
-  const store = await load(acc);
-  const s: Settings = { ...DEFAULT_SETTINGS, ...(store.settings ?? {}) };
-  if (typeof b.lang === "string" && /^[a-z]{2}$/.test(b.lang)) s.lang = b.lang;
-  if (b.speak === "none" || b.speak === "short" || b.speak === "all") s.speak = b.speak;
-  if (Number.isFinite(Number(b.musicVolume))) s.musicVolume = Math.max(0, Math.min(100, Math.round(Number(b.musicVolume))));
-  if (typeof b.translatorLang === "string" && /^[a-z]{2}$/.test(b.translatorLang)) s.translatorLang = b.translatorLang;
-  s.rev = (s.rev ?? 0) + 1;
-  store.settings = s;
-  await save(acc, store);
+  const s = await mutate(acc, (store) => {
+    const next: Settings = { ...DEFAULT_SETTINGS, ...(store.settings ?? {}) };
+    if (typeof b.lang === "string" && /^[a-z]{2}$/.test(b.lang)) next.lang = b.lang;
+    if (b.speak === "none" || b.speak === "short" || b.speak === "all") next.speak = b.speak;
+    if (Number.isFinite(Number(b.musicVolume))) next.musicVolume = Math.max(0, Math.min(100, Math.round(Number(b.musicVolume))));
+    if (typeof b.translatorLang === "string" && /^[a-z]{2}$/.test(b.translatorLang)) next.translatorLang = b.translatorLang;
+    next.rev = (next.rev ?? 0) + 1;
+    store.settings = next;
+    return next;
+  });
   return c.json({ ok: true, settings: s });
 });
 
@@ -308,9 +312,9 @@ boardApi.post("/note", async (c) => {
   const text = clampNote(b.text);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
   const acc = accountOf(c);
-  const store = await load(acc);
-  store.notes.push({ id: nextId(store), text, createdAt: new Date().toISOString() });
-  await save(acc, store);
+  await mutate(acc, (store) => {
+    store.notes.push({ id: nextId(store), text, createdAt: new Date().toISOString() });
+  });
   return c.json({ ok: true });
 });
 

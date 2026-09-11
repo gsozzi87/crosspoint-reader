@@ -27,7 +27,7 @@ import * as mupdf from "mupdf";
 import sharp from "sharp";
 import bwipjs from "bwip-js/node";
 import { readBarcodes, prepareZXingModule } from "zxing-wasm/reader";
-import { attachmentsDir, readDoc, writeBytesAtomic, writeDoc } from "./fsjson";
+import { attachmentsDir, mutateDoc, readDoc, writeBytesAtomic } from "./fsjson";
 import { accountOf, type AppEnv } from "./tenant";
 import { toDeviceBmp } from "./photos";
 import { readBody } from "./net";
@@ -89,14 +89,26 @@ type Index = { version: number; items: Attachment[] };
 
 // ---------------------------------------------------------------- índice
 
-async function loadIndex(accountId: number): Promise<Index> {
-  const idx = await readDoc<Index>(accountId, "attachments", { version: 1, items: [] });
+function shapeIndex(raw: unknown): Index {
+  const idx = (raw && typeof raw === "object" ? raw : {}) as Index;
+  idx.version ||= 1;
   idx.items ??= [];
   return idx;
 }
 
-function saveIndex(accountId: number, idx: Index): Promise<void> {
-  return writeDoc(accountId, "attachments", idx);
+// Solo para LEER. Todo lo que modifica el índice va por mutateIndex: leer con
+// readDoc, cambiar una copia y guardar con writeDoc son dos operaciones
+// separadas, así que dos subidas o un borrado y una subida a la vez terminaban
+// con el último escribiendo encima de lo que hizo el otro (una entrada del
+// índice que desaparece y deja los archivos tirados en el volumen). mutateDoc
+// toma el candado —pg_advisory_xact_lock en Postgres, serialize() por archivo
+// en el volumen— sobre la lectura Y la escritura.
+async function loadIndex(accountId: number): Promise<Index> {
+  return shapeIndex(await readDoc<unknown>(accountId, "attachments", null));
+}
+
+function mutateIndex<R>(accountId: number, fn: (idx: Index) => R | Promise<R>): Promise<R> {
+  return mutateDoc(accountId, "attachments", shapeIndex, fn);
 }
 
 export async function listAttachments(accountId: number, ids?: string[]): Promise<Attachment[]> {
@@ -113,11 +125,12 @@ export async function getAttachment(accountId: number, id: string): Promise<Atta
 export async function deleteAttachment(accountId: number, id: string): Promise<boolean> {
   const clean = safeId(id);
   if (!clean) return false;
-  const idx = await loadIndex(accountId);
-  const before = idx.items.length;
-  idx.items = idx.items.filter((a) => a.id !== clean);
-  if (idx.items.length === before) return false;
-  await saveIndex(accountId, idx);
+  const gone = await mutateIndex(accountId, (idx) => {
+    const before = idx.items.length;
+    idx.items = idx.items.filter((a) => a.id !== clean);
+    return idx.items.length !== before;
+  });
+  if (!gone) return false;
   await rm(`${dirFor(accountId)}/${clean}`, { recursive: true, force: true }).catch(() => {});
   return true;
 }
@@ -125,11 +138,12 @@ export async function deleteAttachment(accountId: number, id: string): Promise<b
 // Borra los adjuntos de un viaje que se borró (si no, quedan 96 KB por página
 // tirados en el volumen para siempre).
 export async function deleteAttachmentsOfTrip(accountId: number, tripId: string): Promise<number> {
-  const idx = await loadIndex(accountId);
-  const mine = idx.items.filter((a) => a.tripId === tripId);
+  const mine = await mutateIndex(accountId, (idx) => {
+    const found = idx.items.filter((a) => a.tripId === tripId);
+    if (found.length) idx.items = idx.items.filter((a) => a.tripId !== tripId);
+    return found;
+  });
   if (!mine.length) return 0;
-  idx.items = idx.items.filter((a) => a.tripId !== tripId);
-  await saveIndex(accountId, idx);
   for (const a of mine) await rm(`${dirFor(accountId)}/${a.id}`, { recursive: true, force: true }).catch(() => {});
   return mine.length;
 }
@@ -747,13 +761,17 @@ export async function processUpload(
     at: new Date().toISOString(),
   };
 
-  const idx = await loadIndex(accountId);
-  if (idx.items.length >= MAX_ATTACHMENTS) {
+  // El tope se comprueba DENTRO del candado: dos subidas a la vez veían las
+  // dos el mismo "hay lugar para uno" y entraban las dos.
+  const full = await mutateIndex(accountId, (idx) => {
+    if (idx.items.length >= MAX_ATTACHMENTS) return true;
+    idx.items.unshift(att);
+    return false;
+  });
+  if (full) {
     await rm(`${DIR}/${id}`, { recursive: true, force: true }).catch(() => {});
     throw new Error(`ya hay ${MAX_ATTACHMENTS} adjuntos guardados: borra alguno antes de subir otro`);
   }
-  idx.items.unshift(att);
-  await saveIndex(accountId, idx);
   return { attachment: att };
 }
 

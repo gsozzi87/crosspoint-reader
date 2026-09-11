@@ -75,25 +75,39 @@ api.use("*", async (c, next) => withTimeZone(accountOf(c), () => next()));
 // del pedido y TODO lo demás (hub, calendario, biblia, música, fotos, noticias)
 // sigue andando. Sin `DATABASE_URL` o sin topes puestos, `overQuota` es false y
 // esto no hace nada.
-const METERED = ["/api/ask", "/api/voice", "/api/transcribe", "/api/translate"];
+// Una tabla y no una lista de rutas: hay rutas que gastan modelo pero NO mandan
+// audio, y con la lista pelada los 40 KB de JSON de un capítulo de la Biblia se
+// cobraban como segundos de audio. `audio` dice si el cuerpo es una toma del
+// micrófono; `llm` cuántas llamadas al modelo hace la ruta.
+//
+// Las que faltaban: /api/bible/ask (chatText con hasta 40 KB de capítulo, la
+// llamada más cara del sistema) y /api/calendar/dictate (chatJson). Las dos
+// pasaban por afuera del tope y no sumaban nada. /api/suggest se cobra adentro
+// de suggest.ts, porque ahí hay caché y cobrar en la ruta cobraría los aciertos.
+const METERED: { path: string; llm: number; audio: boolean }[] = [
+  { path: "/api/ask", llm: 1, audio: false },
+  { path: "/api/voice", llm: 1, audio: true },
+  { path: "/api/transcribe", llm: 0, audio: true },
+  { path: "/api/translate", llm: 1, audio: true },
+  { path: "/api/bible/ask", llm: 1, audio: false },
+  { path: "/api/calendar/dictate", llm: 1, audio: false },
+];
 
 api.use("*", async (c, next) => {
   const path = c.req.path;
-  if (!METERED.some((p) => path === p || path.startsWith(`${p}/`))) return next();
+  const m = METERED.find((e) => path === e.path || path.startsWith(`${e.path}/`));
+  if (!m) return next();
   const acc = accountOf(c);
   if (await overQuota(acc)) {
     const lang = normalizeLang(c.req.query("lang"));
     return c.json({ ok: false, error: QUOTA_MSG[lang], code: QUOTA_CODE }, 429);
   }
-  const bytes = Number(c.req.header("content-length") ?? 0) || 0;
+  const bytes = m.audio ? Number(c.req.header("content-length") ?? 0) || 0 : 0;
   const type = c.req.header("content-type");
   await next();
   // Solo se cobra lo que salió bien: un 502 del proveedor no se le carga a nadie.
   if (c.res.status < 400) {
-    void addUsage(acc, {
-      llm: path.startsWith("/api/transcribe") ? 0 : 1,
-      sttSeconds: path.startsWith("/api/ask") ? 0 : audioSeconds(bytes, type),
-    });
+    void addUsage(acc, { llm: m.llm, sttSeconds: m.audio ? audioSeconds(bytes, type) : 0 });
   }
 });
 

@@ -35,6 +35,7 @@ import { occurrencesBetween } from "./calendar";
 import { getTrip, tripOnDate, kindLabel, type Trip } from "./trips";
 import { hubDiagnostics } from "./hub";
 import { load as loadStore, memoryLines, todayLocal, pendingReminders } from "./store";
+import { addUsage } from "./usage";
 
 const MAX_PER_DAY = Math.max(1, Math.min(100, Number(process.env.SUGGEST_MAX_PER_DAY ?? 10) || 10));
 
@@ -256,6 +257,10 @@ async function generate(ask: Ask): Promise<Suggestion> {
     search: ask.search,
     memories: await memories(ask.accountId),
   });
+  // Se cobra ACÁ y no en la ruta: la ruta sirve de la caché la mayoría de las
+  // veces y ahí no se llama al modelo. chatSearch con búsqueda web es de lo
+  // más caro que hace el servidor y hasta ahora no sumaba nada.
+  void addUsage(ask.accountId, { llm: 1 });
   const { lines, packing } = parseSections(res.text);
   return {
     key: ask.key,

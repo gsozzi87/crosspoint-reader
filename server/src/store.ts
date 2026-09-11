@@ -8,7 +8,7 @@
 // No hay pizarra de mensajes: se sacó del producto. Un store.json viejo que
 // todavía traiga "messages" se lee igual y esa clave se ignora.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { readDoc, writeDoc } from "./fsjson";
+import { mutateDoc, readDoc, writeDoc } from "./fsjson";
 import { LABELS, type Lang } from "./lang";
 
 export type RepeatKind = "none" | "daily" | "weekdays" | "weekly" | "monthly" | "yearly";
@@ -207,9 +207,39 @@ export function load(accountId: number): Promise<Store> {
   return pending;
 }
 
+// Escritura a secas, sin candado: NO usarla para modificar (para eso está
+// mutate()). Queda para reemplazar el documento entero, que hoy no hace nadie.
 export async function save(accountId: number, store: Store): Promise<void> {
   remember(accountId, store);
   await writeDoc(accountId, "store", store);
+}
+
+// TODO lo que modifica el store va por acá.
+//
+// load() + save() son dos operaciones separadas sobre el documento entero: lo
+// que se lee puede ser de la caché de ESTE proceso (que no sabe nada de lo que
+// escribió otra réplica ni de lo que se escribió antes del último redeploy) y
+// lo que se guarda pisa el documento completo. Dos pedidos que se cruzan —o dos
+// instancias— y el último borra lo que hizo el otro: un recordatorio que se
+// agregó por voz desaparece porque la web guardó un ajuste medio segundo
+// después.
+//
+// mutateDoc lee y escribe DENTRO del candado (pg_advisory_xact_lock en
+// Postgres, serialize() por archivo en el volumen), así que lo que se modifica
+// es siempre la versión que hay guardada en ese instante. El store era el único
+// documento que quedaba afuera, y es el que más se escribe.
+export async function mutate<R>(accountId: number, fn: (store: Store) => R | Promise<R>): Promise<R> {
+  try {
+    return await mutateDoc(accountId, "store", normalizeStore, async (store) => {
+      const out = await fn(store);
+      remember(accountId, store);  // la caché se queda con lo recién leído y cambiado
+      return out;
+    });
+  } catch (err) {
+    // Pudo quedar a medio cambiar y sin guardarse: mejor que se relea.
+    cache.delete(accountId);
+    throw err;
+  }
 }
 
 export function nextId(store: Store): number {

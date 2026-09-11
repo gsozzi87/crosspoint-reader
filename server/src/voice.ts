@@ -22,7 +22,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
-import { load, save, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
+import { load, mutate, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
@@ -280,9 +280,11 @@ async function answerWithSearch(acc: number, question: string, lang: Lang): Prom
 }
 
 async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) {
-  const store = await load(acc);
   const saved: { kind: string; list?: string; title: string; when?: string; repeatText?: string }[] = [];
   const stamp = new Date().toISOString();
+  // Bajo candado y sin ninguna llamada al modelo adentro: lo que hay acá es
+  // puro armado de objetos, así que la transacción dura microsegundos.
+  await mutate(acc, (store) => {
   for (const a of parsed.actions ?? []) {
     const title = (a.text ?? "").trim().slice(0, 200);
     if (!title) continue;
@@ -338,7 +340,7 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
         break; // timer corre en el aparato (timerSeconds)
     }
   }
-  if (saved.length) await save(acc, store);
+  });
   console.log(`voice: "${spoken}" -> ${parsed.intent}`, saved.map((s) => `${s.kind}:${s.title}`).join(" | "));
   return saved;
 }
@@ -385,10 +387,11 @@ voice.post("/", async (c) => {
   try {
     if (pending) {
       const dueAt = await parseTimeReply(text, lang, pendingDate);
-      const store = await load(acc);
       const aligned = dueAt ? alignToRepeat(dueAt.slice(0, 10), pendingRepeat) + dueAt.slice(10) : null;
-      store.reminders.push({ id: nextId(store), title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });
-      await save(acc, store);
+      // parseTimeReply (que llama al modelo) queda AFUERA del candado.
+      await mutate(acc, (store) => {
+        store.reminders.push({ id: nextId(store), title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });
+      });
       const label = whenLabel(aligned, lang);
       const repText = repeatText(pendingRepeat, aligned, lang);
       const reply = aligned ? `${pending} — ${label}` : pending;
@@ -510,30 +513,28 @@ export function fixTimerUnit(seconds: number, said: string): number {
 }
 
 export async function editEntry(accountId: number, body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null }): Promise<boolean> {
-  const store = await load(accountId);
+  // Todo adentro del candado: antes era leer, filtrar y guardar el documento
+  // entero, así que un borrado y un alta a la vez se pisaban.
+  return mutate(accountId, (store) => {
   const id = Number(body.id);
   if (body.kind === "feed") {
     const before = (store.feeds ?? []).length;
     store.feeds = (store.feeds ?? []).filter((f) => f.id !== id);
-    if (store.feeds.length !== before) await save(accountId, store);
     return store.feeds.length !== before;
   }
   if (body.kind === "memory") {
     const before = (store.memories ?? []).length;
-    store.memories = (store.memories ?? []).filter((m) => m.id !== id);
-    if (store.memories.length !== before) await save(accountId, store);
+    store.memories = (store.memories ?? []).filter((x) => x.id !== id);
     return store.memories.length !== before;
   }
   if (body.kind === "reminder") {
     const before = store.reminders.length;
     store.reminders = store.reminders.filter((r) => r.id !== id);
-    if (store.reminders.length !== before) await save(accountId, store);
     return store.reminders.length !== before;
   }
   if (body.kind === "note") {
     const before = store.notes.length;
     store.notes = store.notes.filter((n) => n.id !== id);
-    if (store.notes.length !== before) await save(accountId, store);
     return store.notes.length !== before;
   }
   for (const [name, items] of Object.entries(store.lists)) {
@@ -553,21 +554,36 @@ export async function editEntry(accountId: number, body: { kind?: string; id?: n
     } else {
       return false;
     }
-    await save(accountId, store);
     return true;
   }
   return false;
+  });
 }
 
-// Tildar (o posponer `snoozeSeconds`) desde el aparato. Idempotente: llega
-// repetido desde la cola offline. Un recordatorio con repetición no se cierra:
-// pasa al próximo ciclo.
-export async function markDone(accountId: number, kind: "reminder" | "item", id: number, snoozeSeconds = 0): Promise<boolean> {
-  const store = await load(accountId);
+// Tildar (o posponer `snoozeSeconds`) desde el aparato.
+//
+// Idempotente, pero no lo era del todo: para un recordatorio CON repetición,
+// `advanceRepeat()` corre la fecha cada vez que se entra, sin comparar contra
+// nada. El aparato reintenta hasta tres veces (y la cola offline reproduce de
+// nuevo) con el mismo pedido, así que un reintento que llega porque se perdió
+// la RESPUESTA —no el pedido— avanzaba un ciclo de más: una ocurrencia que el
+// usuario nunca ve, sin error y sin rastro.
+//
+// `at` es el `dueAt` de la ocurrencia que el aparato está tildando (viaja en
+// `GET /api/hub` como epoch UTC). Un replay llega con el `at` de la ocurrencia
+// vieja, que ya no coincide con la del store, y no avanza nada. Solo se aplica
+// a los repetidos: sin `at` (web, firmware viejo) se comporta como antes.
+export async function markDone(accountId: number, kind: "reminder" | "item", id: number, snoozeSeconds = 0, at = 0): Promise<boolean> {
+  return mutate(accountId, (store) => {
   let found = false;
   if (kind === "reminder") {
     for (const r of store.reminders) {
       if (r.id !== id) continue;
+      if (at > 0 && snoozeSeconds === 0 && normalizeRepeat(r.repeat).kind !== "none" && r.dueAt && localToEpoch(r.dueAt) !== at) {
+        // Ya se aplicó: esto es el reintento del mismo tilde.
+        found = true;
+        continue;
+      }
       found = true;
       if (snoozeSeconds > 0) r.dueAt = epochToLocal(Math.floor(Date.now() / 1000) + snoozeSeconds);
       else if (!advanceRepeat(r)) r.done = true;
@@ -575,6 +591,6 @@ export async function markDone(accountId: number, kind: "reminder" | "item", id:
   } else {
     for (const items of Object.values(store.lists)) for (const i of items) if (i.id === id) { i.done = true; found = true; }
   }
-  if (found) await save(accountId, store);
   return found;
+  });
 }

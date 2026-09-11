@@ -40,6 +40,15 @@ void ReminderAlertActivity::onExit() {
 }
 
 void ReminderAlertActivity::done() {
+  // El dueAt de ESTA ocurrencia, leido ANTES de correr la fecha: viaja como
+  // `at` para que un reintento del mismo tilde no le coma otro ciclo.
+  time_t at = 0;
+  for (const HubStore::Reminder& r : HUB_STORE.reminders) {
+    if (r.id == reminderId) {
+      at = r.dueAt;
+      break;
+    }
+  }
   // Si repite, la cache se queda con la proxima ocurrencia: sin WiFi, borrarlo
   // dejaba al aparato sin nada que armar y el diario no volvia a sonar nunca.
   time_t now = 0;
@@ -51,6 +60,7 @@ void ReminderAlertActivity::done() {
     JsonDocument doc;
     doc["kind"] = "reminder";
     doc["id"] = reminderId;
+    if (at > 0) doc["at"] = static_cast<int64_t>(at);
     serializeJson(doc, body);
   }
   LOG_INF(TAG, "done %d: %s", reminderId, ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/done", body)));

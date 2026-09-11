@@ -35,7 +35,7 @@ import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 import { VOICES } from "./tts";
 import { metNoForecast, type MetNoData } from "./metno";
-import { load as loadStore, save as saveStore, DEFAULT_SETTINGS, refreshTimeZone, forgetTimeZone, repeatText, whenLabel, upsertReminder, normalizeRepeat, repeatToWire, localToEpoch } from "./store";
+import { load as loadStore, mutate as mutateStore, DEFAULT_SETTINGS, refreshTimeZone, forgetTimeZone, repeatText, whenLabel, upsertReminder, normalizeRepeat, repeatToWire, localToEpoch } from "./store";
 import { agendaConfigured, todayForHub } from "./agenda";
 import { verseOfTheDay } from "./bible";
 
@@ -409,14 +409,12 @@ hub.post("/reminder", async (c) => {
   await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const body = await readBody(c);
-  const store = await loadStore(acc);
-  const res = upsertReminder(store, body);
+  const res = await mutateStore(acc, (store) => upsertReminder(store, body));
   if (!res.ok) {
     return res.error === "not_found"
       ? c.json({ ok: false, error: "no existe ese recordatorio", code: "not_found" }, 404)
       : c.json({ ok: false, error: "title required" }, 400);
   }
-  await saveStore(acc, store);
   const r = res.reminder;
   console.log(`hub reminder ${res.created ? "nuevo" : "editado"}: ${r.id} "${r.title}" ${r.dueAt ?? "sin fecha"} (${repeatText(r.repeat, r.dueAt, "es")})`);
   return c.json({
@@ -437,12 +435,16 @@ hub.post("/reminder", async (c) => {
 hub.post("/done", async (c) => {
   // readBody: un cuerpo literal "null" pasaba el catch y reventaba en la
   // primera propiedad que se leía.
-  let body: { kind?: string; id?: number; snooze?: number };
+  // `at` = el dueAt (epoch UTC) de la ocurrencia que se está tildando. Lo manda
+  // el aparato para que un reintento del mismo tilde no le coma otro ciclo a un
+  // recordatorio con repetición; sin él todo sigue igual que antes.
+  let body: { kind?: string; id?: number; snooze?: number; at?: number };
   body = await readBody(c);
   const id = Number(body.id);
   if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item")) {
     return c.json({ ok: false, error: "kind (reminder|item) and id required" }, 400);
   }
-  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0);
+  const at = Number(body.at) > 0 ? Math.floor(Number(body.at)) : 0;
+  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0, at);
   return c.json({ ok: true, found });
 });

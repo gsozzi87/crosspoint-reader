@@ -167,10 +167,14 @@ void AgendaActivity::tickCurrent() {
   if (itemCount() == 0) return;
   int id = 0;
   const char* kind = "item";
+  // dueAt de la ocurrencia que se esta tildando: viaja en el POST como `at`
+  // para que un reintento no le coma otro ciclo a un recordatorio que repite.
+  time_t at = 0;
   switch (current().kind) {
     case REMINDERS: {
       kind = "reminder";
       id = HUB_STORE.reminders[itemIndex].id;
+      at = HUB_STORE.reminders[itemIndex].dueAt;
       // Los que repiten no se borran de la cache: se les corre la fecha, para
       // que la alarma siga armada aunque no haya WiFi (el servidor hace lo
       // mismo con advanceRepeat() y manda la version buena al sincronizar).
@@ -190,6 +194,7 @@ void AgendaActivity::tickCurrent() {
     JsonDocument doc;
     doc["kind"] = kind;
     doc["id"] = id;
+    if (at > 0) doc["at"] = static_cast<int64_t>(at);
     serializeJson(doc, body);
   }
   const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/hub/done", body);
