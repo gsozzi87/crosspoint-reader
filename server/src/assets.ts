@@ -353,6 +353,8 @@ export async function renderCard(card: Card): Promise<Uint8Array> {
 const biblePath = (lang: Lang, i: number) => `/.crosspoint/bible/${lang}/b${String(i).padStart(2, "0")}.txt`;
 // Estas tres son las que espera CardsActivity del firmware; no cambiarlas sin
 // cambiarlas allá.
+const CARDS_IN_PACK = false;
+
 const CARD_INDEX_PATH = "/.crosspoint/cards/index.json";
 const cardImagePath = (id: string) => `/.crosspoint/cards/img/${id}.bmp`;
 const cardAudioPath = (lang: Lang, id: string) => `/.crosspoint/cards/audio/${lang}/${id}.adp`;
@@ -405,7 +407,11 @@ async function plan(lang: Lang): Promise<Planned[]> {
       },
     });
   }
-  // El índice va primero: sin él CardsActivity no sabe qué tarjetas hay.
+  // Las tarjetas salieron del aparato en 1.5.63 ("tarjetas afuera, se va, luego
+  // lo hacemos en LUA"): el catálogo y el dibujante siguen acá para cuando
+  // vuelvan como app en Lua, pero el paquete de contenido NO los manda más.
+  // Eran cientos de BMP y dos audios por tarjeta que nadie iba a abrir.
+  if (CARDS_IN_PACK) {
   out.push({
     id: "cards/index",
     kind: "cards",
@@ -430,6 +436,7 @@ async function plan(lang: Lang): Promise<Planned[]> {
         make: () => synthesize(voice === "en" ? card.en : card.es, voice, 4),
       });
     }
+  }
   }
   return out;
 }

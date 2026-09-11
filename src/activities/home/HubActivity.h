@@ -27,7 +27,7 @@ class HubActivity final : public Activity {
   bool isHomeActivity() const override { return true; }
 
  private:
-  // Catorce mosaicos en tres columnas no dan filas parejas, así que la primera
+  // Trece mosaicos en tres columnas no dan filas parejas, así que la primera
   // fila la comparten "Mi día" — ancho, ocupa dos columnas, con su subtítulo —
   // y "Conversor". Debajo quedan las cuatro filas de tres de siempre. El orden
   // del enum ES el orden de lectura: la palanca recorre índices, no coordenadas.
@@ -46,7 +46,6 @@ class HubActivity final : public Activity {
     TILE_MUSIC,
     TILE_NEWS,
     TILE_GAMES,   // ahora: apps en Lua
-    TILE_CARDS,   // tarjetas (figura + palabra en dos idiomas)
     TILE_WEATHER,
     TILE_SETTINGS,
     TILE_COUNT

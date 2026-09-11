@@ -36,17 +36,28 @@ enum class Sound : uint8_t {
   Error,     // algo salió mal: más grave que los demás
 };
 
-// 48 kHz no es capricho: la tarea de reproducción del SDK ceba la línea con
-// silencio antes de levantar el amplificador y la vacía al terminar, siempre la
-// misma cantidad de muestras. A 16 kHz eso son 64 ms de retardo y 192 ms de
-// cola por clic; a 48 kHz, 21 y 64. El clic llega tres veces antes.
+// 48 kHz: el clic es un transitorio corto y a esta tasa sale limpio.
+//
+// OJO: hasta 1.5.64 el silencio con el que el SDK ceba la línea antes y después
+// de levantar el amplificador se contaba en BUFFERS, no en milisegundos, así que
+// a 48 kHz duraba un tercio que a 16 kHz: el amplificador clase D recién estaba
+// arrancando cuando el clic de 26 ms ya había terminado. Eso, más que el clic
+// salía a -21 dBFS (la mitad de la mitad), es por qué "los sonidos del sistema
+// están activados y no se oyen". El silencio ahora va en milisegundos
+// (AMP_PRIME_MS / AMP_SETTLE_MS en AudioManager.cpp) y esta tasa ya no cambia
+// nada del arranque.
 constexpr uint32_t RATE = 48000;
 constexpr uint32_t MAX_MS = 80;
 constexpr size_t MAX_SAMPLES = RATE / 1000 * MAX_MS;
 
 // Ajuste "Sonidos de la interfaz": apagados / suaves / normales.
 enum Level : uint8_t { OFF = 0, SOFT = 1, NORMAL = 2 };
-inline float gainFor(const uint8_t level) { return level == NORMAL ? 0.30f : level == SOFT ? 0.14f : 0.0f; }
+// Referencia: el pitido del recordatorio (AlertBeep) sale a 12000/32768 = 0,37
+// de escala completa y ESO sí se oye. Con 0,30 de ganancia sobre picos de 0,30
+// el clic de navegación quedaba en 0,09 — doce decibeles por debajo del pitido y
+// además cinco veces más corto. "Normal" ahora deja los clics en el entorno del
+// pitido y "suave" a la mitad.
+inline float gainFor(const uint8_t level) { return level == NORMAL ? 1.0f : level == SOFT ? 0.45f : 0.0f; }
 
 // Escribe el clic en `out` (16 bits, mono, RATE) y devuelve cuántas muestras
 // escribió. `gain` es el factor propio de estos sonidos (gainFor), aparte del
@@ -56,30 +67,31 @@ inline size_t render(const Sound sound, float gain, int16_t* out, const size_t m
   if (gain <= 0.0f) return 0;
   if (gain > 1.0f) gain = 1.0f;
 
-  // Duración y pico de cada uno. El pico es relativo a la escala completa, así
-  // que hasta el más fuerte (error, 0,60 x 0,30 = 0,18) queda a -15 dB.
+  // Duración y pico de cada uno, relativos a la escala completa. Con la
+  // ganancia en "normal" el más fuerte (error, 0,55) queda apenas por encima del
+  // pitido del recordatorio y el de navegación (0,32) justo por debajo.
   float durS = 0.030f;
   float peak = 0.30f;
   switch (sound) {
     case Sound::Nav:
-      durS = 0.026f;
-      peak = 0.30f;
+      durS = 0.038f;  // 26 ms era menos que lo que tarda el amplificador en arrancar
+      peak = 0.32f;
       break;
     case Sound::Select:
       durS = 0.070f;
-      peak = 0.55f;
+      peak = 0.45f;
       break;
     case Sound::Back:
       durS = 0.052f;
-      peak = 0.45f;
+      peak = 0.40f;
       break;
     case Sound::Page:
-      durS = 0.046f;
-      peak = 0.50f;
+      durS = 0.050f;
+      peak = 0.45f;
       break;
     case Sound::Error:
       durS = 0.074f;
-      peak = 0.60f;
+      peak = 0.55f;
       break;
   }
 

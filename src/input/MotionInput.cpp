@@ -194,6 +194,7 @@ void MotionInput::poll() {
     } else if (++shakeHits_ >= SHAKE_HITS) {
       shakeHits_ = 0;
       tilted_ = true;  // el sacudón deja el aparato en cualquier posición
+      lastBigMoveMs_ = now;  // esto SÍ es una sacudida: ver el doble golpe
       if (!debounced) {
         emit(Event::Shake);
         return;
@@ -216,12 +217,8 @@ void MotionInput::poll() {
   //   2. pasó el tiempo muerto desde el último doble golpe que dimos por bueno,
   //   3. el acelerómetro vio un sacudón hace poco — un golpe de verdad mueve la
   //      lectura, y un registro viejo no mueve nada.
-  // Un sacudon fuerte (azotar el aparato hacia abajo) tambien dispara el motor
-  // de golpes del chip, y eso se leia como doble golpe: se abria Hablar de la
-  // nada. Una sacudida y un doble golpe son gestos distintos y el usuario los
-  // hace distinto, asi que durante y despues de un sacudon grande no se acepta
-  // ningun doble golpe.
-  if (deviation > SHAKE_DEV * 0.6f) lastBigMoveMs_ = now;
+  // (La marca del sacudon se pone mas abajo, cuando se EMITE una sacudida:
+  // ver el comentario del doble golpe.)
   if (tapTrusted_) {
     uint8_t tap = 0;
     if (imu.readTapStatus(tap)) {
@@ -229,6 +226,13 @@ void MotionInput::poll() {
       const bool fresh = !tapStatusSeen_ || tap != lastTapStatus_;
       lastTapStatus_ = tap;
       tapStatusSeen_ = true;
+      // OJO CON ESTA GUARDA. En 1.5.58 pedía 1,2 s de quietud después de
+      // CUALQUIER movimiento grande, para que azotar el aparato no se leyera
+      // como doble golpe. Pero un doble golpe ES un movimiento grande: los
+      // propios golpes reseteaban el contador y el gesto se bloqueaba a sí
+      // mismo — con golpes suaves entraba y con golpes firmes no entraba nunca.
+      // Ahora la marca la pone sólo una SACUDIDA emitida (oscilación sostenida,
+      // que es lo que de verdad hay que distinguir de un golpe seco).
       if (isDouble && fresh && !debounced && now - lastTapEmitMs_ >= TAP_REFRACTORY_MS &&
           now - lastBigMoveMs_ >= BIG_MOVE_QUIET_MS) {
         lastTapEmitMs_ = now;

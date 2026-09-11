@@ -553,23 +553,13 @@ void MusicActivity::drawDisplay(const int x, const int y, const int w, const int
   inset(renderer, x, y, w, h);
 
   const int pad = 12;
-  const int seg = sevenseg::clock(renderer, MUSIC.positionSeconds(), x + pad, y + pad, 26, 44, 6, 5);
-
-  // Estado y número de pista, debajo del contador.
-  char sub[32] = "";
-  if (MUSIC.isActive()) snprintf(sub, sizeof(sub), "%d/%d", MUSIC.index() + 1, MUSIC.count());
-  const char* state = !MUSIC.isActive() ? tr(STR_MUSIC_STOPPED)
-                      : MUSIC.isPaused() ? tr(STR_MUSIC_PAUSED)
-                                         : tr(STR_MUSIC_PLAYING);
-  renderer.drawText(SMALL_FONT_ID, x + pad, y + pad + 50, state, true, EpdFontFamily::BOLD);
-  if (sub[0]) {
-    renderer.drawText(SMALL_FONT_ID, x + pad + seg - renderer.getTextWidth(SMALL_FONT_ID, sub), y + pad + 50, sub);
-  }
+  const int segH = 44;
+  const int seg = sevenseg::clock(renderer, MUSIC.positionSeconds(), x + pad, y + pad, 26, segH, 6, 5);
 
   // Analizador a la derecha del contador.
   const int anaX = x + pad + seg + 16;
   const int anaW = x + w - pad - anaX;
-  if (anaW > 60) drawAnalyzer(anaX, y + pad, anaW, 44);
+  if (anaW > 60) drawAnalyzer(anaX, y + pad, anaW, segH);
 
   // Título, artista y la línea técnica, abajo del visor.
   //
@@ -585,6 +575,22 @@ void MusicActivity::drawDisplay(const int x, const int y, const int w, const int
   const int techY = y + h - pad - techH;
   const int subY = (hasTech ? techY : y + h - pad) - 4 - subH;
   const int titleY = subY - 4 - titleH;
+
+  // Estado y número de pista, entre el contador y el título. Iban a `y + pad + 50`,
+  // un salto fijo que no sabía nada del título de abajo: con una tipografía más
+  // alta (o un visor más bajo) "SONANDO 1/1" se montaba encima del nombre de la
+  // pista. Ahora cuelga del contador y, si no entra, se corre hacia arriba.
+  char sub[32] = "";
+  if (MUSIC.isActive()) snprintf(sub, sizeof(sub), "%d/%d", MUSIC.index() + 1, MUSIC.count());
+  const char* state = !MUSIC.isActive() ? tr(STR_MUSIC_STOPPED)
+                      : MUSIC.isPaused() ? tr(STR_MUSIC_PAUSED)
+                                         : tr(STR_MUSIC_PLAYING);
+  const int stateH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int stateY = std::min(y + pad + segH + 6, titleY - 2 - stateH);
+  renderer.drawText(SMALL_FONT_ID, x + pad, stateY, state, true, EpdFontFamily::BOLD);
+  if (sub[0]) {
+    renderer.drawText(SMALL_FONT_ID, x + pad + seg - renderer.getTextWidth(SMALL_FONT_ID, sub), stateY, sub);
+  }
 
   const std::string title = MUSIC.isActive() ? MUSIC.title() : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
   renderer.drawText(UI_12_FONT_ID, x + pad, titleY,

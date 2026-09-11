@@ -564,6 +564,30 @@ certificado se valida contra la fecha. Sin eso el arreglo deja al aparato sin re
 - "Mensaje" salió de los ejemplos de la pantalla de Hablar: la pizarra se sacó del producto en 1.5.44 y el ejemplo
   seguía prometiendo algo que el aparato ya no hace.
 
+## Lo que salió y por qué (1.5.63 / 1.5.65)
+
+- **Los juegos compilados y las tarjetas se fueron.** El mosaico Juegos abre DIRECTO las apps en Lua ("la pestaña
+  juegos es sólo para LUA… quita apps lua de ahí, va a ser lua en general"). Las tarjetas alcanzaron a tener
+  mosaico propio y duraron una versión: "tarjetas afuera, se va, luego lo hacemos en LUA". El hub volvió a trece
+  mosaicos. En el servidor el catálogo (`CARDS`) y el dibujante siguen en `assets.ts`, pero `CARDS_IN_PACK = false`:
+  el paquete de contenido NO manda más ni los BMP ni los dos audios por tarjeta.
+- **Guiones de partición de palabras**: `-DHYPH_PRODUCT_LANGS=1` deja sólo los seis idiomas del producto y saca
+  fi/it/pl/sv/uk (−63,5 KB). El flash está en 87 %. El que sobra es el alemán, 201 KB él solo; las fuentes son
+  1994 KB. Lua no es la palanca para el flash: son las fuentes y los guiones.
+- **El doble golpe se bloqueaba a sí mismo.** En 1.5.58 se pidió 1,2 s de quietud después de cualquier movimiento
+  grande para que azotar el aparato no se leyera como doble golpe — pero un doble golpe ES un movimiento grande, así
+  que los propios golpes reseteaban el contador y con golpes firmes el gesto no entraba nunca. Ahora la marca la
+  pone sólo una SACUDIDA emitida (oscilación sostenida), que es lo que de verdad hay que distinguir de un golpe seco.
+- **Los sonidos del sistema estaban activados y no se oían**, y no era el ajuste: (1) el silencio con el que el SDK
+  ceba la línea antes y después de levantar el amplificador se contaba en BUFFERS de 512 cuadros, o sea 32 ms a
+  16 kHz pero 10,7 ms a 48 kHz, que es justo la tasa de los clics — el clase D recién arrancaba cuando el clic de
+  26 ms ya había terminado; ahora va en milisegundos (`AMP_PRIME_MS`/`AMP_SETTLE_MS`, parche 0021); y (2) el clic de
+  navegación salía a 0,09 de escala completa, doce decibeles por debajo del pitido del recordatorio (0,37) que sí se
+  oye. "Normal" ahora deja los clics en el entorno del pitido y "suave" a la mitad.
+- **Convivencia de sonidos y música**: con música sonando los clics no suenan, punto (`MUSIC.isActive()` en
+  `UiSound::play`). Es a pedido: "cuando se reproduzca la música los demás sonidos no deben oírse, sólo la música".
+  Los avisos (`AlertBeep`, Piper) sí mandan: cortan la canción, porque el I2S es uno solo.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
