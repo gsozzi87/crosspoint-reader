@@ -211,10 +211,16 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `ReminderAlertActivity` sobre las pantallas tranquilas (hub, home, agenda, notas, ajustes, clima), no solo desde el
   tick del hub. Todo camino de deep sleep pasa por `sleepNow()`, que arma el wake: antes el re-sleep por wake espurio
   del botón dormía sin nada armado y el temporizador quedaba mudo para siempre.
-- OJO con los botones: **OK largo NUNCA llega**. Hasta 1.5.46 era porque OK era confirm+power compartidos (mantenerlo
-  apagaba); desde 1.5.47 el encendido es un botón aparte contra el PMIC y OK es solo confirmar, pero
-  `wasLongPressed(Confirm, ...)` sigue sin dispararse. Ninguna función puede colgar de ahí. El Clima quedó como
-  mosaico propio por ese motivo.
+- **OK mantenido: la razón por la que "nunca llegaba" se había vuelto falsa.** Hasta 1.5.46 era cierto y tenía
+  explicación: con `InputStyle::DigitalConfirmPowerHold` el SDK NO levanta el bit de Confirm mientras la tecla está
+  abajo (`updateConfirmPowerHold` sólo emite un clic sintético al soltar), así que `isPressed(Confirm)` era siempre
+  false y `wasLongPressed` no podía dar true ni queriendo. En 1.5.47 el encendido pasó al PMIC y la placa cambió a
+  `InputStyle::DigitalButtons`, donde `getDigitalState()` sí levanta el bit mientras se mantiene — pero el atajo
+  quedó: `EpubReaderActivity::confirmLongPressThreshold()` tenía un `if (WS397) return 0;` que apagaba la rama
+  entera, y con ella el marcador del lector. **Se sacó en 1.5.49**; ahora manda el ajuste de siempre
+  (Ajustes → Controles → menú de pulsación larga, que de fábrica viene apagado).
+  Para comprobarlo en el aparato sin cable: **Ajustes → Sistema → Memoria** mide el último OK mantenido y dice si
+  el evento llegó. El Clima sigue siendo mosaico propio, que igual está mejor.
 - **El botón PWR es del PMIC, no un GPIO** (`src/util/PowerKey`, singleton `POWER_KEY`, `pump()` desde el loop):
   está cableado al PWRKEY del AXP2101 y el chip lo reporta por su IRQ (GPIO38, `pmicIrq` en el perfil). Toque corto =
   **menú de pantalla** (limpiar, bloquear, dormir; se dibuja encima de lo que haya y sin pasar por una Activity, así

@@ -48,4 +48,20 @@ class TaskStatsActivity final : public Activity {
 
   Snapshot painted;
   unsigned long lastPaint = 0;
+
+  // --- El medidor de OK mantenido ---------------------------------------
+  //
+  // Hasta 1.5.48 se daba por sentado que "OK largo NUNCA llega" y por eso
+  // ninguna función colgaba de ahí. La razón era real hasta 1.5.46 (OK era
+  // confirm y power compartidos y el SDK no levantaba el bit mientras se
+  // mantenía), pero dejó de serlo en 1.5.47 y nadie lo volvió a probar.
+  // Esto lo contesta sin cable: mantené OK acá y la pantalla dice cuánto lo
+  // tuviste apretado y si el evento de pulsación larga llegó de verdad.
+  static constexpr unsigned long OK_HOLD_TEST_MS = 1000;
+  bool okDown = false;         // estaba apretado en la pasada anterior
+  bool okFired = false;        // el evento llegó durante ESTA pulsación
+  unsigned long okHoldMs = 0;  // cuánto lleva apretado ahora
+  unsigned long lastOkHoldMs = 0;  // lo que duró la última pulsación
+  bool lastOkFired = false;        // si en esa llegó el evento
+  bool sawOkHold = false;          // ya hubo al menos una, hay algo que mostrar
 };

@@ -79,6 +79,27 @@ void TaskStatsActivity::loop() {
     finish();
     return;
   }
+
+  // El medidor de OK mantenido. Se mira `isPressed` y no `wasReleased` a
+  // propósito: `wasLongPressed()` se come la soltada siguiente
+  // (`suppressNextRelease`), así que si el evento llega, el release nunca
+  // aparece y el medidor se quedaría esperando para siempre.
+  const bool down = mappedInput.isPressed(MappedInputManager::Button::Confirm);
+  if (down) {
+    // getHeldTime() es de "cualquier botón", no por botón: acá vale porque la
+    // pantalla no usa ningún otro y lo único apretado es OK.
+    okHoldMs = mappedInput.getHeldTime();
+    if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, OK_HOLD_TEST_MS)) okFired = true;
+  } else if (okDown) {
+    lastOkHoldMs = okHoldMs;
+    lastOkFired = okFired;
+    sawOkHold = true;
+    okFired = false;
+    okHoldMs = 0;
+    requestUpdate();  // se soltó: hay resultado nuevo que mostrar
+  }
+  okDown = down;
+
   if (millis() - lastPaint < REFRESH_MS) return;
   // La regla del panel manda: se repinta sólo si algún número se movió de
   // verdad. Un contador que cambia por 16 bytes deja fantasma y no dice nada.
@@ -144,6 +165,20 @@ void TaskStatsActivity::render(RenderLock&&) {
     y += listui::ROW2_H;
   }
   y += listui::GAP;
+
+  // --- OK mantenido -------------------------------------------------------
+  y = listui::sectionHeader(renderer, x, y, w, tr(STR_MEMORY_OK_HOLD), nullptr);
+  if (!sawOkHold) {
+    listui::row(renderer, x, y, w, listui::ROW1_H, {.title = tr(STR_MEMORY_OK_HOLD_HINT), .rule = true});
+  } else {
+    char meta[32];
+    snprintf(meta, sizeof(meta), "%lu ms", lastOkHoldMs);
+    // tr() es una macro que antepone StrId::, así que el ternario va afuera.
+    const char* veredicto =
+        lastOkFired ? tr(STR_MEMORY_EVENT_ARRIVED) : tr(STR_MEMORY_EVENT_LOST);
+    listui::row(renderer, x, y, w, listui::ROW1_H, {.title = veredicto, .meta = meta, .rule = true});
+  }
+  y += listui::ROW1_H + listui::GAP;
 
   // --- Reposo -------------------------------------------------------------
   y = listui::sectionHeader(renderer, x, y, w, tr(STR_MEMORY_REST), nullptr);
