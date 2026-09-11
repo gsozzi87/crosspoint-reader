@@ -30,6 +30,11 @@ class NotesActivity final : public Activity {
  public:
   explicit NotesActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Notes", renderer, mappedInput) {}
+  // `focusNoteId` deja el cursor sobre una nota concreta al entrar: es como se
+  // abre la que se acaba de dictar desde Hablar, para verla donde vive en vez
+  // de detrás de un cartel que dice "listo".
+  NotesActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const int focusNoteId)
+      : Activity("Notes", renderer, mappedInput), focusNoteId_(focusNoteId) {}
 
   void onEnter() override;
   void onExit() override;
@@ -69,6 +74,7 @@ class NotesActivity final : public Activity {
   Take take = TAKE_TEXT;
   int index = 0;
   int listTop = 0;
+  int focusNoteId_ = 0;  // 0 = sin foco
   bool forceClean = false;  // entrar o salir de la grabación pide uno limpio
   std::vector<Row> rows;
   std::vector<voicenotes::Note> voiceNotes;

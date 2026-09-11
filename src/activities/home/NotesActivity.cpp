@@ -81,6 +81,16 @@ void NotesActivity::onEnter() {
   listTop = 0;
   reloadVoiceNotes();
   reloadRows();
+  if (focusNoteId_ > 0) {
+    for (size_t i = 0; i < rows.size(); i++) {
+      if (rows[i].kind != Row::TEXT) continue;
+      if (rows[i].index < 0 || static_cast<size_t>(rows[i].index) >= HUB_STORE.notes.size()) continue;
+      if (HUB_STORE.notes[rows[i].index].id != focusNoteId_) continue;
+      index = static_cast<int>(i);
+      break;
+    }
+    focusNoteId_ = 0;  // sólo al entrar
+  }
   requestUpdate();
 }
 

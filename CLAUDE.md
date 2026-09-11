@@ -510,6 +510,54 @@ raíces, chequear el nombre del host en `SecureClient` (hoy no se llama a `wolfS
 lado) y, sobre todo, **poner el reloj en hora ANTES del primer TLS** — hoy nadie llama a `settimeofday` y un
 certificado se valida contra la fecha. Sin eso el arreglo deja al aparato sin red. Es una ola aparte.
 
+## Lo que se rompió y por qué (1.5.54 / 1.5.55)
+
+- **El log no servía y por eso no se podía diagnosticar nada más.** `devlog::tail()` leía PREVIOUS primero y
+  CURRENT después; como el archivo rotado suele estar lleno (64 KB), se comía el presupuesto de 24 KB entero y a
+  CURRENT le quedaban CERO bytes. El aparato subía siempre el final del log VIEJO y nunca una línea de lo que
+  acababa de pasar: en `/board/log` se veía la misma tanda de hace semanas en cada sincronización, y vaciarla no
+  cambiaba nada. Ahora manda lo nuevo y PREVIOUS entra solo si sobra lugar.
+- **Un solo códec, un solo amplificador, cinco AudioManager.** `ensureI2s()` ya le pedía el puerto al dueño, pero
+  `stop()` y `powerDown()` seguían bajando el amp, muteando el DAC y cortando el riel del códec **desde una
+  instancia que ya no era dueña de nada**. O sea que el clic que sonó hace 250 ms desarmaba el códec por debajo de
+  la canción que acababa de empezar. De ahí "la música no suena" y "se come la mitad del audio" de las cartas.
+- **Los sonidos del sistema.** `UiSound` le preguntaba al driver si se podía crear un canal I2S. Eso valía hasta
+  que el puerto pasó a tener dueño: `stop()` NO suelta los canales (sólo `end()`), así que en cuanto sonaba el
+  primer pitido esa instancia se quedaba con el puerto y el driver contestaba "ocupado" para siempre. Después del
+  primer sonido, ningún clic volvía a sonar. Ahora se pregunta `AudioManager::portBusy()` (¿hay alguien
+  reproduciendo o grabando?), que es lo que de verdad importa.
+- **El amplificador tarda en arrancar.** Un clase D no pasa de apagado a amplificando en cero: los primeros
+  milisegundos salen mudos. Con clips cortos se oye como que empieza tarde. Ahora va silencio también DESPUÉS de
+  levantar el enable (~64 ms).
+- **El recordatorio nacía vencido.** "A las ocho de la mañana" dicho a las 12:52 daba las 08:00 de HOY y sonaba en
+  el acto. El modelo ahora tiene la regla escrita y, por si igual se equivoca, `rollForwardIfPast()` lo corre a la
+  próxima ocurrencia antes de guardarlo. Sólo con hora explícita: sin hora, correr la fecha convertiría "recordame
+  HOY comprar pan" en mañana.
+- **La lista blanca de "pantallas tranquilas" era demasiado chica** y ya había mordido a las alarmas (F07). El
+  **doble golpe** tenía el mismo problema: no existía en los juegos, en Noticias, en Fotos ni en la Biblia, que es
+  justo donde uno lo prueba y concluye que los gestos no están hechos. Como no usa ningún botón, no le roba los
+  controles a nadie: ahora anda en cualquier pantalla que no esté ocupada. El **doble Atrás** sigue atado a la
+  lista blanca a propósito: ahí Atrás es un botón que cada app usa para salir.
+
+## Dormir y apagar son dos cosas distintas (1.5.54)
+
+- PWR soltado entre **1,2 s y 3 s** = dormir (deep sleep; las alarmas siguen vivas y el RTC despierta).
+- PWR mantenido hasta los **3 s** = **apagar**: se pinta el fondo de pantalla, se desmonta la tarjeta y el AXP2101
+  corta los rieles (bit0 de 0x10, soft off). No hay alarmas ni reloj; se vuelve con PWR mantenido 1 s (PressOn).
+- Dormir pasó al SOLTAR a propósito: si durmiera al cruzar el umbral con el botón abajo, nunca se podría llegar a
+  los 3 s. El corte duro del PMIC sigue a los 10 s como escape de emergencia.
+
+## Lo dictado se abre donde vive (1.5.55)
+
+- `POST /api/voice` devuelve ahora el `id` de lo que guardó en cada entrada de `saved[]`. Con **una sola** cosa
+  guardada, `VoiceActivity` no muestra un cartel que dice "listo": abre esa cosa en su pantalla.
+  Un recordatorio entra **directo al editor** de `AgendaActivity` (hora, fecha y repetición a la vista, OK
+  confirma, Atrás largo borra); un ítem de lista deja el cursor sobre él en su sección; una nota abre `NotesActivity`
+  posicionada. Con varias acciones de un tirón no se abre nada: no hay "la pantalla correcta" para tres cosas.
+- Así una hora mal entendida se ve ANTES de que suene, que es de lo que se trataba.
+- "Mensaje" salió de los ejemplos de la pantalla de Hablar: la pizarra se sacó del producto en 1.5.44 y el ejemplo
+  seguía prometiendo algo que el aparato ya no hace.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

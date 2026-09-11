@@ -547,7 +547,14 @@ static void checkMotionGestures() {
 
   if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
   if (busyRecording()) return;
-  if (!isCalmScreen(name)) return;
+  // El DOBLE GOLPE no usa ningún botón, así que no le roba los controles a
+  // nadie: anda en cualquier pantalla que no esté ocupada, igual que las
+  // alarmas. Con la lista blanca de nueve pantallas el gesto no existía en los
+  // juegos, en Noticias, en Fotos ni en la Biblia, que es justo donde uno lo
+  // prueba y concluye que los gestos no están hechos. El doble Atrás SÍ sigue
+  // atado a la lista: ahí Atrás es un botón que cada app usa para salir.
+  if (activityManager.preventAutoSleep()) return;
+  if (isAlarmSilentScreen(name)) return;
 
   if (pending == MotionInput::Event::DoubleTap) {
     MOTION.take(MotionInput::Event::DoubleTap);

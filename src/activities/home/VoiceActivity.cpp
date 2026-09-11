@@ -13,7 +13,9 @@
 #include <algorithm>
 
 #include "HubStore.h"
+#include "AgendaActivity.h"
 #include "HubSyncActivity.h"
+#include "NotesActivity.h"
 #include "TimerActivity.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
@@ -237,6 +239,18 @@ void VoiceActivity::performRequest() {
           (int)(doc["ms"]["stt"] | 0), (int)(doc["ms"]["llm"] | 0), (int)(doc["ms"]["tts"] | 0),
           (int)(doc["ms"]["total"] | 0));
 
+  // Una sola cosa guardada: se puede abrir en su pantalla. Con varias no, no
+  // hay "la pantalla correcta" para tres cosas a la vez.
+  savedId = 0;
+  savedKind.clear();
+  {
+    JsonArrayConst saved = doc["saved"].as<JsonArrayConst>();
+    if (saved.size() == 1) {
+      savedKind = saved[0]["kind"] | "";
+      savedId = saved[0]["id"] | 0;
+    }
+  }
+
   // Widgets: whatever was just saved shows up on the hub right away.
   if (intent != "question" && intent != "translate" && intent != "memory") HubSyncActivity::fetchNow();
   WiFi.setSleep(true);
@@ -246,6 +260,24 @@ void VoiceActivity::performRequest() {
     return;
   }
   timerSeconds = 0;
+  // Lo dictado se ABRE donde vive. Un recordatorio entra directo al editor:
+  // hora, fecha y repeticion a la vista, y OK lo confirma. Antes se guardaba y
+  // se mostraba un cartel, asi que una hora mal entendida no se veia hasta que
+  // sonaba (o hasta que no sonaba).
+  if (savedId > 0) {
+    if (savedKind == "reminder") {
+      speakThen(AFTER_AGENDA);
+      return;
+    }
+    if (savedKind == "task" || savedKind == "shopping") {
+      speakThen(AFTER_AGENDA);
+      return;
+    }
+    if (savedKind == "note") {
+      speakThen(AFTER_NOTES);
+      return;
+    }
+  }
   showReply();
 }
 
@@ -284,6 +316,16 @@ void VoiceActivity::runAfterSpeech() {
   }
   if (what == AFTER_TIMER) {
     activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, timerSeconds));
+    return;
+  }
+  if (what == AFTER_AGENDA) {
+    const AgendaActivity::Focus focus =
+        savedKind == "reminder" ? AgendaActivity::Focus::Reminder : AgendaActivity::Focus::Item;
+    activityManager.replaceActivity(std::make_unique<AgendaActivity>(renderer, mappedInput, focus, savedId));
+    return;
+  }
+  if (what == AFTER_NOTES) {
+    activityManager.replaceActivity(std::make_unique<NotesActivity>(renderer, mappedInput, savedId));
     return;
   }
   showReply();

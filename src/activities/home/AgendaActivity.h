@@ -27,8 +27,17 @@
 // sugerencias del día. Este mosaico es solo mensajes, recordatorios y listas.
 class AgendaActivity final : public Activity {
  public:
+  // Qué abrir de entrada. Sirve para lo que se acaba de dictar: el servidor
+  // devuelve el id de lo que guardó y el aparato ABRE ese ítem en vez de
+  // mostrar un cartel que dice "listo". Con un recordatorio entra directo a la
+  // pantalla de edición —hora, fecha y repetición— así se confirma o se
+  // corrige ANTES de que quede sonando cuando no toca.
+  enum class Focus : uint8_t { None, Reminder, Item };
+
   explicit AgendaActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("Agenda", renderer, mappedInput) {}
+  AgendaActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, const Focus focus, const int id)
+      : Activity("Agenda", renderer, mappedInput), focus_(focus), focusId_(id) {}
 
   void onEnter() override;
   void loop() override;
@@ -100,6 +109,12 @@ class AgendaActivity final : public Activity {
   void onMenuPick(int index);
   void sendEdit(const char* action, const char* list, const char* dueDate);
   void openSection();
+
+  Focus focus_ = Focus::None;
+  int focusId_ = 0;
+  // Deja el cursor sobre lo que pidió el llamador. Devuelve false si ya no
+  // está en la caché (lo borraron desde la web entre el dictado y esto).
+  bool applyFocus();
 
   void openEditor();
   void editFieldStep(int delta);

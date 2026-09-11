@@ -1,0 +1,44 @@
+From 46d2e8fb6113b16416331cea3753932ee6459b83 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 11 Sep 2026 19:18:10 +0000
+Subject: [PATCH] ws397: give the class-D amp time to start before the first
+ real sample
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The task primes the line with silence, raises the amp and starts writing audio
+immediately. A class-D does not go from off to amplifying in zero time: the
+first few tens of ms after the enable come out muted, which on a short clip —
+a card name, a two-word notice — is heard as starting late or swallowing the
+first syllable. Two more buffers of silence after the enable, ~64 ms at 16 kHz.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ libs/hardware/AudioManager/src/AudioManager.cpp | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/libs/hardware/AudioManager/src/AudioManager.cpp b/libs/hardware/AudioManager/src/AudioManager.cpp
+index 0218e22..28c83bb 100644
+--- a/libs/hardware/AudioManager/src/AudioManager.cpp
++++ b/libs/hardware/AudioManager/src/AudioManager.cpp
+@@ -651,6 +651,15 @@ void AudioManager::taskLoop() {
+     if (i2s_channel_write(tx, outBuf, sizeof(outBuf), &written, pdMS_TO_TICKS(200)) != ESP_OK) break;
+   }
+   setAmp(true);
++  // Y otro tanto DESPUES de levantar el amplificador. Un clase D no pasa de
++  // apagado a amplificando en cero: tarda unas decenas de ms en arrancar, y en
++  // ese rato los primeros samples reales salen mudos. Con clips cortos —el
++  // nombre de una carta, un aviso de dos palabras— eso se oye como que empieza
++  // tarde o que se come la primera sílaba. El silencio es gratis y va antes.
++  for (int i = 0; i < 2; ++i) {
++    size_t written = 0;
++    if (i2s_channel_write(tx, outBuf, sizeof(outBuf), &written, pdMS_TO_TICKS(200)) != ESP_OK) break;
++  }
+ 
+   size_t consumed = 0;
+   bool wasPaused = false;
+-- 
+2.43.0
+

@@ -30,8 +30,16 @@ class VoiceActivity final : public Activity {
   // parlante falla ("error de micrófono"), y navegar mientras habla corta la frase.
   enum State { RECORDING, CONNECTING, SENDING, SPEAKING, REPLY, FAILED };
   State state = RECORDING;
-  enum AfterSpeech { AFTER_NONE, AFTER_ASK_TIME, AFTER_TIMER };
+  // AFTER_AGENDA / AFTER_NOTES: lo que se dicto se ABRE en su pantalla para
+  // confirmarlo (y, en un recordatorio, para corregirle hora y repeticion)
+  // en vez de quedar guardado a ciegas detras de un cartel que dice "listo".
+  enum AfterSpeech { AFTER_NONE, AFTER_ASK_TIME, AFTER_TIMER, AFTER_AGENDA, AFTER_NOTES };
   AfterSpeech afterSpeech = AFTER_NONE;
+  // Lo unico que guardo el servidor, si guardo exactamente una cosa: que tipo
+  // y con que id, para poder abrirlo. Con varias acciones de un tiron no se
+  // abre nada (no hay una pantalla "la correcta") y se muestra el resumen.
+  int savedId = 0;
+  std::string savedKind;
   unsigned long speakStartedAt = 0;
 
   VoiceRecorder recorder{20};  // 20 s: con 12 se cortaba a mitad de frase

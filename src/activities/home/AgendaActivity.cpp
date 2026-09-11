@@ -86,7 +86,45 @@ void AgendaActivity::onEnter() {
   sectionIndex = 0;
   itemIndex = 0;
   rebuildSections();
+  applyFocus();
   requestUpdate();
+}
+
+// Lo que se acaba de dictar se abre donde vive, no en un cartel. Un
+// recordatorio entra directo al editor (hora, fecha, repetición) porque es lo
+// único que hay que revisar antes de que suene; un item de lista alcanza con
+// dejarlo marcado en su seccion.
+bool AgendaActivity::applyFocus() {
+  if (focus_ == Focus::None || focusId_ <= 0) return false;
+  const Focus what = focus_;
+  focus_ = Focus::None;  // solo al entrar: despues manda la navegacion normal
+  if (what == Focus::Reminder) {
+    for (size_t i = 0; i < HUB_STORE.reminders.size(); i++) {
+      if (HUB_STORE.reminders[i].id != focusId_) continue;
+      for (int sIdx = 0; sIdx < sectionCount(); sIdx++) {
+        if (sections[sIdx].kind != REMINDERS) continue;
+        sectionIndex = sIdx;
+        itemIndex = static_cast<int>(i);
+        level = ITEMS;
+        openEditor();
+        return true;
+      }
+      return false;
+    }
+    return false;
+  }
+  for (int sIdx = 0; sIdx < sectionCount(); sIdx++) {
+    if (sections[sIdx].kind != LIST) continue;
+    const HubStore::List& l = HUB_STORE.lists[sections[sIdx].listIndex];
+    for (size_t i = 0; i < l.items.size(); i++) {
+      if (l.items[i].id != focusId_) continue;
+      sectionIndex = sIdx;
+      itemIndex = static_cast<int>(i);
+      level = ITEMS;
+      return true;
+    }
+  }
+  return false;
 }
 
 // Recordatorios primero y después las listas. En 1.5.44 se sacaron los

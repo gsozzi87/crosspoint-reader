@@ -282,7 +282,10 @@ async function answerWithSearch(acc: number, question: string, lang: Lang): Prom
 }
 
 async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) {
-  const saved: { kind: string; list?: string; title: string; when?: string; repeatText?: string }[] = [];
+  // `id` viaja para que el aparato pueda ABRIR lo que se acaba de guardar en su
+  // pantalla y darle el OK (o corregirle la hora y la repetición) antes de que
+  // quede así: ver VoiceActivity -> AgendaActivity/NotesActivity.
+  const saved: { kind: string; id?: number; list?: string; title: string; when?: string; repeatText?: string }[] = [];
   const stamp = new Date().toISOString();
   // Bajo candado y sin ninguna llamada al modelo adentro: lo que hay acá es
   // puro armado de objetos, así que la transacción dura microsegundos.
@@ -296,28 +299,32 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
         const repeat = repeatFromAction(a.repeat);
         // "Los martes y jueves" dicho un lunes arranca el martes.
         const aligned = rollForwardIfPast(dueAt ? alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10) : null, repeat);
-        store.reminders.push({ id: nextId(store), title, dueAt: aligned, repeat, done: false, createdAt: stamp });
-        saved.push({ kind: "reminder", title, when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
+        const rid = nextId(store);
+        store.reminders.push({ id: rid, title, dueAt: aligned, repeat, done: false, createdAt: stamp });
+        saved.push({ kind: "reminder", id: rid, title, when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
         break;
       }
       case "task": {
         const list = resolveList(store, a.list);
-        store.lists[list].push({ id: nextId(store), text: title, done: false, dueDate: a.dueAt ? a.dueAt.slice(0, 10) : null, createdAt: stamp });
-        saved.push({ kind: "task", list: listLabel(list, lang), title });
+        const tid = nextId(store);
+        store.lists[list].push({ id: tid, text: title, done: false, dueDate: a.dueAt ? a.dueAt.slice(0, 10) : null, createdAt: stamp });
+        saved.push({ kind: "task", id: tid, list: listLabel(list, lang), title });
         break;
       }
       case "shopping": {
         const list = resolveList(store, a.list ?? SHOPPING_LIST);
-        store.lists[list].push({ id: nextId(store), text: title, done: false, dueDate: null, createdAt: stamp });
-        saved.push({ kind: "shopping", list: listLabel(list, lang), title });
+        const sid = nextId(store);
+        store.lists[list].push({ id: sid, text: title, done: false, dueDate: null, createdAt: stamp });
+        saved.push({ kind: "shopping", id: sid, list: listLabel(list, lang), title });
         break;
       }
       // "message" ya no existe como intención (se sacó la pizarra del producto);
       // si un modelo viejo o terco la devuelve igual, se guarda como nota.
       case "note":
       case "message":
-        store.notes.push({ id: nextId(store), text: title, createdAt: stamp });
-        saved.push({ kind: "note", title });
+        const nid = nextId(store);
+        store.notes.push({ id: nid, text: title, createdAt: stamp });
+        saved.push({ kind: "note", id: nid, title });
         break;
       case "memory": {
         // rememberFact pisa la memoria más parecida: "ya no vivo en México" no
@@ -334,8 +341,9 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
         if (!dueAt) break;
         const repeat = repeatFromAction(a.repeat);
         const aligned = rollForwardIfPast(alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10), repeat) ?? dueAt;
-        store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt: aligned, repeat, done: false, createdAt: stamp });
-        saved.push({ kind: "reminder", title: title || "Alarma", when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
+        const aid = nextId(store);
+        store.reminders.push({ id: aid, title: title || "Alarma", dueAt: aligned, repeat, done: false, createdAt: stamp });
+        saved.push({ kind: "reminder", id: aid, title: title || "Alarma", when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
         break;
       }
       default:
