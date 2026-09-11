@@ -280,7 +280,7 @@ async function dropExpired(): Promise<void> {
 
 export type PairStart =
   | { ok: true; code: string; expiresIn: number }
-  | { ok: false; status: 429 | 400 | 501; error: string; code: string };
+  | { ok: false; status: 429 | 400 | 403 | 501; error: string; code: string };
 
 /** El aparato pide un código. No tiene cuenta todavía, así que no hay Bearer. */
 export async function startPairing(deviceIdRaw: unknown, tokenRaw: unknown): Promise<PairStart> {
@@ -292,18 +292,49 @@ export async function startPairing(deviceIdRaw: unknown, tokenRaw: unknown): Pro
 
   await dropExpired();
 
-  const live = (await db()`SELECT code, created_at FROM pairings WHERE device_id = ${deviceId}`) as any[];
+  const hash = sha256Hex(token);
+
+  // Un aparato YA vinculado sólo puede pedir código si prueba que es él.
+  //
+  // Esta ruta es pública a propósito (el aparato todavía no tiene cuenta), pero
+  // aceptaba cualquier par {deviceId, token} sin mirar nada. Y `deviceId` es la
+  // MAC, que va impresa en la caja: con ese dato, cualquiera podía pedir un
+  // código para el aparato de otro, canjearlo en su propia cuenta y de paso
+  // dejarle un token elegido por él. Ahora, si el aparato ya está en `devices`,
+  // el token tiene que coincidir con el que está guardado.
+  //
+  // Recuperar un aparato cuyo token se perdió sigue siendo posible, pero por el
+  // camino del dueño: borrarlo en /board → Aparatos y volver a vincular. Eso lo
+  // hace quien tiene la cuenta, que es exactamente quien debería poder hacerlo.
+  const owned = (await db()`SELECT token_hash FROM devices WHERE device_id = ${deviceId}`) as any[];
+  if (owned.length && String(owned[0].token_hash) !== hash) {
+    return {
+      ok: false,
+      status: 403,
+      error: "este aparato ya está vinculado a una cuenta; para moverlo, bórralo primero desde Aparatos",
+      code: "device_owned",
+    };
+  }
+
+  const live = (await db()`SELECT code, created_at, token_hash FROM pairings WHERE device_id = ${deviceId}`) as any[];
   if (live.length) {
+    // El código sólo se le devuelve a QUIEN LO PIDIÓ. Antes se buscaba por
+    // device_id a secas, así que durante los 30 s del reintento cualquiera que
+    // supiera la MAC podía sonsacar el código de seis dígitos que el usuario
+    // tenía en la pantalla y canjearlo antes que él.
+    const mismo = String(live[0].token_hash) === hash;
     const age = Date.now() - new Date(live[0].created_at).getTime();
     // Un pedido cada 30 s: mientras tanto se devuelve el MISMO código, así el
     // aparato que reintenta no le cambia el número al usuario en la cara.
-    if (age < PAIR_COOLDOWN_MS) {
+    if (mismo && age < PAIR_COOLDOWN_MS) {
       return { ok: true, code: String(live[0].code), expiresIn: Math.max(1, PAIR_TTL_S - Math.floor(age / 1000)) };
+    }
+    if (!mismo && age < PAIR_COOLDOWN_MS) {
+      return { ok: false, status: 429, error: "hay un pedido en curso para ese aparato", code: "pair_busy" };
     }
     await db()`DELETE FROM pairings WHERE device_id = ${deviceId}`;
   }
 
-  const hash = sha256Hex(token);
   for (let i = 0; i < 20; i++) {
     const code = sixDigits();
     const rows = (await db()`
