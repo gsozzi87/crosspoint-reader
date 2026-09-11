@@ -9,10 +9,13 @@
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 
+#include <algorithm>
+
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "activities/ListStyle.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
@@ -21,6 +24,7 @@ namespace {
 constexpr const char* TAG = "TRANSL";
 constexpr uint32_t TRANSLATE_TIMEOUT_MS = 60000;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int STATUS_BAND_H = 60;          // lo que se le reserva abajo al estado y a la ayuda
 struct LangInfo {
   const char* code;
   const char* name;
@@ -303,7 +307,7 @@ void TranslatorActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
-  const int side = 20;
+  const int side = listui::SIDE;  // el único margen lateral
 
   renderer.clearScreen();
   char title[64];
@@ -316,52 +320,44 @@ void TranslatorActivity::render(RenderLock&&) {
     return;
   }
 
-  const int top = metrics.topPadding + metrics.headerHeight + 16;
-  const int hintsTop = pageHeight - metrics.buttonHintsHeight;
-  const int paneH = (hintsTop - top - 60) / 2;
+  // Los dos bloques van separados por una REGLA de 1 px, no por cajas: hasta
+  // 1.5.47 la traducción era un panel NEGRO MACIZO de media pantalla con las
+  // letras en blanco, que es lo que más fantasma deja en el parcial siguiente.
+  // La jerarquía la hace la tipografía: lo dicho en UI_12 y la traducción —que
+  // es lo que el otro tiene que leer— en UI_14.
+  const int top = metrics.topPadding + metrics.headerHeight + listui::GAP;
+  const int hintsTop = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int paneH = (hintsTop - top - STATUS_BAND_H) / 2;
   const int w = pageWidth - 2 * side;
+  const int labelH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
 
   // Pane 1: what was said (source language), pane 2: the translation (target).
   const std::string srcLang = meSpeaking ? mine : other;
   const std::string dstLang = meSpeaking ? other : mine;
-  renderer.drawRoundedRect(side, top, w, paneH, 1, 10, true);
-  renderer.drawText(UI_10_FONT_ID, side + 12, top + 8, languageName(srcLang));
-  drawWrapped(renderer, UI_12_FONT_ID, side + 12, top + 34, w - 24, 26, (paneH - 44) / 26, original);
 
-  const int top2 = top + paneH + 12;
-  renderer.fillRoundedRect(side, top2, w, paneH, 10, Color::Black);
-  renderer.drawText(UI_10_FONT_ID, side + 12, top2 + 8, languageName(dstLang), false);
-  // White text on black: draw with the same wrap helper but inverted via drawText's black flag.
-  {
-    std::string line, word;
-    int lines = 0;
-    const int maxLines = (paneH - 44) / 26;
-    const int tw = w - 24;
-    auto flushLine = [&](const std::string& l) {
-      if (lines >= maxLines) return;
-      renderer.drawText(UI_12_FONT_ID, side + 12, top2 + 34 + lines * 26,
-                        renderer.truncatedText(UI_12_FONT_ID, l.c_str(), tw, EpdFontFamily::BOLD).c_str(), false,
-                        EpdFontFamily::BOLD);
-      lines++;
-    };
-    for (size_t i = 0; i <= translation.size(); ++i) {
-      const char c = i < translation.size() ? translation[i] : ' ';
-      if (c == ' ' || c == '\n') {
-        if (word.empty()) continue;
-        const std::string cand = line.empty() ? word : line + " " + word;
-        if (renderer.getTextWidth(UI_12_FONT_ID, cand.c_str(), EpdFontFamily::BOLD) > tw && !line.empty()) {
-          flushLine(line);
-          line = word;
-        } else {
-          line = cand;
-        }
-        word.clear();
-      } else {
-        word += c;
-      }
-    }
-    if (!line.empty()) flushLine(line);
-  }
+  int y = top;
+  renderer.drawText(UI_10_FONT_ID, side, y, languageName(srcLang), true, EpdFontFamily::BOLD);
+  y += labelH;
+  const int srcStep = renderer.getLineHeight(UI_12_FONT_ID) + 6;
+  drawWrapped(renderer, UI_12_FONT_ID, side, y, w, srcStep, std::max(1, (top + paneH - y) / srcStep), original);
+
+  listui::rule(renderer, side, top + paneH, w);
+
+  const int top2 = top + paneH + listui::GAP;
+  int y2 = top2;
+  renderer.drawText(UI_10_FONT_ID, side, y2, languageName(dstLang), true, EpdFontFamily::BOLD);
+  y2 += labelH;
+  // La traducción entra en UI_14, que es la cara de lectura a un brazo de
+  // distancia; si el que contestó se extendió y no entra, baja a UI_12 antes de
+  // comerse el final de la frase.
+  const int bigStep = std::max(40, renderer.getLineHeight(UI_14_FONT_ID) + 6);
+  const int bigRoom = std::max(1, (hintsTop - STATUS_BAND_H - y2) / bigStep);
+  const bool fitsBig =
+      static_cast<int>(renderer.wrappedText(UI_14_FONT_ID, translation.c_str(), w, bigRoom + 1).size()) <= bigRoom;
+  const int dstFont = fitsBig ? UI_14_FONT_ID : UI_12_FONT_ID;
+  const int dstStep = fitsBig ? bigStep : renderer.getLineHeight(UI_12_FONT_ID) + 6;
+  drawWrapped(renderer, dstFont, side, y2, w, dstStep, std::max(1, (hintsTop - STATUS_BAND_H - y2) / dstStep),
+              translation);
 
   const int statusY = top2 + paneH + 14;
   char status[96] = "";

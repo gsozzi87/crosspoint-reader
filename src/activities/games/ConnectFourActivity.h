@@ -104,7 +104,12 @@ class ConnectFourActivity final : public Activity {
   int boardX = 0;
   int boardY = 0;
   int cursorY = 0;
-  int infoY = 0;
+  // El bloque de abajo se arma de abajo hacia arriba y con alto fijo (la ayuda
+  // reserva sus renglones se usen o no): el tablero no se mueve cuando cambia
+  // el texto.
+  int statusTop = 0;
+  int statsTop = 0;
+  int helpTop = 0;
 
   // Partida
   void newGame();

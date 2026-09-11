@@ -66,6 +66,13 @@ class UiListActivity : public Activity, protected UiAppHost {
   virtual void drawFooter();
 
   // --- helpers ---------------------------------------------------------------
+  // La banda de contenido de una lista nuestra: debajo del encabezado y arriba
+  // de la barra de botones, con verticalSpacing ADEMÁS del alto de los hints
+  // (regla del proyecto: con el hueco justo, la última fila queda pegada a la
+  // botonera y parece tapada). Se aplica sola antes de cada buildScreen, así
+  // una pantalla que no fija su margen igual respeta el borde de abajo; la que
+  // necesita otra cosa lo pisa llamando a setContentMarginFromScreen.
+  void applyStandardContentMargin(UiScreen& screen) const;
   // Measure visibleRows for the screen band, apply follow-on-build, clamp the
   // viewport, and write selection/viewport into props. Call from buildScreen
   // right before screen.list(props).

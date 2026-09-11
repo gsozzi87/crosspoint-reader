@@ -1047,7 +1047,7 @@ void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetr
     const Rect statusBounds{statusX, screen->y, statusWidth, screen->height};
     UITheme::drawCenteredWrappedText(renderer, statusBounds, UI_10_FONT_ID, statusText, MAX_STATUS_LINES);
     if (autoConnecting) {
-      const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SHOW_NETWORKS), "", "");
+      const auto labels = mappedInput.mapLabels(tr(STR_HINT_CLOSE), tr(STR_SHOW_NETWORKS), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }
   } else {
@@ -1062,7 +1062,7 @@ void WifiSelectionActivity::renderConnecting(const Rect* screen, const ThemeMetr
     }
     UITheme::drawCenteredText(renderer, *screen, UI_10_FONT_ID, top, ssidInfo.c_str());
     if (autoConnecting) {
-      const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), tr(STR_SHOW_NETWORKS), "", "");
+      const auto labels = mappedInput.mapLabels(tr(STR_HINT_CLOSE), tr(STR_SHOW_NETWORKS), "", "");
       GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     }
   }

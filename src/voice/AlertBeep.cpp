@@ -7,6 +7,7 @@
 
 #include "HubStore.h"
 #include "util/WavHeader.h"
+#include "music/MusicPlayer.h"
 
 namespace {
 constexpr uint32_t RATE = 16000;
@@ -16,6 +17,9 @@ constexpr float PATTERN_S = 1.6f;  // 3 x (0.16 s on + 0.16 s off) + pause
 bool AlertBeep::start(const uint8_t volume) {
   if (playing) return true;
   if (!BoardConfig::hasAudio()) return false;
+  // El aviso manda sobre la música: se corta la canción en vez de superponer
+  // las dos cosas (el I2S es uno solo y encima sonaría todo mezclado).
+  MUSIC.stop();
   const size_t samples = static_cast<size_t>(RATE * PATTERN_S);
   const size_t bytes = wav::HEADER_BYTES + samples * sizeof(int16_t);
   if (!wav) wav = static_cast<uint8_t*>(heap_caps_malloc(bytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

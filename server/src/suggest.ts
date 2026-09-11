@@ -27,7 +27,8 @@
 //     solo si ese día cae adentro de un viaje. Un día común en casa se contesta
 //     con la agenda y el clima que ya tenemos, sin gastar una búsqueda.
 import { Hono } from "hono";
-import { readJsonSafe, serialize, writeAtomicNow } from "./fsjson";
+import { mutateDoc, readDoc } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
 import { chatSearch, LlmError, type Source } from "./llm";
 import { normalizeLang, LANGUAGE_NAME, type Lang } from "./lang";
 import { occurrencesBetween } from "./calendar";
@@ -35,7 +36,6 @@ import { getTrip, tripOnDate, kindLabel, type Trip } from "./trips";
 import { hubDiagnostics } from "./hub";
 import { load as loadStore, memoryLines, todayLocal, pendingReminders } from "./store";
 
-const FILE = process.env.SUGGEST_FILE ?? "/data/suggest.json";
 const MAX_PER_DAY = Math.max(1, Math.min(100, Number(process.env.SUGGEST_MAX_PER_DAY ?? 10) || 10));
 
 // Lo que se le manda a la pantalla: renglones cortos, no un ensayo. La pantalla
@@ -61,28 +61,28 @@ const EMPTY: Store = { version: 1, entries: {}, budget: { date: "", count: 0 } }
 
 // ---------------------------------------------------------------- caché
 
-async function loadAll(): Promise<Store> {
-  const s = await readJsonSafe<Store>(FILE, structuredClone(EMPTY));
+function shape(raw: unknown): Store {
+  const s = (raw && typeof raw === "object" ? raw : structuredClone(EMPTY)) as Store;
+  s.version ??= 1;
   s.entries ??= {};
   s.budget ??= { date: "", count: 0 };
   return s;
 }
 
-// Leer y escribir adentro de la misma cola: dos pedidos a la vez no se pisan
-// (es el mismo patrón de trips.ts).
-function update<T>(fn: (store: Store) => T | Promise<T>): Promise<T> {
-  return serialize(FILE, async () => {
-    const store = await loadAll();
-    const out = await fn(store);
-    await writeAtomicNow(FILE, JSON.stringify(store, null, 2));
-    return out;
-  });
+async function loadAll(accountId: number): Promise<Store> {
+  return shape(await readDoc<unknown>(accountId, "suggest", null));
+}
+
+// Leer y escribir sin carreras: dos pedidos a la vez no se pisan (mismo patrón
+// que trips.ts).
+function update<T>(accountId: number, fn: (store: Store) => T | Promise<T>): Promise<T> {
+  return mutateDoc(accountId, "suggest", shape, fn);
 }
 
 // Cuántas generaciones quedan hoy. El contador se reinicia solo al cambiar el día.
-async function takeBudget(): Promise<boolean> {
+async function takeBudget(accountId: number): Promise<boolean> {
   const day = todayLocal();
-  return update((store) => {
+  return update(accountId, (store) => {
     if (store.budget.date !== day) store.budget = { date: day, count: 0 };
     if (store.budget.count >= MAX_PER_DAY) return false;
     store.budget.count++;
@@ -90,8 +90,8 @@ async function takeBudget(): Promise<boolean> {
   });
 }
 
-async function remember(entry: Suggestion): Promise<void> {
-  await update((store) => {
+async function remember(accountId: number, entry: Suggestion): Promise<void> {
+  await update(accountId, (store) => {
     store.entries[entry.key] = entry;
     // El archivo no puede crecer para siempre: se guardan las 40 más nuevas.
     const keys = Object.keys(store.entries);
@@ -179,8 +179,8 @@ function systemPrompt(lang: Lang): string {
 
 // La agenda del día en texto, tal como la ve el calendario (incluye lo que el
 // viaje espeja ahí y los recordatorios con fecha).
-async function agendaText(date: string, lang: Lang): Promise<string> {
-  const { items } = await occurrencesBetween(date, date, lang);
+async function agendaText(accountId: number, date: string, lang: Lang): Promise<string> {
+  const { items } = await occurrencesBetween(accountId, date, date, lang);
   if (!items.length) return "(no hay nada agendado)";
   return items
     .slice(0, 20)
@@ -208,9 +208,9 @@ function tripText(trip: Trip, lang: Lang, fromDate?: string): string {
 }
 
 // Clima y lugar salen del hub: es el mismo que ve el usuario en la pantalla.
-async function placeAndWeather(): Promise<string> {
+async function placeAndWeather(accountId: number): Promise<string> {
   try {
-    const d = await hubDiagnostics();
+    const d = await hubDiagnostics(accountId);
     const where = d.place ? `${d.place.label || d.place.name} (${d.place.lat}, ${d.place.lon})` : "(sin lugar cargado)";
     const w = d.weather.line ? `${d.weather.line} · ${d.weather.detail}` : "(sin clima)";
     return `Dónde está: ${where}\nClima de hoy ahí: ${w}`;
@@ -219,8 +219,8 @@ async function placeAndWeather(): Promise<string> {
   }
 }
 
-async function pendingText(): Promise<string> {
-  const store = await loadStore();
+async function pendingText(accountId: number): Promise<string> {
+  const store = await loadStore(accountId);
   const rem = pendingReminders(store)
     .slice(0, 8)
     .map((r) => `- ${r.title}${r.dueAt ? ` (${r.dueAt.replace("T", " ")})` : ""}`);
@@ -235,9 +235,9 @@ async function pendingText(): Promise<string> {
   ].join("\n");
 }
 
-async function memories(): Promise<string[]> {
+async function memories(accountId: number): Promise<string[]> {
   try {
-    return memoryLines(await loadStore());
+    return memoryLines(await loadStore(accountId));
   } catch {
     return [];
   }
@@ -245,7 +245,7 @@ async function memories(): Promise<string[]> {
 
 // ---------------------------------------------------------------- generación
 
-type Ask = { key: string; lang: Lang; user: string; search: "off" | "force" };
+type Ask = { accountId: number; key: string; lang: Lang; user: string; search: "off" | "force" };
 
 async function generate(ask: Ask): Promise<Suggestion> {
   const res = await chatSearch({
@@ -254,7 +254,7 @@ async function generate(ask: Ask): Promise<Suggestion> {
     lang: ask.lang,
     maxTokens: 700,
     search: ask.search,
-    memories: await memories(),
+    memories: await memories(ask.accountId),
   });
   const { lines, packing } = parseSections(res.text);
   return {
@@ -286,10 +286,10 @@ function view(entry: Suggestion, stale = false) {
 // Lo común de las dos rutas: caché, tope diario y errores del proveedor
 // traducidos a algo que el aparato pueda mostrar.
 async function serve(ask: Ask, refresh: boolean, extra: Record<string, unknown>) {
-  const store = await loadAll();
+  const store = await loadAll(ask.accountId);
   const cached = store.entries[ask.key];
   if (cached && !refresh) return { status: 200 as const, body: { ...view(cached), ...extra } };
-  if (!(await takeBudget())) {
+  if (!(await takeBudget(ask.accountId))) {
     // Se acabó el presupuesto del día: lo viejo sirve más que un error.
     if (cached) return { status: 200 as const, body: { ...view(cached, true), ...extra, budget: "spent" } };
     return { status: 429 as const, body: { ok: false, error: "budget", ...extra } };
@@ -299,7 +299,7 @@ async function serve(ask: Ask, refresh: boolean, extra: Record<string, unknown>)
     if (!entry.lines.length && !entry.packing.length && cached) {
       return { status: 200 as const, body: { ...view(cached, true), ...extra } };
     }
-    await remember(entry);
+    await remember(ask.accountId, entry);
     return { status: 200 as const, body: { ...view(entry), ...extra } };
   } catch (err) {
     const code = err instanceof LlmError ? err.code : "provider_error";
@@ -311,20 +311,21 @@ async function serve(ask: Ask, refresh: boolean, extra: Record<string, unknown>)
 
 // ---------------------------------------------------------------- rutas
 
-export const suggest = new Hono();
+export const suggest = new Hono<AppEnv>();
 
 // Sugerencias para un día: qué hay agendado, qué conviene hacer antes, cuánto
 // se tarda de un lugar al siguiente y qué falta preparar.
 suggest.get("/day", async (c) => {
+  const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
   const date = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query("date") ?? "") ? (c.req.query("date") as string) : todayLocal();
   const refresh = c.req.query("refresh") === "1";
-  const trip = await tripOnDate(date);
+  const trip = await tripOnDate(acc, date);
   const user = [
     `Fecha: ${date}${date === todayLocal() ? " (hoy)" : ""}`,
-    await placeAndWeather(),
-    `Agenda del día:\n${await agendaText(date, lang)}`,
-    await pendingText(),
+    await placeAndWeather(acc),
+    `Agenda del día:\n${await agendaText(acc, date, lang)}`,
+    await pendingText(acc),
     trip ? `Ese día está de viaje:\n${tripText(trip, lang, date)}` : "",
     trip
       ? "Sugiere qué visitar cerca y a qué hora, cuánto se tarda entre los lugares del día y qué conviene tener listo."
@@ -335,7 +336,7 @@ suggest.get("/day", async (c) => {
   // Solo se busca en internet si ese día está de viaje: ahí es donde los datos
   // de ahora (horarios, trayectos) valen lo que cuestan.
   const r = await serve(
-    { key: `day:${date}:${lang}${trip ? `:${trip.id}` : ""}`, lang, user, search: trip ? "force" : "off" },
+    { accountId: acc, key: `day:${date}:${lang}${trip ? `:${trip.id}` : ""}`, lang, user, search: trip ? "force" : "off" },
     refresh,
     { date, trip: trip?.id ?? "" },
   );
@@ -345,10 +346,11 @@ suggest.get("/day", async (c) => {
 // Sugerencias de un viaje: qué visitar cerca y en qué horario, y qué falta en
 // la lista de cosas para llevar según el destino, las fechas y lo que ya anotó.
 suggest.get("/trip", async (c) => {
+  const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
   const id = (c.req.query("id") ?? "").toString();
   const refresh = c.req.query("refresh") === "1";
-  const trip = await getTrip(id);
+  const trip = await getTrip(acc, id);
   if (!trip) return c.json({ ok: false, error: "not found" }, 404);
   const today = todayLocal();
   const user = [
@@ -360,7 +362,7 @@ suggest.get("/trip", async (c) => {
     "pensando en el destino, la época del año, el clima, cuántos días dura y qué tipo de actividades hay.",
   ].join("\n\n");
   const r = await serve(
-    { key: `trip:${trip.id}:${lang}:${today}`, lang, user, search: "force" },
+    { accountId: acc, key: `trip:${trip.id}:${lang}:${today}`, lang, user, search: "force" },
     refresh,
     { id: trip.id, name: trip.name },
   );
@@ -369,7 +371,7 @@ suggest.get("/trip", async (c) => {
 
 // Para /board y las pruebas: qué hay cacheado y cuánto presupuesto queda hoy.
 suggest.get("/status", async (c) => {
-  const store = await loadAll();
+  const store = await loadAll(accountOf(c));
   const day = todayLocal();
   return c.json({
     ok: true,

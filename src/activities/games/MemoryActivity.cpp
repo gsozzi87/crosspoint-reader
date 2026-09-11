@@ -1,5 +1,7 @@
 #include "MemoryActivity.h"
 
+#include "GameUi.h"
+
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <I18n.h>
@@ -9,8 +11,10 @@
 
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
 #include "memoryIcons.h"
+#include "components/Selection.h"
 
 namespace {
 // Nivel -> forma de la grilla. 8, 10 y 15 parejas.
@@ -33,17 +37,6 @@ const freeink::Icon* const FIGURES_BIG[] = {
 };
 constexpr int FIGURES_IN_TABLE = sizeof(FIGURES_SMALL) / sizeof(FIGURES_SMALL[0]);
 
-// El icono se dibuja pixel por pixel a través del renderer, así queda bien en
-// cualquier orientación y se puede invertir sobre la carta emparejada.
-void blitIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y, const bool ink) {
-  const int stride = (icon.w + 7) / 8;
-  for (int row = 0; row < icon.h; ++row) {
-    const uint8_t* line = icon.bits + row * stride;
-    for (int col = 0; col < icon.w; ++col) {
-      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, ink);
-    }
-  }
-}
 }  // namespace
 
 std::array<uint16_t, 3> MemoryActivity::bestMoves{};
@@ -240,7 +233,14 @@ void MemoryActivity::drawFigure(const int figure, const int cx, const int cy, co
                                 const bool ink) const {
   const int idx = figure >= 0 && figure < FIGURES_IN_TABLE ? figure : 0;
   const freeink::Icon& icon = *(big ? FIGURES_BIG[idx] : FIGURES_SMALL[idx]);
-  blitIcon(renderer, icon, cx - icon.w / 2, cy - icon.h / 2, ink);
+  BaseTheme::drawIconBitmap(renderer, icon, cx - icon.w / 2, cy - icon.h / 2, ink);
+}
+
+void MemoryActivity::figureSize(const int figure, const bool big, int& fw, int& fh) const {
+  const int idx = figure >= 0 && figure < FIGURES_IN_TABLE ? figure : 0;
+  const freeink::Icon& icon = *(big ? FIGURES_BIG[idx] : FIGURES_SMALL[idx]);
+  fw = icon.w;
+  fh = icon.h;
 }
 
 void MemoryActivity::drawCard(const int idx, const int x, const int y, const int w, const int h) const {
@@ -251,9 +251,23 @@ void MemoryActivity::drawCard(const int idx, const int x, const int y, const int
   const bool big = w >= 84 && h >= 84;
 
   if (st == 2) {
-    // Emparejada: queda destapada en negativo, bien distinta de la recién dada vuelta.
-    renderer.fillRoundedRect(x, y, w, h, 10, Color::Black);
-    drawFigure(figures[static_cast<size_t>(idx)], cx, cy, big, false);
+    // Emparejada: queda APAGADA, no en negativo. Hasta 1.5.48 la carta entera se
+    // pintaba de negro macizo: en el nivel de 5x6, con la partida avanzada, eso
+    // es más de media pantalla de negro, que es justo lo que más fantasma
+    // arrastra en el refresco parcial siguiente (regla del sistema visual: lo
+    // único macizo es el texto, la pestaña del resalte y algún ícono chico).
+    // Ahora es trama al 25 % con marco fino, el mismo lenguaje que las casillas
+    // oscuras del tablero de Damas, y la figura va en tinta sobre un plato
+    // BLANCO: nunca hay dibujo sobre trama.
+    renderer.fillRoundedRect(x, y, w, h, 10, Color::White);
+    renderer.fillRectDither(x + 4, y + 4, w - 8, h - 8, Color::LightGray);
+    renderer.drawRoundedRect(x, y, w, h, 1, 10, true);
+    int fw = 0, fh = 0;
+    figureSize(figures[static_cast<size_t>(idx)], big, fw, fh);
+    const int plateW = std::min(fw + 12, w - 12);
+    const int plateH = std::min(fh + 12, h - 12);
+    drawTextPlate(renderer, cx - plateW / 2, cy - plateH / 2, plateW, plateH);
+    drawFigure(figures[static_cast<size_t>(idx)], cx, cy, big, true);
     return;
   }
 
@@ -360,23 +374,32 @@ void MemoryActivity::drawLevelScreen(const int top, const int bottom) const {
   const int listTop = top + (bottom - top - LEVEL_COUNT * ROW_H) / 2;
   char buf[64];
 
+  // La fila del resalte arranca en el margen y el texto 24 px más adentro, de
+  // los DOS lados: así cae por dentro de las franjas tramadas que dibuja
+  // `drawSelectionRow` ([x+3, x+19] y [x+w-19, x+w-3]). NUNCA hay letras sobre
+  // trama, y hasta 1.5.48 el arranque de "Nivel 1" y el final de "Mejor 42"
+  // quedaban justo encima.
+  const int rowW = pageWidth - 2 * MARGIN_X;
+  const int textX = MARGIN_X + TEXT_PAD;
+  const int textRight = pageWidth - MARGIN_X - TEXT_PAD;
+
   for (int i = 0; i < LEVEL_COUNT; ++i) {
     const int y = listTop + i * ROW_H;
     const bool sel = i == level;
-    if (sel) renderer.fillRoundedRect(MARGIN_X - 4, y, pageWidth - 2 * (MARGIN_X - 4), ROW_H - 10, 10, Color::Black);
+    if (sel) drawSelectionRow(renderer, MARGIN_X, y, rowW, ROW_H - 10, 10);
 
     snprintf(buf, sizeof(buf), "%s %d", I18N.get(StrId::STR_GAME_LEVEL), i + 1);
-    renderer.drawText(UI_12_FONT_ID, MARGIN_X + 8, y + 10, buf, !sel, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, textX, y + 10, buf, SELECTION_INK, EpdFontFamily::BOLD);
 
     snprintf(buf, sizeof(buf), "%dx%d - %d %s", COLS[i], ROWS[i], COLS[i] * ROWS[i] / 2,
              I18N.get(StrId::STR_GAME_PAIRS));
-    renderer.drawText(UI_10_FONT_ID, MARGIN_X + 8, y + 36, buf, !sel);
+    renderer.drawText(UI_10_FONT_ID, textX, y + 36, buf, SELECTION_INK);
 
     if (bestMoves[static_cast<size_t>(i)] > 0) {
       snprintf(buf, sizeof(buf), "%s %u", I18N.get(StrId::STR_GAME_BEST),
                static_cast<unsigned>(bestMoves[static_cast<size_t>(i)]));
-      renderer.drawText(UI_10_FONT_ID, pageWidth - MARGIN_X - 8 - renderer.getTextWidth(UI_10_FONT_ID, buf), y + 36,
-                        buf, !sel);
+      renderer.drawText(UI_10_FONT_ID, textRight - renderer.getTextWidth(UI_10_FONT_ID, buf), y + 36, buf,
+                        SELECTION_INK);
     }
   }
 }
@@ -386,8 +409,11 @@ void MemoryActivity::drawSummary(const int top, const int bottom) const {
   char buf[64];
   int y = top + (bottom - top) / 2 - 90;
 
-  renderer.fillRoundedRect(MARGIN_X, y - 12, pageWidth - 2 * MARGIN_X, 58, 12, Color::Black);
-  renderer.drawCenteredText(UI_12_FONT_ID, y + 6, I18N.get(StrId::STR_GAME_WON), false, EpdFontFamily::BOLD);
+  // El cartel era una pastilla NEGRA maciza con el texto en blanco: en este
+  // panel es el manchón que fantasmea en el refresco siguiente. La jerarquía la
+  // hace la tipografía (UI_14) y una regla de 1 px.
+  renderer.drawCenteredText(UI_14_FONT_ID, y, I18N.get(StrId::STR_GAME_WON));
+  gameui::rule(renderer, MARGIN_X, y + renderer.getLineHeight(UI_14_FONT_ID) + 6, pageWidth - 2 * MARGIN_X);
   y += 76;
 
   snprintf(buf, sizeof(buf), "%s %d", I18N.get(StrId::STR_GAME_MOVES), moves);

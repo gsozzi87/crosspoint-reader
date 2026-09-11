@@ -28,13 +28,14 @@ import { load, memoryLines } from "./store";
 import { chatSearch, providerLabel, LlmError } from "./llm";
 import { sourcesLine } from "./websearch";
 import { readBody, redactSecrets } from "./net";
+import { accountOf, type AppEnv } from "./tenant";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const MAX_TEXT = 32_000; // chars; el aparato recorta antes, esto es defensa
 const MAX_PAGE = 8_000;
 const MAX_QUESTION = 500;
 
-export const ask = new Hono();
+export const ask = new Hono<AppEnv>();
 
 // La fecha de hoy en el prompt: sin esto el modelo contesta con el mundo del
 // día en que lo entrenaron y ni se da cuenta.
@@ -95,7 +96,7 @@ ask.post("/", async (c) => {
   try {
     // La memoria vale también leyendo un libro: si dijo que es diabético, la
     // respuesta sobre una receta del libro tiene que tenerlo en cuenta.
-    const memories = memoryLines(await load());
+    const memories = memoryLines(await load(accountOf(c)));
     const r = await chatSearch({
       system: general ? generalPrompt(lang) : systemPrompt(book, chapter, lang),
       memories,

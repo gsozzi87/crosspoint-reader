@@ -1,0 +1,46 @@
+From 58eadbb5b146fd5315f274bda92387437fe0e099 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 10 Sep 2026 14:19:50 +0000
+Subject: [PATCH 11/12] ws397: AudioManager::stop() always drops the amp and
+ mutes the codec
+
+A stop() after a capture-only session left the amplifier powered (begin()
+enables it, not playback), which the user hears as hiss until the next play.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ libs/hardware/AudioManager/src/AudioManager.cpp | 15 +++++++++------
+ 1 file changed, 9 insertions(+), 6 deletions(-)
+
+diff --git a/libs/hardware/AudioManager/src/AudioManager.cpp b/libs/hardware/AudioManager/src/AudioManager.cpp
+index 0b4d1c2..478b72a 100644
+--- a/libs/hardware/AudioManager/src/AudioManager.cpp
++++ b/libs/hardware/AudioManager/src/AudioManager.cpp
+@@ -530,14 +530,17 @@ bool AudioManager::playBuffer(const uint8_t* data, size_t len, bool loop) {
+ }
+ 
+ void AudioManager::stop() {
+-  if (!playing_) return;
+-  stopRequested_ = true;
+-  // The task deletes itself; wait for it to drain (bounded).
+-  for (int i = 0; i < 200 && playing_; ++i) {
+-    vTaskDelay(pdMS_TO_TICKS(10));
++  if (playing_) {
++    stopRequested_ = true;
++    // The task deletes itself; wait for it to drain (bounded).
++    for (int i = 0; i < 200 && playing_; ++i) {
++      vTaskDelay(pdMS_TO_TICKS(10));
++    }
+   }
+   // Drop the amp and mute the DAC so nothing residual reaches the output
+-  // between alarms.
++  // between alarms. Unconditionally: a stop() after a capture-only session (the
++  // amp is enabled by begin(), not by playback) used to leave the amplifier
++  // powered and hissing until the next play.
+   setAmp(false);
+   codecMute(true);
+ }
+-- 
+2.43.0
+

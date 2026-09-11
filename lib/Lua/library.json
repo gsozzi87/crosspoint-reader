@@ -1,0 +1,10 @@
+{
+  "name": "Lua",
+  "version": "5.4.7",
+  "description": "Lua 5.4.7 core (lua.org), sin io/os/package/debug: las apps de la tarjeta corren en un cajón cerrado",
+  "license": "MIT",
+  "build": {
+    "srcDir": "src",
+    "flags": ["-DLUAI_MAXCCALLS=40", "-Wno-unused-variable", "-Wno-implicit-fallthrough"]
+  }
+}

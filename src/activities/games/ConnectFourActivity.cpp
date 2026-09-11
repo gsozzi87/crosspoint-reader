@@ -6,14 +6,15 @@
 
 #include <cstdio>
 
+#include "GameUi.h"
 #include "MappedInputManager.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-constexpr int SIDE_MARGIN = 20;
+constexpr int SIDE_MARGIN = gameui::SIDE;
 constexpr int CURSOR_BAND = 74;  // franja de arriba con la flecha y la ficha
-constexpr int INFO_BAND = 116;   // turno, marcador y modo, debajo del tablero
 
 // Las cuatro direcciones de una línea (la de vuelta sale de restar).
 constexpr int LINE_DR[4] = {0, 1, 1, 1};
@@ -368,20 +369,26 @@ void ConnectFourActivity::layout() {
   // Siempre libre abajo lo que ocupan los hints, si no la última fila se tapa.
   const int bottom = pageHeight - (metrics.buttonHintsHeight + metrics.verticalSpacing);
 
+  // El bloque de abajo primero, de abajo hacia arriba y con alto fijo; lo que
+  // sobra es del tablero.
+  helpTop = bottom - gameui::helpHeight(renderer);
+  statsTop = helpTop - gameui::statsHeight(renderer);
+  statusTop = statsTop - gameui::GAP - gameui::statusHeight(renderer);
+  const int infoBand = bottom - statusTop + 3 * gameui::GAP;
+
   int cell = (pageWidth - 2 * SIDE_MARGIN) / COLS;
-  const int byHeight = (bottom - top - CURSOR_BAND - INFO_BAND) / ROWS;
+  const int byHeight = (bottom - top - CURSOR_BAND - infoBand) / ROWS;
   if (byHeight < cell) cell = byHeight;
   if (cell > MAX_CELL) cell = MAX_CELL;
   if (cell < 16) cell = 16;
 
   cellPx = cell;
   const int boardH = cell * ROWS;
-  int free = bottom - top - CURSOR_BAND - INFO_BAND - boardH;
+  int free = bottom - top - CURSOR_BAND - infoBand - boardH;
   if (free < 0) free = 0;
   cursorY = top + free / 2;
   boardY = cursorY + CURSOR_BAND;
   boardX = (pageWidth - cell * COLS) / 2;
-  infoY = boardY + boardH + 24;
 }
 
 void ConnectFourActivity::fillCircle(const int cx, const int cy, const int r, const bool on) const {
@@ -433,12 +440,12 @@ void ConnectFourActivity::drawBoard() const {
     drawDisc(boardX + col * cell + cell / 2, boardY + row * cell + cell / 2, r, board[static_cast<size_t>(idx)]);
   }
 
-  // La última ficha soltada: un cuadradito en la esquina de su casilla, para no
-  // perderla de vista cuando juega la máquina.
+  // La última ficha soltada: marco de 2 px alrededor de su casilla. Hasta
+  // 1.5.47 era un cuadradito de 7 px en una esquina, invisible a un palmo, así
+  // que no se sabía dónde había jugado la máquina.
   if (lastDropIdx >= 0 && !haveWinLine) {
-    const int x = boardX + (lastDropIdx % COLS) * cell;
-    const int y = boardY + (lastDropIdx / COLS) * cell;
-    renderer.fillRect(x + 4, y + 4, 7, 7, true);
+    gameui::lastMoveFrame(renderer, boardX + (lastDropIdx % COLS) * cell, boardY + (lastDropIdx / COLS) * cell,
+                          cell);
   }
 
   if (!haveWinLine) return;
@@ -489,34 +496,41 @@ const char* ConnectFourActivity::playerName(const int8_t player) const {
 }
 
 void ConnectFourActivity::drawInfo() const {
-  char line[128];
-  const char* title;
+  const int contentW = gameui::contentWidth(renderer);
+  char line[128] = "";
+
+  // Estado en UI_14: quién juega, quién ganó o que la máquina está pensando.
   if (state == State::AI_TURN) {
-    title = tr(STR_GAME_THINKING);
+    snprintf(line, sizeof(line), "%s", tr(STR_GAME_THINKING));
   } else if (state == State::OVER) {
-    title = drawn ? tr(STR_GAME_DRAW) : nullptr;
-  } else {
-    title = nullptr;
-  }
-  if (title != nullptr) {
-    renderer.drawCenteredText(UI_12_FONT_ID, infoY, title, true, EpdFontFamily::BOLD);
-  } else if (state == State::OVER) {
-    snprintf(line, sizeof(line), tr(STR_GAME_CONNECT4_WINS), playerName(winner));
-    renderer.drawCenteredText(UI_12_FONT_ID, infoY, line, true, EpdFontFamily::BOLD);
+    if (drawn) snprintf(line, sizeof(line), "%s", tr(STR_GAME_DRAW));
+    else snprintf(line, sizeof(line), tr(STR_GAME_CONNECT4_WINS), playerName(winner));
   } else {
     snprintf(line, sizeof(line), tr(STR_GAME_CONNECT4_TURN), playerName(turn));
-    renderer.drawCenteredText(UI_12_FONT_ID, infoY, line, true, EpdFontFamily::BOLD);
   }
+  gameui::status(renderer, gameui::SIDE, statusTop, contentW, line,
+                 state == State::PLAYING ? tr(STR_GAME_CONNECT4_COLUMN) : nullptr);
 
-  if (state == State::PLAYING) {
-    renderer.drawCenteredText(UI_10_FONT_ID, infoY + 34, tr(STR_GAME_CONNECT4_COLUMN));
-  }
+  // Marcadores: las partidas ganadas de cada uno y las jugadas de ésta.
+  char vP1[8], vP2[8], vMoves[8];
+  snprintf(vP1, sizeof(vP1), "%d", winsP1);
+  snprintf(vP2, sizeof(vP2), "%d", winsP2);
+  snprintf(vMoves, sizeof(vMoves), "%d", moveNumber);
+  const gameui::Stat scoreboard[3] = {
+      {vP1, tr(STR_GAME_CONNECT4_P1)},
+      {vP2, mode == Mode::VS_MACHINE ? tr(STR_GAME_CONNECT4_MACHINE) : tr(STR_GAME_CONNECT4_P2)},
+      {vMoves, tr(STR_GAME_MOVES)}};
+  gameui::stats(renderer, gameui::SIDE, statsTop, contentW, scoreboard, 3);
 
-  snprintf(line, sizeof(line), "%s %d  -  %d %s", tr(STR_GAME_CONNECT4_P1), winsP1, winsP2,
-           mode == Mode::VS_MACHINE ? tr(STR_GAME_CONNECT4_MACHINE) : tr(STR_GAME_CONNECT4_P2));
-  renderer.drawCenteredText(SMALL_FONT_ID, infoY + 66, line);
-  snprintf(line, sizeof(line), "%s %d", tr(STR_GAME_MOVES), moveNumber);
-  renderer.drawCenteredText(SMALL_FONT_ID, infoY + 88, line);
+  char helpText[192];
+  const char* what = tr(STR_GAME_HELP_COLUMN);
+  if (state == State::AI_TURN) what = tr(STR_GAME_HELP_WAIT);
+  else if (state == State::OVER) what = tr(STR_GAME_HELP_OVER);
+  // El renglón de los marcos sólo tiene sentido cuando hay una jugada marcada.
+  const char* extra =
+      state != State::OVER && lastDropIdx >= 0 ? tr(STR_GAME_HELP_LAST_MOVE) : tr(STR_GAME_HELP_RESTART);
+  snprintf(helpText, sizeof(helpText), "%s %s", what, extra);
+  gameui::help(renderer, helpTop, helpText);
 }
 
 // Pantalla de modo: dos jugadores en el mismo aparato, o contra la máquina.
@@ -534,12 +548,12 @@ void ConnectFourActivity::drawModeScreen() const {
     const int y = listTop + i * rowH;
     const bool sel = i == modeCursor;
     if (sel) {
-      renderer.fillRoundedRect(SIDE_MARGIN, y, pageWidth - 2 * SIDE_MARGIN, rowH - 12, 12, Color::Black);
+      drawSelectionRow(renderer, SIDE_MARGIN, y, pageWidth - 2 * SIDE_MARGIN, rowH - 12, 12);
     } else {
       renderer.drawRoundedRect(SIDE_MARGIN, y, pageWidth - 2 * SIDE_MARGIN, rowH - 12, 2, 12, true);
     }
     const char* label = i == 0 ? tr(STR_GAME_CONNECT4_TWO) : tr(STR_GAME_CONNECT4_CPU);
-    renderer.drawCenteredText(UI_12_FONT_ID, y + 16, label, !sel, EpdFontFamily::BOLD);
+    renderer.drawCenteredText(UI_12_FONT_ID, y + 16, label, SELECTION_INK, EpdFontFamily::BOLD);
   }
 
   // Muestra las dos fichas para que se entienda quién es quién antes de jugar.

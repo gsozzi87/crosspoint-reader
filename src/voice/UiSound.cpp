@@ -10,6 +10,8 @@
 
 #include "HubStore.h"
 #include "util/WavHeader.h"
+#include "music/MusicPlayer.h"
+#include "TaskConfig.h"
 
 namespace {
 
@@ -38,6 +40,9 @@ bool i2sPortFree() {
 void UiSound::play(const uisound::Sound sound) {
   const uint8_t level = HUB_STORE.uiSoundMode;
   if (level == uisound::OFF || level > uisound::NORMAL) return;
+  // "Cuando se reproduzca la música los demás sonidos no deben oírse, sólo la
+  // música": con una canción puesta los clics se saltean sin más.
+  if (MUSIC.isActive()) return;
   if (!BoardConfig::hasAudio()) return;
   if (!ensureTask()) return;
 
@@ -57,14 +62,20 @@ void UiSound::play(const uisound::Sound sound) {
 bool UiSound::ensureTask() {
   if (task_ != nullptr) return true;
   TaskHandle_t handle = nullptr;
-  // Core 0, como la tarea de reproducción del SDK: el loop de Arduino (la UI)
-  // vive en el 1 y no se lo frena. Prioridad por debajo de la de audio (10).
-  if (xTaskCreatePinnedToCore(taskEntry, "ui_sound", 4096, this, 4, &handle, 0) != pdPASS) return false;
+  // Núcleo, prioridad y stack en src/TaskConfig.h (core 0 como la tarea de
+  // reproducción del SDK, por debajo de su prioridad 10).
+  if (xTaskCreatePinnedToCore(taskEntry, tasks::UI_SOUND_NAME, tasks::UI_SOUND_STACK, this, tasks::UI_SOUND_PRIO,
+                              &handle, tasks::CORE_AUDIO) != pdPASS) {
+    return false;
+  }
   task_ = handle;
   return true;
 }
 
-void UiSound::taskEntry(void* self) { static_cast<UiSound*>(self)->taskLoop(); }
+void UiSound::taskEntry(void* self) {
+  tasks::attach(tasks::Id::UiSound);
+  static_cast<UiSound*>(self)->taskLoop();
+}
 
 void UiSound::taskLoop() {
   for (;;) {

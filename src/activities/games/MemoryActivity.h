@@ -47,7 +47,8 @@ class MemoryActivity final : public Activity {
   static constexpr unsigned long RESTART_HOLD_MS = 1000;
 
   static constexpr int MARGIN_X = 16;
-  static constexpr int GAP = 12;  // deja lugar al marco del cursor entre cartas
+  static constexpr int GAP = 12;       // deja lugar al marco del cursor entre cartas
+  static constexpr int TEXT_PAD = 24;  // borde de la fila -> texto: por fuera de la franja del resalte
 
   // Estado de la partida
   State state = State::LEVEL;
@@ -94,4 +95,6 @@ class MemoryActivity final : public Activity {
   // en vez del de 48. `ink` es el color: negro sobre carta blanca, blanco sobre
   // la carta emparejada (que va en negativo).
   void drawFigure(int figure, int cx, int cy, bool big, bool ink) const;
+  // Alto y ancho de la figura, para el plato blanco de la carta emparejada.
+  void figureSize(int figure, bool big, int& fw, int& fh) const;
 };

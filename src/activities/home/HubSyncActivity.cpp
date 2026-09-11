@@ -356,8 +356,8 @@ bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) 
   }
   markAttempt(ok);
   WiFi.setSleep(true);
-  LOG_INF(TAG, "sync %s: weather=\"%s\" events=%u messages=%u", ok ? "ok" : "failed", HUB_STORE.weatherLine.c_str(),
-          (unsigned)HUB_STORE.events.size(), (unsigned)HUB_STORE.messages.size());
+  LOG_INF(TAG, "sync %s: weather=\"%s\" events=%u reminders=%u", ok ? "ok" : "failed", HUB_STORE.weatherLine.c_str(),
+          (unsigned)HUB_STORE.events.size(), (unsigned)HUB_STORE.reminders.size());
   return ok;
 }
 

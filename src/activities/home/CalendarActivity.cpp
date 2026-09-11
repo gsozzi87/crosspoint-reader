@@ -16,18 +16,22 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "TripActivity.h"
+#include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
+#include "voice/SpeechToText.h"
 
 namespace {
 constexpr const char* TAG = "CAL";
 constexpr const char* CACHE = "/.crosspoint/calendar.json";
-constexpr int SIDE = 12;
-constexpr int ROW_H = 56;                  // filas de la vista de día
+constexpr int SIDE = listui::SIDE;
+constexpr int PAGER_H = 24;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr unsigned long MENU_HOLD_MS = 1200;   // Atrás mantenido sobre una actividad
+constexpr uint32_t DICTATE_TIMEOUT_MS = 90000;  // el modelo parte el día dictado
 constexpr time_t CACHE_MAX_AGE_S = 6 * 3600;
 constexpr int MAX_CACHED_MONTHS = 3;
 constexpr int MAX_CACHED_DAYS = 40;
@@ -70,15 +74,66 @@ int dayOfIso(const std::string& iso) {
 
 // Un evento puede venir con `date`/`at` sueltos o con un `start` ISO completo:
 // se aceptan las dos formas para no depender de un detalle del Hono.
-void readEvent(JsonVariantConst v, std::string& date, std::string& at, std::string& title, std::string& place) {
-  const std::string start = v["start"] | "";
+//
+// Se guarda TODO lo que el servidor manda de la actividad, no solo lo que se
+// pinta: POST /api/calendar/event reemplaza el evento entero, así que para
+// cambiarle la hora sin borrarle el lugar, la nota, el fin y la repetición hay
+// que devolvérselos tal cual vinieron.
+void readEvent(JsonVariantConst v, CalendarActivity::Item& out, std::string& date) {
+  // `start` puede ser el arranque de la serie ("2026-09-15T10:30") o un epoch
+  // ya resuelto; `startAt` es siempre el de la serie cuando viene.
+  const std::string start = v["startAt"].is<const char*>() ? std::string(v["startAt"] | "")
+                                                           : std::string(v["start"].is<const char*>() ? v["start"] | "" : "");
   date = v["date"] | "";
   if (date.empty() && start.size() >= 10) date = start.substr(0, 10);
-  at = v["at"] | "";
-  if (at.empty()) at = v["time"] | "";
-  if (at.empty() && start.size() >= 16) at = start.substr(11, 5);
-  title = v["title"] | "";
-  place = v["place"] | "";
+  out.id = v["id"] | 0;
+  out.kind = v["kind"] | "event";
+  out.at = v["at"] | "";
+  if (out.at.empty()) out.at = v["time"] | "";
+  if (out.at.empty() && start.size() >= 16) out.at = start.substr(11, 5);
+  out.title = v["title"] | "";
+  out.place = v["place"] | "";
+  out.note = v["note"] | "";
+  out.endTime = v["endTime"] | "";
+  out.startAt = start;
+  out.endStamp = v["endAt"].is<const char*>() ? std::string(v["endAt"] | "") : std::string();
+  JsonVariantConst rep = v["repeat"];
+  // La repetición se guarda cruda: no se toca, solo se devuelve.
+  if (!rep.isNull() && rep.is<JsonObjectConst>()) serializeJson(rep, out.repeatRaw);
+}
+
+// De la caché de la SD (los mismos campos, con los nombres cortos que se
+// escriben ahí).
+void readCachedItem(JsonVariantConst v, CalendarActivity::Item& out) {
+  out.id = v["id"] | 0;
+  out.kind = v["k"] | "event";
+  out.at = v["at"] | "";
+  out.title = v["title"] | "";
+  out.place = v["place"] | "";
+  out.note = v["note"] | "";
+  out.endTime = v["et"] | "";
+  out.startAt = v["s"] | "";
+  out.endStamp = v["e"] | "";
+  out.repeatRaw = v["rp"] | "";
+}
+
+void writeCachedItem(JsonObject o, const CalendarActivity::Item& it) {
+  o["id"] = it.id;
+  o["k"] = it.kind;
+  o["at"] = it.at;
+  o["title"] = it.title;
+  if (!it.place.empty()) o["place"] = it.place;
+  if (!it.note.empty()) o["note"] = it.note;
+  if (!it.endTime.empty()) o["et"] = it.endTime;
+  if (!it.startAt.empty()) o["s"] = it.startAt;
+  if (!it.endStamp.empty()) o["e"] = it.endStamp;
+  if (!it.repeatRaw.empty()) o["rp"] = it.repeatRaw;
+}
+
+std::string twoDigits(const int value) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%02d", value);
+  return buf;
 }
 }  // namespace
 
@@ -257,6 +312,8 @@ void CalendarActivity::openToday() {
   const bool haveClock = localToday(y, m, d);
   const std::string date = haveClock ? isoDate(y, m, d) : "";
   todayTop = 0;
+  dayNotice.clear();
+  menuItem = -1;
   state = TODAY;
   if (date.empty()) {
     dayItems.clear();
@@ -296,6 +353,9 @@ void CalendarActivity::buildTodayLines() {
   } else {
     push(tr(STR_CAL_NO_CLOCK), 1);
   }
+
+  // Lo que contestó el servidor al último dictado ("Cargué 3 actividades.").
+  if (!dayNotice.empty()) pushWrapped(dayNotice, 0);
 
   push(tr(STR_DAY_AGENDA), 1);
   if (dayItems.empty()) {
@@ -394,6 +454,7 @@ bool CalendarActivity::fetchSuggest(const bool refresh) {
 
 void CalendarActivity::onExit() {
   Activity::onExit();
+  recorder.abort();  // el micrófono y la PSRAM de la toma no se quedan tomados
   if (wifiActivated) {
     WiFi.disconnect(false);
     delay(30);
@@ -476,9 +537,7 @@ bool CalendarActivity::loadDayFromCache(const std::string& date) {
     if (std::string(dv["date"] | "") != date) continue;
     for (JsonVariantConst iv : dv["items"].as<JsonArrayConst>()) {
       Item it;
-      it.at = iv["at"] | "";
-      it.title = iv["title"] | "";
-      it.place = iv["place"] | "";
+      readCachedItem(iv, it);
       dayItems.push_back(std::move(it));
     }
     return true;
@@ -564,9 +623,10 @@ bool CalendarActivity::fetchMonth() {
       if (d.size() >= 7 && d.compare(0, 7, key) == 0) days.remove(i);
     }
     for (JsonVariantConst ev : events) {
-      std::string date, at, title, place;
-      readEvent(ev, date, at, title, place);
-      if (date.size() < 10 || title.empty()) continue;
+      std::string date;
+      Item it;
+      readEvent(ev, it, date);
+      if (date.size() < 10 || it.title.empty()) continue;
       JsonObject target;
       for (JsonVariant dv : days) {
         if (std::string(dv["date"] | "") == date) {
@@ -580,10 +640,7 @@ bool CalendarActivity::fetchMonth() {
         target["savedAt"] = static_cast<int64_t>(now);
         target["items"].to<JsonArray>();
       }
-      JsonObject io = target["items"].as<JsonArray>().add<JsonObject>();
-      io["at"] = at;
-      io["title"] = title;
-      io["place"] = place;
+      writeCachedItem(target["items"].as<JsonArray>().add<JsonObject>(), it);
     }
     while (static_cast<int>(days.size()) > MAX_CACHED_DAYS) days.remove(0);
   }
@@ -608,33 +665,65 @@ bool CalendarActivity::fetchDay(const std::string& date) {
   dayItems.clear();
   dayDate = date;
   for (JsonVariantConst iv : items) {
-    std::string d, at, title, place;
-    readEvent(iv, d, at, title, place);
-    if (title.empty()) continue;
-    dayItems.push_back({at, title, place});
+    std::string d;
+    Item it;
+    readEvent(iv, it, d);
+    if (it.title.empty()) continue;
+    dayItems.push_back(std::move(it));
   }
+  saveDayToCache();
+  syncSummaryCount();
+  return true;
+}
 
+// Lo que hay en `dayItems` para `dayDate`, a la caché de la SD. Se llama
+// después de bajar el día y después de CADA cambio hecho en el aparato, así lo
+// que se ve sigue estando ahí sin WiFi y sin esperar la próxima bajada.
+void CalendarActivity::saveDayToCache() const {
+  if (dayDate.size() < 10) return;
   JsonDocument cache;
   readCache(cache);
   JsonArray days = cache["days"].isNull() ? cache["days"].to<JsonArray>() : cache["days"].as<JsonArray>();
   for (int i = static_cast<int>(days.size()) - 1; i >= 0; --i) {
-    if (std::string(days[i]["date"] | "") == date) days.remove(i);
+    if (std::string(days[i]["date"] | "") == dayDate) days.remove(i);
   }
   time_t now = 0;
   halClock.getEpochUtc(now);
   JsonObject do_ = days.add<JsonObject>();
-  do_["date"] = date;
+  do_["date"] = dayDate;
   do_["savedAt"] = static_cast<int64_t>(now);
   JsonArray arr = do_["items"].to<JsonArray>();
-  for (const Item& it : dayItems) {
-    JsonObject o = arr.add<JsonObject>();
-    o["at"] = it.at;
-    o["title"] = it.title;
-    o["place"] = it.place;
-  }
+  for (const Item& it : dayItems) writeCachedItem(arr.add<JsonObject>(), it);
   while (static_cast<int>(days.size()) > MAX_CACHED_DAYS) days.remove(0);
   writeCache(cache);
-  return true;
+}
+
+// El punto y el número de la cuadrícula salen del resumen del mes: después de
+// cargar o borrar actividades hay que moverlo a mano o el mes queda mintiendo
+// hasta la próxima bajada.
+void CalendarActivity::syncSummaryCount() {
+  if (dayDate.size() < 10) return;
+  const int day = dayOfIso(dayDate);
+  if (day < 1) return;
+  if (dayDate.compare(0, 7, monthKey(viewYear, viewMonth)) != 0) return;
+  const int count = static_cast<int>(dayItems.size());
+  for (DaySummary& sum : summary) {
+    if (sum.day != day) continue;
+    sum.count = count;
+    sum.firstTitle = count ? dayItems[0].title : std::string();
+    return;
+  }
+  if (count == 0) return;
+  summary.push_back({day, count, dayItems[0].title});
+}
+
+// El mismo orden que manda el servidor: primero lo de todo el día y después
+// por hora. Se usa cuando se le cambia la hora a una actividad acá.
+void CalendarActivity::sortDayItems() {
+  std::stable_sort(dayItems.begin(), dayItems.end(), [](const Item& a, const Item& b) {
+    if (a.at.empty() != b.at.empty()) return a.at.empty();
+    return a.at < b.at;
+  });
 }
 
 // OK sobre un día: lo que ya está cacheado se abre en el acto, y solo se pide
@@ -645,6 +734,8 @@ void CalendarActivity::openDay() {
   const DaySummary* s = summaryFor(cursorDay);
   const bool cached = loadDayFromCache(date);
   dayIndex = 0;
+  dayNotice.clear();
+  menuItem = -1;
   if (cached || !s || s->count == 0) {
     state = DAY;
     requestUpdate();
@@ -653,6 +744,257 @@ void CalendarActivity::openDay() {
   afterLoad = DAY;
   pending = DAY_FETCH;
   ensureConnected();
+}
+
+
+// ---------------------------------------------------------------------------
+// Dictar el día, y cambiar o borrar una actividad
+// ---------------------------------------------------------------------------
+
+// El aparato no tiene teclado: TODO lo que el usuario escribe entra por el
+// micrófono. Acá se graba de una vez el día entero ("a las 8 gimnasio, a las 9
+// reunión con Ana") y el servidor lo parte en actividades; el mismo camino, con
+// REC_TITLE, sirve para volver a decir el título de una que ya está.
+void CalendarActivity::startDictation(const RecordMode mode) {
+  recordMode = mode;
+  // Se dicta desde la vista del día y también desde Hoy (Atrás mantenido): se
+  // vuelve a la pantalla desde la que se arrancó.
+  if (state == TODAY || state == DAY) dictateReturn = state;
+  dayNotice.clear();
+  transcribed.clear();
+  StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
+  if (!recorder.start(why)) {
+    dayNotice = I18N.get(why);
+    state = dictateReturn;
+    if (state == TODAY) buildTodayLines();
+    requestUpdate();
+    return;
+  }
+  state = DICTATING;
+  requestUpdate();
+}
+
+void CalendarActivity::stopDictation() {
+  recorder.stop();
+  if (recorder.tooShort()) {  // apretón sin querer
+    recorder.abort();
+    state = dictateReturn;
+    requestUpdate();
+    return;
+  }
+  afterLoad = DAY;
+  afterWifi = recordMode == REC_DAY ? DICTATE_SEND : TITLE_SEND;
+  pending = afterWifi;
+  ensureConnected();
+}
+
+// POST /api/transcribe y después POST /api/calendar/dictate. Los dos necesitan
+// respuesta, así que van con el WiFi arriba; la cola offline no sirve acá.
+void CalendarActivity::performDictate() {
+  std::string detail;
+  const bool heard = SpeechToText::transcribe(recorder, transcribed, detail);
+  recorder.release();
+  if (!heard) {
+    dayNotice = detail.empty() ? tr(STR_ASK_TRANSCRIBE_FAILED) : detail;
+    return;
+  }
+  // Sin reloj ni día abierto no se manda fecha: el servidor usa su hoy, que es
+  // mejor que mandarle un "0000-00-00".
+  const std::string date = dayDate.size() >= 10 ? dayDate
+                           : viewYear > 0      ? isoDate(viewYear, viewMonth, cursorDay)
+                                               : std::string();
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["text"] = transcribed;
+    if (date.size() >= 10) doc["date"] = date;
+    doc["lang"] = uiLanguageCode();
+    serializeJson(doc, body);
+  }
+  ServerClient::Response resp;
+  const ServerClient::Result r =
+      SERVER_CLIENT.postJson("/api/calendar/dictate", body, resp, DICTATE_TIMEOUT_MS);
+  if (r != ServerClient::Result::Ok) {
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s (%d)", ServerClient::resultName(r), resp.status);
+    dayNotice = std::string(tr(STR_CAL_DICTATE_FAILED)) + " · " + buf;
+    LOG_ERR(TAG, "POST /api/calendar/dictate: %s", buf);
+    return;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+    dayNotice = tr(STR_CAL_DICTATE_FAILED);
+    return;
+  }
+  // `reply` es la frase corta que arma el servidor ("Cargué 3 actividades.").
+  dayNotice = doc["reply"] | "";
+  if (dayNotice.empty()) dayNotice = doc["error"] | tr(STR_CAL_DICTATE_FAILED);
+  LOG_INF(TAG, "dictado: %s", dayNotice.c_str());
+  // Y el día se vuelve a bajar: así las actividades nuevas aparecen con su id,
+  // que es lo que hace falta para poder cambiarlas o borrarlas.
+  if (date.size() >= 10) fetchDay(date);
+  dayIndex = 0;
+}
+
+// El título nuevo de una actividad, dicho por voz. La transcripción necesita
+// WiFi; el POST que la guarda ya puede esperar en la cola.
+void CalendarActivity::performTitle() {
+  std::string detail;
+  const bool heard = SpeechToText::transcribe(recorder, transcribed, detail);
+  recorder.release();
+  if (!heard) {
+    dayNotice = detail.empty() ? tr(STR_ASK_TRANSCRIBE_FAILED) : detail;
+    return;
+  }
+  if (menuItem < 0 || menuItem >= static_cast<int>(dayItems.size())) return;
+  dayItems[menuItem].title = transcribed;
+  saveDayToCache();
+  syncSummaryCount();
+  sendEventEdit(dayItems[menuItem]);
+  dayNotice = transcribed;
+}
+
+// POST /api/calendar/event con el id: edita en su lugar. Va por la cola, así
+// el cambio queda hecho aunque no haya WiFi. OJO: el servidor REEMPLAZA el
+// evento con lo que le llega, por eso se le devuelve todo lo que vino de él
+// (lugar, nota, fin y repetición), no solo lo que se cambió.
+void CalendarActivity::sendEventEdit(const Item& it) const {
+  if (it.id <= 0) return;
+  const std::string date = it.startAt.size() >= 10 ? it.startAt.substr(0, 10) : dayDate;
+  if (date.size() < 10) return;
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["id"] = it.id;
+    doc["title"] = it.title;
+    doc["date"] = date;
+    doc["time"] = it.at;  // vacío = actividad de todo el día
+    doc["endDate"] = it.endStamp.size() >= 10 ? it.endStamp.substr(0, 10) : date;
+    doc["endTime"] = it.endTime;
+    doc["place"] = it.place;
+    doc["note"] = it.note;
+    if (!it.repeatRaw.empty()) {
+      JsonDocument rep;
+      if (deserializeJson(rep, it.repeatRaw) == DeserializationError::Ok) doc["repeat"] = rep.as<JsonVariantConst>();
+    }
+    serializeJson(doc, body);
+  }
+  const ServerClient::Result r =
+      SERVER_CLIENT.postOrQueue("/api/calendar/event?lang=" + std::string(uiLanguageCode()), body);
+  LOG_INF(TAG, "event %d: %s", it.id, ServerClient::resultName(r));
+}
+
+void CalendarActivity::deleteMenuItem() {
+  if (menuItem < 0 || menuItem >= static_cast<int>(dayItems.size())) return;
+  const int id = dayItems[menuItem].id;
+  dayItems.erase(dayItems.begin() + menuItem);
+  if (dayIndex >= static_cast<int>(dayItems.size()) && dayIndex > 0) dayIndex--;
+  saveDayToCache();
+  syncSummaryCount();
+  if (id > 0) {
+    std::string body;
+    {
+      JsonDocument doc;
+      doc["id"] = id;
+      serializeJson(doc, body);
+    }
+    const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/calendar/event/delete", body);
+    LOG_INF(TAG, "delete event %d: %s", id, ServerClient::resultName(r));
+  }
+  menuItem = -1;
+}
+
+// Atrás mantenido sobre una actividad: el mismo menú por ítem que ya tienen las
+// listas de AgendaActivity.
+void CalendarActivity::openItemMenu() {
+  if (state != DAY || dayItems.empty()) return;
+  if (dayIndex < 0 || dayIndex >= static_cast<int>(dayItems.size())) return;
+  // Los recordatorios viven en el store (se tildan en Recordatorios) y los
+  // ítems de viaje se cargan en la web: acá solo se tocan las actividades.
+  if (dayItems[dayIndex].kind != "event" || dayItems[dayIndex].id <= 0) {
+    dayNotice = tr(STR_CAL_ONLY_EVENTS);
+    requestUpdate();
+    return;
+  }
+  menuItem = dayIndex;
+  menuOptions = {tr(STR_CAL_ITEM_TIME), tr(STR_CAL_ITEM_TITLE), tr(STR_CAL_ITEM_DELETE)};
+  menuOpen = true;
+  menu.show(StrId::STR_CAL_ITEM_MENU, menuOptions, 0, [this](int idx) { onMenuPick(idx); });
+  requestUpdate();
+}
+
+void CalendarActivity::onMenuPick(const int index) {
+  menuOpen = false;
+  if (index == 0) {
+    openTimeEditor();
+    return;
+  }
+  if (index == 1) {
+    startDictation(REC_TITLE);
+    return;
+  }
+  if (index == 2) deleteMenuItem();
+  requestUpdate();
+}
+
+// La hora se ELIGE con la palanca (el aparato no tiene teclado ni para los
+// números): horas primero, después minutos de cinco en cinco.
+void CalendarActivity::openTimeEditor() {
+  if (menuItem < 0 || menuItem >= static_cast<int>(dayItems.size())) return;
+  const std::string& at = dayItems[menuItem].at;
+  if (at.size() >= 5) {
+    editHour = (at[0] - '0') * 10 + (at[1] - '0');
+    editMinute = (at[3] - '0') * 10 + (at[4] - '0');
+  } else {
+    editHour = -1;
+    editMinute = 0;
+  }
+  if (editHour < -1 || editHour > 23) editHour = -1;
+  editMinute = (editMinute / 5) * 5;
+  editMinuteField = false;
+  state = TIME_EDIT;
+  requestUpdate();
+}
+
+void CalendarActivity::timeStep(const int delta) {
+  if (editMinuteField) {
+    editMinute = ((editMinute / 5 + delta) % 12 + 12) % 12 * 5;
+  } else {
+    // -1 ("sin hora") entra en la rueda justo antes de las 00: así se le puede
+    // sacar la hora a una actividad sin otro menú.
+    editHour = ((editHour + 1 + delta) % 25 + 25) % 25 - 1;
+  }
+  requestUpdate();
+}
+
+void CalendarActivity::confirmTimeEditor() {
+  if (!editMinuteField && editHour >= 0) {
+    editMinuteField = true;
+    requestUpdate();
+    return;
+  }
+  if (menuItem >= 0 && menuItem < static_cast<int>(dayItems.size())) {
+    Item& it = dayItems[menuItem];
+    it.at = editHour < 0 ? std::string() : twoDigits(editHour) + ":" + twoDigits(editMinute);
+    // El fin que quedó antes del arranque lo recorta el servidor; acá se saca
+    // para que lo que se ve en pantalla no mienta.
+    if (!it.at.empty() && !it.endTime.empty() && it.endTime < it.at) it.endTime.clear();
+    const Item copy = it;
+    sortDayItems();
+    saveDayToCache();
+    syncSummaryCount();
+    sendEventEdit(copy);
+    // El cursor sigue a la actividad que se movió de lugar en la lista.
+    for (int i = 0; i < static_cast<int>(dayItems.size()); ++i) {
+      if (dayItems[i].id == copy.id) {
+        dayIndex = i;
+        break;
+      }
+    }
+  }
+  menuItem = -1;
+  state = DAY;
+  requestUpdate();
 }
 
 void CalendarActivity::ensureConnected() {
@@ -671,7 +1013,19 @@ void CalendarActivity::onWifiSelectionComplete(const bool connected) {
     // Sin red se sigue mirando lo que haya en la tarjeta: el calendario tiene
     // que servir sin WiFi.
     wifiActivated = false;
+    const Pending was = pending;
     pending = NONE;
+    // Dictar y cambiar el título necesitan que el servidor conteste: sin WiFi
+    // no se puede, y se dice en el día en vez de tirar al usuario al mes.
+    if (was == DICTATE_SEND || was == TITLE_SEND) {
+      recorder.abort();
+      afterWifi = NONE;
+      dayNotice = tr(STR_SERVER_WIFI_FAILED);
+      state = dictateReturn;
+      if (state == TODAY) buildTodayLines();
+      requestUpdate();
+      return;
+    }
     state = afterLoad == TODAY ? TODAY : MONTH;
     if (state == TODAY) {
       suggestError = tr(STR_SERVER_WIFI_FAILED);
@@ -685,6 +1039,18 @@ void CalendarActivity::onWifiSelectionComplete(const bool connected) {
 }
 
 void CalendarActivity::loop() {
+  // El menú de la actividad se come toda la entrada mientras está abierto.
+  if (menuOpen) {
+    if (menu.handleInput(mappedInput, [this] { requestUpdate(); })) {
+      if (!menu.isActive() && menuOpen) {  // Atrás sobre el menú: se cierra y punto
+        menuOpen = false;
+        menuItem = -1;
+        requestUpdate();
+      }
+    }
+    return;
+  }
+
   switch (state) {
     case LOADING: {
       WiFi.setSleep(false);
@@ -703,6 +1069,18 @@ void CalendarActivity::loop() {
         dayIndex = 0;
         if (state == TODAY) buildTodayLines();
         if (!ok) LOG_ERR(TAG, "día: %s", failureDetail.c_str());
+        requestUpdate();
+      } else if (p == DICTATE_SEND || p == TITLE_SEND) {
+        if (p == DICTATE_SEND) performDictate();
+        else performTitle();
+        WiFi.setSleep(true);
+        afterWifi = NONE;
+        menuItem = -1;
+        state = dictateReturn;
+        if (state == TODAY) {
+          todayTop = 0;
+          buildTodayLines();
+        }
         requestUpdate();
       } else if (p == SUGGEST_FETCH) {
         fetchSuggest(suggestRefresh);
@@ -735,6 +1113,12 @@ void CalendarActivity::loop() {
       break;
     }
     case TODAY: {
+      // Atrás mantenido dicta el día de hoy: OK ya está tomado por las
+      // sugerencias, y este es el lugar donde uno mira la jornada.
+      if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, MENU_HOLD_MS)) {
+        startDictation(REC_DAY);
+        break;
+      }
       const int total = static_cast<int>(todayLines.size());
       buttonNavigator.onNext([&] {
         if (todayTop + todayPerPage < total) todayTop += todayPerPage;
@@ -780,6 +1164,11 @@ void CalendarActivity::loop() {
       break;
     }
     case DAY: {
+      // Atrás mantenido: el menú de la actividad marcada (hora, título, borrar).
+      if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, MENU_HOLD_MS)) {
+        openItemMenu();
+        break;
+      }
       const int count = static_cast<int>(dayItems.size());
       buttonNavigator.onNext([&] {
         if (count > 0) dayIndex = ButtonNavigator::nextIndex(dayIndex, count);
@@ -789,13 +1178,55 @@ void CalendarActivity::loop() {
         if (count > 0) dayIndex = ButtonNavigator::previousIndex(dayIndex, count);
         requestUpdate();
       });
-      if (mappedInput.wasReleased(MappedInputManager::Button::Back) ||
-          mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      // OK dicta el día entero: es la forma de cargar actividades sin teclado.
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        startDictation(REC_DAY);
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        dayNotice.clear();
         state = MONTH;
         requestUpdate();
       }
       break;
     }
+    case DICTATING:
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        recorder.abort();
+        state = dictateReturn;
+        requestUpdate();
+        break;
+      }
+      if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) || !recorder.isRecording()) {
+        stopDictation();
+        break;
+      }
+      if (!recorder.pump()) {
+        recorder.abort();
+        dayNotice = tr(STR_AUDIO_CAPTURE_FAILED);
+        state = dictateReturn;
+        if (state == TODAY) buildTodayLines();
+        requestUpdate();
+      }
+      break;
+    case TIME_EDIT:
+      buttonNavigator.onNext([this] { timeStep(1); });
+      buttonNavigator.onPrevious([this] { timeStep(-1); });
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+        confirmTimeEditor();
+        break;
+      }
+      if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        // Atrás siempre sale: primero de los minutos, después sin guardar nada.
+        if (editMinuteField) {
+          editMinuteField = false;
+        } else {
+          menuItem = -1;
+          state = DAY;
+        }
+        requestUpdate();
+      }
+      break;
     case FAILED:
       if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
           mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
@@ -808,59 +1239,94 @@ void CalendarActivity::loop() {
   }
 }
 
-// El menú de Mi día: tres filas grandes con lo que hay adentro.
+// El menú de Mi día: tres filas de dos renglones con lo que hay adentro. Cada
+// una en su fila con regla al pie: los marcos de antes eran tres cajas para
+// tres cosas que ya se distinguen por el texto.
 void CalendarActivity::renderHome() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int top = metrics.topPadding + metrics.headerHeight + 16;
-  const int rowH = 76;
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const int top = listui::contentTop();
   const StrId titles[HOME_ROWS] = {StrId::STR_DAY_TODAY, StrId::STR_CAL_TITLE, StrId::STR_DAY_TRIPS};
   const StrId subs[HOME_ROWS] = {StrId::STR_DAY_TODAY_SUB, StrId::STR_DAY_CALENDAR_SUB, StrId::STR_DAY_TRIPS_SUB};
   for (int i = 0; i < HOME_ROWS; ++i) {
-    const int y = top + i * (rowH + 10);
-    const bool sel = i == homeRow;
-    if (sel) renderer.fillRoundedRect(SIDE, y, pageWidth - 2 * SIDE, rowH, 12, Color::Black);
-    else renderer.drawRoundedRect(SIDE, y, pageWidth - 2 * SIDE, rowH, 2, 12, true);
-    const int tw = pageWidth - 2 * SIDE - 32;
-    renderer.drawText(UI_12_FONT_ID, SIDE + 16, y + 14,
-                      renderer.truncatedText(UI_12_FONT_ID, I18N.get(titles[i]), tw, EpdFontFamily::BOLD).c_str(), !sel,
-                      EpdFontFamily::BOLD);
-    renderer.drawText(SMALL_FONT_ID, SIDE + 16, y + 44,
-                      renderer.truncatedText(SMALL_FONT_ID, I18N.get(subs[i]), tw).c_str(), !sel);
+    listui::RowSpec spec;
+    spec.title = I18N.get(titles[i]);
+    spec.detail = I18N.get(subs[i]);
+    spec.bold = true;
+    spec.selected = i == homeRow;
+    listui::row(renderer, x, top + i * listui::ROW2_H, w, listui::ROW2_H, spec);
   }
 }
 
-// Hoy: la agenda del día y las sugerencias, paginadas con la palanca.
+// Hoy: la agenda del día y las sugerencias, paginadas con la palanca. Los
+// títulos van en UI_14 con su regla, así se ve dónde empieza cada bloque.
 void CalendarActivity::renderToday() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
-  // El margen de abajo lleva verticalSpacing además del alto de los hints.
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - 18;
-  const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
-  todayPerPage = std::max(1, (bottom - top) / lineH);
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  const int top = listui::contentTop();
+  const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+  const int pagerY = hintY - PAGER_H;
+  const int bottom = pagerY - listui::GAP;
   if (todayLines.empty()) buildTodayLines();
   const int total = static_cast<int>(todayLines.size());
   if (todayTop >= total) todayTop = 0;
-  for (int i = 0; i < todayPerPage && todayTop + i < total; ++i) {
-    const Line& line = todayLines[todayTop + i];
-    if (line.text.empty()) continue;
-    const int font = line.style == 2 ? SMALL_FONT_ID : line.style == 1 ? UI_12_FONT_ID : UI_10_FONT_ID;
-    const auto style = line.style == 1 ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
-    renderer.drawText(font, SIDE, top + i * lineH,
-                      renderer.truncatedText(font, line.text.c_str(), pageWidth - 2 * SIDE, style).c_str(), true,
-                      style);
+
+  // Cada renglón mide lo suyo (un encabezado en UI_14 no entra en el paso de
+  // UI_10 y la regla le cortaría los descendentes), así que las páginas se
+  // arman midiendo y no dividiendo: con eso el "Página n de N" dice la verdad.
+  const auto advance = [&](const Line& line) {
+    if (line.style == 1) return renderer.getLineHeight(UI_14_FONT_ID) + 8;
+    return renderer.getLineHeight(line.style == 2 ? SMALL_FONT_ID : UI_10_FONT_ID) + 6;
+  };
+  int pages = 0;
+  int page = 0;
+  int pageStart = 0;
+  for (int i = 0; i < total;) {
+    const int start = i;
+    for (int y = top; i < total;) {
+      const int h = advance(todayLines[i]);
+      if (y + h > bottom && i > start) break;
+      y += h;
+      ++i;
+    }
+    // La página que se está mostrando es la que contiene a todayTop.
+    if (start <= todayTop && todayTop < i) {
+      page = pages;
+      pageStart = start;
+    }
+    ++pages;
   }
-  if (total > todayPerPage) {
-    char pages[16];
-    snprintf(pages, sizeof(pages), "%d/%d", todayTop / todayPerPage + 1, (total + todayPerPage - 1) / todayPerPage);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom, pages);
+  todayTop = pageStart;
+
+  int y = top;
+  int drawn = 0;
+  for (int i = todayTop; i < total; ++i) {
+    const Line& line = todayLines[i];
+    const int h = advance(line);
+    if (y + h > bottom && drawn > 0) break;
+    ++drawn;
+    if (!line.text.empty()) {
+      if (line.style == 1) {
+        // Encabezado de bloque: UI_14 y una regla de 1 px al pie, por debajo de
+        // los descendentes.
+        renderer.drawText(UI_14_FONT_ID, x, y, renderer.truncatedText(UI_14_FONT_ID, line.text.c_str(), w).c_str());
+        listui::rule(renderer, x, y + h - 2, w);
+      } else {
+        const int font = line.style == 2 ? SMALL_FONT_ID : UI_10_FONT_ID;
+        renderer.drawText(font, x, y, renderer.truncatedText(font, line.text.c_str(), w).c_str());
+      }
+    }
+    y += h;
   }
+  // Lo que se dibujó es lo que avanza la palanca: así la página siguiente
+  // empieza donde terminó ésta.
+  todayPerPage = std::max(1, drawn);
+  listui::pager(renderer, x, pagerY, w, page + 1, std::max(pages, 1));
+  // El dictado está en Atrás mantenido y sin decirlo no lo encuentra nadie.
+  listui::hint(renderer, hintY, tr(STR_DAY_DICTATE_HINT));
 }
 
 void CalendarActivity::renderMonth() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   const int pageHeight = renderer.getScreenHeight();
 
@@ -873,14 +1339,16 @@ void CalendarActivity::renderMonth() {
   const int cols = 7;
   const int cellW = (pageWidth - 2 * SIDE) / cols;
   const int gridX = (pageWidth - cellW * cols) / 2;
-  const int dowY = metrics.topPadding + metrics.headerHeight + 8;
+  const int dowY = listui::contentTop();
   const int gridTop = dowY + renderer.getLineHeight(SMALL_FONT_ID) + 6;
   // Abajo van dos líneas: qué hay en el día marcado y la ayuda de los botones.
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  const int bottom = listui::contentBottom(renderer);
   // Abajo de la cuadrícula entran dos líneas (qué cae en el día marcado) y la
   // ayuda de los botones: si no se les reserva lugar, la última fila de la
   // cuadrícula se les encima.
-  const int infoH = 72;
+  // Abajo de la cuadrícula van la fila de dos renglones del día marcado y el
+  // renglón de ayuda: se les reserva el alto exacto.
+  const int infoH = listui::ROW2_H + listui::HINT_H + listui::GAP;
   const int cellH = std::max(34, (bottom - infoH - gridTop) / 6);
 
   for (int c = 0; c < cols; ++c) {
@@ -888,6 +1356,9 @@ void CalendarActivity::renderMonth() {
     const int w = renderer.getTextWidth(SMALL_FONT_ID, label);
     renderer.drawText(SMALL_FONT_ID, gridX + c * cellW + (cellW - w) / 2, dowY, label);
   }
+  // Regla de 1 px bajo los nombres de los días: separa el encabezado de la
+  // cuadrícula sin encajonarla.
+  listui::rule(renderer, gridX, gridTop - 4, cellW * cols);
 
   const int firstDow = weekdayOfCivil(viewYear, viewMonth, 1);
   const int dim = daysInMonth(viewYear, viewMonth);
@@ -901,40 +1372,48 @@ void CalendarActivity::renderMonth() {
     const int y = gridTop + (cell / cols) * cellH;
     const bool selected = day == cursorDay;
     const bool isToday = haveToday && todayY == viewYear && todayM == viewMonth && todayD == day;
-    if (selected) renderer.fillRoundedRect(x + 2, y + 2, cellW - 4, cellH - 6, 8, Color::Black);
-    else if (isToday) renderer.drawRoundedRect(x + 2, y + 2, cellW - 4, cellH - 6, 2, 8, true);
+    // La celda elegida usa el estilo de mosaico (marco + trama, sin pestaña: en
+    // una celda cuadrada la pestaña queda torcida) y HOY, un marco fino.
+    if (selected) drawSelectionRow(renderer, x + 2, y + 2, cellW - 4, cellH - 6, 0, SelectionStyle::Tile);
+    else if (isToday) renderer.drawRect(x + 2, y + 2, cellW - 4, cellH - 6, 1, true);
 
     char num[4];
     snprintf(num, sizeof(num), "%d", day);
     const int nw = renderer.getTextWidth(UI_12_FONT_ID, num);
-    renderer.drawText(UI_12_FONT_ID, x + (cellW - nw) / 2, y + 8, num, !selected);
+    const int numY = y + 8;
+    // Nunca hay letras sobre trama: el número de la celda elegida va sobre un
+    // plato blanco.
+    if (selected) {
+      drawTextPlate(renderer, x + (cellW - nw) / 2 - 4, numY - 2, nw + 8, renderer.getLineHeight(UI_12_FONT_ID));
+    }
+    renderer.drawText(UI_12_FONT_ID, x + (cellW - nw) / 2, numY, num, SELECTION_INK);
 
     const DaySummary* s = summaryFor(day);
     if (s && s->count > 0) {
       const int dotY = y + cellH - 22;
       if (s->count == 1) {
-        renderer.fillRoundedRect(x + cellW / 2 - 4, dotY, 8, 8, 4, selected ? Color::White : Color::Black);
+        renderer.fillRect(x + cellW / 2 - 3, dotY, 6, 6, true);
       } else {
         char n[8];
         snprintf(n, sizeof(n), "%d", s->count);
         const int w = renderer.getTextWidth(SMALL_FONT_ID, n);
-        renderer.fillRoundedRect(x + cellW / 2 - w / 2 - 8, dotY - 1, 6, 6, 3, selected ? Color::White : Color::Black);
-        renderer.drawText(SMALL_FONT_ID, x + cellW / 2 - w / 2 + 2, dotY - 6, n, !selected);
+        if (selected) drawTextPlate(renderer, x + cellW / 2 - w / 2 - 12, dotY - 6, w + 18, 18);
+        renderer.fillRect(x + cellW / 2 - w / 2 - 8, dotY - 1, 5, 5, true);
+        renderer.drawText(SMALL_FONT_ID, x + cellW / 2 - w / 2 + 2, dotY - 6, n, SELECTION_INK);
       }
     }
   }
 
   // Qué cae en el día marcado, en palabras: es lo que evita tener que entrar
   // para saber si el cursor quedó donde uno cree.
-  const int infoY = gridTop + 6 * cellH + 4;
+  const int infoY = gridTop + 6 * cellH + listui::GAP;
+  const int w = listui::contentWidth(renderer);
   std::string line = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " +
                      std::to_string(cursorDay);
   int ty = 0, tm = 0, td = 0;
   if (localToday(ty, tm, td) && ty == viewYear && tm == viewMonth && td == cursorDay) {
     line += " · " + std::string(tr(STR_CAL_TODAY));
   }
-  renderer.drawText(UI_10_FONT_ID, SIDE + 4, infoY,
-                    renderer.truncatedText(UI_10_FONT_ID, line.c_str(), pageWidth - 2 * SIDE - 8).c_str());
   const DaySummary* s = summaryFor(cursorDay);
   std::string detail = tr(STR_CAL_NO_EVENTS);
   if (s && s->count > 0) {
@@ -945,48 +1424,100 @@ void CalendarActivity::renderMonth() {
       detail = std::string(n) + (detail.empty() ? "" : " · " + detail);
     }
   }
-  renderer.drawText(SMALL_FONT_ID, SIDE + 4, infoY + 22,
-                    renderer.truncatedText(SMALL_FONT_ID, detail.c_str(), pageWidth - 2 * SIDE - 8).c_str());
-  renderer.drawCenteredText(SMALL_FONT_ID, bottom - 18,
-                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_CAL_HINT), pageWidth - 2 * SIDE).c_str());
+  // El día marcado y lo que cae en él, con el mismo ritmo de dos renglones que
+  // las listas: es lo que evita entrar para saber dónde quedó el cursor.
+  listui::RowSpec spec;
+  spec.title = line.c_str();
+  spec.detail = detail.c_str();
+  spec.bold = true;
+  spec.rule = false;
+  listui::rule(renderer, listui::SIDE, infoY, w);
+  listui::row(renderer, listui::SIDE, infoY, w, listui::ROW2_H, spec);
+  listui::hint(renderer, listui::contentBottom(renderer) - listui::HINT_H, tr(STR_CAL_HINT));
 }
 
 void CalendarActivity::renderDay() {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int pageWidth = renderer.getScreenWidth();
-  const int pageHeight = renderer.getScreenHeight();
-  const int top = metrics.topPadding + metrics.headerHeight + 12;
-  const int bottom = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  // La franja del "p/N" va abajo de las filas, no debajo de la última.
-  itemsPerPage = std::max(1, (bottom - 22 - top) / ROW_H);
+  const int x = listui::SIDE;
+  const int w = listui::contentWidth(renderer);
+  int top = listui::contentTop();
+  const int hintY = listui::contentBottom(renderer) - listui::HINT_H;
+  const int pagerY = hintY - PAGER_H;
+  // Lo que contestó el servidor al dictado ("Cargué 3 actividades."), o por qué
+  // no se pudo. Se va solo en cuanto se sale del día.
+  if (!dayNotice.empty()) {
+    const int lineH = renderer.getLineHeight(UI_10_FONT_ID) + 2;
+    const auto lines = renderer.wrappedText(UI_10_FONT_ID, dayNotice.c_str(), w, 2);
+    for (size_t i = 0; i < lines.size(); ++i) {
+      renderer.drawText(UI_10_FONT_ID, x, top + static_cast<int>(i) * lineH, lines[i].c_str(), true,
+                        EpdFontFamily::BOLD);
+    }
+    top += static_cast<int>(lines.size()) * lineH + listui::GAP;
+    listui::rule(renderer, x, top - listui::GAP / 2, w);
+  }
+  itemsPerPage = std::max(1, (pagerY - listui::GAP - top) / listui::ROW2_H);
   const int count = static_cast<int>(dayItems.size());
+  listui::hint(renderer, hintY, tr(STR_CAL_ITEM_HINT));
   if (count == 0) {
-    renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10, tr(STR_CAL_NO_EVENTS));
+    renderer.drawCenteredText(UI_10_FONT_ID, (top + pagerY) / 2 - 10, tr(STR_CAL_NO_EVENTS));
     return;
   }
-  const int first = (dayIndex / itemsPerPage) * itemsPerPage;
+  const int page = dayIndex / itemsPerPage;
+  const int first = page * itemsPerPage;
   for (int i = first; i < count && i < first + itemsPerPage; ++i) {
-    const int y = top + (i - first) * ROW_H;
-    const bool sel = i == dayIndex;
-    if (sel) renderer.fillRoundedRect(SIDE + 2, y, pageWidth - 2 * (SIDE + 2), ROW_H - 6, 8, Color::Black);
     const Item& it = dayItems[i];
-    const int atW = it.at.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, it.at.c_str()) + 12;
-    if (atW) renderer.drawText(SMALL_FONT_ID, SIDE + 10, y + 10, it.at.c_str(), !sel);
-    renderer.drawText(UI_12_FONT_ID, SIDE + 10 + atW, y + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, it.title.c_str(), pageWidth - 2 * SIDE - 20 - atW).c_str(),
-                      !sel);
-    if (!it.place.empty()) {
-      renderer.drawText(SMALL_FONT_ID, SIDE + 10 + atW, y + 30,
-                        renderer.truncatedText(SMALL_FONT_ID, it.place.c_str(), pageWidth - 2 * SIDE - 20 - atW).c_str(),
-                        !sel);
-    }
+    listui::RowSpec spec;
+    spec.title = it.title.c_str();
+    spec.detail = it.place.empty() ? nullptr : it.place.c_str();
+    // La hora en su columna, a la derecha: delante del título se leía como
+    // parte del nombre de la actividad.
+    spec.meta = it.at.empty() ? nullptr : it.at.c_str();
+    spec.selected = i == dayIndex;
+    listui::row(renderer, x, top + (i - first) * listui::ROW2_H, w, listui::ROW2_H, spec);
   }
-  if (count > itemsPerPage) {
-    char pages[16];
-    snprintf(pages, sizeof(pages), "%d/%d", dayIndex / itemsPerPage + 1, (count + itemsPerPage - 1) / itemsPerPage);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - renderer.getTextWidth(SMALL_FONT_ID, pages), bottom - 18,
-                      pages);
+  listui::pager(renderer, x, pagerY, w, page + 1, (count + itemsPerPage - 1) / itemsPerPage);
+}
+
+// Grabando: qué se puede decir, para que no haya que adivinar el formato.
+void CalendarActivity::renderDictating() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int top = metrics.topPadding + metrics.headerHeight + 30;
+  const bool title = recordMode == REC_TITLE;
+  renderer.drawCenteredText(
+      UI_12_FONT_ID, top,
+      renderer.truncatedText(UI_12_FONT_ID, title ? tr(STR_CAL_TITLE_PROMPT) : tr(STR_CAL_DICTATE_PROMPT),
+                             pageWidth - 30, EpdFontFamily::BOLD)
+          .c_str(),
+      true, EpdFontFamily::BOLD);
+  const char* hint = title ? tr(STR_CAL_TITLE_HINT) : tr(STR_CAL_DICTATE_HINT);
+  int y = top + 44;
+  for (const std::string& line : renderer.wrappedText(UI_10_FONT_ID, hint, pageWidth - 2 * SIDE - 12, 6)) {
+    renderer.drawText(UI_10_FONT_ID, SIDE + 6, y, line.c_str());
+    y += 26;
   }
+}
+
+// La hora, elegida con la palanca. "[14]:30" dice qué pedazo se está moviendo:
+// en blanco y negro es lo más claro que hay.
+void CalendarActivity::renderTimeEditor() {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int pageWidth = renderer.getScreenWidth();
+  const int top = metrics.topPadding + metrics.headerHeight + 24;
+  if (menuItem >= 0 && menuItem < static_cast<int>(dayItems.size())) {
+    renderer.drawCenteredText(
+        UI_10_FONT_ID, top,
+        renderer.truncatedText(UI_10_FONT_ID, dayItems[menuItem].title.c_str(), pageWidth - 2 * SIDE).c_str());
+  }
+  std::string label;
+  if (editHour < 0) {
+    label = std::string("[") + tr(STR_REM_NO_TIME) + "]";
+  } else {
+    label = (editMinuteField ? twoDigits(editHour) : "[" + twoDigits(editHour) + "]") + ":" +
+            (editMinuteField ? "[" + twoDigits(editMinute) + "]" : twoDigits(editMinute));
+  }
+  renderer.drawCenteredText(UI_12_FONT_ID, top + 60, label.c_str(), true, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(SMALL_FONT_ID, top + 110,
+                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_REM_FIELD_HINT), pageWidth - 2 * SIDE).c_str());
 }
 
 void CalendarActivity::render(RenderLock&&) {
@@ -1000,6 +1531,10 @@ void CalendarActivity::render(RenderLock&&) {
     title = tr(STR_HUB_DAY);
   } else if (state == TODAY) {
     title = tr(STR_DAY_TODAY);
+  } else if (state == DICTATING) {
+    title = recordMode == REC_TITLE ? tr(STR_CAL_ITEM_TITLE) : tr(STR_CAL_DICTATE);
+  } else if (state == TIME_EDIT) {
+    title = tr(STR_CAL_ITEM_TIME);
   } else if (state == DAY && viewYear != 0) {
     title = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " +
             std::to_string(cursorDay) + " " + monthName(viewMonth);
@@ -1021,8 +1556,18 @@ void CalendarActivity::render(RenderLock&&) {
     case DAY:
       renderDay();
       break;
+    case DICTATING:
+      renderDictating();
+      break;
+    case TIME_EDIT:
+      renderTimeEditor();
+      break;
     case LOADING:
-      renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 10, tr(STR_CAL_LOADING), true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_12_FONT_ID, pageHeight / 2 - 10,
+                                pending == DICTATE_SEND || pending == TITLE_SEND || afterWifi != NONE
+                                    ? tr(STR_CAL_DICTATE_SENDING)
+                                    : tr(STR_CAL_LOADING),
+                                true, EpdFontFamily::BOLD);
       break;
     case FAILED:
       renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);
@@ -1035,14 +1580,14 @@ void CalendarActivity::render(RenderLock&&) {
       break;
   }
 
+  // El menú de la actividad se dibuja encima de todo y se queda con los botones.
+  if (menuOpen && menu.processRender(renderer, mappedInput)) return;
   // En Hoy, OK es lo único que le pide sugerencias al servidor, así que lo dice.
-  const char* okLabel = state == DAY      ? tr(STR_BACK)
-                        : state == TODAY  ? (suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO))
-                                          : tr(STR_SELECT);
+  const char* okLabel = state == DAY       ? tr(STR_CAL_DICTATE)
+                        : state == TODAY   ? (suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO))
+                                           : tr(STR_SELECT);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
-  // Regla del panel: refresco limpio cada 10-15 parciales o la cuadrícula fantasmea.
-  const bool clean = ++partialCount >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partialCount = 0;
-  renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+  // La cadencia de refrescos limpios la lleva el coordinador del panel.
+  renderer.displayBuffer();
 }

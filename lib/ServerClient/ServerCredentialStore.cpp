@@ -1,6 +1,8 @@
 #include "ServerCredentialStore.h"
 
+#include <Arduino.h>
 #include <ObfuscationUtils.h>
+#include <esp_random.h>
 
 namespace {
 constexpr uint8_t CONFIG_VERSION = 1;
@@ -61,4 +63,37 @@ void ServerCredentialStore::setToken(const std::string& t) {
   token = t;
   while (!token.empty() && (token.back() == ' ' || token.back() == '\r' || token.back() == '\n')) token.pop_back();
   if (token.size() > MAX_TOKEN_LENGTH) token.resize(MAX_TOKEN_LENGTH);
+}
+
+std::string ServerCredentialStore::deviceId() {
+  uint64_t mac = ESP.getEfuseMac();  // la MAC de fábrica, invariable
+  char out[13];
+  for (int i = 0; i < 6; ++i) {
+    static const char kHexUpper[] = "0123456789ABCDEF";
+    const uint8_t b = static_cast<uint8_t>((mac >> (8 * i)) & 0xFF);
+    out[i * 2] = kHexUpper[b >> 4];
+    out[i * 2 + 1] = kHexUpper[b & 0x0F];
+  }
+  out[12] = '\0';
+  return std::string(out);
+}
+
+const std::string& ServerCredentialStore::ensureToken() {
+  if (!token.empty()) return token;
+  // 32 bytes del generador de hardware (esp_random se alimenta del ruido de la
+  // radio, no de una semilla previsible).
+  static const char kHexLower[] = "0123456789abcdef";
+  std::string t;
+  t.reserve(64);
+  for (int i = 0; i < 8; ++i) {
+    const uint32_t r = esp_random();
+    for (int b = 3; b >= 0; --b) {
+      const uint8_t v = static_cast<uint8_t>((r >> (8 * b)) & 0xFF);
+      t += kHexLower[v >> 4];
+      t += kHexLower[v & 0x0F];
+    }
+  }
+  token = t;
+  saveToFile();
+  return token;
 }

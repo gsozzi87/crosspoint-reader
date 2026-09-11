@@ -31,6 +31,15 @@ class Mp3Source {
   int positionSeconds() const { return sampleRate_ > 0 ? static_cast<int>(samplesOut_ / sampleRate_) : 0; }
   bool finished() const { return eof_ && pcmAvail_ == 0; }
 
+  // Historial de nivel para el analizador de la pantalla. NO es una FFT (no hay
+  // presupuesto ni sentido: el panel se repinta cada varios segundos): es el
+  // pico real de cada bloque decodificado, que dibujado como barras se lee
+  // igual que el analizador de Winamp y encima dice la verdad sobre el audio.
+  // Lo escribe la tarea de audio y lo lee la UI; son bytes sueltos, una lectura
+  // a destiempo pinta una barra distinta y nada más.
+  static constexpr int LEVELS = 24;
+  uint8_t level(const int i) const { return levels_[(levelPos_ + i) % LEVELS]; }  // 0..15, del más viejo al más nuevo
+
  private:
   static constexpr size_t IN_BUF = 4096;
   static constexpr size_t PCM_BUF = 1152 * 2 * 2 * 2;  // two full stereo frames, bytes
@@ -46,6 +55,10 @@ class Mp3Source {
   size_t fileSize_ = 0;
   bool eof_ = false;
   uint64_t samplesOut_ = 0;
+  uint8_t levels_[LEVELS] = {0};
+  int levelPos_ = 0;      // dónde entra el próximo (y, por eso, el más viejo)
+  uint16_t levelPeak_ = 0;
+  int levelFrames_ = 0;
 
   std::string title_;
   std::string artist_;

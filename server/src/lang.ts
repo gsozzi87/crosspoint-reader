@@ -49,14 +49,19 @@ export function describeWeather(code: number, lang: Lang): string {
   return w[8];
 }
 
-// Etiquetas cortas del widget: máxima, mínima, humedad; hoy, mañana.
-export const LABELS: Record<Lang, { max: string; min: string; hum: string; today: string; tomorrow: string }> = {
-  es: { max: "Máx", min: "Mín", hum: "Hum", today: "hoy", tomorrow: "mañana" },
-  en: { max: "High", min: "Low", hum: "Hum", today: "today", tomorrow: "tomorrow" },
-  fr: { max: "Max", min: "Min", hum: "Hum", today: "aujourd'hui", tomorrow: "demain" },
-  de: { max: "Max", min: "Min", hum: "Feuchte", today: "heute", tomorrow: "morgen" },
-  pt: { max: "Máx", min: "Mín", hum: "Umid", today: "hoje", tomorrow: "amanhã" },
-  ru: { max: "Макс", min: "Мин", hum: "Влажн", today: "сегодня", tomorrow: "завтра" },
+// Etiquetas cortas del widget: máxima, mínima, humedad; hoy, mañana, y los
+// nombres visibles de las DOS únicas listas (compras y tareas). No hay más
+// categorías: todo lo que no sea claramente una compra va a la de tareas.
+export const LABELS: Record<
+  Lang,
+  { max: string; min: string; hum: string; today: string; tomorrow: string; shopping: string; tasks: string }
+> = {
+  es: { max: "Máx", min: "Mín", hum: "Hum", today: "hoy", tomorrow: "mañana", shopping: "Compras", tasks: "Tareas" },
+  en: { max: "High", min: "Low", hum: "Hum", today: "today", tomorrow: "tomorrow", shopping: "Shopping", tasks: "Tasks" },
+  fr: { max: "Max", min: "Min", hum: "Hum", today: "aujourd'hui", tomorrow: "demain", shopping: "Courses", tasks: "Tâches" },
+  de: { max: "Max", min: "Min", hum: "Feuchte", today: "heute", tomorrow: "morgen", shopping: "Einkäufe", tasks: "Aufgaben" },
+  pt: { max: "Máx", min: "Mín", hum: "Umid", today: "hoje", tomorrow: "amanhã", shopping: "Compras", tasks: "Tarefas" },
+  ru: { max: "Макс", min: "Мин", hum: "Влажн", today: "сегодня", tomorrow: "завтра", shopping: "Покупки", tasks: "Задачи" },
 };
 
 // Frase del día, una lista chica por idioma (Fase 3 la trae del servidor con más variedad).

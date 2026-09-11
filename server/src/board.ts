@@ -1,21 +1,18 @@
 // La "app del teléfono": una página web del Hono para manejar el aparato desde
 // cualquier navegador. Pide el token del aparato una vez (queda en
-// localStorage) y usa la misma API que el aparato. Sirve para dejar mensajes en
-// la pizarra del hub, crear recordatorios con fecha y repetición, manejar las
-// listas, escribir notas, subir fotos, cargar feeds, ver la memoria del
+// localStorage) y usa la misma API que el aparato. Sirve para crear
+// recordatorios con fecha y repetición, manejar las dos listas (compras y
+// tareas), escribir notas, subir fotos, cargar feeds, ver la memoria del
 // asistente y configurar el aparato (lugar del clima, idioma, voz, volumen).
 //
 //   GET  /board                      página (sin token; el JS lo pide)
 //   GET  /board/log                  el log que sube el aparato (devicelog.ts)
-//   POST /api/board/message  {from, text}
 //   POST /api/board/reminder {title, dueAt: "YYYY-MM-DDTHH:MM"|null, repeat}
 //   POST /api/board/item     {list, text}
 //   POST /api/board/note     {text}
 //   POST /api/board/feed     {name, url}
 //   POST /api/board/photo?name=      (body: image/bmp de 2 bpp, lo arma el navegador)
 //   POST /api/board/attachment?trip=&name=   (multipart o cuerpo crudo: PDF del vuelo, del hotel...)
-//   POST /api/board/list     {name}          crea una lista
-//   POST /api/board/list/delete {name}       la borra con todo lo que tenga
 //   GET  /api/board/extra    -> {feeds, memories, settings, lists}
 //   POST /api/board/settings {lang, speak, musicVolume, translatorLang}
 //   (leer, tildar y borrar: GET /api/hub, POST /api/hub/done, POST /api/hub/edit)
@@ -29,32 +26,25 @@ import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
 import { boardAttachment } from "./attachments";
+import { accountOf, isAdmin, type AppEnv } from "./tenant";
+import { clampNote, MAX_NOTE_CHARS } from "./notes";
 
-export const boardApi = new Hono();
-
-boardApi.post("/message", async (c) => {
-  const b = await readBody(c);
-  const text = (b.text ?? "").toString().trim().slice(0, 300);
-  if (!text) return c.json({ ok: false, error: "text required" }, 400);
-  const store = await load();
-  store.messages.push({ id: nextId(store), from: (b.from ?? "").toString().trim().slice(0, 40) || "web", text, createdAt: new Date().toISOString(), read: false });
-  await save(store);
-  return c.json({ ok: true });
-});
+export const boardApi = new Hono<AppEnv>();
 
 // Alta y edición (si trae id). La repetición es el objeto nuevo
 // {kind, days, interval, until}; una cadena vieja también entra.
 boardApi.post("/reminder", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const b = await readBody(c);
-  const store = await load();
+  const store = await load(acc);
   const res = upsertReminder(store, b);
   if (!res.ok) {
     return res.error === "not_found"
       ? c.json({ ok: false, error: "no existe ese recordatorio" }, 404)
       : c.json({ ok: false, error: "title required" }, 400);
   }
-  await save(store);
+  await save(acc, store);
   const r = res.reminder;
   return c.json({ ok: true, reminder: { id: r.id, title: r.title, at: r.dueAt, repeatSpec: r.repeat, repeatText: repeatText(r.repeat, r.dueAt, "es") } });
 });
@@ -63,31 +53,12 @@ boardApi.post("/item", async (c) => {
   const b = await readBody(c);
   const text = (b.text ?? "").toString().trim().slice(0, 200);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
-  const store = await load();
-  const list = resolveList(store, b.list, true);
+  const acc = accountOf(c);
+  const store = await load(acc);
+  const list = resolveList(store, b.list);
   store.lists[list].push({ id: nextId(store), text, done: false, dueDate: null, createdAt: new Date().toISOString() });
-  await save(store);
+  await save(acc, store);
   return c.json({ ok: true, list });
-});
-
-boardApi.post("/list", async (c) => {
-  const b = await readBody(c);
-  const name = (b.name ?? "").toString().trim().slice(0, 40);
-  if (!name) return c.json({ ok: false, error: "name required" }, 400);
-  const store = await load();
-  const list = resolveList(store, name, true);
-  await save(store);
-  return c.json({ ok: true, list });
-});
-
-boardApi.post("/list/delete", async (c) => {
-  const b = await readBody(c);
-  const name = (b.name ?? "").toString();
-  const store = await load();
-  if (!(name in store.lists)) return c.json({ ok: false, error: "not found" }, 404);
-  delete store.lists[name];
-  await save(store);
-  return c.json({ ok: true });
 });
 
 boardApi.post("/feed", async (c) => {
@@ -107,7 +78,8 @@ boardApi.post("/feed", async (c) => {
   } catch (err) {
     return c.json({ ok: false, error: `no se pudo leer el feed: ${String(err instanceof Error ? err.message : err).slice(0, 160)}` }, 400);
   }
-  const store = await load();
+  const acc = accountOf(c);
+  const store = await load(acc);
   store.feeds ??= [];
   if (store.feeds.some((f) => f.url === probe.url)) return c.json({ ok: false, error: "ese feed ya está cargado" }, 400);
   const name =
@@ -115,7 +87,7 @@ boardApi.post("/feed", async (c) => {
     probe.title ||
     new URL(probe.url).hostname.replace(/^www\./, "");
   store.feeds.push({ id: nextId(store), name, url: probe.url });
-  await save(store);
+  await save(acc, store);
   return c.json({ ok: true, name, url: probe.url, count: probe.count });
 });
 
@@ -123,7 +95,7 @@ boardApi.post("/feed", async (c) => {
 // titulares trae o por qué no trae ninguno.
 boardApi.post("/feed/test", async (c) => {
   const b = await readBody(c);
-  const store = await load();
+  const store = await load(accountOf(c));
   const feed = (store.feeds ?? []).find((f) => f.id === Number(b.id));
   if (!feed) return c.json({ ok: false, error: "no está" }, 404);
   const r = await checkFeed(feed.url);
@@ -151,7 +123,7 @@ boardApi.post("/photo", async (c) => {
     }
   }
   try {
-    const id = await savePhoto(name, out);
+    const id = await savePhoto(accountOf(c), name, out);
     return c.json({ ok: true, id });
   } catch (err) {
     console.error("photo save:", err);
@@ -165,22 +137,24 @@ boardApi.post("/photo", async (c) => {
 boardApi.route("/attachment", boardAttachment);
 
 boardApi.get("/extra", async (c) => {
-  const store = await load();
+  const acc = accountOf(c);
+  const store = await load(acc);
   return c.json({
     ok: true,
     feeds: store.feeds ?? [],
     memories: store.memories ?? [],
     settings: store.settings ?? DEFAULT_SETTINGS,
     lists: Object.keys(store.lists),
-    diag: await hubDiagnostics(),
+    diag: await hubDiagnostics(acc),
   });
 });
 
 // Ajustes del aparato. Cada cambio sube `rev`; el aparato los aplica en la
 // próxima sincronización solo si la revisión es mayor a la que ya tenía.
 boardApi.post("/settings", async (c) => {
+  const acc = accountOf(c);
   const b = await readBody(c);
-  const store = await load();
+  const store = await load(acc);
   const s: Settings = { ...DEFAULT_SETTINGS, ...(store.settings ?? {}) };
   if (typeof b.lang === "string" && /^[a-z]{2}$/.test(b.lang)) s.lang = b.lang;
   if (b.speak === "none" || b.speak === "short" || b.speak === "all") s.speak = b.speak;
@@ -188,12 +162,27 @@ boardApi.post("/settings", async (c) => {
   if (typeof b.translatorLang === "string" && /^[a-z]{2}$/.test(b.translatorLang)) s.translatorLang = b.translatorLang;
   s.rev = (s.rev ?? 0) + 1;
   store.settings = s;
-  await save(store);
+  await save(acc, store);
   return c.json({ ok: true, settings: s });
 });
 
 // Proveedores de IA y token, configurables desde la web. Las claves entran acá y
 // no salen nunca: la página solo ve si hay clave puesta.
+//
+// OJO: esta configuración es DEL OPERADOR y es una sola para todo el servidor
+// (con 1000 aparatos vendidos no puede poner cada uno su clave de Anthropic).
+// Solo la puede ver y tocar una cuenta admin; para las demás la pestaña IA ni
+// se muestra y estos endpoints contestan 403. Sin base de datos hay un solo
+// usuario y es el admin, así que todo sigue igual que siempre.
+boardApi.use("/config", async (c, next) => {
+  if (!isAdmin(c)) return c.json({ ok: false, error: "solo el administrador", code: "forbidden" }, 403);
+  await next();
+});
+boardApi.use("/config/*", async (c, next) => {
+  if (!isAdmin(c)) return c.json({ ok: false, error: "solo el administrador", code: "forbidden" }, 403);
+  await next();
+});
+
 boardApi.get("/config", async (c) => c.json({ ok: true, config: await publicConfig() }));
 
 boardApi.post("/config", async (c) => {
@@ -316,11 +305,12 @@ boardApi.get("/costs", async (c) => {
 
 boardApi.post("/note", async (c) => {
   const b = await readBody(c);
-  const text = (b.text ?? "").toString().trim().slice(0, 2000);
+  const text = clampNote(b.text);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
-  const store = await load();
+  const acc = accountOf(c);
+  const store = await load(acc);
   store.notes.push({ id: nextId(store), text, createdAt: new Date().toISOString() });
-  await save(store);
+  await save(acc, store);
   return c.json({ ok: true });
 });
 
@@ -387,19 +377,42 @@ label.chk{min-width:0;display:inline-flex;align-items:center;gap:4px;color:var(-
 // atributos HTML con comillas simples. Los botones no llevan onclick: se manejan
 // por delegación con data-act.
 const SCRIPT = `
+// Dos formas de entrar, según cómo esté armado el servidor:
+//   - sin base de datos (como siempre): el token del aparato, guardado acá;
+//   - con base de datos (multiusuario): correo y contraseña, y la sesión viaja
+//     en una cookie HttpOnly que este script ni ve. Ahí no se guarda ningún
+//     token en el navegador.
+// GET /auth/me es lo que dice en cuál de los dos estamos.
 let token = localStorage.getItem("deviceToken") || "";
+let me = null;
 let cfg = null;
+let entered = false;
 const $ = (id) => document.getElementById(id);
 function esc(s){ return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;","\\u0022":"&quot;","\\u0027":"&#39;"}[c])); }
 function toast(msg){ const t = $("toast"); t.textContent = msg; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 2200); }
 
+function multi(){ return !!(me && me.multi); }
+
 async function api(path, body, method){
+  const headers = { "Content-Type": "application/json" };
+  // Con sesión no hay token: manda la cookie. Con token no hay sesión.
+  if (token) headers["Authorization"] = "Bearer " + token;
   const r = await fetch(path, {
     method: method || (body ? "POST" : "GET"),
-    headers: { "Authorization": "Bearer " + token, "Content-Type": "application/json" },
+    headers,
+    credentials: "same-origin",
     body: body ? JSON.stringify(body) : undefined,
   });
-  if (r.status === 401) { gate("Token rechazado"); throw new Error("token"); }
+  if (r.status === 401) {
+    // Antes de entrar ya hay pedidos en el aire (el texto de la repetición, por
+    // ejemplo): un 401 de esos no tiene que pisar el cartel de la pantalla de
+    // entrada con un "se cerró la sesión" que no pasó.
+    if (entered) {
+      if (multi()) showLogin("Se cerró la sesión, entra de nuevo");
+      else gate("Token rechazado");
+    }
+    throw new Error("no autorizado");
+  }
   if (!r.ok) {
     let detail = "";
     try { detail = (await r.json()).error || ""; } catch (e) {}
@@ -408,23 +421,72 @@ async function api(path, body, method){
   return r.json();
 }
 
-function gate(msg){
-  $("gate").style.display = "block";
-  $("app").style.display = "none";
-  $("nav").style.display = "none";
-  $("gateMsg").textContent = msg || "";
-  $("tokenInput").value = token;
+function screen(which, msg){
+  entered = which === "app";
+  $("gate").style.display = which === "token" ? "block" : "none";
+  $("login").style.display = which === "login" ? "block" : "none";
+  $("app").style.display = which === "app" ? "block" : "none";
+  $("nav").style.display = which === "app" ? "flex" : "none";
+  if (which === "token") { $("gateMsg").textContent = msg || ""; $("tokenInput").value = token; }
+  if (which === "login") $("loginMsg").textContent = msg || "";
 }
+
+function gate(msg){ screen("token", msg); }
+function showLogin(msg){ screen("login", msg); }
 
 function saveToken(){
   const v = $("tokenInput").value.trim();
-  if (!v) { $("gateMsg").textContent = "Poné el token"; return; }
+  if (!v) { $("gateMsg").textContent = "Pon el token"; return; }
   token = v;
   localStorage.setItem("deviceToken", token);
-  $("gate").style.display = "none";
-  $("app").style.display = "block";
-  $("nav").style.display = "flex";
+  screen("app");
   refresh().catch((e) => gate("No se pudo conectar: " + e.message));
+}
+
+// ── Cuentas (solo con base de datos) ───────────────────────────────────────
+
+async function authPost(path, body){
+  const r = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: JSON.stringify(body || {}),
+  });
+  let j = {};
+  try { j = await r.json(); } catch (e) {}
+  if (!r.ok || !j.ok) throw new Error(j.error || ("http " + r.status));
+  return j;
+}
+
+async function loadMe(){
+  const r = await fetch("/auth/me", { credentials: "same-origin" });
+  try { me = await r.json(); } catch (e) { me = null; }
+  return me;
+}
+
+// Qué pestañas se ven: Aparatos solo en multiusuario, IA solo para el admin
+// (la configuración de IA es del operador y es una sola para todo el servidor).
+function applyMe(){
+  const navBtn = (t) => document.querySelector("nav button[data-tab='" + t + "']");
+  const isAdmin = !me || me.isAdmin !== false;
+  if (navBtn("ia")) navBtn("ia").style.display = isAdmin ? "" : "none";
+  if (navBtn("aparatos")) navBtn("aparatos").style.display = multi() ? "" : "none";
+  $("tokenBtn").style.display = multi() ? "none" : "";
+  $("who").textContent = multi() && me.email ? me.email : "";
+  const open = localStorage.getItem("boardTab") || "pizarra";
+  if ((open === "ia" && !isAdmin) || (open === "aparatos" && !multi())) showTab("pizarra");
+}
+
+async function loadDevices(){
+  const info = await loadMe();
+  if (!info || !info.ok) return;
+  const list = info.devices || [];
+  $("devices").innerHTML = list.map((d) => {
+    const when = d.lastSeen ? new Date(d.lastSeen).toLocaleString() : "todavía no se conectó";
+    return row(d.name || d.deviceId, d.deviceId + " · " + when,
+      btn("Renombrar", "dev-rename", { id: d.deviceId, name: d.name || "" }) +
+      btn("Desvincular", "dev-del", { id: d.deviceId }, "danger"));
+  }).join("") || empty("Todavía no hay ningún aparato vinculado");
 }
 
 function showTab(name){
@@ -433,6 +495,7 @@ function showTab(name){
   localStorage.setItem("boardTab", name);
   if (name === "log") loadLog();
   if (name === "calendario") loadCalendar().catch((e) => toast("No se pudo cargar el calendario: " + e.message));
+  if (name === "aparatos") loadDevices().catch((e) => toast(e.message));
   window.scrollTo(0, 0);
 }
 
@@ -450,26 +513,24 @@ async function refresh(){
   const d = await api("/api/hub?lang=es");
   const x = await api("/api/board/extra");
 
-  $("messages").innerHTML = d.messages.map((m) =>
-    row(m.from + ": " + m.text, "", btn("Leído", "done", { kind: "message", id: m.id }))).join("") || empty("Sin mensajes");
-
   $("reminders").innerHTML = d.reminders.map((r) =>
     row(r.title, [r.when || "sin hora", r.repeatText].filter(Boolean).join(" · "),
       btn("Hecho", "done", { kind: "reminder", id: r.id }) +
       btn("Editar", "remedit", { rem: JSON.stringify({ id: r.id, title: r.title, at: r.at, repeat: r.repeatSpec }) }) +
       btn("Borrar", "del", { kind: "reminder", id: r.id }))).join("") || empty("Sin recordatorios");
 
-  const names = x.lists.length ? x.lists : d.lists.map((l) => l.name);
+  // Son dos listas fijas (compras y tareas): no se crean ni se borran.
+  const names = x.lists;
   const sel = $("listSelect");
   const keep = sel.value;
   sel.innerHTML = names.map((n) => "<option>" + esc(n) + "</option>").join("");
   if (names.indexOf(keep) >= 0) sel.value = keep;
 
-  const byName = {};
-  d.lists.forEach((l) => { byName[l.name] = l.items; });
+  const byKey = {};
+  d.lists.forEach((l) => { byKey[l.key || l.name] = l.items; });
   $("listItems").innerHTML = names.map((n) => {
-    const items = byName[n] || [];
-    return "<h3>" + esc(n) + " · " + items.length + " " + btn("Borrar lista", "dellist", { name: n }) + "</h3><ul>" +
+    const items = byKey[n] || [];
+    return "<h3>" + esc(n) + " · " + items.length + "</h3><ul>" +
       (items.map((i) => row(i.text, "",
         btn("Hecho", "done", { kind: "item", id: i.id }) +
         btn("Borrar", "del", { kind: "item", id: i.id }))).join("") || empty("Vacía")) + "</ul>";
@@ -514,6 +575,8 @@ async function refresh(){
 }
 
 async function loadConfig(){
+  // La pestaña IA es del operador: si esta cuenta no es admin, ni se pide.
+  if (me && me.isAdmin === false) return;
   const r = await api("/api/board/config");
   cfg = r.config;
   const presets = cfg.presets || {};
@@ -822,6 +885,21 @@ document.addEventListener("click", async (ev) => {
       return;
     }
     if (act === "remedit") { fillReminder(JSON.parse(b.dataset.rem)); return; }
+    if (act === "dev-rename") {
+      const name = prompt("Nombre del aparato", b.dataset.name || "");
+      if (name === null) return;
+      await api("/api/account/device/rename", { deviceId: b.dataset.id, name });
+      await loadDevices();
+      toast("Listo");
+      return;
+    }
+    if (act === "dev-del") {
+      if (!confirm("El aparato va a dejar de ver los datos de esta cuenta. ¿Lo desvinculamos?")) return;
+      await api("/api/account/device/delete", { deviceId: b.dataset.id });
+      await loadDevices();
+      toast("Desvinculado");
+      return;
+    }
     if (act === "done") await api("/api/hub/done", { kind: b.dataset.kind, id: Number(b.dataset.id) });
     else if (act === "del") await api("/api/hub/edit", { kind: b.dataset.kind, id: Number(b.dataset.id), action: "delete" });
     else if (act === "delphoto") await api("/api/photos/delete", { id: b.dataset.id });
@@ -831,10 +909,7 @@ document.addEventListener("click", async (ev) => {
       toast(r.error ? r.name + ": " + r.error : r.name + ": " + r.count + " titulares");
       return;
     }
-    else if (act === "dellist") {
-      if (!confirm("¿Borrar la lista " + b.dataset.name + " con todo lo que tenga?")) return;
-      await api("/api/board/list/delete", { name: b.dataset.name });
-    } else if (act === "place") {
+    else if (act === "place") {
       const r = await api("/api/hub/location", JSON.parse(b.dataset.place));
       $("placeResults").innerHTML = "";
       toast(r.weather && r.weather.line ? "Lugar guardado · " + r.weather.line : "Lugar guardado");
@@ -903,8 +978,12 @@ async function loadLog(){
   } catch (e) { $("logBox").textContent = "No se pudo leer el log"; }
 }
 
-function start(){
-  wire("formMessage", "/api/board/message", (f) => ({ from: f.from.value, text: f.text.value }));
+async function start(){
+  // Lo PRIMERO: saber si este servidor tiene cuentas y si hay sesión. Si no, un
+  // 401 de cualquier pedido suelto (el texto de la repetición, por ejemplo)
+  // llegaba antes y mostraba la pantalla del token en un servidor con login.
+  await loadMe().catch(() => { me = null; });
+  applyMe();
   wireRepeat("rem", "remDate");
   wireRepeat("ev", "evDate");
   $("formReminder").addEventListener("submit", async (e) => {
@@ -930,7 +1009,6 @@ function start(){
     $("evTimeRow").style.display = $("evAllDay").checked ? "none" : "flex";
   });
   wire("formItem", "/api/board/item", (f) => ({ list: $("listSelect").value, text: f.text.value }));
-  wire("formList", "/api/board/list", (f) => ({ name: f.name.value }));
   wire("formNote", "/api/board/note", (f) => ({ text: f.text.value }));
   // El feed se prueba al agregarlo, así que este formulario cuenta cuántos
   // titulares trajo (o dice por qué no trajo ninguno) en vez del "Guardado" seco.
@@ -1010,10 +1088,74 @@ function start(){
     } catch (e) { toast("No se pudo: " + e.message); }
   });
 
+  $("loginForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    const email = $("loginEmail").value.trim();
+    const pass = $("loginPass").value;
+    const creating = $("login").dataset.mode === "register";
+    try {
+      await authPost(creating ? "/auth/register" : "/auth/login", { email, password: pass });
+      $("loginPass").value = "";
+      await enter();
+    } catch (e) { $("loginMsg").textContent = e.message; }
+  });
+  $("loginSwitch").addEventListener("click", () => {
+    const creating = $("login").dataset.mode === "register";
+    $("login").dataset.mode = creating ? "login" : "register";
+    $("loginTitle").textContent = creating ? "Entrar" : "Crear cuenta";
+    $("loginGo").textContent = creating ? "Entrar" : "Crear cuenta";
+    $("loginSwitch").textContent = creating ? "Crear una cuenta" : "Ya tengo cuenta";
+    $("loginMsg").textContent = "";
+  });
+  $("logout").addEventListener("click", async () => {
+    await fetch("/auth/logout", { method: "POST", credentials: "same-origin" });
+    location.reload();
+  });
+  $("pairForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      const r = await api("/api/account/pair", { code: $("pairCode").value.trim(), name: $("pairName").value.trim() });
+      $("pairCode").value = "";
+      $("pairName").value = "";
+      await loadDevices();
+      toast("Aparato vinculado: " + r.deviceId);
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+  $("passForm").addEventListener("submit", async (ev) => {
+    ev.preventDefault();
+    try {
+      await api("/api/account/password", { current: $("passOld").value, password: $("passNew").value });
+      $("passOld").value = "";
+      $("passNew").value = "";
+      toast("Contraseña cambiada");
+    } catch (e) { toast("No se pudo: " + e.message); }
+  });
+
   showTab(localStorage.getItem("boardTab") || "pizarra");
+  await enter();
+}
+
+// Decide qué pantalla mostrar: login (multiusuario), token (como siempre) o
+// directamente la aplicación. El estado de la sesión ya se cargó en start().
+async function enter(){
+  const info = me;
+  if (info && info.multi) {
+    // Con cuentas no hay token en el navegador: la sesión va en la cookie.
+    token = "";
+    localStorage.removeItem("deviceToken");
+    if (!info.ok) { showLogin(""); return; }
+    applyMe();
+    screen("app");
+    refresh().catch((e) => showLogin("No se pudo conectar: " + e.message));
+    return;
+  }
+  // Un solo usuario: exactamente como siempre, con el token del aparato.
+  applyMe();
   if (!token) { gate("Está en la web UI del aparato → Servidor"); return; }
+  screen("app");
   refresh().catch((e) => gate("No se pudo conectar: " + e.message));
 }
+
 start();
 
 // ── Viajes ───────────────────────────────────────────────────────────────────
@@ -1212,7 +1354,7 @@ const PAGE = `<!doctype html>
 <title>Pizarra</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23111'/%3E%3Crect x='8' y='9' width='16' height='2.5' fill='%23fff'/%3E%3Crect x='8' y='15' width='16' height='2.5' fill='%23fff'/%3E%3Crect x='8' y='21' width='10' height='2.5' fill='%23fff'/%3E%3C/svg%3E">
 <style>${STYLE}</style></head><body>
-<header><strong>Pizarra del aparato</strong><button id="tokenBtn">Token</button></header>
+<header><strong>Pizarra del aparato</strong><span class="muted" id="who"></span><button id="tokenBtn">Token</button></header>
 <nav id="nav" style="display:none">
   <button data-tab="pizarra">Pizarra</button>
   <button data-tab="calendario">Calendario</button>
@@ -1221,28 +1363,35 @@ const PAGE = `<!doctype html>
   <button data-tab="fotos">Fotos</button>
   <button data-tab="noticias">Noticias</button>
   <button data-tab="viajes">Viajes</button>
+  <button data-tab="aparatos" style="display:none">Aparatos</button>
   <button data-tab="ia">IA</button>
   <button data-tab="ajustes">Ajustes</button>
   <button data-tab="log">Log</button>
 </nav>
 
-<div id="gate">
+<div id="gate" style="display:none">
   <h2>Token del aparato</h2>
   <p class="muted" id="gateMsg"></p>
   <p><input type="text" id="tokenInput" placeholder="Token" style="width:80%"></p>
   <p><button id="tokenSave">Entrar</button></p>
 </div>
 
+<div id="login" style="display:none" data-mode="login">
+  <h2 id="loginTitle">Entrar</h2>
+  <p class="muted" id="loginMsg"></p>
+  <form id="loginForm">
+    <input type="email" id="loginEmail" placeholder="Correo" autocomplete="username" required>
+    <input type="password" id="loginPass" placeholder="Contraseña" autocomplete="current-password" required>
+    <button id="loginGo">Entrar</button>
+  </form>
+  <p><button class="ghost" id="loginSwitch">Crear una cuenta</button></p>
+  <p class="muted">La contraseña necesita al menos 8 caracteres. Después de entrar, vincula el aparato
+    con el código de 6 dígitos que muestra su pantalla.</p>
+</div>
+
 <main id="app" style="display:none">
 
 <section class="tab" id="tab-pizarra">
-  <div class="card"><h2>Mensaje para el hub</h2>
-    <form id="formMessage">
-      <input type="text" name="from" placeholder="De" style="max-width:110px">
-      <input type="text" name="text" placeholder="Mensaje" required><button>Dejar</button>
-    </form>
-    <ul id="messages"></ul>
-  </div>
   <div class="card"><h2 id="remFormTitle">Recordatorios</h2>
     <form id="formReminder">
       <input type="hidden" id="remId">
@@ -1294,16 +1443,18 @@ const PAGE = `<!doctype html>
 
 <section class="tab" id="tab-listas">
   <div class="card"><h2>Listas</h2>
+    <p class="muted">Hay dos listas y nada más: Compras y Tareas. Todo lo que dictes que no sea una compra
+      va a Tareas.</p>
     <form id="formItem"><select id="listSelect"></select><input type="text" name="text" placeholder="Ítem" required><button>Agregar</button></form>
-    <form id="formList"><input type="text" name="name" placeholder="Lista nueva" required><button>Crear lista</button></form>
     <div id="listItems"></div>
   </div>
 </section>
 
 <section class="tab" id="tab-notas">
   <div class="card"><h2>Notas</h2>
-    <form id="formNote"><textarea name="text" rows="3" placeholder="Nota" required></textarea><button>Guardar</button></form>
-    <p class="muted">En el aparato también se dictan: Atrás dos veces y decí "nota: ...".</p>
+    <form id="formNote"><textarea name="text" rows="8" placeholder="Nota" required></textarea><button>Guardar</button></form>
+    <p class="muted">Las notas pueden ser largas (hasta 20.000 caracteres). En el aparato también se dictan:
+      presiona Atrás dos veces y di "nota: ...".</p>
     <ul id="notes"></ul>
   </div>
 </section>
@@ -1375,6 +1526,29 @@ const PAGE = `<!doctype html>
   <div class="card" id="tripPackCard" style="display:none"><h2>Para llevar</h2>
     <form id="formPacking"><input type="text" name="text" placeholder="Cosa" required><button>Agregar</button></form>
     <ul id="tripPacking"></ul>
+  </div>
+</section>
+
+<section class="tab" id="tab-aparatos">
+  <div class="card"><h2>Vincular un aparato</h2>
+    <p class="muted">En el aparato entra a Ajustes &rarr; Vincular: muestra un código de 6 dígitos que dura
+      10 minutos. Escríbelo aquí y el aparato pasa a esta cuenta. Si estaba en otra, se mueve a esta.</p>
+    <form id="pairForm">
+      <input type="text" id="pairCode" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" placeholder="482913" style="max-width:120px" required>
+      <input type="text" id="pairName" placeholder="Nombre (el lector de la cocina)" maxlength="60">
+      <button>Vincular</button>
+    </form>
+  </div>
+  <div class="card"><h2>Mis aparatos</h2>
+    <ul id="devices"></ul>
+  </div>
+  <div class="card"><h2>Mi cuenta</h2>
+    <form id="passForm">
+      <input type="password" id="passOld" placeholder="Contraseña actual" autocomplete="current-password" required>
+      <input type="password" id="passNew" placeholder="Contraseña nueva" autocomplete="new-password" required>
+      <button>Cambiar contraseña</button>
+    </form>
+    <p><button class="ghost" id="logout">Salir</button></p>
   </div>
 </section>
 

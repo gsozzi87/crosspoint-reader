@@ -11,6 +11,7 @@
 #include "cardIcons.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 // Valores de la carta, en el orden del mazo (el 0 es el as, el 12 la K). Son
@@ -492,7 +493,7 @@ void BlackjackActivity::drawActions(const int top) const {
     const int y = top + i * ACTION_ROW_H;
     const bool selected = i == cursor;
     if (selected) {
-      renderer.fillRoundedRect(SIDE, y, width, ACTION_ROW_H - 10, 12, Color::Black);
+      drawSelectionRow(renderer, SIDE, y, width, ACTION_ROW_H - 10, 12);
     } else {
       renderer.drawRoundedRect(SIDE, y, width, ACTION_ROW_H - 10, 2, 12, true);
     }
@@ -531,7 +532,7 @@ void BlackjackActivity::drawActions(const int top) const {
     }
     const std::string shown = renderer.truncatedText(UI_12_FONT_ID, label, width - 24, EpdFontFamily::BOLD);
     const int textWidth = renderer.getTextWidth(UI_12_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-    renderer.drawText(UI_12_FONT_ID, SIDE + (width - textWidth) / 2, y + 11, shown.c_str(), !selected,
+    renderer.drawText(UI_12_FONT_ID, SIDE + (width - textWidth) / 2, y + 11, shown.c_str(), SELECTION_INK,
                       EpdFontFamily::BOLD);
   }
 }

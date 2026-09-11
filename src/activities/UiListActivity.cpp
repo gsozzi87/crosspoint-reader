@@ -24,8 +24,18 @@ void UiListActivity::onEnter() {
   requestUpdate();
 }
 
+void UiListActivity::applyStandardContentMargin(UiScreen& screen) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int16_t top =
+      static_cast<int16_t>(metrics.topPadding + (headerTitle() ? metrics.headerHeight : 0));
+  screen.setContentMarginFromScreen(
+      fui::Insets{top, 0, static_cast<int16_t>(metrics.buttonHintsHeight + metrics.verticalSpacing), 0});
+}
+
 void UiListActivity::screenTrampoline(UiScreen& screen, void* user) {
-  static_cast<UiListActivity*>(user)->buildScreen(screen);
+  auto* self = static_cast<UiListActivity*>(user);
+  self->applyStandardContentMargin(screen);
+  self->buildScreen(screen);
 }
 
 void UiListActivity::rowActionTrampoline(const fui::ActionEvent& event, void* user) {

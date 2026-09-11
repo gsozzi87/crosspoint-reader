@@ -26,15 +26,14 @@
 //   POST /api/trip/packing             -> {tripId, id?, text?, done?, action?}
 //   POST /api/trip/attach              -> colgar/descolgar un adjunto de un ítem o del viaje
 import { Hono } from "hono";
-import { readJsonSafe, serialize, writeAtomicNow } from "./fsjson";
+import { mutateDoc, readDoc } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
 import { readBody } from "./net";
 import { normalizeLang, type Lang } from "./lang";
 import { deleteAttachmentsOfTrip, listAttachments, type Attachment } from "./attachments";
 
-const FILE = process.env.TRIPS_FILE ?? "/data/trips.json";
 // El calendario es de `calendar.ts`: acá solo se espeja lo del viaje adentro de
 // su misma cola de escritura (ver `syncCalendar`).
-const CAL_FILE = process.env.CALENDAR_FILE ?? "/data/calendar.json";
 
 export type ItemKind = "flight" | "train" | "hotel" | "ticket" | "meal" | "visit" | "other";
 export const KINDS: ItemKind[] = ["flight", "train", "hotel", "ticket", "meal", "visit", "other"];
@@ -77,33 +76,33 @@ const MAX_TRIPS = 40;
 // `serialize()` es lo que evita que dos pedidos a la vez se pisen (uno lee,
 // el otro lee lo mismo, los dos escriben y el último borra lo del primero).
 // `writeJsonAtomic` sola no alcanza: encola la escritura, no la lectura.
-function update<T>(fn: (store: Store) => T | Promise<T>): Promise<T> {
-  return serialize(FILE, async () => {
-    const store = await readJsonSafe<Store>(FILE, structuredClone(EMPTY));
-    store.trips ??= [];
-    const out = await fn(store);
-    await writeAtomicNow(FILE, JSON.stringify(store, null, 2));
-    return out;
-  });
+function shapeTrips(raw: unknown): Store {
+  const store = (raw && typeof raw === "object" ? raw : structuredClone(EMPTY)) as Store;
+  store.version ??= 1;
+  store.trips ??= [];
+  return store;
 }
 
-export async function loadTrips(): Promise<Trip[]> {
-  const store = await readJsonSafe<Store>(FILE, structuredClone(EMPTY));
-  return store.trips ?? [];
+function update<T>(accountId: number, fn: (store: Store) => T | Promise<T>): Promise<T> {
+  return mutateDoc(accountId, "trips", shapeTrips, fn);
+}
+
+export async function loadTrips(accountId: number): Promise<Trip[]> {
+  return shapeTrips(await readDoc<unknown>(accountId, "trips", null)).trips;
 }
 
 // Un viaje por id. Sin id devuelve el primero (que es como pide el aparato
 // cuando todavía no eligió ninguno). Lo usan las rutas de acá y `suggest.ts`.
-export async function getTrip(id?: string): Promise<Trip | null> {
-  const trips = await loadTrips();
+export async function getTrip(accountId: number, id?: string): Promise<Trip | null> {
+  const trips = await loadTrips(accountId);
   if (!id) return trips[0] ?? null;
   return trips.find((t) => t.id === id) ?? null;
 }
 
 // El viaje que contiene esa fecha (para las sugerencias del día: si hoy estoy
 // de viaje, lo del día sale del viaje y no de la agenda de casa).
-export async function tripOnDate(date: string): Promise<Trip | null> {
-  const trips = await loadTrips();
+export async function tripOnDate(accountId: number, date: string): Promise<Trip | null> {
+  const trips = await loadTrips(accountId);
   return trips.find((t) => t.start <= date && date <= t.end) ?? null;
 }
 
@@ -197,8 +196,8 @@ export type TripEvent = {
 // suma a los suyos: no se guarda nada duplicado, la fuente sigue siendo el viaje.
 // Un ítem con hora dura una hora por default (lo que ocupa en la grilla); uno
 // sin hora es de todo el día.
-export async function tripCalendarEvents(from?: string, to?: string): Promise<TripEvent[]> {
-  const trips = await loadTrips();
+export async function tripCalendarEvents(accountId: number, from?: string, to?: string): Promise<TripEvent[]> {
+  const trips = await loadTrips(accountId);
   const out: TripEvent[] = [];
   for (const trip of trips) {
     for (const day of trip.days) {
@@ -243,10 +242,15 @@ function addHour(hhmm: string): string {
 // pierde eventos.
 type CalRaw = { version?: number; events?: unknown[] };
 
-export async function syncCalendar(tripId: string): Promise<number> {
-  const trip = (await loadTrips()).find((t) => t.id === tripId) ?? null;
-  return serialize(CAL_FILE, async () => {
-    const cal = await readJsonSafe<CalRaw>(CAL_FILE, { version: 1, events: [] });
+export async function syncCalendar(accountId: number, tripId: string): Promise<number> {
+  const trip = (await loadTrips(accountId)).find((t) => t.id === tripId) ?? null;
+  const shapeCal = (raw: unknown): CalRaw => {
+    const cal = (raw && typeof raw === "object" ? raw : {}) as CalRaw;
+    cal.version ??= 1;
+    if (!Array.isArray(cal.events)) cal.events = [];
+    return cal;
+  };
+  return mutateDoc(accountId, "calendar", shapeCal, (cal) => {
     const all = Array.isArray(cal.events) ? cal.events : [];
     const mine = new Map<string, Record<string, unknown>>();
     const rest: unknown[] = [];
@@ -290,7 +294,8 @@ export async function syncCalendar(tripId: string): Promise<number> {
     }
     out.sort((a, b) =>
       String((a as Record<string, unknown> | null)?.start ?? "").localeCompare(String((b as Record<string, unknown> | null)?.start ?? "")));
-    await writeAtomicNow(CAL_FILE, JSON.stringify({ version: 1, events: out }, null, 2));
+    cal.version = 1;
+    cal.events = out;
     return n;
   });
 }
@@ -311,8 +316,8 @@ function slimAttachment(a: Attachment) {
   };
 }
 
-async function tripView(trip: Trip, lang: Lang) {
-  const all = await listAttachments();
+async function tripView(accountId: number, trip: Trip, lang: Lang) {
+  const all = await listAttachments(accountId);
   const byId = new Map(all.map((a) => [a.id, a]));
   const inItems = new Set<string>();
   for (const d of trip.days) for (const i of d.items) for (const id of i.attachmentIds) inItems.add(id);
@@ -374,12 +379,12 @@ function today(): string {
 
 // ---------------------------------------------------------------- rutas
 
-export const tripsApi = new Hono();   // GET /api/trips
-export const tripApi = new Hono();    // /api/trip*
+export const tripsApi = new Hono<AppEnv>();   // GET /api/trips
+export const tripApi = new Hono<AppEnv>();    // /api/trip*
 
 tripsApi.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
-  const trips = await loadTrips();
+  const trips = await loadTrips(accountOf(c));
   const now = today();
   const rows = trips
     .map((t) => ({
@@ -402,10 +407,10 @@ tripsApi.get("/", async (c) => {
 tripApi.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const id = (c.req.query("id") ?? "").toString();
-  const trips = await loadTrips();
+  const trips = await loadTrips(accountOf(c));
   const trip = trips.find((t) => t.id === id) ?? (id ? null : trips[0]);
   if (!trip) return c.json({ ok: false, error: "not found" }, 404);
-  return c.json({ ok: true, today: today(), trip: await tripView(trip, lang) });
+  return c.json({ ok: true, today: today(), trip: await tripView(accountOf(c), trip, lang) });
 });
 
 // Crear o editar. Sin `id` crea; con `id` cambia nombre, lugar y fechas y
@@ -420,7 +425,7 @@ tripApi.post("/", async (c) => {
   if (daysBetween(start, end) < 0) return c.json({ ok: false, error: "la vuelta es antes de la ida" }, 400);
   if (daysBetween(start, end) > MAX_DAYS) return c.json({ ok: false, error: `el viaje no puede pasar de ${MAX_DAYS} días` }, 400);
 
-  const res = await update((store) => {
+  const res = await update(accountOf(c), (store) => {
     const id = (b.id ?? "").toString();
     let trip = id ? store.trips.find((t) => t.id === id) : undefined;
     if (id && !trip) return { error: "not found" as const };
@@ -439,23 +444,23 @@ tripApi.post("/", async (c) => {
     return { trip };
   });
   if ("error" in res) return c.json({ ok: false, error: res.error }, res.error === "not found" ? 404 : 400);
-  await syncCalendar(res.trip.id);
+  await syncCalendar(accountOf(c), res.trip.id);
   return c.json({ ok: true, id: res.trip.id });
 });
 
 tripApi.post("/delete", async (c) => {
   const b = await readBody(c);
   const id = (b.id ?? "").toString();
-  const gone = await update((store) => {
+  const gone = await update(accountOf(c), (store) => {
     const before = store.trips.length;
     store.trips = store.trips.filter((t) => t.id !== id);
     return store.trips.length !== before;
   });
   if (!gone) return c.json({ ok: false, error: "not found" }, 404);
-  await syncCalendar(id);  // el viaje ya no está: esto le saca los eventos al calendario
+  await syncCalendar(accountOf(c), id);  // el viaje ya no está: esto le saca los eventos al calendario
   // Los bitmaps de los adjuntos son 96 KB por página: si no se borran acá,
   // quedan ocupando el volumen sin que nadie los pueda ver nunca más.
-  const dropped = await deleteAttachmentsOfTrip(id);
+  const dropped = await deleteAttachmentsOfTrip(accountOf(c), id);
   return c.json({ ok: true, attachments: dropped });
 });
 
@@ -464,7 +469,7 @@ tripApi.post("/day", async (c) => {
   const b = await readBody(c);
   const date = (b.date ?? "").toString();
   if (!isDate(date)) return c.json({ ok: false, error: "fecha inválida" }, 400);
-  const res = await update((store) => {
+  const res = await update(accountOf(c), (store) => {
     const trip = store.trips.find((t) => t.id === (b.tripId ?? "").toString());
     if (!trip) return false;
     const day = trip.days.find((d) => d.date === date);
@@ -489,7 +494,7 @@ tripApi.post("/day/item", async (c) => {
   if (at && !TIME_RE.test(at)) return c.json({ ok: false, error: "la hora va como HH:MM" }, 400);
   const kind: ItemKind = KINDS.includes(b.kind) ? b.kind : "other";
 
-  const res = await update((store) => {
+  const res = await update(accountOf(c), (store) => {
     const trip = store.trips.find((t) => t.id === (b.tripId ?? "").toString());
     if (!trip) return { error: "not found" as const };
     let day = trip.days.find((d) => d.date === date);
@@ -524,7 +529,7 @@ tripApi.post("/day/item", async (c) => {
     return { id: item.id };
   });
   if ("error" in res) return c.json({ ok: false, error: res.error }, 404);
-  await syncCalendar((b.tripId ?? "").toString());
+  await syncCalendar(accountOf(c), (b.tripId ?? "").toString());
   return c.json({ ok: true, id: res.id });
 });
 
@@ -532,7 +537,7 @@ tripApi.post("/day/item/delete", async (c) => {
   const b = await readBody(c);
   const date = (b.date ?? "").toString();
   const id = (b.id ?? "").toString();
-  const gone = await update((store) => {
+  const gone = await update(accountOf(c), (store) => {
     const trip = store.trips.find((t) => t.id === (b.tripId ?? "").toString());
     const day = trip?.days.find((d) => d.date === date);
     if (!day) return false;
@@ -540,7 +545,7 @@ tripApi.post("/day/item/delete", async (c) => {
     day.items = day.items.filter((i) => i.id !== id);
     return day.items.length !== before;
   });
-  if (gone) await syncCalendar((b.tripId ?? "").toString());
+  if (gone) await syncCalendar(accountOf(c), (b.tripId ?? "").toString());
   return gone ? c.json({ ok: true }) : c.json({ ok: false, error: "not found" }, 404);
 });
 
@@ -549,7 +554,7 @@ tripApi.post("/day/item/delete", async (c) => {
 tripApi.post("/packing", async (c) => {
   const b = await readBody(c);
   const action = (b.action ?? "").toString();
-  const res = await update((store) => {
+  const res = await update(accountOf(c), (store) => {
     const trip = store.trips.find((t) => t.id === (b.tripId ?? "").toString());
     if (!trip) return { error: "not found" as const };
     const id = (b.id ?? "").toString();
@@ -585,7 +590,7 @@ tripApi.post("/attach", async (c) => {
   const attachmentId = (b.attachmentId ?? "").toString().replace(/[^a-z0-9]/gi, "");
   const remove = b.action === "remove";
   if (!attachmentId) return c.json({ ok: false, error: "falta el adjunto" }, 400);
-  const res = await update((store) => {
+  const res = await update(accountOf(c), (store) => {
     const trip = store.trips.find((t) => t.id === (b.tripId ?? "").toString());
     if (!trip) return false;
     const date = (b.date ?? "").toString();
@@ -610,8 +615,8 @@ tripApi.post("/attach", async (c) => {
 tripApi.post("/sync", async (c) => {
   const b = await readBody(c);
   const id = (b.id ?? "").toString();
-  const ids = id ? [id] : (await loadTrips()).map((t) => t.id);
+  const ids = id ? [id] : (await loadTrips(accountOf(c))).map((t) => t.id);
   let n = 0;
-  for (const t of ids) n += await syncCalendar(t);
+  for (const t of ids) n += await syncCalendar(accountOf(c), t);
   return c.json({ ok: true, events: n });
 });

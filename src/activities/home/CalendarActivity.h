@@ -7,7 +7,9 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
+#include "voice/VoiceRecorder.h"
 
 // "Mi día": el mosaico del hub que junta TODO lo que tiene fecha. Adentro hay
 // tres pantallas, elegidas en un menú de tres filas:
@@ -34,6 +36,15 @@
 //          viene, deja el mes entero disponible sin WiFi.
 //   GET /api/calendar/day?date=YYYY-MM-DD&lang=xx
 //       -> {ok, items:[{at, title, place, note}]}
+//   POST /api/calendar/dictate   {text, date, lang}
+//       -> {ok, added:[{id, start, title, allDay}], reply}
+//          El usuario DICTA el día entero ("a las 8 gimnasio, a las 9 reunión
+//          con Ana") y el servidor lo parte en actividades. Necesita respuesta,
+//          así que va con WiFi arriba, nunca por la cola.
+//   POST /api/calendar/event         {id, ...campos...}  edita en su lugar
+//   POST /api/calendar/event/delete  {id}
+//          Los dos salen por `postOrQueue`: el cambio se ve en el acto y el
+//          POST espera en la cola si no hay WiFi.
 //   GET /api/suggest/day?date=YYYY-MM-DD&lang=xx[&refresh=1]
 //       -> {ok, at, ageS, stale, lines:[...]}   sugerencias del día (server/src/suggest.ts)
 //          Cuestan plata (el servidor busca en internet), así que NUNCA se piden
@@ -48,7 +59,10 @@ class CalendarActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return state == CONNECTING || state == LOADING; }
+  bool skipLoopDelay() override { return state == DICTATING; }
+  bool preventAutoSleep() override {
+    return state == CONNECTING || state == LOADING || state == DICTATING;
+  }
 
   // Fechas, sin depender de la libc: las usa también la edición de
   // recordatorios de AgendaActivity.
@@ -68,9 +82,28 @@ class CalendarActivity final : public Activity {
   // "2026-09-14"
   static std::string isoDate(int year, int month, int day);
 
+  // Una actividad del día. Además de lo que se pinta, lleva lo que hace falta
+  // para volver a mandarla entera en POST /api/calendar/event: ese endpoint
+  // REEMPLAZA el evento, así que lo que no se le manda (lugar, nota, fin,
+  // repetición) se borraría del servidor.
+  struct Item {
+    int id = 0;
+    std::string kind;  // "event" | "reminder" | "trip"; solo "event" se edita acá
+    std::string at;    // "10:30", vacío = todo el día
+    std::string title;
+    std::string place;
+    std::string note;
+    std::string endTime;   // "HH:MM" de fin, vacío si no tiene
+    std::string startAt;   // arranque de la SERIE ("2026-09-15T10:30"): con eso se edita
+    std::string endStamp;  // fin de la serie, mismo formato
+    std::string repeatRaw;  // el objeto `repeat` crudo, tal como vino
+  };
+
  private:
-  enum State { HOME, TODAY, MONTH, DAY, CONNECTING, LOADING, FAILED };
-  enum Pending { NONE, MONTH_FETCH, DAY_FETCH, SUGGEST_FETCH };
+  enum State { HOME, TODAY, MONTH, DAY, DICTATING, TIME_EDIT, CONNECTING, LOADING, FAILED };
+  enum Pending { NONE, MONTH_FETCH, DAY_FETCH, SUGGEST_FETCH, DICTATE_SEND, TITLE_SEND };
+  // Qué se está grabando: el día entero o el título de una actividad.
+  enum RecordMode { REC_DAY, REC_TITLE };
   // Filas del menú de entrada.
   enum HomeRow { ROW_TODAY, ROW_CALENDAR, ROW_TRIPS, HOME_ROWS };
   // Un renglón de la pantalla Hoy: el texto y con qué fuente se dibuja.
@@ -83,11 +116,6 @@ class CalendarActivity final : public Activity {
     int day = 0;  // 1..31
     int count = 0;
     std::string firstTitle;
-  };
-  struct Item {
-    std::string at;  // "10:30", vacío = todo el día
-    std::string title;
-    std::string place;
   };
 
   State state = HOME;
@@ -102,7 +130,6 @@ class CalendarActivity final : public Activity {
   std::string dayDate;  // "YYYY-MM-DD" de lo que hay en dayItems
   int dayIndex = 0;
   int itemsPerPage = 1;
-  int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
   bool wifiActivated = false;
   bool monthCached = false;  // el mes en pantalla salió de la caché o del servidor
@@ -133,6 +160,38 @@ class CalendarActivity final : public Activity {
   void moveDay(int delta);
   void openDay();
   void goToMonth(int year, int month, int day);
+
+  // --- Dictar, editar y borrar las actividades del día ---------------------
+  VoiceRecorder recorder{45};  // 45 s: lo que lleva enumerar una jornada entera
+  RecordMode recordMode = REC_DAY;
+  State dictateReturn = DAY;  // a qué pantalla se vuelve cuando termina de grabar
+  Pending afterWifi = NONE;  // qué se estaba por hacer cuando se pidió el WiFi
+  std::string dayNotice;     // lo que contestó el servidor, o por qué no se pudo
+  std::string transcribed;   // lo que se entendió de la última grabación
+  OptionPopup menu;
+  bool menuOpen = false;
+  std::vector<std::string> menuOptions;
+  int menuItem = -1;  // índice en dayItems de la actividad del menú
+  int editHour = -1;  // < 0 = sin hora (queda como algo del día)
+  int editMinute = 0;
+  bool editMinuteField = false;  // la palanca está sobre los minutos
+
+  void startDictation(RecordMode mode);
+  void stopDictation();
+  void performDictate();
+  void performTitle();
+  void openItemMenu();
+  void onMenuPick(int index);
+  void openTimeEditor();
+  void timeStep(int delta);
+  void confirmTimeEditor();
+  void deleteMenuItem();
+  void sendEventEdit(const Item& it) const;
+  void saveDayToCache() const;
+  void syncSummaryCount();
+  void sortDayItems();
+  void renderDictating();
+  void renderTimeEditor();
 
   bool loadMonthFromCache();
   bool loadDayFromCache(const std::string& date);

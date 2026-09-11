@@ -2,6 +2,7 @@
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <BoardConfig.h>
+#include <FreeInkUIIcon.h>  // bitmapFromIcon: la pestaña del resalte va como marcador de la lista
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <Logging.h>
@@ -40,8 +41,26 @@
 #include "components/UIThemeTokens.h"
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
+#include "music/MusicPlayer.h"
+#if FREEINK_CAP_USB_MSC
+#include "activities/network/UsbDriveActivity.h"
+#include "DevicePairActivity.h"
+#include <HalTiltSensor.h>
+
+#include "TaskStatsActivity.h"
+#include "MotionActivity.h"
+#endif
 
 namespace fui = freeink::ui;
+
+namespace {
+// La pestaña negra de 5 px del resalte (components/Selection.h) en formato de
+// icono del SDK, para que la lista de fui la dibuje como marcador de la fila
+// elegida: 1 bpp, bit 0 = tinta, asi que la fila entera de ceros es tinta y
+// solo se usan los primeros 5 bits de cada byte.
+constexpr uint8_t kSelectionTabBits[26] = {0};
+constexpr freeink::Icon kSelectionTab = {5, 26, 13, kSelectionTabBits};
+}  // namespace
 
 const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
                                                               StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
@@ -126,6 +145,12 @@ void SettingsActivity::rebuildSettingsLists() {
   // tarjetas, sonidos, la Biblia entera) vive en el servidor y se baja acá, o
   // solo, detrás de la actualización de firmware.
   if (isWs397) {
+#if FREEINK_CAP_USB_MSC
+    // La tarjeta como disco por USB: es la forma de cargar libros y MP3 sin
+    // sacarla del aparato, así que va acá arriba y no escondida en Transferir
+    // archivos.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_USB_DRIVE, SettingAction::UsbDrive));
+#endif
     systemSettings.push_back(SettingInfo::Action(StrId::STR_ASSETS_MENU, SettingAction::DownloadAssets));
   }
   // Actualizar por SD: en la ws397 el firmware entra por OTA desde el servidor
@@ -146,7 +171,27 @@ void SettingsActivity::rebuildSettingsLists() {
     // "Prueba de servidor" era un diagnóstico de desarrollo: lo mismo lo dice
     // Sincronizar hub, que además sirve para algo. Queda ServerTestActivity en
     // el código por si hay que volver a colgarla de algún lado.
+    // Vincular con la cuenta de la web: el aparato muestra un código de seis
+    // dígitos y la persona lo escribe desde el teléfono, ya con su sesión
+    // iniciada. Es la única forma de asociarlo sin teclado.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_PAIR_TITLE, SettingAction::DevicePair));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
+    // Gestos del IMU: encender o apagar, ver qué lee el sensor y calibrar cómo
+    // está montado (sin eso, "inclinar a la derecha" puede ser cualquier eje).
+    if (halTiltSensor.isAvailable()) {
+      systemSettings.push_back(SettingInfo::DynamicEnum(
+                                   StrId::STR_MOTION_GESTURES, {StrId::STR_MOTION_OFF, StrId::STR_MOTION_ON},
+                                   []() -> uint8_t { return HUB_STORE.motionGestures ? 1 : 0; },
+                                   [](uint8_t value) {
+                                     HUB_STORE.motionGestures = value != 0;
+                                     HUB_STORE.saveToFile();
+                                   })
+                                   .withSwitch());
+      systemSettings.push_back(SettingInfo::Action(StrId::STR_MOTION_TITLE, SettingAction::Motion));
+    }
+    // La contracara de src/TaskConfig.h: acá se ve cuánto stack usó de verdad
+    // cada tarea contra lo que tiene declarado, y cómo va el heap interno.
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_SETTING_MEMORY, SettingAction::Memory));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
     // Fondo de pantalla: elegir qué foto queda pintada cuando el aparato se suspende.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_WALLPAPER, SettingAction::Wallpaper));
@@ -157,6 +202,12 @@ void SettingsActivity::rebuildSettingsLists() {
           HUB_STORE.speakMode = v;
           HUB_STORE.saveToFile();
         }));
+    // El volumen del aparato (música, voz de Piper y avisos son uno solo). Se
+    // pidió tenerlo también acá: hasta 1.5.43 sólo se podía tocar desde la
+    // música o desde la web, y nadie lo encontraba.
+    systemSettings.push_back(SettingInfo::DynamicValue(
+        StrId::STR_MUSIC_VOLUME, {0, 100, 10}, [] { return static_cast<uint8_t>(MUSIC.volume()); },
+        [](uint8_t v) { MUSIC.setVolume(v); }));
     // Sonidos de la interfaz: clics cortos al navegar, elegir, volver y pasar
     // página. De fábrica apagados; al elegir un nivel suena el clic para que se
     // escuche en el momento cuánto es "suave" y cuánto "normal".
@@ -242,6 +293,10 @@ void SettingsActivity::rebuildRowItems() {
     fui::ListItem item;
     item.label = I18N.get(settings[i].nameId);
     item.actionValue = static_cast<int16_t>(i);
+    // Los si/no van con interruptor dibujado en vez de la palabra "Activado":
+    // se reconoce del telefono sin leerlo. Estructural (que la fila SEA un
+    // interruptor); el estado lo pone buildScreen en cada pasada.
+    item.toggle = settings[i].type == SettingType::TOGGLE || settings[i].switchStyle;
     rowItems_.push_back(item);
   }
 }
@@ -387,6 +442,12 @@ void SettingsActivity::toggleCurrentSetting() {
       return;
     }
     setting.valueSetter((cur + 1) % totalValues);
+  } else if (setting.type == SettingType::VALUE && setting.valuePtr == nullptr && setting.valueGetter) {
+    // Valor dinámico (el volumen): mismo ciclo min..max, pero leído y escrito
+    // por los lambdas en vez de por un puntero a CrossPointSettings.
+    const int current = setting.valueGetter();
+    const int next = current + setting.valueRange.step;
+    setting.valueSetter(next > setting.valueRange.max ? setting.valueRange.min : static_cast<uint8_t>(next));
   } else if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     const int8_t currentValue = SETTINGS.*(setting.valuePtr);
     if (currentValue + setting.valueRange.step > setting.valueRange.max) {
@@ -421,6 +482,20 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::ServerTest:
         startActivityForResult(std::make_unique<ServerTestActivity>(renderer, mappedInput), resultHandler);
+        break;
+#if FREEINK_CAP_USB_MSC
+      case SettingAction::UsbDrive:
+        startActivityForResult(std::make_unique<UsbDriveActivity>(renderer, mappedInput), resultHandler);
+        break;
+#endif
+      case SettingAction::DevicePair:
+        startActivityForResult(std::make_unique<DevicePairActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Memory:
+        startActivityForResult(std::make_unique<TaskStatsActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::Motion:
+        startActivityForResult(std::make_unique<MotionActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::HubSync:
         startActivityForResult(std::make_unique<HubSyncActivity>(renderer, mappedInput), resultHandler);
@@ -526,8 +601,18 @@ void SettingsActivity::openSleepTimeoutPicker() {
       });
 }
 
+// Un ajuste que abre OTRA pantalla lleva galon a la derecha; el que cambia un
+// valor ahi mismo muestra el valor. Es la unica diferencia entre las dos
+// clases de fila y hasta 1.5.47 no se veia en ningun lado.
+const char* const SettingsActivity::chevronGlyph = "\xE2\x80\xBA";  // U+203A
+
 std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
+  if (setting.type == SettingType::ACTION) {
+    return chevronGlyph;
+  }
   if (setting.type == SettingType::TOGGLE && setting.valuePtr != nullptr) {
+    // La fila lo dibuja como interruptor; el texto queda de respaldo para el
+    // caso raro de un TOGGLE sin puntero, que cae abajo en "".
     return SETTINGS.*(setting.valuePtr) ? tr(STR_STATE_ON) : tr(STR_STATE_OFF);
   }
   if (setting.type == SettingType::ENUM && setting.valuePtr != nullptr) {
@@ -546,6 +631,9 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
       return I18N.get(setting.enumValues[value]);
     }
     return "";
+  }
+  if (setting.type == SettingType::VALUE && setting.valuePtr == nullptr && setting.valueGetter) {
+    return std::to_string(setting.valueGetter()) + " %";
   }
   if (setting.type == SettingType::VALUE && setting.valuePtr != nullptr) {
     if (setting.nameId == StrId::STR_TIME_TO_SLEEP) {
@@ -581,6 +669,14 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   // render.
   const auto& settings = *currentSettings;
   for (size_t i = 0; i < settings.size(); i++) {
+    if (rowItems_[i].toggle) {
+      rowItems_[i].toggleChecked = settings[i].valuePtr != nullptr ? SETTINGS.*(settings[i].valuePtr) != 0
+                                   : settings[i].valueGetter    ? settings[i].valueGetter() != 0
+                                                                : false;
+      rowValues_[i].clear();
+      rowItems_[i].value = nullptr;
+      continue;
+    }
     rowValues_[i] = settingValueText(settings[i]);
     rowItems_[i].value = rowValues_[i].empty() ? nullptr : rowValues_[i].c_str();
   }
@@ -591,13 +687,44 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.valueInset = 8;               // air between the value and the row edge
-  // Titles match the value's font size (smallText) so both sides of a row
-  // read as one unit; labels that still don't fit wrap onto a second line.
-  // maxLines=2 also marks the style explicitly set (an all-default smallText
-  // fails textStyleUnset and the list would substitute bodyText back); the
-  // common fits-on-one-line case takes the renderer's fast path anyway.
-  props.labelText = screen.theme().smallText;
+  // Jerarquia dentro de la fila: el NOMBRE en el cuerpo de la lista (UI_12) y
+  // el VALOR mas chico a la derecha (UI_10), en el mismo renglon. Hasta 1.5.47
+  // los dos iban en UI_10 y la fila no tenia jerarquia ninguna. maxLines=2
+  // ademas marca el estilo como puesto a mano (un smallText todo por omision
+  // falla textStyleUnset y la lista volveria a poner bodyText).
+  props.labelText = screen.theme().bodyText;
   props.labelText.maxLines = 2;
+  props.valueText = screen.theme().smallText;
+  // El texto de la fila arranca despues de la pestaña de 5 px del resalte.
+  props.sidePadding = 16;
+  // Interruptor de 36x20: marco redondeado y perilla llena a un lado, como el
+  // del telefono. Encendido la lista rellena la via (fill negro + perilla
+  // blanca): son 720 px de tinta, del orden de un icono de 24 px, que es lo
+  // que la regla del negro macizo deja pasar, y es la unica forma de que se
+  // vea encendido de un vistazo sin leer la palabra.
+  props.toggleWidth = 36;
+  props.toggleHeight = 20;
+  props.toggleRadius = 10;
+  props.toggleKnobRadius = 7;
+  props.toggleKnobInset = 3;
+  props.toggleBorderWidth = 1;
+  // El resalte: NADA de pastilla tramada debajo del texto (es lo que hacia el
+  // estilo LightPill del tema y dejaba la fila elegida como la menos legible
+  // de la pantalla). Centro blanco, marco de 2 px y la pestaña negra de 5 px
+  // de Selection.h llevada a la lista de fui como bitmap de marcador.
+  fui::StyleSet rows = screen.theme().listRow.unset() ? fui::defaultListRowStyles() : screen.theme().listRow;
+  rows.selected = rows.normal;
+  rows.selected.background = fui::Paint::solid(fui::Color::White);
+  rows.selected.foreground = fui::Paint::solid(fui::Color::Black);
+  rows.selected.border = fui::Paint::solid(fui::Color::Black);
+  rows.selected.borderWidth = 2;
+  rows.focused = rows.selected;
+  rows.active = rows.selected;
+  props.rowStyles = rows;
+  props.selectionMarker = fui::SelectionMarker::Bitmap;
+  props.markerBitmap = fui::bitmapFromIcon(kSelectionTab);
+  props.markerInset = 4;
+  props.markerPaint = fui::Paint::solid(fui::Color::Black);
   syncTabListViewport(screen, props);
 
   // Una etiqueta que envuelve en dos renglones hace crecer SU fila, así que en
@@ -647,10 +774,18 @@ void SettingsActivity::render(RenderLock&&) {
   }
 
   const int ring = ringPos();
-  const auto confirmLabel =
-      (ring == 0) ? I18N.get(categoryNames[(selectedCategoryIndex + 1) % categoryCount])
-                  : (ring > 0 && (*currentSettings)[ring - 1].nameId == StrId::STR_TIME_TO_SLEEP ? tr(STR_SELECT)
-                                                                                                 : tr(STR_TOGGLE));
+  // El nombre de la categoria siguiente no entra en un hueco de la barra
+  // ("Controles" mide 93 px en UI_10 y manda a las CUATRO ayudas al modo
+  // apilado): el verbo corto alcanza, la pestaña que se va a abrir ya se ve
+  // resaltada arriba.
+  const char* confirmLabel = tr(STR_SELECT);
+  if (ring > 0) {
+    const SettingInfo& row = (*currentSettings)[ring - 1];
+    // Abrir otra pantalla o elegir un valor = "Selecc."; cambiar el ajuste ahi
+    // mismo = "Editar".
+    const bool opensScreen = row.type == SettingType::ACTION || row.nameId == StrId::STR_TIME_TO_SLEEP;
+    confirmLabel = opensScreen ? tr(STR_SELECT) : tr(STR_TOGGLE);
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

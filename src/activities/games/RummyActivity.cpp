@@ -10,7 +10,9 @@
 #include "MappedInputManager.h"
 #include "cardIcons.h"
 #include "components/UITheme.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 
@@ -23,18 +25,6 @@ const freeink::Icon* const RANK_ICONS[13] = {
 
 const freeink::Icon* const SUIT_SMALL[4] = {&icon_suit_spade_16, &icon_suit_heart_16, &icon_suit_diamond_16,
                                             &icon_suit_club_16};
-
-// Los bitmaps se pintan pixel por pixel: así salen bien en cualquier orientación.
-void blitIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y) {
-  const int stride = (icon.w + 7) / 8;
-  for (int row = 0; row < icon.h; ++row) {
-    const uint8_t* line = icon.bits + row * stride;
-    for (int col = 0; col < icon.w; ++col) {
-      if ((line[col / 8] & (0x80 >> (col % 8))) != 0) continue;
-      renderer.drawPixel(x + col, y + row, true);
-    }
-  }
-}
 
 // ----------------------------------------------------------- combinaciones --
 
@@ -693,11 +683,11 @@ void RummyActivity::loop() {
 void RummyActivity::drawSuit(const int cx, const int cy, const int suit) const {
   const int index = suit >= 0 && suit < 4 ? suit : 0;
   const freeink::Icon& icon = *SUIT_SMALL[index];
-  blitIcon(renderer, icon, cx - icon.w / 2, cy - icon.h / 2);
+  BaseTheme::drawIconBitmap(renderer, icon, cx - icon.w / 2, cy - icon.h / 2);
 }
 
 void RummyActivity::drawRank(const int x, const int y, const uint8_t card) const {
-  blitIcon(renderer, *RANK_ICONS[rankOf(card)], x, y);
+  BaseTheme::drawIconBitmap(renderer, *RANK_ICONS[rankOf(card)], x, y);
 }
 
 // Carta chica: en 480 px no entran diez cartas del tamaño del blackjack, así que
@@ -840,13 +830,13 @@ int RummyActivity::drawPlayerHand(const int top) const {
 void RummyActivity::drawOptionRow(const int x, const int y, const int w, const char* label,
                                   const bool selected) const {
   if (selected) {
-    renderer.fillRoundedRect(x, y, w, ROW_H - 10, 12, Color::Black);
+    drawSelectionRow(renderer, x, y, w, ROW_H - 10, 12);
   } else {
     renderer.drawRoundedRect(x, y, w, ROW_H - 10, 2, 12, true);
   }
   const std::string shown = renderer.truncatedText(UI_12_FONT_ID, label, w - 24, EpdFontFamily::BOLD);
   const int width = renderer.getTextWidth(UI_12_FONT_ID, shown.c_str(), EpdFontFamily::BOLD);
-  renderer.drawText(UI_12_FONT_ID, x + (w - width) / 2, y + 11, shown.c_str(), !selected, EpdFontFamily::BOLD);
+  renderer.drawText(UI_12_FONT_ID, x + (w - width) / 2, y + 11, shown.c_str(), SELECTION_INK, EpdFontFamily::BOLD);
 }
 
 void RummyActivity::drawModeSelect() const {

@@ -1,0 +1,390 @@
+From 0f68816344cc879eb33643edf3863cf678e6a8ae Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Thu, 10 Sep 2026 14:38:53 +0000
+Subject: [PATCH 12/12] ws397: QMI8658 usable as a gesture sensor (modes,
+ scales, tap engine)
+
+The driver could only do one thing: both sensors on, +-2 g at 28 Hz, forever.
+That is the wrong shape for a device that wants to watch for gestures all day
+(the gyro alone is ~750 uA against ~142 uA for the accelerometer) and it cannot
+see a tap at all.
+
+Added, all additive and QMI8658-only:
+  setMode(Off|AccelOnly|AccelGyro)  the gyro is the expensive half
+  setAccelConfig(fs, odr)           +-8 g at 250 Hz for gestures and taps
+  ctrl9(cmd)                        the CTRL9 command handshake
+  configureTap(...) / enableTap()   the part's own tap engine (datasheet 10.3)
+  readTapStatus()                   single vs double tap
+  selfCheckPassed()                 gravity was ~1 g at begin()
+
+CTRL8 bit7 now selects STATUSINT as the CTRL9 handshake: on the ws397 the IMU
+INT1 pin is wired to the audio amplifier enable, so the pin cannot be used and
+without this bit no CTRL9 command ever completes.
+
+Fixed while here: CTRL1 set the BIG_ENDIAN bit while read() decoded little
+endian, so every sample was byte-swapped. The bit is now clear (the part's reset
+default) and the constant is kept named so the intent stays visible. Accel and
+gyro also come back in a single 12-byte burst instead of two transactions, which
+means the six values belong to the same sample instant.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ libs/hardware/Imu/include/Imu.h |  44 +++++++
+ libs/hardware/Imu/src/Imu.cpp   | 196 ++++++++++++++++++++++++++++++--
+ 2 files changed, 231 insertions(+), 9 deletions(-)
+
+diff --git a/libs/hardware/Imu/include/Imu.h b/libs/hardware/Imu/include/Imu.h
+index 3801e26..4786783 100644
+--- a/libs/hardware/Imu/include/Imu.h
++++ b/libs/hardware/Imu/include/Imu.h
+@@ -21,6 +21,12 @@ class Imu {
+     float gx, gy, gz;  // angular rate, degrees/second
+   };
+ 
++  // What the part is sampling. The gyro is by far the expensive half (~750 uA
++  // against ~142 uA for the accelerometer alone at 250 Hz), and tilt, shake and
++  // face-down only need acceleration — so a consumer that polls all day asks
++  // for AccelOnly and turns the gyro on for the few screens that use rotation.
++  enum class Mode : uint8_t { Off, AccelOnly, AccelGyro };
++
+   // Verifies WHO_AM_I and configures accel + gyro for the active board.
+   // Returns false when the active board has no IMU or the part doesn't identify.
+   bool begin();
+@@ -38,8 +44,46 @@ class Imu {
+   // error; allow for a settling transient before trusting samples.
+   bool wake();
+ 
++  // --- QMI8658 extras -------------------------------------------------------
++  // Everything below is a no-op returning false on other parts.
++
++  // Selects what is sampled (see Mode). begin() leaves the part in AccelGyro
++  // for compatibility with the callers that predate this.
++  bool setMode(Mode mode);
++  Mode mode() const { return mode_; }
++
++  // Accelerometer full scale and output rate, as raw CTRL2 fields:
++  //   fsBits 0=±2 g 1=±4 g 2=±8 g 3=±16 g, odrBits 4=500 Hz 5=250 Hz 6=125 Hz.
++  // The tap engine wants >= 200 Hz. Also updates the g/LSB used by read().
++  bool setAccelConfig(uint8_t fsBits, uint8_t odrBits);
++
++  // One CTRL9 command with its handshake (STATUSINT bit7, then CTRL_CMD_ACK).
++  // Returns false if the part never signalled completion.
++  bool ctrl9(uint8_t command);
++
++  // Loads the tap engine parameters (two CTRL9 rounds, see datasheet 10.3).
++  // Must run with the sensors disabled: it does that itself and restores the
++  // previous mode. peakMagThr/udmThr are in g^2 and g.
++  bool configureTap(uint8_t priority, uint8_t peakWindow, uint16_t tapWindow, uint16_t dTapWindow, float alpha,
++                    float gamma, float peakMagThr, float udmThr);
++  // CTRL8.bit0. The engine only runs with the accelerometer enabled.
++  bool enableTap(bool on);
++  // Raw TAP_STATUS (0x59): bits[1:0] 1 = single, 2 = double; bits[5:4] axis;
++  // bit7 direction. Reading it clears the event. 0 when nothing was detected.
++  bool readTapStatus(uint8_t& status);
++
++  // False when begin() saw an implausible gravity vector: the part answers on
++  // I2C but its numbers cannot be trusted, so a consumer should not present
++  // gesture detection as working.
++  bool selfCheckPassed() const { return selfCheckOk_; }
++
+  private:
+   bool begun_ = false;
++  Mode mode_ = Mode::Off;
++  bool selfCheckOk_ = false;
++  uint8_t ctrl2_ = 0;  // last accelerometer CTRL2 written
++  uint8_t ctrl3_ = 0;  // last gyroscope CTRL3 written
++  float accelScale_ = 0.0f;  // g per LSB for the configured full scale
+   // The QMI8658 can legally appear at 0x6A or 0x6B depending on its SA0
+   // strap. Keep the address found by begin() instead of repeatedly using the
+   // board profile's preferred address.
+diff --git a/libs/hardware/Imu/src/Imu.cpp b/libs/hardware/Imu/src/Imu.cpp
+index 5c7b4b6..eab3222 100644
+--- a/libs/hardware/Imu/src/Imu.cpp
++++ b/libs/hardware/Imu/src/Imu.cpp
+@@ -7,6 +7,9 @@
+ #include <Wire.h>
+ #include <soc/soc_caps.h>
+ 
++#include <cmath>
++#include <cstring>
++
+ namespace freeink {
+ namespace {
+ 
+@@ -34,21 +37,41 @@ constexpr uint8_t QMI8658_WHO_AM_I_VALUE = 0x05;
+ constexpr uint8_t QMI8658_REG_CTRL1 = 0x02;
+ constexpr uint8_t QMI8658_REG_CTRL2 = 0x03;
+ constexpr uint8_t QMI8658_REG_CTRL3 = 0x04;
++constexpr uint8_t QMI8658_REG_CTRL5 = 0x06;
+ constexpr uint8_t QMI8658_REG_CTRL7 = 0x08;
++constexpr uint8_t QMI8658_REG_CTRL8 = 0x09;
++constexpr uint8_t QMI8658_REG_CTRL9 = 0x0A;
++constexpr uint8_t QMI8658_REG_CAL1_L = 0x0B;  // CAL1_L..CAL4_H are 0x0B..0x12
++constexpr uint8_t QMI8658_REG_STATUSINT = 0x2D;
++constexpr uint8_t QMI8658_REG_TAP_STATUS = 0x59;
+ constexpr uint8_t QMI8658_REG_AX_L = 0x35;
+ constexpr uint8_t QMI8658_REG_GX_L = 0x3B;
+ constexpr uint8_t QMI8658_ADDR_6A = 0x6A;
+ constexpr uint8_t QMI8658_ADDR_6B = 0x6B;
++// CTRL1 bit5 selects the byte order of the output registers: 0 = little
++// endian (the part's reset default), 1 = big endian. read() decodes little
++// endian, so this bit must stay CLEAR — it used to be set, which made every
++// sample a byte-swapped number. Kept as a named constant so the intent is
++// visible rather than an absent bit.
+ constexpr uint8_t QMI8658_CTRL1_BIG_ENDIAN = 1U << 5;
+ constexpr uint8_t QMI8658_CTRL1_AUTO_INC = 1U << 6;
+ constexpr uint8_t QMI8658_CTRL1_SENSOR_DISABLE = 1U << 0;
+-constexpr uint8_t QMI8658_CTRL1_BASE = QMI8658_CTRL1_AUTO_INC | QMI8658_CTRL1_BIG_ENDIAN;
++constexpr uint8_t QMI8658_CTRL1_BASE = QMI8658_CTRL1_AUTO_INC;
+ constexpr uint8_t QMI8658_CTRL2_FS_2G = 0U << 4;
+ constexpr uint8_t QMI8658_CTRL2_ODR_28HZ = 0x08;
+ constexpr uint8_t QMI8658_CTRL3_FS_512DPS = 0b101U << 4;
+ constexpr uint8_t QMI8658_CTRL3_ODR_28HZ = 0x08;
+ constexpr uint8_t QMI8658_CTRL7_ACC_GYRO_ENABLE = 0x03;
++constexpr uint8_t QMI8658_CTRL7_ACC_ONLY = 0x01;
+ constexpr uint8_t QMI8658_CTRL7_DISABLE_ALL = 0x00;
++// CTRL8 bit7: use STATUSINT.bit7 as the CTRL9 handshake instead of the INT1
++// pin. On this board INT1 is wired to the audio amplifier enable, so the pin
++// is not available and this bit is mandatory before any CTRL9 command.
++constexpr uint8_t QMI8658_CTRL8_HANDSHAKE_STATUSINT = 0x80;
++constexpr uint8_t QMI8658_CTRL8_TAP_EN = 0x01;
++constexpr uint8_t QMI8658_CTRL9_CMD_ACK = 0x00;
++constexpr uint8_t QMI8658_CTRL9_CMD_CONFIGURE_TAP = 0x0C;
++constexpr uint8_t QMI8658_STATUSINT_CMD_DONE = 0x80;
+ // LSM6DS3: ODR bits [7:4] = 0000b powers the sensor down; full-scale bits are
+ // retained, so restoring the configured CTRL value resumes sampling.
+ constexpr uint8_t CTRL_ODR_POWER_DOWN = 0x00;
+@@ -147,11 +170,22 @@ bool Imu::begin() {
+         return false;
+       }
+ 
++      ctrl2_ = QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ;
++      ctrl3_ = QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ;
++      accelScale_ = QMI8658_ACCEL_G_PER_LSB;
+       const bool configured = writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL) &&
+                               writeReg(addr_, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
+-                              writeReg(addr_, QMI8658_REG_CTRL2, QMI8658_CTRL2_FS_2G | QMI8658_CTRL2_ODR_28HZ) &&
+-                              writeReg(addr_, QMI8658_REG_CTRL3, QMI8658_CTRL3_FS_512DPS | QMI8658_CTRL3_ODR_28HZ) &&
++                              writeReg(addr_, QMI8658_REG_CTRL2, ctrl2_) &&
++                              writeReg(addr_, QMI8658_REG_CTRL3, ctrl3_) &&
++                              // Low-pass filters off: the gesture layer does its
++                              // own smoothing and the tap engine wants the raw
++                              // peaks.
++                              writeReg(addr_, QMI8658_REG_CTRL5, 0x00) &&
++                              // Handshake over STATUSINT, INT1 being unavailable
++                              // on boards that share that pin (see CTRL8 above).
++                              writeReg(addr_, QMI8658_REG_CTRL8, QMI8658_CTRL8_HANDSHAKE_STATUSINT) &&
+                               writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
++      mode_ = configured ? Mode::AccelGyro : Mode::Off;
+       if (!configured) {
+         // A failed setup must not strand a previously running sensor in its
+         // multi-milliamp active mode. The digital interface remains available
+@@ -165,6 +199,18 @@ bool Imu::begin() {
+       return false;
+   }
+   begun_ = true;
++
++  // Sanity check: standing still, the magnitude of the acceleration vector is
++  // one g. Anything far from that means the numbers are not acceleration (wrong
++  // byte order, wrong scale, a part that answers but is not configured), and a
++  // consumer must not offer gestures as if they worked.
++  selfCheckOk_ = false;
++  delay(20);
++  Sample probe = {};
++  if (read(probe)) {
++    const float magnitude = sqrtf(probe.ax * probe.ax + probe.ay * probe.ay + probe.az * probe.az);
++    selfCheckOk_ = magnitude > 0.6f && magnitude < 1.6f;
++  }
+   return true;
+ }
+ 
+@@ -178,8 +224,14 @@ bool Imu::read(Sample& out) {
+     if (!readRegs(addr, REG_OUTX_L_G, g, sizeof(g))) return false;
+     if (!readRegs(addr, REG_OUTX_L_XL, a, sizeof(a))) return false;
+   } else if (s.imuType == BoardConfig::ImuType::Qmi8658) {
+-    if (!readRegs(addr, QMI8658_REG_GX_L, g, sizeof(g))) return false;
+-    if (!readRegs(addr, QMI8658_REG_AX_L, a, sizeof(a))) return false;
++    // One burst for both halves (CTRL1 auto-increment): AX..GZ are contiguous
++    // from 0x35, so this is a single bus transaction instead of two, and the
++    // six values come from the same sample instant.
++    uint8_t frame[12] = {};
++    if (!readRegs(addr, QMI8658_REG_AX_L, frame, sizeof(frame))) return false;
++    memcpy(a, frame, 6);
++    memcpy(g, frame + 6, 6);
++    if (mode_ == Mode::AccelOnly) memset(g, 0, sizeof(g));
+   } else {
+     return false;
+   }
+@@ -191,7 +243,9 @@ bool Imu::read(Sample& out) {
+   const int16_t ay = static_cast<int16_t>(a[2] | a[3] << 8);
+   const int16_t az = static_cast<int16_t>(a[4] | a[5] << 8);
+ 
+-  const float accelScale = s.imuType == BoardConfig::ImuType::Qmi8658 ? QMI8658_ACCEL_G_PER_LSB : ACCEL_G_PER_LSB;
++  const float accelScale = s.imuType == BoardConfig::ImuType::Qmi8658
++                               ? (accelScale_ > 0.0f ? accelScale_ : QMI8658_ACCEL_G_PER_LSB)
++                               : ACCEL_G_PER_LSB;
+   const float gyroScale = s.imuType == BoardConfig::ImuType::Qmi8658 ? QMI8658_GYRO_DPS_PER_LSB : GYRO_DPS_PER_LSB;
+   out.ax = ax * accelScale;
+   out.ay = ay * accelScale;
+@@ -211,6 +265,7 @@ bool Imu::sleep() {
+     case BoardConfig::ImuType::Qmi8658:
+       // CTRL7 only disables sampling; the internal oscillator keeps running.
+       // SensorDisable is required for the QMI8658's full power-down mode.
++      mode_ = Mode::Off;
+       return powerDownQmi8658(addr);
+     case BoardConfig::ImuType::None:
+       return false;
+@@ -224,16 +279,130 @@ bool Imu::wake() {
+   switch (BoardConfig::ACTIVE.sensors.imuType) {
+     case BoardConfig::ImuType::Lsm6ds3:
+       return writeReg(addr, REG_CTRL1_XL, CTRL1_XL_104HZ_2G) && writeReg(addr, REG_CTRL2_G, CTRL2_G_104HZ_245DPS);
+-    case BoardConfig::ImuType::Qmi8658:
++    case BoardConfig::ImuType::Qmi8658: {
+       // Re-enable the internal oscillator before restarting the sensors.
+-      return writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
+-             writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
++      const bool ok = writeReg(addr, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE) &&
++                      writeReg(addr, QMI8658_REG_CTRL7, QMI8658_CTRL7_ACC_GYRO_ENABLE);
++      if (ok) mode_ = Mode::AccelGyro;
++      return ok;
++    }
+     case BoardConfig::ImuType::None:
+       return false;
+   }
+   return false;
+ }
+ 
++// --- QMI8658 extras ---------------------------------------------------------
++
++bool Imu::setMode(const Mode mode) {
++  if (!begun_ || addr_ == 0 || BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::Qmi8658) return false;
++  if (mode == mode_) return true;
++  uint8_t ctrl7 = QMI8658_CTRL7_DISABLE_ALL;
++  if (mode == Mode::AccelOnly) ctrl7 = QMI8658_CTRL7_ACC_ONLY;
++  else if (mode == Mode::AccelGyro) ctrl7 = QMI8658_CTRL7_ACC_GYRO_ENABLE;
++  // Leaving Off means the oscillator was stopped by sleep(): restart it first.
++  if (mode_ == Mode::Off && !writeReg(addr_, QMI8658_REG_CTRL1, QMI8658_CTRL1_BASE)) return false;
++  if (!writeReg(addr_, QMI8658_REG_CTRL7, ctrl7)) return false;
++  mode_ = mode;
++  return true;
++}
++
++bool Imu::setAccelConfig(const uint8_t fsBits, const uint8_t odrBits) {
++  if (!begun_ || addr_ == 0 || BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::Qmi8658) return false;
++  const uint8_t ctrl2 = static_cast<uint8_t>((fsBits & 0x07) << 4 | (odrBits & 0x0F));
++  if (!writeReg(addr_, QMI8658_REG_CTRL2, ctrl2)) return false;
++  ctrl2_ = ctrl2;
++  // 32768 counts over the full scale: ±2 g -> 16384/g, and one step of the
++  // scale field halves that.
++  accelScale_ = 1.0f / (16384.0f / static_cast<float>(1U << (fsBits & 0x07)));
++  return true;
++}
++
++bool Imu::ctrl9(const uint8_t command) {
++  if (!begun_ || addr_ == 0 || BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::Qmi8658) return false;
++  if (!writeReg(addr_, QMI8658_REG_CTRL9, command)) return false;
++  // The part signals completion in STATUSINT.bit7 (CTRL8.bit7 selected that
++  // over the INT1 pin in begin()). Commands answer in well under a
++  // millisecond; the budget here is generous on purpose, it only costs time
++  // when something is wrong.
++  uint8_t status = 0;
++  bool done = false;
++  for (int i = 0; i < 100 && !done; ++i) {
++    if (readRegs(addr_, QMI8658_REG_STATUSINT, &status, 1) && (status & QMI8658_STATUSINT_CMD_DONE)) done = true;
++    else delay(1);
++  }
++  if (!done) return false;
++  // Acknowledge, which is what clears the bit for the next command.
++  if (!writeReg(addr_, QMI8658_REG_CTRL9, QMI8658_CTRL9_CMD_ACK)) return false;
++  for (int i = 0; i < 100; ++i) {
++    if (readRegs(addr_, QMI8658_REG_STATUSINT, &status, 1) && !(status & QMI8658_STATUSINT_CMD_DONE)) return true;
++    delay(1);
++  }
++  return false;
++}
++
++bool Imu::configureTap(const uint8_t priority, const uint8_t peakWindow, const uint16_t tapWindow,
++                       const uint16_t dTapWindow, const float alpha, const float gamma, const float peakMagThr,
++                       const float udmThr) {
++  if (!begun_ || addr_ == 0 || BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::Qmi8658) return false;
++  // Datasheet 10.3: the parameters may only be loaded with both sensors
++  // disabled. The previous mode is restored on the way out.
++  const Mode previous = mode_;
++  if (!writeReg(addr_, QMI8658_REG_CTRL7, QMI8658_CTRL7_DISABLE_ALL)) return false;
++  mode_ = Mode::Off;
++
++  // Fixed-point conversions, all from Table 35: alpha and gamma are 7-bit
++  // fractions, the two thresholds 10-bit fractions.
++  const uint8_t alphaFx = static_cast<uint8_t>(alpha * 128.0f + 0.5f);
++  const uint8_t gammaFx = static_cast<uint8_t>(gamma * 128.0f + 0.5f);
++  const uint16_t peakFx = static_cast<uint16_t>(peakMagThr * 1024.0f + 0.5f);
++  const uint16_t udmFx = static_cast<uint16_t>(udmThr * 1024.0f + 0.5f);
++
++  // CAL1_L..CAL4_H, written as one auto-incrementing block per command set.
++  const uint8_t first[8] = {peakWindow,
++                            priority,
++                            static_cast<uint8_t>(tapWindow & 0xFF),
++                            static_cast<uint8_t>(tapWindow >> 8),
++                            static_cast<uint8_t>(dTapWindow & 0xFF),
++                            static_cast<uint8_t>(dTapWindow >> 8),
++                            0x00,
++                            0x01};  // CAL4_H = 1: first parameter set
++  const uint8_t second[8] = {alphaFx,
++                             gammaFx,
++                             static_cast<uint8_t>(peakFx & 0xFF),
++                             static_cast<uint8_t>(peakFx >> 8),
++                             static_cast<uint8_t>(udmFx & 0xFF),
++                             static_cast<uint8_t>(udmFx >> 8),
++                             0x00,
++                             0x02};  // CAL4_H = 2: second parameter set
++  bool ok = true;
++  for (const uint8_t* set : {first, second}) {
++    for (uint8_t i = 0; i < 8 && ok; ++i) ok = writeReg(addr_, static_cast<uint8_t>(QMI8658_REG_CAL1_L + i), set[i]);
++    if (ok) ok = ctrl9(QMI8658_CTRL9_CMD_CONFIGURE_TAP);
++    if (!ok) break;
++  }
++
++  mode_ = Mode::Off;
++  setMode(previous);
++  return ok;
++}
++
++bool Imu::enableTap(const bool on) {
++  if (!begun_ || addr_ == 0 || BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::Qmi8658) return false;
++  uint8_t ctrl8 = 0;
++  if (!readRegs(addr_, QMI8658_REG_CTRL8, &ctrl8, 1)) return false;
++  ctrl8 |= QMI8658_CTRL8_HANDSHAKE_STATUSINT;  // never give the handshake back to INT1
++  if (on) ctrl8 |= QMI8658_CTRL8_TAP_EN;
++  else ctrl8 &= static_cast<uint8_t>(~QMI8658_CTRL8_TAP_EN);
++  return writeReg(addr_, QMI8658_REG_CTRL8, ctrl8);
++}
++
++bool Imu::readTapStatus(uint8_t& status) {
++  status = 0;
++  if (!begun_ || addr_ == 0 || BoardConfig::ACTIVE.sensors.imuType != BoardConfig::ImuType::Qmi8658) return false;
++  return readRegs(addr_, QMI8658_REG_TAP_STATUS, &status, 1);
++}
++
+ }  // namespace freeink
+ 
+ #else  // FREEINK_CAP_IMU — IMU absent.
+@@ -243,6 +412,15 @@ bool Imu::begin() { return false; }
+ bool Imu::read(Sample&) { return false; }
+ bool Imu::sleep() { return false; }
+ bool Imu::wake() { return false; }
++bool Imu::setMode(Mode) { return false; }
++bool Imu::setAccelConfig(uint8_t, uint8_t) { return false; }
++bool Imu::ctrl9(uint8_t) { return false; }
++bool Imu::configureTap(uint8_t, uint8_t, uint16_t, uint16_t, float, float, float, float) { return false; }
++bool Imu::enableTap(bool) { return false; }
++bool Imu::readTapStatus(uint8_t& status) {
++  status = 0;
++  return false;
++}
+ }  // namespace freeink
+ 
+ #endif  // FREEINK_CAP_IMU
+-- 
+2.43.0
+

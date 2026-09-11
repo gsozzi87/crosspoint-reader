@@ -14,11 +14,6 @@ class HubStore : public PersistableStore<HubStore> {
     std::string when;  // "10:30", "mañana 9:00"; already formatted by the server
     std::string title;
   };
-  struct Message {
-    int id = 0;
-    std::string from;
-    std::string text;
-  };
   struct Reminder {
     int id = 0;
     std::string title;
@@ -41,6 +36,12 @@ class HubStore : public PersistableStore<HubStore> {
     std::string text;
   };
   struct List {
+    // `key` es la clave canónica del store del servidor ("Compras", "Tareas") y
+    // es lo que hay que devolverle al mover un ítem; `name` es el nombre ya
+    // traducido al idioma del aparato, que es lo que se muestra. Antes había
+    // uno solo y, en inglés, mover un ítem le mandaba "Shopping" al servidor,
+    // que no conoce ese nombre.
+    std::string key;
     std::string name;
     std::vector<ListItem> items;  // pending only
   };
@@ -50,7 +51,6 @@ class HubStore : public PersistableStore<HubStore> {
   };
 
   static constexpr int MAX_EVENTS = 4;
-  static constexpr int MAX_MESSAGES = 5;
   static constexpr int MAX_REMINDERS = 20;
   static constexpr int MAX_LISTS = 12;
   static constexpr int MAX_ITEMS = 30;
@@ -68,7 +68,6 @@ class HubStore : public PersistableStore<HubStore> {
   std::vector<List> lists;
   std::vector<Note> notes;
   std::vector<Event> events;
-  std::vector<Message> messages;
   std::string quote;
   std::string verseRef;   // verse of the day (Bible), shown alternating with the quote
   std::string verseText;
@@ -121,6 +120,23 @@ class HubStore : public PersistableStore<HubStore> {
   // 1 suaves, 2 normales. Apagados de fábrica: nadie quiere que el aparato
   // empiece a hacer ruido solo después de una actualización.
   uint8_t uiSoundMode = 0;
+  // Cómo está montado el IMU: qué eje del chip es la normal a la pantalla y con
+  // qué signo mira cada uno. No está documentado en ninguna hoja de datos de la
+  // placa, así que se calibra en Ajustes → Movimiento y se guarda acá. Los
+  // valores de fábrica son la suposición razonable (Z hacia afuera).
+  struct ImuMap {
+    uint8_t normalAxis = 2;  // 0 = X, 1 = Y, 2 = Z del chip
+    int8_t normalSign = 1;   // +1 si boca arriba da positivo en ese eje
+    uint8_t xAxis = 0;       // eje del chip que va hacia la derecha de la pantalla
+    int8_t xSign = 1;
+    uint8_t yAxis = 1;       // eje del chip que va hacia el usuario
+    int8_t ySign = 1;
+    bool calibrated = false;
+  };
+  ImuMap imuMap;
+  // Gestos del IMU encendidos (Ajustes → Movimiento). Apagados, el aparato no
+  // consulta el chip: son ~142 uA que no todos quieren gastar.
+  bool motionGestures = true;
   // Ajustes cargados en /board. El servidor manda `settings.rev`; solo se
   // aplican cuando esa revisión es mayor a la última aplicada, así lo que se
   // cambia en el aparato no se pisa en cada sincronización.
@@ -147,8 +163,7 @@ class HubStore : public PersistableStore<HubStore> {
   const Reminder* dueReminder(time_t now) const;
   void snoozeReminder(int id, time_t until);
   void removeNote(int id);
-  void removeMessage(int id);
-  void moveItem(int id, const std::string& listName);
+  void moveItem(int id, const std::string& listKey);
 
  private:
   HubStore() = default;

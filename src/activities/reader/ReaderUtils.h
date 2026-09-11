@@ -159,18 +159,27 @@ inline bool isTouchMenuGesture(const GfxRenderer& renderer, const MappedInputMan
 // Async callers must not touch the framebuffer until
 // renderer.waitRefreshComplete() and must rebuild the differential baseline
 // before the next page turn (the tiled grayscale cleanup does).
-inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh, bool async = false) {
-  const auto mode = (pagesUntilFullRefresh <= 1) ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
-  if (async) {
-    renderer.displayBufferAsync(mode);
-  } else {
-    renderer.displayBuffer(mode);
-  }
-  if (pagesUntilFullRefresh <= 1) {
+//
+// The reader keeps its own configurable cadence (pagesUntilFullRefresh) and
+// tells the refresh coordinator these are page turns (Hint::PageTurn: no
+// identical-frame skip, no gray-residue promotion, only the safety ceiling).
+// The counter is resynced from the EFFECTIVE mode the coordinator returns, so
+// a promoted clean (ceiling, first paint, periodic FULL) restarts the cadence
+// instead of being followed by the reader's own clean a few pages later.
+inline void resyncRefreshCycle(const HalDisplay::RefreshMode effective, int& pagesUntilFullRefresh) {
+  if (effective != HalDisplay::FAST_REFRESH) {
     pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
   } else {
     pagesUntilFullRefresh--;
   }
+}
+
+inline void displayWithRefreshCycle(const GfxRenderer& renderer, int& pagesUntilFullRefresh, bool async = false) {
+  const auto mode = (pagesUntilFullRefresh <= 1) ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
+  constexpr auto hint = PanelRefreshCoordinator::Hint::PageTurn;
+  const HalDisplay::RefreshMode effective =
+      async ? renderer.displayBufferAsync(mode, hint) : renderer.displayBuffer(mode, hint);
+  resyncRefreshCycle(effective, pagesUntilFullRefresh);
 }
 
 // Display the B/W base of a page whose grayscale pass follows. Panels that
@@ -184,12 +193,9 @@ inline void displayBaseWithRefreshCycle(const GfxRenderer& renderer, int& pagesU
     return;
   }
   const auto mode = (pagesUntilFullRefresh <= 1) ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH;
-  renderer.displayGrayscaleBase(mode);
-  if (pagesUntilFullRefresh <= 1) {
-    pagesUntilFullRefresh = SETTINGS.getRefreshFrequency();
-  } else {
-    pagesUntilFullRefresh--;
-  }
+  const HalDisplay::RefreshMode effective =
+      renderer.displayGrayscaleBase(mode, PanelRefreshCoordinator::Hint::PageTurn);
+  resyncRefreshCycle(effective, pagesUntilFullRefresh);
 }
 
 // Grayscale anti-aliasing pass. Renders content twice (LSB + MSB) to build

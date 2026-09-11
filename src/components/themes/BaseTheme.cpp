@@ -23,6 +23,7 @@
 #include "components/icons/bookmark.h"
 #include "components/icons/buttonIcons.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 // Internal constants
 namespace {
@@ -177,18 +178,20 @@ std::string cleanHintLabel(const char* label) {
   return stripped.empty() ? text : stripped;
 }
 
+}  // namespace
+
 // Los iconos del SDK (freeink::Icon) son 1 bpp con el bit en 0 = tinta, y van
 // por drawPixel para que salgan bien en cualquier orientación.
-void drawHintIcon(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y) {
+void BaseTheme::drawIconBitmap(const GfxRenderer& renderer, const freeink::Icon& icon, const int x, const int y,
+                               const bool ink) {
   const int stride = (icon.w + 7) / 8;
   for (int row = 0; row < icon.h; ++row) {
     const uint8_t* line = icon.bits + row * stride;
     for (int col = 0; col < icon.w; ++col) {
-      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, true);
+      if ((line[col / 8] & (0x80 >> (col % 8))) == 0) renderer.drawPixel(x + col, y + row, ink);
     }
   }
 }
-}  // namespace
 
 void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const char* btn2, const char* btn3,
                                 const char* btn4) const {
@@ -223,7 +226,12 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
   const int cellWidth = std::max(48, (pageWidth - hintSidePadding * 2 - hintCellGap * 3) / 4);
   const int boxTop = pageHeight - bandHeight + hintBoxMarginTop;
   const int boxHeight = bandHeight - hintBoxMarginTop - hintBoxMarginBottom;
-  const int innerPadding = hasBox ? 6 : 2;
+  // 5 y no 6: con el recuadro, el hueco que le queda al texto al lado del
+  // icono es cellWidth - 2*innerPadding - 24 - 6. Con 6 daba 69 px y una sola
+  // etiqueta de 70 px mandaba a las CUATRO ayudas al modo apilado; con 5 el
+  // presupuesto de 70 px por etiqueta (el que usan los strings de la barra)
+  // entra justo.
+  const int innerPadding = hasBox ? 5 : 2;
   const int fontId = UI_10_FONT_ID;
   const int textHeight = renderer.getTextHeight(fontId);
 
@@ -265,13 +273,13 @@ void BaseTheme::drawButtonHints(GfxRenderer& renderer, const char* btn1, const c
       const int centerY = boxTop + boxHeight / 2;
       // opticalCenterY es la fila del centro de masa del dibujo: alineándola con
       // el centro del texto, la flecha no queda ni alta ni baja.
-      drawHintIcon(renderer, *hints[i].icon, groupX, centerY - hints[i].icon->opticalCenterY);
+      BaseTheme::drawIconBitmap(renderer, *hints[i].icon, groupX, centerY - hints[i].icon->opticalCenterY);
       renderer.drawText(fontId, groupX + hintIconSize + hintIconTextGap, centerY - textHeight / 2, label.c_str());
     } else {
       constexpr int stackGap = 1;
       const int blockHeight = hintIconSize + stackGap + textHeight;
       const int top = boxTop + (boxHeight - blockHeight) / 2;
-      drawHintIcon(renderer, *hints[i].icon, x + (cellWidth - hintIconSize) / 2, top);
+      BaseTheme::drawIconBitmap(renderer, *hints[i].icon, x + (cellWidth - hintIconSize) / 2, top);
       renderer.drawText(fontId, x + (cellWidth - textWidth) / 2, top + hintIconSize + stackGap, label.c_str());
     }
   }
@@ -722,8 +730,9 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     const bool selected = selectedIndex == i;
 
     if (selected) {
-      renderer.fillRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
-                        rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
+      renderer.fillRectDither(rect.x + BaseMetrics::values.contentSidePadding, tileY,
+                              rect.width - BaseMetrics::values.contentSidePadding * 2,
+                              BaseMetrics::values.menuRowHeight, SELECTION_FILL);
     } else {
       renderer.drawRect(rect.x + BaseMetrics::values.contentSidePadding, tileY,
                         rect.width - BaseMetrics::values.contentSidePadding * 2, BaseMetrics::values.menuRowHeight);
@@ -741,11 +750,17 @@ void BaseTheme::drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount
     const int textY =
         tileY + (BaseMetrics::values.menuRowHeight - lineHeight) / 2;  // vertically centered assuming y is top of text
     // Invert text when the tile is selected, to contrast with the filled background
-    renderer.drawText(UI_10_FONT_ID, textX, textY, label, selectedIndex != i);
+    renderer.drawText(UI_10_FONT_ID, textX, textY, label, true);
   }
 }
 
 Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) const {
+  const Rect layout = composePopup(renderer, message);
+  renderer.displayBuffer();
+  return layout;
+}
+
+Rect BaseTheme::composePopup(const GfxRenderer& renderer, const char* message) const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int marginX = metrics.popupMarginX;
   const int marginY = metrics.popupMarginY;
@@ -782,9 +797,14 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) cons
 
   const bool useRoundedPopup = metrics.popupCornerRadius > 0;
   if (useRoundedPopup) {
+    // Tarjeta BLANCA con marco negro, igual que el dialogo de opciones. Hasta
+    // 1.5.47 el cuerpo se rellenaba de negro y el texto salia en blanco: cada
+    // "Próximamente" era un manchon que aparecia y desaparecia de golpe, o sea
+    // el peor fantasma posible en el parcial siguiente. El marco redondeado y
+    // las letras negras dicen lo mismo sin gastar tinta.
     renderer.fillRoundedRect(x - frameThickness, y - frameThickness, w + frameThickness * 2, h + frameThickness * 2,
-                             metrics.popupCornerRadius + frameThickness, Color::White);
-    renderer.fillRoundedRect(x, y, w, h, metrics.popupCornerRadius, Color::Black);
+                             metrics.popupCornerRadius + frameThickness, Color::Black);
+    renderer.fillRoundedRect(x, y, w, h, metrics.popupCornerRadius, Color::White);
   } else {
     renderer.fillRect(x - frameThickness, y - frameThickness, w + frameThickness * 2, h + frameThickness * 2, true);
     renderer.fillRect(x, y, w, h, false);
@@ -797,7 +817,6 @@ Rect BaseTheme::drawPopup(const GfxRenderer& renderer, const char* message) cons
                       popupFontFamily);
     textY += lineHeight;
   }
-  renderer.displayBuffer();
   return Rect{x, y, w, h};
 }
 

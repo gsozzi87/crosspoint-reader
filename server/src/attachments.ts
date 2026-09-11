@@ -27,12 +27,14 @@ import * as mupdf from "mupdf";
 import sharp from "sharp";
 import bwipjs from "bwip-js/node";
 import { readBarcodes, prepareZXingModule } from "zxing-wasm/reader";
-import { readJsonSafe, writeBytesAtomic, writeJsonAtomic } from "./fsjson";
+import { attachmentsDir, readDoc, writeBytesAtomic, writeDoc } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
 import { toDeviceBmp } from "./photos";
 import { readBody } from "./net";
 
-export const DIR = process.env.ATTACHMENTS_DIR ?? "/data/attachments";
-const INDEX = `${DIR}/index.json`;
+// Los bitmaps son archivos: cada cuenta tiene su directorio (la 1, la que ya
+// estaba andando, se queda en /data/attachments). El índice es un documento.
+export const dirFor = attachmentsDir;
 
 // La pantalla del aparato.
 const SCREEN_W = 480;
@@ -87,48 +89,48 @@ type Index = { version: number; items: Attachment[] };
 
 // ---------------------------------------------------------------- índice
 
-async function loadIndex(): Promise<Index> {
-  const idx = await readJsonSafe<Index>(INDEX, { version: 1, items: [] });
+async function loadIndex(accountId: number): Promise<Index> {
+  const idx = await readDoc<Index>(accountId, "attachments", { version: 1, items: [] });
   idx.items ??= [];
   return idx;
 }
 
-function saveIndex(idx: Index): Promise<void> {
-  return writeJsonAtomic(INDEX, idx);
+function saveIndex(accountId: number, idx: Index): Promise<void> {
+  return writeDoc(accountId, "attachments", idx);
 }
 
-export async function listAttachments(ids?: string[]): Promise<Attachment[]> {
-  const idx = await loadIndex();
+export async function listAttachments(accountId: number, ids?: string[]): Promise<Attachment[]> {
+  const idx = await loadIndex(accountId);
   if (!ids) return idx.items;
   return idx.items.filter((a) => ids.includes(a.id));
 }
 
-export async function getAttachment(id: string): Promise<Attachment | null> {
-  const idx = await loadIndex();
+export async function getAttachment(accountId: number, id: string): Promise<Attachment | null> {
+  const idx = await loadIndex(accountId);
   return idx.items.find((a) => a.id === id) ?? null;
 }
 
-export async function deleteAttachment(id: string): Promise<boolean> {
+export async function deleteAttachment(accountId: number, id: string): Promise<boolean> {
   const clean = safeId(id);
   if (!clean) return false;
-  const idx = await loadIndex();
+  const idx = await loadIndex(accountId);
   const before = idx.items.length;
   idx.items = idx.items.filter((a) => a.id !== clean);
   if (idx.items.length === before) return false;
-  await saveIndex(idx);
-  await rm(`${DIR}/${clean}`, { recursive: true, force: true }).catch(() => {});
+  await saveIndex(accountId, idx);
+  await rm(`${dirFor(accountId)}/${clean}`, { recursive: true, force: true }).catch(() => {});
   return true;
 }
 
 // Borra los adjuntos de un viaje que se borró (si no, quedan 96 KB por página
 // tirados en el volumen para siempre).
-export async function deleteAttachmentsOfTrip(tripId: string): Promise<number> {
-  const idx = await loadIndex();
+export async function deleteAttachmentsOfTrip(accountId: number, tripId: string): Promise<number> {
+  const idx = await loadIndex(accountId);
   const mine = idx.items.filter((a) => a.tripId === tripId);
   if (!mine.length) return 0;
   idx.items = idx.items.filter((a) => a.tripId !== tripId);
-  await saveIndex(idx);
-  for (const a of mine) await rm(`${DIR}/${a.id}`, { recursive: true, force: true }).catch(() => {});
+  await saveIndex(accountId, idx);
+  for (const a of mine) await rm(`${dirFor(accountId)}/${a.id}`, { recursive: true, force: true }).catch(() => {});
   return mine.length;
 }
 
@@ -554,11 +556,13 @@ type Built = { idx?: Uint8Array; bmp?: Uint8Array; info: PageInfo };
 export type ProcessResult = { attachment: Attachment };
 
 export async function processUpload(
+  accountId: number,
   name: string,
   mime: string,
   bytes: Uint8Array,
   tripId?: string,
 ): Promise<ProcessResult> {
+  const DIR = dirFor(accountId);
   const id = Date.now().toString(36) + Math.floor(Math.random() * 1296).toString(36).padStart(2, "0");
   const isPdf = bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46;
 
@@ -743,19 +747,19 @@ export async function processUpload(
     at: new Date().toISOString(),
   };
 
-  const idx = await loadIndex();
+  const idx = await loadIndex(accountId);
   if (idx.items.length >= MAX_ATTACHMENTS) {
     await rm(`${DIR}/${id}`, { recursive: true, force: true }).catch(() => {});
     throw new Error(`ya hay ${MAX_ATTACHMENTS} adjuntos guardados: borra alguno antes de subir otro`);
   }
   idx.items.unshift(att);
-  await saveIndex(idx);
+  await saveIndex(accountId, idx);
   return { attachment: att };
 }
 
 // ---------------------------------------------------------------- rutas
 
-export const attachmentApi = new Hono();
+export const attachmentApi = new Hono<AppEnv>();
 
 // El bitmap listo para pintar. Mismo formato que /api/photos/file: BMP de 2 bpp
 // de 480x800, que el aparato dibuja con el pipeline de grises que ya tiene.
@@ -764,7 +768,7 @@ attachmentApi.get("/", async (c) => {
   const page = Math.max(0, Math.min(MAX_PAGES * 2, Number(c.req.query("page") ?? 0) || 0));
   if (!id) return c.json({ ok: false, error: "id required" }, 400);
   try {
-    const bytes = await readFile(`${DIR}/${id}/p${page}.bmp`);
+    const bytes = await readFile(`${dirFor(accountOf(c))}/${id}/p${page}.bmp`);
     return new Response(new Uint8Array(bytes), {
       headers: { "Content-Type": "image/bmp", "Content-Length": String(bytes.length) },
     });
@@ -775,7 +779,7 @@ attachmentApi.get("/", async (c) => {
 
 attachmentApi.get("/info", async (c) => {
   const id = safeId(c.req.query("id"));
-  const att = id ? await getAttachment(id) : null;
+  const att = id ? await getAttachment(accountOf(c), id) : null;
   if (!att) return c.json({ ok: false, error: "not found" }, 404);
   // `text` y `pages` van también en la raíz: es lo que lee el aparato, que
   // guarda esta misma respuesta al lado del bitmap para poder mostrarla sin WiFi.
@@ -784,20 +788,20 @@ attachmentApi.get("/info", async (c) => {
 
 attachmentApi.get("/list", async (c) => {
   const tripId = (c.req.query("trip") ?? "").toString();
-  const all = await listAttachments();
+  const all = await listAttachments(accountOf(c));
   return c.json({ ok: true, attachments: tripId ? all.filter((a) => a.tripId === tripId) : all });
 });
 
 attachmentApi.post("/delete", async (c) => {
   const b = await readBody(c);
-  const ok = await deleteAttachment(safeId(b.id));
+  const ok = await deleteAttachment(accountOf(c), safeId(b.id));
   return ok ? c.json({ ok: true }) : c.json({ ok: false, error: "not found" }, 404);
 });
 
 // Subida desde /board: llega el archivo tal cual (multipart o el cuerpo crudo).
 // Se procesa una sola vez y se devuelve qué se encontró, para que el usuario lo
 // vea en el teléfono antes de salir de casa.
-export const boardAttachment = new Hono();
+export const boardAttachment = new Hono<AppEnv>();
 
 boardAttachment.post("/", async (c) => {
   let name = (c.req.query("name") ?? "").toString().slice(0, 120);
@@ -823,7 +827,7 @@ boardAttachment.post("/", async (c) => {
 
   try {
     const t0 = Date.now();
-    const { attachment } = await processUpload(name || "adjunto", mime, bytes, tripId);
+    const { attachment } = await processUpload(accountOf(c), name || "adjunto", mime, bytes, tripId);
     console.log(
       `adjunto: ${attachment.name} ${bytes.byteLength} B -> ${attachment.pages} páginas, ` +
         `${attachment.codes.length} código(s) en ${Date.now() - t0} ms`,
@@ -843,12 +847,12 @@ boardAttachment.post("/", async (c) => {
 });
 
 // Cuánto ocupa todo en el volumen (se muestra en /board).
-export async function attachmentsUsage(): Promise<{ count: number; bytes: number }> {
-  const idx = await loadIndex();
+export async function attachmentsUsage(accountId: number): Promise<{ count: number; bytes: number }> {
+  const idx = await loadIndex(accountId);
   let bytes = 0;
   for (const a of idx.items) {
     try {
-      const files = await readdir(`${DIR}/${a.id}`);
+      const files = await readdir(`${dirFor(accountId)}/${a.id}`);
       bytes += files.length * 96_070;  // cada página es exactamente ese tamaño
     } catch {}
   }

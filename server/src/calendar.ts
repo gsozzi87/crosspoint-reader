@@ -31,15 +31,17 @@
 //   - `end` de un evento de todo el día es el ÚLTIMO día INCLUIDO (no el
 //     siguiente, como en ICS): es lo que espera cualquiera que lo lea.
 import { Hono } from "hono";
-import { readJsonSafe, serialize, writeAtomicNow } from "./fsjson";
+import { mutateDoc, readDoc } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
 import { readBody } from "./net";
-import { normalizeLang, type Lang } from "./lang";
+import { LANGUAGE_NAME, normalizeLang, type Lang } from "./lang";
+import { chatJson, LlmError } from "./llm";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import {
   addDays, alignToRepeat, diffDays, endOfLocalDay, epochToLocal, expandRepeat, isDateStr, load as loadStore,
   localToEpoch, normalizeRepeat, refreshTimeZone, repeatText, startOfLocalDay, timeZone, todayLocal, type Repeat,
 } from "./store";
 
-const FILE = process.env.CALENDAR_FILE ?? "/data/calendar.json";
 const MAX_OCCURRENCES = 500;
 
 export type CalEvent = {
@@ -128,20 +130,18 @@ function normalizeCalendar(raw: unknown): CalendarFile {
   return { version: 1, events };
 }
 
-export async function loadCalendar(): Promise<CalendarFile> {
-  return normalizeCalendar(await readJsonSafe<unknown>(FILE, null));
+export async function loadCalendar(accountId: number): Promise<CalendarFile> {
+  return normalizeCalendar(await readDoc<unknown>(accountId, "calendar", null));
 }
 
-// Leer-modificar-escribir dentro de la MISMA cola de fsjson que usa
-// writeJsonAtomic: si otro módulo (viajes) escribe el archivo al mismo tiempo,
-// las dos escrituras se ordenan en vez de pisarse. Nunca se cachea el archivo
-// en memoria, justamente porque no somos los únicos que lo escriben.
-async function mutate<T>(fn: (cal: CalendarFile) => T): Promise<T> {
-  return serialize(FILE, async () => {
-    const cal = normalizeCalendar(await readJsonSafe<unknown>(FILE, null));
+// Leer-modificar-escribir sin carreras (`mutateDoc` de fsjson): si otro módulo
+// (viajes) escribe el calendario al mismo tiempo, las dos escrituras se ordenan
+// en vez de pisarse. Nunca se cachea en memoria, justamente porque no somos los
+// únicos que lo escriben.
+async function mutate<T>(accountId: number, fn: (cal: CalendarFile) => T): Promise<T> {
+  return mutateDoc(accountId, "calendar", normalizeCalendar, (cal) => {
     const out = fn(cal);
     cal.events.sort((a, b) => a.start.localeCompare(b.start));
-    await writeAtomicNow(FILE, JSON.stringify(cal, null, 2));
     return out;
   });
 }
@@ -231,8 +231,8 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
 }
 
 // Los recordatorios de store.ts se PROYECTAN acá: se leen, no se copian.
-async function expandReminders(from: string, to: string, lang: Lang, out: Occurrence[]): Promise<void> {
-  const store = await loadStore();
+async function expandReminders(accountId: number, from: string, to: string, lang: Lang, out: Occurrence[]): Promise<void> {
+  const store = await loadStore(accountId);
   for (const r of store.reminders) {
     if (r.done || !r.dueAt) continue;
     const date = r.dueAt.slice(0, 10);
@@ -267,14 +267,14 @@ async function expandReminders(from: string, to: string, lang: Lang, out: Occurr
 }
 
 // Todo lo que cae en [from, to], ordenado por día y hora.
-export async function occurrencesBetween(from: string, to: string, lang: Lang): Promise<{ items: Occurrence[]; truncated: boolean }> {
-  const cal = await loadCalendar();
+export async function occurrencesBetween(accountId: number, from: string, to: string, lang: Lang): Promise<{ items: Occurrence[]; truncated: boolean }> {
+  const cal = await loadCalendar(accountId);
   const out: Occurrence[] = [];
   let full = false;
   for (const ev of cal.events) {
     if (!expandEvent(ev, from, to, lang, out)) { full = true; break; }
   }
-  if (!full) await expandReminders(from, to, lang, out);
+  if (!full) await expandReminders(accountId, from, to, lang, out);
   out.sort((a, b) =>
     a.date.localeCompare(b.date) ||
     (a.allDay === b.allDay ? (a.time || "").localeCompare(b.time || "") : a.allDay ? -1 : 1) ||
@@ -295,7 +295,7 @@ export function daySummary(items: Occurrence[]): { date: string; count: number; 
 
 // ── Rutas ───────────────────────────────────────────────────────────────────
 
-export const calendar = new Hono();
+export const calendar = new Hono<AppEnv>();
 
 function rangeOf(fromRaw: string, toRaw: string): { from: string; to: string } {
   // Sin rango: el mes de hoy. Tope de 400 días para que nadie pida diez años.
@@ -309,10 +309,11 @@ function rangeOf(fromRaw: string, toRaw: string): { from: string; to: string } {
 }
 
 calendar.get("/", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const { from, to } = rangeOf(c.req.query("from") ?? "", c.req.query("to") ?? "");
-  const { items, truncated } = await occurrencesBetween(from, to, lang);
+  const { items, truncated } = await occurrencesBetween(acc, from, to, lang);
   const summary = daySummary(items);
   // Un mes sin nada igual lleva un día con count 0: el aparato saca de ahí de
   // qué mes es la respuesta cuando pide sin rango (sin reloj no sabe la fecha),
@@ -332,17 +333,19 @@ calendar.get("/", async (c) => {
 });
 
 calendar.get("/day", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const date = isDateStr(c.req.query("date") ?? "") ? (c.req.query("date") as string) : todayLocal();
-  const { items } = await occurrencesBetween(date, date, lang);
+  const { items } = await occurrencesBetween(acc, date, date, lang);
   return c.json({ ok: true, date, tz: timeZone(), count: items.length, items });
 });
 
 // Alta y edición. Acepta {date, time, endTime} (lo cómodo para un formulario) o
 // {start, end} ya armados.
 calendar.post("/event", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const b = await readBody(c);
   const title = (b.title ?? "").toString().trim().slice(0, 200);
@@ -358,7 +361,7 @@ calendar.post("/event", async (c) => {
   // Con repetición semanal el evento arranca el primer día que corresponde.
   const first = alignToRepeat(date, repeat);
   const span = Math.max(0, diffDays(endDate, date));
-  const ev = await mutate((cal) => {
+  const ev = await mutate(acc, (cal) => {
     const id = Math.floor(Number(b.id));
     const existing = Number.isFinite(id) && id > 0 ? cal.events.find((e) => e.id === id) : undefined;
     if (Number.isFinite(id) && id > 0 && !existing) return null;
@@ -387,7 +390,7 @@ calendar.post("/event/delete", async (c) => {
   const b = await readBody(c);
   const id = Math.floor(Number(b.id));
   if (!Number.isFinite(id) || id <= 0) return c.json({ ok: false, error: "id required" }, 400);
-  const found = await mutate((cal) => {
+  const found = await mutate(accountOf(c), (cal) => {
     const before = cal.events.length;
     cal.events = cal.events.filter((e) => e.id !== id);
     return cal.events.length !== before;
@@ -398,7 +401,7 @@ calendar.post("/event/delete", async (c) => {
 // La repetición en una línea, para mostrarla mientras se edita.
 //   GET /api/calendar/repeat?kind=weekly&days=2,4&interval=1&until=2026-12-31&date=2026-09-08&lang=es
 calendar.get("/repeat", async (c) => {
-  await refreshTimeZone();
+  await refreshTimeZone(accountOf(c));
   const lang = normalizeLang(c.req.query("lang"));
   const daysRaw = (c.req.query("days") ?? "").split(",").map((d) => Number(d)).filter((d) => Number.isInteger(d));
   const untilRaw = c.req.query("until") ?? "";
@@ -410,4 +413,151 @@ calendar.get("/repeat", async (c) => {
   });
   const date = isDateStr(c.req.query("date") ?? "") ? (c.req.query("date") as string) : todayLocal();
   return c.json({ ok: true, repeat, text: repeatText(repeat, date, lang), first: alignToRepeat(date, repeat) });
+});
+
+// ── Dictar el día ───────────────────────────────────────────────────────────
+//
+//   POST /api/calendar/dictate   (Bearer del aparato, lo chequea api.ts)
+//   body: { text: "a las 8 gimnasio, a las 9 reunión con Ana, a las 13 almuerzo",
+//           date: "2026-09-10",   // opcional: sin él, hoy en la zona del lugar guardado
+//           lang: "es" }
+//   200: { ok: true,
+//          added: [{ id: 12, start: "2026-09-10T08:00", title: "Gimnasio", allDay: false }],
+//          reply: "Cargué 3 actividades." }        // frase corta para leerla por voz
+//   4xx/5xx: { ok: false, error }
+//
+// El usuario dicta el día entero de una vez y el modelo lo parte en actividades
+// con hora. Lo que no traiga hora queda como evento de todo el día. Editar y
+// borrar son los de siempre (POST /api/calendar/event con `id`, /event/delete).
+
+const MAX_DICTATE_CHARS = 4_000;
+const MAX_DICTATE_ITEMS = 40;
+
+const DICTATE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["items"],
+  properties: {
+    items: {
+      type: "array",
+      description: "Una entrada por actividad, en el orden en que las dijo.",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["time", "endTime", "title"],
+        properties: {
+          time: {
+            type: ["string", "null"],
+            description: "Hora de inicio como HH:MM en 24 horas ('a las 8' de la mañana = 08:00, 'a la una' = 13:00). null si no dijo hora.",
+          },
+          endTime: {
+            type: ["string", "null"],
+            description: "Hora de fin como HH:MM si la dijo ('de 8 a 9', 'hasta las 10'); null si no la dijo.",
+          },
+          title: { type: "string", description: "Qué es la actividad, en pocas palabras y sin la hora adentro." },
+        },
+      },
+    },
+  },
+} as const;
+
+// La frase que lee el aparato por el parlante. Se arma acá y no la escribe el
+// modelo: es una sola línea con un número, no vale una llamada más ni el riesgo
+// de que conteste otra cosa.
+function dictateReply(n: number, lang: Lang): string {
+  if (!n) {
+    return {
+      es: "No entendí ninguna actividad.", en: "I didn't catch any activity.",
+      fr: "Je n'ai compris aucune activité.", de: "Ich habe keine Aktivität verstanden.",
+      pt: "Não entendi nenhuma atividade.", ru: "Я не понял ни одного дела.",
+    }[lang];
+  }
+  const one = n === 1;
+  switch (lang) {
+    case "en": return `Added ${n} ${one ? "activity" : "activities"}.`;
+    case "fr": return `J'ai ajouté ${n} ${one ? "activité" : "activités"}.`;
+    case "de": return `${n} ${one ? "Aktivität" : "Aktivitäten"} eingetragen.`;
+    case "pt": return `Adicionei ${n} ${one ? "atividade" : "atividades"}.`;
+    case "ru": {
+      const mod10 = n % 10;
+      const mod100 = n % 100;
+      const word = mod10 === 1 && mod100 !== 11 ? "дело"
+        : mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14) ? "дела" : "дел";
+      return `Добавил ${n} ${word}.`;
+    }
+    default: return `Cargué ${n} ${one ? "actividad" : "actividades"}.`;
+  }
+}
+
+function hhmm(v: unknown): string | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(v ?? "").trim());
+  if (!m) return null;
+  const h = Number(m[1]);
+  const mi = Number(m[2]);
+  if (h < 0 || h > 23 || mi < 0 || mi > 59) return null;
+  return `${String(h).padStart(2, "0")}:${m[2]}`;
+}
+
+function capFirst(s: string): string {
+  return s ? s[0].toLocaleUpperCase() + s.slice(1) : s;
+}
+
+calendar.post("/dictate", async (c) => {
+  await refreshTimeZone(accountOf(c));
+  const b = await readBody(c);
+  const lang = normalizeLang(b.lang ?? c.req.query("lang"));
+  const text = (b.text ?? "").toString().trim().slice(0, MAX_DICTATE_CHARS);
+  if (!text) return c.json({ ok: false, error: "text required" }, 400);
+  const date = isDateStr(b.date) ? (b.date as string) : todayLocal();
+
+  let items: { time?: unknown; endTime?: unknown; title?: unknown }[];
+  try {
+    const raw = await chatJson<{ items?: unknown }>(
+      {
+        system: [
+          "El usuario dicta de un tirón todo lo que va a hacer un día y vos lo partís en actividades sueltas.",
+          `El día es el ${date} y la zona es ${timeZone()}.`,
+          "Devolvés JSON según el esquema: una entrada por actividad, en el orden en que las dijo.",
+          "El texto llega transcripto de voz y puede traer errores de reconocimiento: interpretalo con sentido",
+          "común, no comentes la transcripción y no inventes actividades que no dijo.",
+          "Las horas van en formato de 24 horas. Si dice una hora suelta, usá el sentido común del día",
+          "('a las 8' es la mañana, 'a las 9 de la noche' son las 21:00, 'a la una' es 13:00, 'al mediodía' es 12:00).",
+          "Si de una actividad no dice hora, time va en null (queda como algo del día, sin hora).",
+          "endTime solo si dijo hasta cuándo ('de 8 a 9', 'hasta las 10'); si no, null.",
+          "El título va sin la hora adentro y en pocas palabras.",
+          `Los títulos van en ${LANGUAGE_NAME[lang]}, tal como los dijo el usuario.`,
+        ].join(" "),
+        user: text,
+        maxTokens: 1024,
+        lang,
+      },
+      DICTATE_SCHEMA,
+    );
+    items = Array.isArray(raw.items) ? (raw.items as typeof items) : [];
+  } catch (err) {
+    if (err instanceof LlmError) return c.json({ ok: false, error: err.message, code: err.code }, err.status as ContentfulStatusCode);
+    console.error("calendar dictate:", err);
+    return c.json({ ok: false, error: String(err).slice(0, 200), code: "internal" }, 500);
+  }
+
+  // Un solo leer-modificar-escribir para todas: el archivo lo escriben también
+  // los viajes, y una escritura por actividad es una carrera por cada renglón.
+  const added = await mutate(accountOf(c), (cal) => {
+    const out: { id: number; start: string; title: string; allDay: boolean }[] = [];
+    for (const it of items.slice(0, MAX_DICTATE_ITEMS)) {
+      const title = capFirst(String(it.title ?? "").trim().replace(/\s+/g, " ").slice(0, 200));
+      if (!title) continue;
+      const time = hhmm(it.time);
+      const endTime = hhmm(it.endTime);
+      const ev: CalEvent = time
+        ? { id: nextEventId(cal), title, start: `${date}T${time}`, end: `${date}T${endTime && endTime > time ? endTime : time}`, allDay: false }
+        : { id: nextEventId(cal), title, start: date, end: date, allDay: true };
+      cal.events.push(ev);
+      out.push({ id: ev.id, start: ev.start, title: ev.title, allDay: ev.allDay });
+    }
+    return out;
+  });
+
+  console.log(`calendar dictate ${date}: ${added.length} de "${text.slice(0, 120)}"`);
+  return c.json({ ok: true, added, reply: dictateReply(added.length, lang) });
 });

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <Icon.h>
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -104,10 +106,6 @@ struct ThemeMetrics {
   bool popupProgressFillInverted;
   bool popupProgressOutlineInverted;
 
-  int optionPopupItemSpacing;
-  int optionPopupInnerPadding;
-  int optionPopupSelectionVPadding;
-  int optionPopupDialogSideMargin;
 
   int textFieldHorizontalPadding;
   int textFieldNormalThickness;
@@ -206,10 +204,6 @@ constexpr ThemeMetrics values = {.batteryWidth = 15,
                                  .popupProgressClampPercent = false,
                                  .popupProgressFillInverted = true,
                                  .popupProgressOutlineInverted = true,
-                                 .optionPopupItemSpacing = 6,
-                                 .optionPopupInnerPadding = 16,
-                                 .optionPopupSelectionVPadding = 4,
-                                 .optionPopupDialogSideMargin = 20,
                                  .textFieldHorizontalPadding = 6,
                                  .textFieldNormalThickness = 1,
                                  .textFieldCursorThickness = 3,
@@ -245,6 +239,12 @@ class BaseTheme {
   virtual void drawButtonMenu(GfxRenderer& renderer, Rect rect, int buttonCount, int selectedIndex,
                               const std::function<std::string(int index)>& buttonLabel,
                               const std::function<UIIcon(int index)>& rowIcon) const;
+  // Compose the message popup into the framebuffer WITHOUT refreshing the
+  // panel; returns its rect. For hosts that paint more after it (hints) and
+  // refresh once themselves.
+  virtual Rect composePopup(const GfxRenderer& renderer, const char* message) const;
+  // composePopup() + one refresh. Callers that block right after (silent
+  // restart, "Loading..." before a long operation) rely on it reaching the panel.
   virtual Rect drawPopup(const GfxRenderer& renderer, const char* message) const;
   virtual void fillPopupProgress(const GfxRenderer& renderer, const Rect& layout, const int progress) const;
   void drawStatusBar(GfxRenderer& renderer, const float bookProgress, const int currentPage, const int pageCount,
@@ -255,6 +255,13 @@ class BaseTheme {
   virtual void drawTextField(const GfxRenderer& renderer, Rect rect, const int textWidth, bool cursorMode = false,
                              int contentStartX = 0, int contentWidth = 0) const;
   virtual bool showsFileIcons() const { return false; }
+
+  // Dibuja un freeink::Icon (1 bpp, bit 0 = tinta) pixel a pixel. Va por
+  // drawPixel y no por drawIcon porque el layout de bits del SDK no es el que
+  // espera drawIcon, y porque asi sale bien en cualquier orientacion. Vivia
+  // copiado en cinco archivos; aca queda uno solo.
+  static void drawIconBitmap(const GfxRenderer& renderer, const freeink::Icon& icon, int x, int y,
+                             bool ink = true);
 
   // Shared constants and helpers for battery drawing (used by all themes)
   static constexpr int batteryPercentSpacing = 4;

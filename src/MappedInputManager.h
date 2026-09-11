@@ -50,6 +50,12 @@ class MappedInputManager {
   // One-shot threshold event while the button is down; consumes its release.
   bool wasLongPressed(Button button, unsigned long thresholdMs) const;
   bool consumeSuppressedRelease() const;
+  // A button that is being held for a reason the app already acted on (the OK
+  // hold that woke the device from deep sleep) must not become an in-app
+  // gesture: this marks its long-press as fired (wasLongPressed stays false
+  // until it is released) and, while it is still down, swallows the release
+  // that ends the hold. No-op on the release side when it is already up.
+  void absorbHeldButton(Button button) const;
   bool isPressed(Button button) const;
   bool hasTouch() const;
   bool wasScreenTapped(int& x, int& y) const;

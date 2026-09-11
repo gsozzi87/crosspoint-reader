@@ -9,6 +9,7 @@
 #include <cstdio>
 
 #include "CrossPointSettings.h"
+#include "activities/ListStyle.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/DictHtmlPages.h"
@@ -21,8 +22,26 @@ namespace {
 // (far below this); only pathological unbreakable tokens are split at this cap.
 constexpr size_t MAX_LINE_BYTES = 191;
 
-// Body text left/right inset, matching the reader's default feel.
-constexpr int SIDE_PADDING = 20;
+// Margen lateral ÚNICO de la pantalla (el mismo que las listas).
+constexpr int SIDE_PADDING = listui::SIDE;
+
+// Encabezado: aire de arriba, aire entre la última línea del título y la regla,
+// y aire entre la regla y el primer renglón del cuerpo. Todo en la grilla de 8.
+constexpr int TITLE_TOP = 16;
+constexpr int TITLE_RULE_GAP = 6;
+constexpr int BODY_TOP_GAP = 16;
+constexpr int MAX_TITLE_LINES = 2;
+
+// Paso de renglón del cuerpo. Los jueces midieron los tres visores de las
+// maquetas y el cómodo fue el de 40: con el ~34 que daba la cara de lectura el
+// bloque se lee como un párrafo apretado y se pierde el renglón.
+constexpr int BODY_LINE_STEP = 40;
+
+// Aire entre el último renglón y el paginador.
+constexpr int PAGER_GAP = 8;
+
+// Máximo de bytes del número de versículo ("119" y de sobra).
+constexpr uint16_t MAX_VERSE_DIGITS = 3;
 
 // Styled-path ceiling: the laid-out Pages keep the whole definition resident
 // (TextBlock arenas ≈ text + ~7 bytes/word plus per-line objects), roughly
@@ -38,6 +57,9 @@ void DictionaryDefinitionActivity::onEnter() {
   // Normalize StarDict multi-type separators so the wrap loop and the
   // C-string font APIs below both see the whole definition.
   std::replace(definition.begin(), definition.end(), '\0', '\n');
+  // El título va primero: de cuántos renglones ocupe depende dónde empieza el
+  // cuerpo, y de eso dependen el corte de renglones y la cuenta de páginas.
+  layoutTitle();
   if (!(htmlDefinition && definition.size() <= MAX_STYLED_HTML_BYTES && layoutHtmlPages())) {
     definition = htmlToPlainText(definition);
     wrapText();
@@ -55,17 +77,52 @@ void DictionaryDefinitionActivity::onExit() {
   }
 }
 
-DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() const {
+int DictionaryDefinitionActivity::columnWidth() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const auto orientation = renderer.getOrientation();
   const bool isLandscape = orientation == GfxRenderer::Orientation::LandscapeClockwise ||
                            orientation == GfxRenderer::Orientation::LandscapeCounterClockwise;
-  const bool isInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
   const int hintGutterWidth = isLandscape ? metrics.sideButtonHintsWidth : 0;
-  const int topArea = (isInverted ? metrics.buttonHintsHeight : 0) + metrics.topPadding + metrics.headerHeight;
-  const int bottomArea = metrics.buttonHintsHeight + metrics.verticalSpacing;
-  return {renderer.getScreenWidth() - hintGutterWidth - 2 * SIDE_PADDING,
-          renderer.getScreenHeight() - topArea - bottomArea};
+  return renderer.getScreenWidth() - hintGutterWidth - 2 * SIDE_PADDING;
+}
+
+// El título de esta pantalla es una pregunta dictada o una referencia bíblica:
+// puede ser largo. Entra en dos renglones de UI_14 y lo que sobre se corta con
+// puntos suspensivos, que es mejor que empujar el cuerpo hacia abajo sin techo.
+void DictionaryDefinitionActivity::layoutTitle() {
+  titleLines.clear();
+  if (headword.empty()) return;
+  const int width = columnWidth();
+  if (width <= 0) return;
+  titleLines = renderer.wrappedText(UI_14_FONT_ID, headword.c_str(), width, MAX_TITLE_LINES);
+}
+
+int DictionaryDefinitionActivity::headerHeight() const {
+  if (titleLines.empty()) return TITLE_TOP;
+  return TITLE_TOP + static_cast<int>(titleLines.size()) * renderer.getLineHeight(UI_14_FONT_ID) + TITLE_RULE_GAP + 1 +
+         BODY_TOP_GAP;
+}
+
+int DictionaryDefinitionActivity::pagerTop() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const bool isInverted = renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
+  // Dado vuelta la barra de botones queda arriba, así que abajo solo va el
+  // paginador; el hueco de los hints ya lo descuenta bodyArea() por arriba.
+  // El verticalSpacing va igual en las dos orientaciones: es el margen de abajo
+  // de la pantalla, no el aire de los hints.
+  const int hints = isInverted ? 0 : metrics.buttonHintsHeight;
+  return renderer.getScreenHeight() - hints - metrics.verticalSpacing - renderer.getLineHeight(UI_10_FONT_ID);
+}
+
+int DictionaryDefinitionActivity::footerHeight() const {
+  return renderer.getScreenHeight() - pagerTop() + PAGER_GAP;
+}
+
+DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const bool isInverted = renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
+  const int topArea = (isInverted ? metrics.buttonHintsHeight : 0) + headerHeight();
+  return {columnWidth(), renderer.getScreenHeight() - topArea - footerHeight()};
 }
 
 // Styled path: lay the HTML definition out through the EPUB chapter parser
@@ -85,18 +142,23 @@ bool DictionaryDefinitionActivity::layoutHtmlPages() {
   return true;
 }
 
-int DictionaryDefinitionActivity::measureSpan(const int fontId, const char* text, size_t len) const {
+int DictionaryDefinitionActivity::measureSpan(const int fontId, const char* text, size_t len,
+                                              const EpdFontFamily::Style style) const {
   char buf[MAX_LINE_BYTES + 1];
   len = std::min(len, MAX_LINE_BYTES);
   memcpy(buf, text, len);
   buf[len] = '\0';
-  return renderer.getTextAdvanceX(fontId, buf, EpdFontFamily::REGULAR);
+  return renderer.getTextAdvanceX(fontId, buf, style);
 }
 
 // Greedy word-wrap of `definition` into byte spans. '\n' breaks lines (blank
 // lines survive as paragraph spacing; NULs from multi-type StarDict entries
 // were normalized to newlines in onEnter); '\r' is dropped by treating it as
 // a space at a token edge.
+//
+// En modo Biblia, el número que abre cada versículo se mide (y después se
+// dibuja) con SMALL en negrita: es el dato que deja seguir una cita sin que un
+// número del tamaño del texto corte la lectura.
 void DictionaryDefinitionActivity::wrapText() {
   lines.clear();
   lines.reserve(definition.size() / 32 + 8);
@@ -110,17 +172,22 @@ void DictionaryDefinitionActivity::wrapText() {
   const BodyArea body = bodyArea();
   const int maxWidth = body.width;
   const int spaceWidth = renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR);
-  const int lineHeight = renderer.getLineHeight(fontId);
-  linesPerPage = std::max(1, body.height / lineHeight);
+  // 40 px salvo que la cara elegida sea más alta: ahí manda la fuente, o los
+  // renglones se pisan.
+  lineStep = std::max(BODY_LINE_STEP, renderer.getLineHeight(fontId));
+  linesPerPage = std::max(1, body.height / lineStep);
 
   const char* text = definition.c_str();
   const uint32_t n = static_cast<uint32_t>(definition.size());
   uint32_t lineStart = 0;
   uint32_t lineEnd = 0;  // one past the last token byte on the current line
   int lineWidth = 0;
+  uint16_t verseLen = 0;      // número de versículo del renglón que se está armando
+  bool paragraphStart = true;  // el próximo token abre un versículo
 
   const auto flushLine = [&](uint32_t nextStart) {
-    lines.push_back({lineStart, static_cast<uint16_t>(lineEnd - lineStart)});
+    lines.push_back({lineStart, static_cast<uint16_t>(lineEnd - lineStart), verseLen});
+    verseLen = 0;
     lineStart = nextStart;
     lineEnd = nextStart;
     lineWidth = 0;
@@ -131,6 +198,7 @@ void DictionaryDefinitionActivity::wrapText() {
     const char c = text[i];
     if (c == '\n' || c == '\0') {
       flushLine(i + 1);
+      paragraphStart = true;
       i++;
       continue;
     }
@@ -151,12 +219,30 @@ void DictionaryDefinitionActivity::wrapText() {
     // continuation byte, so this is a no-op there.
     while (i - tokenStart > 1 && (text[i] & 0xC0) == 0x80) i--;
     const uint32_t tokenLen = i - tokenStart;
-    const int tokenWidth = measureSpan(fontId, text + tokenStart, tokenLen);
+
+    // ¿Es el número que abre un versículo? Solo si abre el párrafo, abre el
+    // renglón, son todos dígitos y hay texto detrás (un "3" suelto al final no
+    // es una cita, es parte del texto).
+    bool isVerse = false;
+    if (verseNumbers && paragraphStart && lineEnd == lineStart && tokenLen > 0 && tokenLen <= MAX_VERSE_DIGITS) {
+      isVerse = true;
+      for (uint32_t d = 0; d < tokenLen; d++) {
+        if (text[tokenStart + d] < '0' || text[tokenStart + d] > '9') {
+          isVerse = false;
+          break;
+        }
+      }
+      if (isVerse && (i >= n || text[i] == '\n' || text[i] == '\0')) isVerse = false;
+    }
+    paragraphStart = false;
+    const int tokenWidth = isVerse ? measureSpan(SMALL_FONT_ID, text + tokenStart, tokenLen, EpdFontFamily::BOLD)
+                                   : measureSpan(fontId, text + tokenStart, tokenLen, EpdFontFamily::REGULAR);
 
     if (lineEnd == lineStart) {
       lineStart = tokenStart;
       lineEnd = tokenStart + tokenLen;
       lineWidth = tokenWidth;
+      if (isVerse) verseLen = static_cast<uint16_t>(tokenLen);
     } else if (lineWidth + spaceWidth + tokenWidth <= maxWidth &&
                tokenStart + tokenLen - lineStart <= UINT16_MAX) {  // span len must fit Line::len
       lineEnd = tokenStart + tokenLen;
@@ -169,13 +255,15 @@ void DictionaryDefinitionActivity::wrapText() {
 
     // An unbreakable token wider than the screen is now alone on the line
     // (any previous content was flushed above): split it at the widest
-    // fitting UTF-8 boundary and carry the remainder forward.
+    // fitting UTF-8 boundary and carry the remainder forward. Un número de
+    // versículo nunca llega acá (mide tres dígitos), así que el corte puede
+    // medir con la cara de lectura sin más.
     while (lineWidth > maxWidth && lineEnd - lineStart > 1) {
       const uint32_t len = lineEnd - lineStart;
       uint32_t lastFit = 0;
       for (uint32_t f = 1; f <= len; f++) {
         if (f == len || (text[lineStart + f] & 0xC0) != 0x80) {  // codepoint boundary
-          if (measureSpan(fontId, text + lineStart, f) > maxWidth) break;
+          if (measureSpan(fontId, text + lineStart, f, EpdFontFamily::REGULAR) > maxWidth) break;
           lastFit = f;
         }
       }
@@ -189,7 +277,7 @@ void DictionaryDefinitionActivity::wrapText() {
       lineEnd = rest;
       flushLine(rest);
       lineEnd = rest + (len - lastFit);
-      lineWidth = measureSpan(fontId, text + lineStart, lineEnd - lineStart);
+      lineWidth = measureSpan(fontId, text + lineStart, lineEnd - lineStart, EpdFontFamily::REGULAR);
     }
   }
   if (lineEnd > lineStart) flushLine(n);
@@ -248,16 +336,31 @@ void DictionaryDefinitionActivity::drawBody(const int fontId, const int x, const
     pages[currentPage]->render(renderer, fontId, x, startY);
     return;
   }
-  const int lineHeight = renderer.getLineHeight(fontId);
   char buf[MAX_LINE_BYTES + 1];
   const int firstLine = currentPage * linesPerPage;
   const int lastLine = std::min(firstLine + linesPerPage, static_cast<int>(lines.size()));
+  const int spaceWidth = renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR);
+  // El número de versículo se apoya en la MISMA línea de base que el texto: por
+  // eso baja la diferencia de ascendentes en vez de dibujarse en el tope.
+  const int baselineDrop = renderer.getFontAscenderSize(fontId) - renderer.getFontAscenderSize(SMALL_FONT_ID);
   for (int i = firstLine; i < lastLine; i++) {
     if (lines[i].len == 0) continue;
     const size_t len = std::min(static_cast<size_t>(lines[i].len), MAX_LINE_BYTES);
     memcpy(buf, definition.c_str() + lines[i].start, len);
     buf[len] = '\0';
-    renderer.drawText(fontId, x, startY + (i - firstLine) * lineHeight, buf);
+    const int y = startY + (i - firstLine) * lineStep;
+    size_t offset = 0;
+    int textX = x;
+    if (lines[i].verseLen > 0 && lines[i].verseLen < len) {
+      char number[MAX_VERSE_DIGITS + 1];
+      memcpy(number, buf, lines[i].verseLen);
+      number[lines[i].verseLen] = '\0';
+      renderer.drawText(SMALL_FONT_ID, textX, y + baselineDrop, number, true, EpdFontFamily::BOLD);
+      textX += renderer.getTextAdvanceX(SMALL_FONT_ID, number, EpdFontFamily::BOLD) + spaceWidth;
+      offset = lines[i].verseLen;
+      while (offset < len && (buf[offset] == ' ' || buf[offset] == '\t')) offset++;
+    }
+    renderer.drawText(fontId, textX, y, buf + offset);
   }
 }
 
@@ -271,37 +374,41 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   const bool isInverted = orientation == GfxRenderer::Orientation::PortraitInverted;
   const int hintGutterWidth = (isLandscapeCw || isLandscapeCcw) ? metrics.sideButtonHintsWidth : 0;
   const int contentX = isLandscapeCw ? hintGutterWidth : 0;
-  const int contentWidth = renderer.getScreenWidth() - hintGutterWidth;
   const int contentY = isInverted ? metrics.buttonHintsHeight : 0;
+  const int x = contentX + SIDE_PADDING;
+  const int w = columnWidth();
 
-  // Header: matched headword left, page counter right.
-  const int headerY = contentY + metrics.topPadding + 10;
-  renderer.drawText(UI_12_FONT_ID, contentX + SIDE_PADDING, headerY, headword.c_str(), true, EpdFontFamily::BOLD);
-  if (totalPages > 1) {
-    char counter[16];
-    snprintf(counter, sizeof(counter), "%d/%d", currentPage + 1, totalPages);
-    const int counterWidth = renderer.getTextWidth(UI_10_FONT_ID, counter);
-    renderer.drawText(UI_10_FONT_ID, contentX + contentWidth - SIDE_PADDING - counterWidth, headerY, counter);
+  // Encabezado: el título en UI_14 (la pregunta dictada, la referencia del
+  // capítulo, el nombre de la nota) y una regla de 1 px que lo separa del
+  // cuerpo. Nada de marcos ni de barras rellenas.
+  int titleY = contentY + TITLE_TOP;
+  for (const std::string& line : titleLines) {
+    renderer.drawText(UI_14_FONT_ID, x, titleY, line.c_str());
+    titleY += renderer.getLineHeight(UI_14_FONT_ID);
   }
+  if (!titleLines.empty()) listui::rule(renderer, x, titleY + TITLE_RULE_GAP, w);
 
   // Body: two-pass draw inside a prewarm scope (same pattern as the reader's
   // renderContents) so SD-card font glyphs load from SD in one batch instead
   // of one on-demand overflow read per character on every page turn.
   const int fontId = SETTINGS.getReaderFontId();
-  const int bodyStartY = contentY + metrics.topPadding + metrics.headerHeight;
-  const int bodyX = contentX + SIDE_PADDING;
+  const int bodyStartY = contentY + headerHeight();
   auto* fcm = renderer.getFontCacheManager();
   auto scope = fcm->createPrewarmScope();
-  drawBody(fontId, bodyX, bodyStartY);  // scan pass: records codepoints only
+  drawBody(fontId, x, bodyStartY);  // scan pass: records codepoints only
   scope.endScanAndPrewarm();
-  drawBody(fontId, bodyX, bodyStartY);
+  drawBody(fontId, x, bodyStartY);
 
-  const auto labels =
-      mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? "<" : ""), (currentPage + 1 < totalPages ? ">" : ""));
+  // Paginador: "Página 2 de 5" y la barra que se llena. La palabra "Página" es
+  // lo que explica la barra; el folio "2 / 5" en una esquina no lo entendía nadie.
+  listui::pager(renderer, x, pagerTop(), w, currentPage + 1, totalPages);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? tr(STR_DIR_UP) : ""),
+                                            (currentPage + 1 < totalPages ? tr(STR_DIR_DOWN) : ""));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // Esta pantalla es para leer (capítulos de la Biblia, respuestas, noticias),
   // así que el texto sale por el pipeline de grises igual que en el lector: la
   // base en blanco y negro y encima las dos pasadas de suavizado. Solo se
   // vuelve a dibujar el cuerpo; el encabezado y los botones quedan de la base.
-  GrayText::displayPage(renderer, partialCount, [&] { drawBody(fontId, bodyX, bodyStartY); });
+  GrayText::displayPage(renderer, partialCount, [&] { drawBody(fontId, x, bodyStartY); });
 }

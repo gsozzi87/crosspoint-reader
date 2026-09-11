@@ -7,7 +7,9 @@
 
 #include <cstdio>
 
+#include "GameUi.h"
 #include "MappedInputManager.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -402,7 +404,7 @@ void SudokuActivity::drawBoard(const int gridLeft, const int gridTop, const int 
     const int x = gridLeft + (i % 9) * cell;
     const int y = gridTop + (i / 9) * cell;
     const bool selected = i == highlight;
-    if (selected) renderer.fillRoundedRect(x + 3, y + 3, cell - 6, cell - 6, 6, Color::Black);
+    if (selected) drawSelectionRow(renderer, x + 3, y + 3, cell - 6, cell - 6, 6);
 
     const uint8_t v = puzzle[i];
     if (v != 0) {
@@ -410,10 +412,10 @@ void SudokuActivity::drawBoard(const int gridLeft, const int gridTop, const int 
       const auto style = isGiven ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
       char buf[2] = {static_cast<char>('0' + v), '\0'};
       const int width = renderer.getTextWidth(UI_12_FONT_ID, buf, style);
-      renderer.drawText(UI_12_FONT_ID, x + (cell - width) / 2, y + (cell - textHeight) / 2, buf, !selected, style);
+      renderer.drawText(UI_12_FONT_ID, x + (cell - width) / 2, y + (cell - textHeight) / 2, buf, SELECTION_INK, style);
       // Choque: triangulito en la esquina de arriba a la izquierda.
       if (!isGiven && conflicts(i)) {
-        for (int k = 0; k < 9; ++k) renderer.fillRect(x + 5, y + 5 + k, 9 - k, 1, !selected);
+        for (int k = 0; k < 9; ++k) renderer.fillRect(x + 5, y + 5 + k, 9 - k, true);
       }
     }
   }
@@ -427,27 +429,31 @@ void SudokuActivity::drawPicker(const int gridLeft, const int cell, const int y)
     const int x = gridLeft + (d - 1) * cell;
     const bool selected = pickOption == d - 1;
     if (selected) {
-      renderer.fillRoundedRect(x + 2, y, cell - 4, boxHeight, 6, Color::Black);
+      drawSelectionRow(renderer, x + 2, y, cell - 4, boxHeight, 6);
     } else {
       renderer.drawRoundedRect(x + 2, y, cell - 4, boxHeight, 1, 6, true);
     }
     char buf[2] = {static_cast<char>('0' + d), '\0'};
     const int width = renderer.getTextWidth(UI_12_FONT_ID, buf, EpdFontFamily::BOLD);
-    renderer.drawText(UI_12_FONT_ID, x + (cell - width) / 2, y + (boxHeight - textHeight) / 2, buf, !selected,
+    renderer.drawText(UI_12_FONT_ID, x + (cell - width) / 2, y + (boxHeight - textHeight) / 2, buf, SELECTION_INK,
                       EpdFontFamily::BOLD);
   }
 
   // Última opción: borrar lo que haya en la celda.
   const int clearY = y + boxHeight + 10;
   const int clearHeight = 44;
+  // Elegida va con el resalte común (pestaña + marco + franjas al costado) y el
+  // texto SIEMPRE en negro sobre blanco. Hasta 1.5.47 se pintaba de negro macizo
+  // con el texto invertido: un manchón del ancho de la grilla, que es lo que más
+  // fantasma deja en el parcial siguiente.
   const bool clearSelected = pickOption == CLEAR_OPTION;
   if (clearSelected) {
-    renderer.fillRoundedRect(gridLeft, clearY, size, clearHeight, 8, Color::Black);
+    drawSelectionRow(renderer, gridLeft, clearY, size, clearHeight, 8);
   } else {
     renderer.drawRoundedRect(gridLeft, clearY, size, clearHeight, 1, 8, true);
   }
   renderer.drawCenteredText(UI_10_FONT_ID, clearY + (clearHeight - renderer.getTextHeight(UI_10_FONT_ID)) / 2,
-                            tr(STR_GAME_EMPTY_CELL), !clearSelected, EpdFontFamily::BOLD);
+                            tr(STR_GAME_EMPTY_CELL), SELECTION_INK, EpdFontFamily::BOLD);
 }
 
 void SudokuActivity::render(RenderLock&&) {
@@ -473,22 +479,22 @@ void SudokuActivity::render(RenderLock&&) {
     for (int i = 0; i < LEVEL_COUNT; ++i) {
       const int y = top + i * rowHeight;
       const bool selected = i == level;
-      if (selected) renderer.fillRoundedRect(20, y, pageWidth - 40, rowHeight - 12, 10, Color::Black);
+      if (selected) drawSelectionRow(renderer, 20, y, pageWidth - 40, rowHeight - 12, 10);
       snprintf(buf, sizeof(buf), "%s %d", tr(STR_GAME_LEVEL), i + 1);
-      renderer.drawText(UI_12_FONT_ID, 40, y + 12, buf, !selected, EpdFontFamily::BOLD);
+      renderer.drawText(UI_12_FONT_ID, 40, y + 12, buf, SELECTION_INK, EpdFontFamily::BOLD);
       // Dificultad en cuadraditos (i + 1 llenos de tres) + cuántas pistas trae.
       const int pipY = y + 42;
       for (int p = 0; p < LEVEL_COUNT; ++p) {
         const int px = 40 + p * 26;
         if (p <= i) {
-          renderer.fillRect(px, pipY, 18, 14, !selected);
+          renderer.fillRect(px, pipY, 18, 14, true);
         } else {
-          renderer.drawRect(px, pipY, 18, 14, 1, !selected);
+          renderer.drawRect(px, pipY, 18, 14, 1, SELECTION_INK);
         }
       }
       snprintf(buf, sizeof(buf), "%d", CLUES[i]);
       const int width = renderer.getTextWidth(UI_10_FONT_ID, buf);
-      renderer.drawText(UI_10_FONT_ID, pageWidth - 40 - width, pipY - 2, buf, !selected);
+      renderer.drawText(UI_10_FONT_ID, pageWidth - 40 - width, pipY - 2, buf, SELECTION_INK);
     }
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
     // Pantalla entera nueva: refresco limpio.
@@ -513,14 +519,20 @@ void SudokuActivity::render(RenderLock&&) {
   const int highlight = (state == State::WON || editable.empty()) ? -1 : editable[cursor];
   drawBoard(gridLeft, gridTop, cell, highlight);
 
-  const int belowGrid = gridTop + gridSize + 18;
+  // Marcadores en UI_14: nivel, jugadas y tiempo son el dato que se mira entre
+  // jugada y jugada, así que no van en la fuente de los pies de página (hasta
+  // 1.5.47 iban en UI_10 y SMALL). Acá van en un solo renglón y no en la franja
+  // de columnas de `gameui::stats`: debajo de la grilla de 9x9 quedan poco más
+  // de 200 px y el selector de dígitos se los come casi todos.
+  const int belowGrid = gridTop + gridSize + gameui::GAP * 2;
+  const int lineH = renderer.getLineHeight(UI_14_FONT_ID);
+  snprintf(buf, sizeof(buf), "%s %d · %s %d · %02lu:%02lu", tr(STR_GAME_LEVEL), level + 1, tr(STR_GAME_MOVES),
+           moves, elapsedS / 60, elapsedS % 60);
+
   if (state == State::WON) {
-    renderer.drawCenteredText(UI_12_FONT_ID, belowGrid, tr(STR_GAME_WON), true, EpdFontFamily::BOLD);
-    snprintf(buf, sizeof(buf), "%s %02lu:%02lu   %s %d", tr(STR_GAME_TIME), elapsedS / 60, elapsedS % 60,
-             tr(STR_GAME_MOVES), moves);
-    renderer.drawCenteredText(UI_10_FONT_ID, belowGrid + 40, buf);
-    snprintf(buf, sizeof(buf), "%s %d", tr(STR_GAME_LEVEL), level + 1);
-    renderer.drawCenteredText(SMALL_FONT_ID, belowGrid + 70, buf);
+    renderer.drawCenteredText(UI_14_FONT_ID, belowGrid, tr(STR_GAME_WON));
+    renderer.drawCenteredText(UI_14_FONT_ID, belowGrid + lineH + gameui::GAP, buf);
+    gameui::help(renderer, belowGrid + 2 * (lineH + gameui::GAP), tr(STR_GAME_HELP_OVER));
     const auto wonLabels = mappedInput.mapLabels(tr(STR_GAME_QUIT), tr(STR_GAME_NEW), "", "");
     GUI.drawButtonHints(renderer, wonLabels.btn1, wonLabels.btn2, wonLabels.btn3, wonLabels.btn4);
     partialCount = 0;
@@ -528,13 +540,13 @@ void SudokuActivity::render(RenderLock&&) {
     return;
   }
 
-  snprintf(buf, sizeof(buf), "%s %d   %s %d", tr(STR_GAME_LEVEL), level + 1, tr(STR_GAME_MOVES), moves);
-  renderer.drawCenteredText(UI_10_FONT_ID, belowGrid, buf);
+  renderer.drawCenteredText(UI_14_FONT_ID, belowGrid, buf);
+  const int afterStats = belowGrid + lineH + gameui::GAP;
 
   if (state == State::PICK) {
-    drawPicker(gridLeft, cell, belowGrid + 36);
+    drawPicker(gridLeft, cell, afterStats);
   } else {
-    renderer.drawCenteredText(SMALL_FONT_ID, belowGrid + 36, tr(STR_GAME_SELECT_CELL));
+    renderer.drawCenteredText(UI_12_FONT_ID, afterStats, tr(STR_GAME_SELECT_CELL));
   }
 
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

@@ -36,7 +36,10 @@ void parseLists(JsonVariantConst doc, std::vector<HubStore::List>& out) {
   for (JsonVariantConst l : doc["lists"].as<JsonArrayConst>()) {
     if (out.size() >= HubStore::MAX_LISTS) break;
     HubStore::List list;
+    list.key = str(l, "key");
     list.name = str(l, "name");
+    if (list.key.empty()) list.key = list.name;   // servidor viejo: una sola clave
+    if (list.name.empty()) list.name = list.key;
     for (JsonVariantConst i : l["items"].as<JsonArrayConst>()) {
       if (list.items.size() >= HubStore::MAX_ITEMS) break;
       list.items.push_back({i["id"] | 0, str(i, "text")});
@@ -70,6 +73,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   JsonArray ls = doc["lists"].to<JsonArray>();
   for (const List& l : lists) {
     JsonObject o = ls.add<JsonObject>();
+    o["key"] = l.key;
     o["name"] = l.name;
     JsonArray items = o["items"].to<JsonArray>();
     for (const ListItem& i : l.items) {
@@ -90,13 +94,6 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["when"] = e.when;
     o["title"] = e.title;
   }
-  JsonArray msgs = doc["messages"].to<JsonArray>();
-  for (const Message& m : messages) {
-    JsonObject o = msgs.add<JsonObject>();
-    o["id"] = m.id;
-    o["from"] = m.from;
-    o["text"] = m.text;
-  }
   doc["quote"] = quote;
   doc["verseRef"] = verseRef;
   doc["verseText"] = verseText;
@@ -106,6 +103,16 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["bibleBook"] = bibleBook;
   doc["bibleChapter"] = bibleChapter;
   doc["musicVolume"] = musicVolume;
+  doc["motionGestures"] = motionGestures;
+  if (imuMap.calibrated) {
+    JsonObject m = doc["imuMap"].to<JsonObject>();
+    m["na"] = imuMap.normalAxis;
+    m["ns"] = imuMap.normalSign;
+    m["xa"] = imuMap.xAxis;
+    m["xs"] = imuMap.xSign;
+    m["ya"] = imuMap.yAxis;
+    m["ys"] = imuMap.ySign;
+  }
   doc["wallpaperPath"] = wallpaperPath;
   doc["wallpaperName"] = wallpaperName;
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
@@ -141,11 +148,6 @@ bool HubStore::fromJson(JsonVariantConst doc) {
     if (events.size() >= MAX_EVENTS) break;
     events.push_back({str(e, "when"), str(e, "title")});
   }
-  messages.clear();
-  for (JsonVariantConst m : doc["messages"].as<JsonArrayConst>()) {
-    if (messages.size() >= MAX_MESSAGES) break;
-    messages.push_back({m["id"] | 0, str(m, "from"), str(m, "text")});
-  }
   quote = str(doc, "quote");
   verseRef = str(doc, "verseRef");
   verseText = str(doc, "verseText");
@@ -155,6 +157,23 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   bibleBook = doc["bibleBook"] | 0;
   bibleChapter = doc["bibleChapter"] | 0;
   musicVolume = doc["musicVolume"] | 70;
+  motionGestures = doc["motionGestures"] | true;
+  JsonVariantConst m = doc["imuMap"];
+  if (!m.isNull()) {
+    imuMap.normalAxis = m["na"] | 2;
+    imuMap.normalSign = m["ns"] | 1;
+    imuMap.xAxis = m["xa"] | 0;
+    imuMap.xSign = m["xs"] | 1;
+    imuMap.yAxis = m["ya"] | 1;
+    imuMap.ySign = m["ys"] | 1;
+    imuMap.calibrated = true;
+    // Un mapa con dos ejes repetidos (archivo viejo o a mano) haría que dos
+    // direcciones de la pantalla lean el mismo número: se descarta entero.
+    if (imuMap.normalAxis > 2 || imuMap.xAxis > 2 || imuMap.yAxis > 2 || imuMap.normalAxis == imuMap.xAxis ||
+        imuMap.normalAxis == imuMap.yAxis || imuMap.xAxis == imuMap.yAxis) {
+      imuMap = ImuMap{};
+    }
+  }
   wallpaperPath = str(doc, "wallpaperPath");
   wallpaperName = str(doc, "wallpaperName");
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);
@@ -176,7 +195,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
 
 // Server shape (see paper/src/hub.ts):
 //   { ok, now, weather: {line, detail}, reminders: [{title, when}], events: [{when, title}],
-//     messages: [{from, text}], quote }
+//     quote }
 void HubStore::applyServer(JsonVariantConst doc) {
   weatherLine = str(doc["weather"], "line");
   weatherDetail = str(doc["weather"], "detail");
@@ -191,11 +210,6 @@ void HubStore::applyServer(JsonVariantConst doc) {
   for (JsonVariantConst e : doc["events"].as<JsonArrayConst>()) {
     if (events.size() >= MAX_EVENTS) break;
     events.push_back({str(e, "when"), str(e, "title")});
-  }
-  messages.clear();
-  for (JsonVariantConst m : doc["messages"].as<JsonArrayConst>()) {
-    if (messages.size() >= MAX_MESSAGES) break;
-    messages.push_back({m["id"] | 0, str(m, "from"), str(m, "text")});
   }
   quote = str(doc, "quote");
   verseRef = str(doc["verse"], "ref");
@@ -284,7 +298,7 @@ void HubStore::removeNote(const int id) {
   }
 }
 
-void HubStore::moveItem(const int id, const std::string& listName) {
+void HubStore::moveItem(const int id, const std::string& listKey) {
   ListItem moved;
   bool found = false;
   for (List& l : lists) {
@@ -299,19 +313,12 @@ void HubStore::moveItem(const int id, const std::string& listName) {
     if (found) break;
   }
   if (!found) return;
+  // `listKey` es la clave canónica del servidor. Ya no se crean listas nuevas
+  // desde el aparato (el servidor tiene sólo compras y tareas): si la clave no
+  // está, el ítem se queda donde estaba y lo acomoda la próxima sincronización.
   for (List& l : lists) {
-    if (l.name == listName) {
+    if (l.key == listKey) {
       l.items.push_back(moved);
-      return;
-    }
-  }
-  lists.push_back({listName, {moved}});
-}
-
-void HubStore::removeMessage(const int id) {
-  for (auto it = messages.begin(); it != messages.end(); ++it) {
-    if (it->id == id) {
-      messages.erase(it);
       return;
     }
   }

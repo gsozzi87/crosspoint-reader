@@ -5,109 +5,190 @@
 #include <HalStorage.h>
 #include <I18n.h>
 #include <Logging.h>
-#include <esp_random.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
-#include "HubStore.h"
 #include "MappedInputManager.h"
+#include "components/Selection.h"
+#include "components/SevenSegment.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "music/MusicPlayer.h"
 
 namespace {
 constexpr const char* TAG = "MUSIC";
-// El usuario puede haber creado la carpeta con cualquier mayuscula: en la SD de
-// este aparato "/music" y "/Music" NO son lo mismo. Se prueban las variantes
-// habituales y se usa la que exista (reportado en 1.5.41: tenia "/music" y el
-// aparato decia "no hay MP3").
+// La carpeta la pudo haber creado con cualquier mayúscula: en esta SD "/music"
+// y "/Music" NO son lo mismo. Se prueban las variantes habituales.
 constexpr const char* MUSIC_ROOT_CANDIDATES[] = {"/Music", "/music", "/MUSIC", "/Musica", "/musica"};
-std::string musicRoot;  // la que se encontro; vacia = todavia no se busco
+std::string musicRoot;
 constexpr int MAX_TRACKS = 200;
-constexpr int COUNTER_TICK_S = 5;              // refresco parcial del contador
-constexpr int PARTIALS_BEFORE_CLEAN = 12;      // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int PARTIALS_BEFORE_CLEAN = 12;
 constexpr int VOLUME_STEP = 5;
 
-constexpr int SIDE = 12;         // margen lateral
-constexpr int BAND_GAP = 10;     // aire entre bandas
-constexpr int NOW_H = 118;       // banda "sonando"
-constexpr int CTRL_H = 52;       // banda de mandos
-constexpr int VOL_H = 58;        // banda de volumen
-constexpr int LIST_HEADER_H = 26;
-constexpr int LIST_ROW_H = 34;
+// Medidas de la "skin". La pantalla es de 480x800, así que el Winamp va
+// apilado: título, visor, posición, botonera, volumen y la lista abajo.
+constexpr int SIDE = 10;
+constexpr int ROW_H = 34;        // fila de la lista de pistas
+// Borde del panel de la lista -> texto. Tiene que ser >= 22 px: el resalte pone
+// franjas tramadas de 16 px por dentro del marco de la fila y la regla del
+// rediseño es que NUNCA hay letras sobre trama.
+constexpr int LIST_PAD = 24;
+constexpr int LIST_HEADER_H = 28;  // cabecera de la lista + su regla de 1 px
+constexpr int LIST_META_GAP = 12;  // título de la pista -> duración de la derecha
+constexpr int LIST_TAIL = 4;       // aire entre la última fila y el marco del panel
+constexpr int TITLEBAR_H = 30;
+constexpr int DISPLAY_H = 148;
+constexpr int POS_H = 20;
+constexpr int TRANSPORT_H = 54;
+constexpr int VOL_H = 30;
+constexpr int GAP = 8;
 
 bool endsWithMp3(const char* name) {
   const size_t len = strlen(name);
   if (len < 4) return false;
   const char* ext = name + len - 4;
-  return (ext[0] == '.' && (ext[1] == 'm' || ext[1] == 'M') && (ext[2] == 'p' || ext[2] == 'P') && ext[3] == '3');
+  return ext[0] == '.' && (ext[1] | 32) == 'm' && (ext[2] | 32) == 'p' && ext[3] == '3';
 }
 
-void triangle(const GfxRenderer& r, int x, int y, int size, bool right, bool ink) {
-  for (int i = 0; i < size; ++i) {
-    const int len = right ? size - i : i + 1;
-    const int sx = right ? x : x + size - len;
-    r.fillRect(sx, y + i, len, 1, ink);
-    r.fillRect(sx, y + 2 * size - 1 - i, len, 1, ink);
-  }
-}
-
-// Marco de la zona con el foco: 3 px, para que se vea de lejos cuál manda la
-// palanca. Las zonas sin foco no llevan marco (menos tinta, menos fantasma).
-void focusFrame(const GfxRenderer& r, int x, int y, int w, int h, bool focused) {
-  if (focused) r.drawRect(x, y, w, h, 3, true);
-}
-
-void centeredText(const GfxRenderer& r, int fontId, int x, int w, int y, const char* text, bool ink,
-                  EpdFontFamily::Style style = EpdFontFamily::REGULAR) {
-  const int tw = r.getTextWidth(fontId, text, style);
-  r.drawText(fontId, x + (w - tw) / 2, y, text, ink, style);
-}
-
-void formatTime(char* out, size_t size, int seconds) {
+void formatTime(char* out, const size_t size, int seconds) {
   if (seconds < 0) seconds = 0;
   snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
-}  // namespace
 
-void MusicActivity::onEnter() {
-  Activity::onEnter();
-  volume = HUB_STORE.musicVolume >= 0 && HUB_STORE.musicVolume <= 100 ? HUB_STORE.musicVolume : 70;
-  scanFolders();
-  level = FOLDERS;
-  zone = ZONE_LIST;
-  controlIndex = CTRL_PLAY;
-  requestUpdate();
+// Triangulito lleno. `right=false` lo da vuelta (el de "anterior").
+void triangle(const GfxRenderer& r, const int x, const int y, const int size, const bool right = true) {
+  for (int i = 0; i < size; ++i) {
+    const int len = right ? size - i : i + 1;
+    const int sx = right ? x : x + size - len;
+    r.fillRect(sx, y + i, len, 1, true);
+    r.fillRect(sx, y + 2 * size - 1 - i, len, 1, true);
+  }
 }
 
-void MusicActivity::onExit() {
-  Activity::onExit();
-  stop();
-  audio.end();
+// Recuadro con biselado a lo Winamp: marco negro y una luz interior clara
+// arriba/izquierda. Es lo que hace que un rectángulo parezca un botón.
+void bevel(const GfxRenderer& r, const int x, const int y, const int w, const int h, const int radius,
+           const bool pressed) {
+  r.fillRoundedRect(x, y, w, h, radius, pressed ? Color::LightGray : Color::White);
+  r.drawRoundedRect(x, y, w, h, pressed ? 3 : 2, radius, true);
+  if (!pressed) {  // brillo de arriba, que da el relieve
+    r.fillRect(x + radius, y + 3, w - 2 * radius, 1, true);
+  }
 }
 
-int MusicActivity::listCount() const {
-  return level == FOLDERS ? static_cast<int>(folders.size()) : static_cast<int>(tracks.size());
+// Marco hundido del visor y de las barras: doble línea, la de adentro más
+// clara. Winamp puro.
+void inset(const GfxRenderer& r, const int x, const int y, const int w, const int h) {
+  r.drawRect(x, y, w, h, 2, true);
+  r.fillRectDither(x + 2, y + 2, w - 4, 1, Color::DarkGray);
+  r.fillRectDither(x + 2, y + 2, 1, h - 4, Color::DarkGray);
 }
 
-// Devuelve la carpeta de musica que exista de verdad en la tarjeta.
-static const std::string& resolveMusicRoot() {
+// Duración de un MP3 sin levantar el decodificador: se saltea la etiqueta ID3v2,
+// se lee la cabecera del primer cuadro y, si el archivo trae Xing/Info (los VBR),
+// se usa la cuenta de cuadros; si no, tamaño sobre bitrate, que es exacto en CBR.
+// Es media lectura de sector por archivo y solo se hace con las filas que se ven.
+// Devuelve 0 cuando el archivo no permite calcularla.
+int mp3DurationSeconds(const std::string& path) {
+  static const int V1L3[16] = {0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0};
+  static const int V2L3[16] = {0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0};
+  static const int RATES[4][3] = {{11025, 12000, 8000}, {0, 0, 0}, {22050, 24000, 16000}, {44100, 48000, 32000}};
+
+  HalFile f;
+  if (!Storage.openFileForRead(TAG, path, f)) return 0;
+  const size_t fileSize = f.size();
+  size_t audioStart = 0;
+  uint8_t head[10];
+  if (f.read(head, sizeof(head)) == static_cast<int>(sizeof(head)) && memcmp(head, "ID3", 3) == 0) {
+    const size_t tag = (static_cast<size_t>(head[6] & 0x7F) << 21) | (static_cast<size_t>(head[7] & 0x7F) << 14) |
+                       (static_cast<size_t>(head[8] & 0x7F) << 7) | static_cast<size_t>(head[9] & 0x7F);
+    audioStart = 10 + tag + ((head[5] & 0x10) ? 10 : 0);  // pie de la etiqueta, si lo hay
+  }
+  if (audioStart + 4 >= fileSize || !f.seek(audioStart)) {
+    f.close();
+    return 0;
+  }
+  // 512 bytes alcanzan de sobra (el primer sync suele estar en el byte 0 y la
+  // cabecera Xing 36 más adelante) y la tarea de dibujo tiene 8 KB de pila.
+  uint8_t buf[512];
+  const int got = f.read(buf, sizeof(buf));
+  f.close();
+  if (got < 4) return 0;
+
+  for (int i = 0; i + 4 <= got; ++i) {
+    if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) continue;
+    const int version = (buf[i + 1] >> 3) & 3;  // 0 = MPEG2.5, 2 = MPEG2, 3 = MPEG1
+    const int layer = (buf[i + 1] >> 1) & 3;    // 1 = Layer III
+    const int bitrateIdx = (buf[i + 2] >> 4) & 0x0F;
+    const int rateIdx = (buf[i + 2] >> 2) & 3;
+    if (version == 1 || layer != 1 || bitrateIdx == 0 || bitrateIdx == 15 || rateIdx == 3) continue;
+    const int rate = RATES[version][rateIdx];
+    const int kbps = version == 3 ? V1L3[bitrateIdx] : V2L3[bitrateIdx];
+    if (rate <= 0 || kbps <= 0) continue;
+    const int perFrame = version == 3 ? 1152 : 576;
+
+    // Cabecera Xing/Info: va en el hueco del primer cuadro, a una distancia que
+    // depende de la versión y de si es mono.
+    const bool mono = ((buf[i + 3] >> 6) & 3) == 3;
+    const int xing = i + 4 + (version == 3 ? (mono ? 17 : 32) : (mono ? 9 : 17));
+    if (xing + 12 <= got && (memcmp(buf + xing, "Xing", 4) == 0 || memcmp(buf + xing, "Info", 4) == 0)) {
+      const uint32_t flags = (static_cast<uint32_t>(buf[xing + 4]) << 24) | (buf[xing + 5] << 16) |
+                             (buf[xing + 6] << 8) | buf[xing + 7];
+      if (flags & 1) {
+        const uint32_t frames = (static_cast<uint32_t>(buf[xing + 8]) << 24) | (buf[xing + 9] << 16) |
+                                (buf[xing + 10] << 8) | buf[xing + 11];
+        if (frames > 0) return static_cast<int>(static_cast<uint64_t>(frames) * perFrame / rate);
+      }
+    }
+    // El sync está en `audioStart + i`: el audio de verdad empieza ahí.
+    const size_t audioBytes = fileSize - audioStart - static_cast<size_t>(i);
+    return static_cast<int>(static_cast<uint64_t>(audioBytes) * 8 / (static_cast<uint64_t>(kbps) * 1000));
+  }
+  return 0;
+}
+
+const std::string& resolveMusicRoot() {
   if (!musicRoot.empty()) return musicRoot;
   for (const char* candidate : MUSIC_ROOT_CANDIDATES) {
     auto dir = Storage.open(candidate);
     if (dir && dir.isDirectory()) {
       musicRoot = candidate;
-      LOG_DBG("MUSIC", "carpeta de musica: %s", candidate);
+      LOG_INF(TAG, "carpeta de musica: %s", candidate);
       return musicRoot;
     }
   }
-  musicRoot = MUSIC_ROOT_CANDIDATES[0];  // no hay ninguna: se muestra la sugerida
+  musicRoot = MUSIC_ROOT_CANDIDATES[0];
   return musicRoot;
+}
+}  // namespace
+
+void MusicActivity::onEnter() {
+  Activity::onEnter();
+  scanFolders();
+  level = FOLDERS;
+  volumeMode = false;
+  selected = TRANSPORT_COUNT + 1;
+  scroll = TRANSPORT_COUNT + 1;
+  // Si ya hay algo sonando se entra directo a esa carpeta: es lo que uno espera
+  // al volver al reproductor.
+  if (MUSIC.isActive() && !MUSIC.folderPath().empty()) {
+    for (size_t i = 0; i < folders.size(); ++i) {
+      if (folders[i] == MUSIC.folderPath()) {
+        openFolder(static_cast<int>(i));
+        break;
+      }
+    }
+  }
+  buildRows();
+  forceClean = true;
+  requestUpdate();
 }
 
 void MusicActivity::scanFolders() {
   folders.clear();
-  musicRoot.clear();  // volver a buscarla: pueden haber puesto la tarjeta recien
+  musicRoot.clear();  // volver a buscarla: pueden haber puesto la tarjeta recién
   const std::string& rootPath = resolveMusicRoot();
   auto root = Storage.open(rootPath.c_str());
   if (!root || !root.isDirectory()) return;
@@ -128,16 +209,17 @@ void MusicActivity::openFolder(const int index) {
   if (index < 0 || index >= static_cast<int>(folders.size())) return;
   tracks.clear();
   trackNames.clear();
-  const std::string& path = folders[index];
-  folderName = path == resolveMusicRoot() ? std::string("/") : path.substr(path.find_last_of('/') + 1);
-  auto dir = Storage.open(path.c_str());
-  if (!dir || !dir.isDirectory()) return;
-  dir.rewindDirectory();
-  char name[128];
-  for (auto entry = dir.openNextFile(); entry && tracks.size() < MAX_TRACKS; entry = dir.openNextFile()) {
-    entry.getName(name, sizeof(name));
-    if (entry.isDirectory() || name[0] == '.' || !endsWithMp3(name)) continue;
-    tracks.push_back(path + "/" + name);
+  folderPath = folders[index];
+  folderName = folderPath == resolveMusicRoot() ? std::string("/") : folderPath.substr(folderPath.find_last_of('/') + 1);
+  auto dir = Storage.open(folderPath.c_str());
+  if (dir && dir.isDirectory()) {
+    dir.rewindDirectory();
+    char name[128];
+    for (auto entry = dir.openNextFile(); entry && tracks.size() < MAX_TRACKS; entry = dir.openNextFile()) {
+      entry.getName(name, sizeof(name));
+      if (entry.isDirectory() || name[0] == '.' || !endsWithMp3(name)) continue;
+      tracks.push_back(folderPath + "/" + name);
+    }
   }
   std::sort(tracks.begin(), tracks.end());
   for (const std::string& t : tracks) {
@@ -145,208 +227,153 @@ void MusicActivity::openFolder(const int index) {
     n.resize(n.size() - 4);
     trackNames.push_back(n);
   }
-  folderIndex = index;
-  trackIndex = 0;
+  trackSeconds.assign(tracks.size(), -1);  // se miden a medida que las filas se ven
   level = PLAYLIST;
-  requestUpdate();
-}
-
-// Arranca una pista de la carpeta que se está mirando: primero se copia esa
-// carpeta a la lista que suena, así explorar otra no toca lo que se reproduce.
-bool MusicActivity::playSelected(const int index) {
-  if (index < 0 || index >= static_cast<int>(tracks.size())) return false;
-  playTracks = tracks;
-  playTrackNames = trackNames;
-  playFolderName = folderName;
-  playFolderIndex = folderIndex;
-  return play(index);
-}
-
-bool MusicActivity::play(const int index) {
-  if (index < 0 || index >= static_cast<int>(playTracks.size())) return false;
-  audio.stop();
-  playing = false;
-  paused = false;
-  if (!source.open(playTracks[index])) {
-    LOG_ERR(TAG, "cannot open %s", playTracks[index].c_str());
-    playingIndex = -1;
-    return false;
+  buildRows();
+  // Se entra parado en la pista que suena (o en la primera): la botonera queda
+  // justo arriba, a un golpe de palanca.
+  selected = TRANSPORT_COUNT + 1;
+  for (size_t i = 0; i < rows.size(); ++i) {
+    if (rows[i].kind != ROW_TRACK) continue;
+    selected = static_cast<int>(i);
+    if (MUSIC.folderPath() == folderPath && rows[i].index == MUSIC.index()) break;
+    if (MUSIC.folderPath() != folderPath) break;
   }
-  // Todo camino de error cierra la fuente: si no, quedan colgados el handle del
-  // MP3 y los buffers del decodificador, y `playing` en true hacía que el loop
-  // entrara en el ciclo "terminó la pista -> next()".
-  if (!audio.begin()) {
-    source.close();
-    playingIndex = -1;
-    return false;
+  scroll = TRANSPORT_COUNT + 1;
+  forceClean = true;
+}
+
+// Una sola lista por dentro: los seis botones de transporte, el volumen y
+// después lo que se puede elegir (carpetas o pistas). Los siete primeros los
+// dibuja la skin arriba; del octavo en adelante es la lista de abajo.
+void MusicActivity::buildRows() {
+  rows.clear();
+  rows.push_back({ROW_ACTION, 0, ACT_PREV});
+  rows.push_back({ROW_ACTION, 0, ACT_PLAYPAUSE});
+  rows.push_back({ROW_ACTION, 0, ACT_NEXT});
+  rows.push_back({ROW_ACTION, 0, ACT_STOP});
+  rows.push_back({ROW_ACTION, 0, ACT_SHUFFLE});
+  rows.push_back({ROW_ACTION, 0, ACT_REPEAT});
+  rows.push_back({ROW_ACTION, 0, ACT_VOLUME});
+  if (level == FOLDERS) {
+    for (int i = 0; i < static_cast<int>(folders.size()); ++i) rows.push_back({ROW_FOLDER, i, ACT_PREV});
+  } else {
+    for (int i = 0; i < static_cast<int>(tracks.size()); ++i) rows.push_back({ROW_TRACK, i, ACT_PREV});
   }
-  audio.setVolume(volume);
-  if (!audio.play(source.wavSource(), false)) {
-    source.close();
-    playingIndex = -1;
-    return false;
-  }
-  playingIndex = index;
-  // Queda en el log (útil cuando una pista corta o salta sola).
-  LOG_INF(TAG, "suena %d/%u %s", index + 1, static_cast<unsigned>(playTracks.size()),
-          index < static_cast<int>(playTrackNames.size()) ? playTrackNames[index].c_str() : "");
-  if (folderIndex == playFolderIndex) trackIndex = index;  // la lista a la vista es la que suena
-  playing = true;
-  paused = false;
-  lastShownSecond = -1;
-  partials = PARTIALS_BEFORE_CLEAN;  // clean refresh on a new track
-  requestUpdate();
-  return true;
 }
 
-void MusicActivity::stop() {
-  if (playing) audio.stop();
-  source.close();
-  playing = false;
-  paused = false;
-  playingIndex = -1;
-  playFolderIndex = -1;
-  playTracks.clear();
-  playTrackNames.clear();
-  playFolderName.clear();
+// Cuántas filas entran de verdad. La cuenta tiene que ser LA MISMA que la del
+// bucle de dibujo (`listH / ROW_H`): si acá sale una de más, `clampScroll` deja
+// la fila elegida justo abajo del borde del panel y parece que se perdió.
+int MusicActivity::visibleRows(const int listTop) const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int bottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing;
+  return std::max(1, (bottom - LIST_TAIL - listTop) / ROW_H);
 }
 
-// The SDK has no pause: stopping and replaying restarts the track, so pause
-// mutes and keeps the stream (the decoder keeps feeding silence-free PCM).
-void MusicActivity::togglePause() {
-  if (!playing) return;
-  paused = !paused;
-  audio.setVolume(paused ? 0 : volume);
-  requestUpdate();
-}
-
-// Con algo cargado alterna pausa; con el reproductor parado arranca la pista
-// que está elegida en la lista (si no, OK no hacía nada y no se entendía).
-void MusicActivity::playPause() {
-  if (playing) {
-    togglePause();
+// `scroll` es la PRIMERA fila de la lista que se ve, siempre de la parte de
+// abajo (la botonera y el volumen viven arriba y no se desplazan).
+void MusicActivity::clampScroll(const int listTop) {
+  const int first = TRANSPORT_COUNT + 1;
+  const int count = static_cast<int>(rows.size());
+  const int visible = visibleRows(listTop);
+  if (selected < first) {  // el foco está en la skin: la lista se queda al principio
+    scroll = first;
     return;
   }
-  if (level == PLAYLIST) playSelected(trackIndex);
+  if (scroll < first) scroll = first;
+  if (selected < scroll) scroll = selected;
+  if (selected >= scroll + visible) scroll = selected - visible + 1;
+  scroll = std::max(first, std::min(scroll, std::max(first, count - visible)));
 }
 
-// Siempre sobre la carpeta que suena, no sobre la que se está explorando.
-void MusicActivity::next(const bool fromEnd) {
-  if (playTracks.empty()) return;
-  int idx;
-  if (shuffle && playTracks.size() > 1) {
-    do {
-      idx = static_cast<int>(esp_random() % playTracks.size());
-    } while (idx == playingIndex);
-  } else {
-    idx = playingIndex + 1;
-    if (idx >= static_cast<int>(playTracks.size())) {
-      if (!repeat && fromEnd) {
-        stop();
-        requestUpdate();
-        return;
-      }
-      idx = 0;
-    }
+void MusicActivity::moveSelection(const int direction) {
+  if (volumeMode) {
+    MUSIC.setVolume(MUSIC.volume() + (direction > 0 ? VOLUME_STEP : -VOLUME_STEP));
+    requestUpdate();
+    return;
   }
-  play(idx);
-}
-
-void MusicActivity::previous() {
-  if (playTracks.empty()) return;
-  int idx = playingIndex - 1;
-  if (idx < 0) idx = static_cast<int>(playTracks.size()) - 1;
-  play(idx);
-}
-
-// El volumen es uno solo para todo el aparato (música, voz de Piper y pitidos),
-// así que se guarda en HubStore apenas cambia.
-void MusicActivity::setVolume(const int value) {
-  const int clamped = std::max(0, std::min(100, value));
-  if (clamped == volume) return;
-  volume = clamped;
-  audio.setVolume(paused ? 0 : volume);
-  HUB_STORE.musicVolume = volume;
-  HUB_STORE.saveToFile();
-  requestUpdate();
-}
-
-void MusicActivity::step(const int direction) {
-  switch (zone) {
-    case ZONE_LIST: {
-      const int count = listCount();
-      if (count <= 0) {  // carpeta vacia: la palanca pasa derecho a los controles
-        zone = ZONE_TRANSPORT;
-        controlIndex = direction > 0 ? 0 : CTRL_COUNT - 1;
-        break;
-      }
-      int& index = level == FOLDERS ? folderIndex : trackIndex;
-      if (direction > 0 && index >= count - 1) {  // se paso del final: a los controles
-        zone = ZONE_TRANSPORT;
-        controlIndex = 0;
-      } else if (direction < 0 && index <= 0) {  // se paso del principio: al volumen
-        zone = ZONE_VOLUME;
-      } else {
-        index += direction > 0 ? 1 : -1;
-      }
-      break;
-    }
-    case ZONE_TRANSPORT:
-      if (direction > 0 && controlIndex >= CTRL_COUNT - 1) {
-        zone = ZONE_VOLUME;
-      } else if (direction < 0 && controlIndex <= 0) {
-        zone = ZONE_LIST;
-      } else {
-        controlIndex += direction > 0 ? 1 : -1;
-      }
-      break;
-    case ZONE_VOLUME:
-      // Con el foco en el volumen la palanca sube y baja; OK devuelve el foco a
-      // la lista (lo dice la barra de botones).
-      setVolume(volume + (direction > 0 ? VOLUME_STEP : -VOLUME_STEP));
-      return;  // setVolume ya pidió el repintado (o no hubo cambio)
-    default:
-      break;
-  }
+  const int count = static_cast<int>(rows.size());
+  if (count == 0) return;
+  selected = (selected + (direction > 0 ? 1 : count - 1)) % count;
   requestUpdate();
 }
 
 void MusicActivity::activate() {
-  switch (zone) {
-    case ZONE_LIST:
-      if (level == FOLDERS) {
-        openFolder(folderIndex);
-      } else if (isSelectedPlaying()) {
-        togglePause();
+  if (volumeMode) {  // OK termina el ajuste de volumen
+    volumeMode = false;
+    forceClean = true;
+    requestUpdate();
+    return;
+  }
+  if (selected < 0 || selected >= static_cast<int>(rows.size())) return;
+  const Row row = rows[selected];
+  switch (row.kind) {
+    case ROW_FOLDER:
+      openFolder(row.index);
+      requestUpdate();
+      return;
+    case ROW_TRACK:
+      if (MUSIC.folderPath() == folderPath && MUSIC.index() == row.index && MUSIC.isActive()) {
+        MUSIC.togglePause();
       } else {
-        playSelected(trackIndex);
+        MUSIC.playFolder(tracks, trackNames, folderName, folderPath, row.index);
+        buildRows();
+        // Aparecieron las cuatro filas de mando arriba: la selección se corre
+        // con ellas para no quedar parado en otra pista.
+        for (size_t i = 0; i < rows.size(); ++i) {
+          if (rows[i].kind == ROW_TRACK && rows[i].index == row.index) {
+            selected = static_cast<int>(i);
+            break;
+          }
+        }
       }
-      return;
-    case ZONE_TRANSPORT:
-      switch (controlIndex) {
-        case CTRL_PLAY: playPause(); break;
-        case CTRL_PREV: previous(); break;
-        case CTRL_NEXT: next(false); break;
-        case CTRL_STOP: stop(); break;
-        case CTRL_SHUFFLE: shuffle = !shuffle; break;
-        case CTRL_REPEAT: repeat = !repeat; break;
-        default: break;
-      }
+      forceClean = true;
       requestUpdate();
       return;
-    case ZONE_VOLUME:
-      zone = ZONE_LIST;  // OK devuelve el foco a la lista
+    case ROW_ACTION:
+      switch (row.action) {
+        case ACT_PLAYPAUSE:
+          // Con algo cargado alterna pausa; parado arranca la pista que esté
+          // elegida en la lista (y si no hay ninguna elegida, la primera).
+          if (MUSIC.isActive()) {
+            MUSIC.togglePause();
+          } else if (level == PLAYLIST && !tracks.empty()) {
+            const int first = TRANSPORT_COUNT + 1;
+            const int pick = selected >= first && rows[selected].kind == ROW_TRACK ? rows[selected].index : 0;
+            MUSIC.playFolder(tracks, trackNames, folderName, folderPath, pick);
+          }
+          break;
+        case ACT_NEXT: MUSIC.next(false); break;
+        case ACT_PREV: MUSIC.previous(); break;
+        case ACT_STOP:
+          MUSIC.stop();
+          buildRows();
+          selected = std::min(selected, static_cast<int>(rows.size()) - 1);
+          break;
+        case ACT_VOLUME: volumeMode = true; break;
+        case ACT_SHUFFLE: MUSIC.shuffle = !MUSIC.shuffle; break;
+        case ACT_REPEAT: MUSIC.repeat = !MUSIC.repeat; break;
+      }
+      forceClean = true;
       requestUpdate();
-      return;
-    default:
       return;
   }
 }
 
-void MusicActivity::leaveOrExit() {
+void MusicActivity::goBack() {
+  if (volumeMode) {
+    volumeMode = false;
+    forceClean = true;
+    requestUpdate();
+    return;
+  }
   if (level == PLAYLIST) {
-    level = FOLDERS;  // la música sigue sonando; la lista vuelve a las carpetas
-    zone = ZONE_LIST;
+    level = FOLDERS;
+    buildRows();
+    selected = TRANSPORT_COUNT + 1;
+    scroll = TRANSPORT_COUNT + 1;
+    forceClean = true;
     requestUpdate();
     return;
   }
@@ -354,224 +381,358 @@ void MusicActivity::leaveOrExit() {
 }
 
 void MusicActivity::loop() {
-  // Track ended: the audio task exits when the source runs dry.
-  if (playing && !paused && !audio.isPlaying()) {
-    next(true);
-    return;
+  // El contador de tiempo se repinta cada 5 s mientras suena.
+  if (MUSIC.isSounding()) {
+    const int sec = MUSIC.positionSeconds();
+    if (sec / 5 != lastShownSecond / 5) requestUpdate();
   }
-  // Counter: one partial refresh every few seconds while playing.
-  if (playing && !paused) {
-    const int sec = source.positionSeconds();
-    if (sec / COUNTER_TICK_S != lastShownSecond / COUNTER_TICK_S) requestUpdate();
-  }
-
-  // Atrás mantenido sale; el corto cambia de zona (wasLongPressed se come la
-  // suelta, así que nunca disparan los dos).
-  buttonNavigator.onNext([this] { step(1); });
-  buttonNavigator.onPrevious([this] { step(-1); });
-
+  buttonNavigator.onNext([this] { moveSelection(1); });
+  buttonNavigator.onPrevious([this] { moveSelection(-1); });
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     activate();
     return;
   }
-  // Atras SIEMPRE sale, igual que en todas las demas pantallas. Antes cambiaba
-  // de zona y salir era Atras mantenido: el usuario no encontraba como irse.
-  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    leaveOrExit();
-  }
+  if (mappedInput.wasReleased(MappedInputManager::Button::Back)) goBack();
 }
 
-const char* MusicActivity::zoneLabel(const Zone z) const {
-  switch (z) {
-    case ZONE_TRANSPORT: return tr(STR_MUSIC_ZONE_CONTROLS);
-    case ZONE_VOLUME: return tr(STR_MUSIC_VOLUME);
-    default: return tr(STR_MUSIC_ZONE_LIST);
+// ── Textos ──────────────────────────────────────────────────────────────────
+
+std::string MusicActivity::rowLabel(const Row& row) const {
+  switch (row.kind) {
+    case ROW_FOLDER: {
+      const std::string& p = folders[row.index];
+      return p == resolveMusicRoot() ? std::string("/") : p.substr(p.find_last_of('/') + 1);
+    }
+    case ROW_TRACK:
+      return std::to_string(row.index + 1) + ". " + trackNames[row.index];
+    case ROW_ACTION:
+      switch (row.action) {
+        case ACT_PLAYPAUSE: return MUSIC.isPaused() ? tr(STR_MUSIC_RESUME) : tr(STR_MUSIC_PAUSE);
+        case ACT_NEXT: return tr(STR_MUSIC_NEXT);
+        case ACT_PREV: return tr(STR_MUSIC_PREV);
+        case ACT_STOP: return tr(STR_MUSIC_STOP);
+        case ACT_VOLUME: return tr(STR_MUSIC_VOLUME);
+        case ACT_SHUFFLE: return tr(STR_MUSIC_SHUFFLE);
+        case ACT_REPEAT: return tr(STR_MUSIC_REPEAT);
+      }
+      return "";
   }
+  return "";
 }
 
-const char* MusicActivity::controlLabel(const int control) const {
-  switch (control) {
-    case CTRL_PLAY: return playing && !paused ? tr(STR_MUSIC_PAUSE) : tr(STR_MUSIC_PLAY);
-    case CTRL_PREV: return tr(STR_MUSIC_PREV);
-    case CTRL_NEXT: return tr(STR_MUSIC_NEXT);
-    case CTRL_STOP: return tr(STR_MUSIC_STOP);
-    case CTRL_SHUFFLE: return tr(STR_MUSIC_SHUFFLE);
-    case CTRL_REPEAT: return tr(STR_MUSIC_REPEAT);
+// La duración se lee de la cabecera del archivo la primera vez que la fila
+// aparece en pantalla y se guarda: pasar la lista no vuelve a tocar la tarjeta,
+// y abrir una carpeta de 200 pistas no paga 200 lecturas de golpe.
+int MusicActivity::trackDuration(const int index) {
+  if (index < 0 || index >= static_cast<int>(trackSeconds.size())) return 0;
+  if (trackSeconds[index] < 0) trackSeconds[index] = mp3DurationSeconds(tracks[index]);
+  return trackSeconds[index];
+}
+
+std::string MusicActivity::rowValue(const Row& row) const {
+  if (row.kind != ROW_ACTION) return "";
+  char buf[16];
+  switch (row.action) {
+    case ACT_VOLUME:
+      snprintf(buf, sizeof(buf), "%d %%", MUSIC.volume());
+      return buf;
+    case ACT_SHUFFLE: return MUSIC.shuffle ? tr(STR_MUSIC_ON) : tr(STR_MUSIC_OFF);
+    case ACT_REPEAT: return MUSIC.repeat ? tr(STR_MUSIC_ON) : tr(STR_MUSIC_OFF);
     default: return "";
   }
 }
 
 const char* MusicActivity::confirmLabel() const {
-  switch (zone) {
-    case ZONE_LIST:
-      if (level == FOLDERS) return tr(STR_MUSIC_OPEN);
-      if (isSelectedPlaying()) return paused ? tr(STR_MUSIC_PLAY) : tr(STR_MUSIC_PAUSE);
+  if (volumeMode) return tr(STR_MUSIC_VOLUME_DONE);
+  if (selected < 0 || selected >= static_cast<int>(rows.size())) return tr(STR_SELECT);
+  const Row& row = rows[selected];
+  switch (row.kind) {
+    case ROW_FOLDER: return tr(STR_MUSIC_OPEN);
+    case ROW_TRACK:
+      if (MUSIC.isActive() && MUSIC.folderPath() == folderPath && MUSIC.index() == row.index) {
+        return MUSIC.isPaused() ? tr(STR_MUSIC_RESUME) : tr(STR_MUSIC_PAUSE);
+      }
       return tr(STR_MUSIC_PLAY);
-    case ZONE_TRANSPORT:
-      return controlLabel(controlIndex);
-    case ZONE_VOLUME:
-      return tr(STR_MUSIC_ZONE_LIST);  // OK vuelve a la lista
-    default:
+    case ROW_ACTION:
+      switch (row.action) {
+        case ACT_PLAYPAUSE: return MUSIC.isPaused() ? tr(STR_MUSIC_RESUME) : tr(STR_MUSIC_PAUSE);
+        case ACT_NEXT: return tr(STR_MUSIC_NEXT);
+        case ACT_PREV: return tr(STR_MUSIC_PREV);
+        case ACT_STOP: return tr(STR_MUSIC_STOP);
+        case ACT_VOLUME: return tr(STR_MUSIC_VOLUME_ADJUST);
+        case ACT_SHUFFLE: return MUSIC.shuffle ? tr(STR_MUSIC_TURN_OFF) : tr(STR_MUSIC_TURN_ON);
+        case ACT_REPEAT: return MUSIC.repeat ? tr(STR_MUSIC_TURN_OFF) : tr(STR_MUSIC_TURN_ON);
+      }
       return tr(STR_SELECT);
   }
+  return tr(STR_SELECT);
 }
 
-// Lo que está sonando: título, artista, tiempo y barra de posición. No lleva
-// foco (no hay nada que elegir acá), así que no lleva marco.
-int MusicActivity::drawNowPlaying(const int x, const int y, const int w) const {
-  const bool named = playing && playingIndex >= 0 && playingIndex < static_cast<int>(playTrackNames.size());
-  const std::string title = playing ? (!source.title().empty() ? source.title()
-                                       : named                 ? playTrackNames[playingIndex]
-                                                               : std::string())
-                                    : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
-  renderer.drawText(UI_12_FONT_ID, x, y, renderer.truncatedText(UI_12_FONT_ID, title.c_str(), w, EpdFontFamily::BOLD).c_str(),
-                    true, EpdFontFamily::BOLD);
+// ── Dibujo ──────────────────────────────────────────────────────────────────
 
-  const std::string sub = playing ? (source.artist().empty() ? playFolderName : source.artist()) : folderName;
-  if (!sub.empty()) {
-    renderer.drawText(UI_10_FONT_ID, x, y + 26, renderer.truncatedText(UI_10_FONT_ID, sub.c_str(), w).c_str());
+// ── Dibujo: la skin ─────────────────────────────────────────────────────────
+
+// Barra de título: negra con el nombre en blanco, como la de Winamp. Son 30 px
+// de "chrome", no es el resalte de nada — el de la selección sigue siendo gris.
+void MusicActivity::drawTitleBar(const int x, const int y, const int w, const int h) const {
+  renderer.fillRoundedRect(x, y, w, h, 6, Color::Black);
+  renderer.drawText(UI_10_FONT_ID, x + 12, y + (h - renderer.getTextHeight(UI_10_FONT_ID)) / 2, "CROSSPOINT AMP",
+                    false, EpdFontFamily::BOLD);
+  // Las rayitas de la derecha del título original.
+  for (int i = 0; i < 7; ++i) renderer.fillRect(x + w - 16 - i * 6, y + 8, 2, h - 16, false);
+}
+
+// El analizador: el pico real de cada bloque decodificado, del más viejo al más
+// nuevo. Sin audio quedan todas en el piso, que es exactamente lo que pasa.
+void MusicActivity::drawAnalyzer(const int x, const int y, const int w, const int h) const {
+  const int bars = MusicPlayer::LEVELS;
+  const int bw = std::max(2, (w - (bars - 1) * 2) / bars);
+  for (int i = 0; i < bars; ++i) {
+    const int bx = x + i * (bw + 2);
+    const int level = MUSIC.isSounding() ? MUSIC.level(i) : 0;
+    const int bh = std::max(2, level * h / 15);
+    renderer.fillRect(bx, y + h - bh, bw, bh, true);
+    // Cabecita clara arriba de cada barra, como el "peak" del analizador.
+    if (bh > 4) renderer.fillRect(bx, y + h - bh, bw, 2, false);
+  }
+  renderer.fillRect(x, y + h, w, 1, true);  // el piso
+}
+
+// El visor: contador de segmentos, estado, analizador, título, artista y la
+// línea técnica. Todo lo que Winamp mete en su pantallita verde.
+void MusicActivity::drawDisplay(const int x, const int y, const int w, const int h) const {
+  renderer.fillRoundedRect(x, y, w, h, 4, Color::White);
+  inset(renderer, x, y, w, h);
+
+  const int pad = 12;
+  const int seg = sevenseg::clock(renderer, MUSIC.positionSeconds(), x + pad, y + pad, 26, 44, 6, 5);
+
+  // Estado y número de pista, debajo del contador.
+  char sub[32] = "";
+  if (MUSIC.isActive()) snprintf(sub, sizeof(sub), "%d/%d", MUSIC.index() + 1, MUSIC.count());
+  const char* state = !MUSIC.isActive() ? tr(STR_MUSIC_STOPPED)
+                      : MUSIC.isPaused() ? tr(STR_MUSIC_PAUSED)
+                                         : tr(STR_MUSIC_PLAYING);
+  renderer.drawText(SMALL_FONT_ID, x + pad, y + pad + 50, state, true, EpdFontFamily::BOLD);
+  if (sub[0]) {
+    renderer.drawText(SMALL_FONT_ID, x + pad + seg - renderer.getTextWidth(SMALL_FONT_ID, sub), y + pad + 50, sub);
   }
 
-  char left[48];
-  if (playing) {
+  // Analizador a la derecha del contador.
+  const int anaX = x + pad + seg + 16;
+  const int anaW = x + w - pad - anaX;
+  if (anaW > 60) drawAnalyzer(anaX, y + pad, anaW, 44);
+
+  // Título, artista y la línea técnica, abajo del visor.
+  const int textY = y + pad + 68;
+  const int tw = w - 2 * pad;
+  const std::string title = MUSIC.isActive() ? MUSIC.title() : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
+  renderer.drawText(UI_12_FONT_ID, x + pad, textY,
+                    renderer.truncatedText(UI_12_FONT_ID, title.c_str(), tw, EpdFontFamily::BOLD).c_str(), true,
+                    EpdFontFamily::BOLD);
+  const std::string sub2 = MUSIC.isActive() ? (MUSIC.artist().empty() ? MUSIC.folderName() : MUSIC.artist())
+                                            : std::string(tr(STR_MUSIC_HELP_START));
+  renderer.drawText(UI_10_FONT_ID, x + pad, textY + 26,
+                    renderer.truncatedText(UI_10_FONT_ID, sub2.c_str(), tw).c_str());
+  if (MUSIC.isActive()) {
+    char tech[48];
+    snprintf(tech, sizeof(tech), "%d kbps  %d kHz  %s", MUSIC.bitrateKbps(), MUSIC.sampleRate() / 1000,
+             MUSIC.channels() == 1 ? tr(STR_MUSIC_MONO) : tr(STR_MUSIC_STEREO));
+    renderer.drawText(SMALL_FONT_ID, x + pad, textY + 50, tech);
+  }
+}
+
+// Barra de posición con el cursor, hundida como la de Winamp.
+void MusicActivity::drawPosition(const int x, const int y, const int w, const int h) const {
+  char clock[40] = "--:-- / --:--";
+  if (MUSIC.isActive()) {
     char now[16];
     char total[16];
-    formatTime(now, sizeof(now), source.positionSeconds());
-    formatTime(total, sizeof(total), source.durationSeconds());
-    snprintf(left, sizeof(left), "%s / %s", now, total);
-  } else {
-    snprintf(left, sizeof(left), "--:-- / --:--");
+    formatTime(now, sizeof(now), MUSIC.positionSeconds());
+    formatTime(total, sizeof(total), MUSIC.durationSeconds());
+    snprintf(clock, sizeof(clock), "%s / %s", now, total);
   }
-  renderer.drawText(UI_12_FONT_ID, x, y + 48, left, true, EpdFontFamily::BOLD);
-
-  const char* state = !playing ? tr(STR_MUSIC_STOPPED) : (paused ? tr(STR_MUSIC_PAUSED) : tr(STR_MUSIC_PLAYING));
-  renderer.drawText(UI_10_FONT_ID, x + w - renderer.getTextWidth(UI_10_FONT_ID, state), y + 50, state);
-
-  // Barra de posición
-  const int barY = y + 74;
-  renderer.drawRect(x, barY, w, 14, true);
-  if (playing) {
-    const int total = source.durationSeconds();
-    const int fill = total > 0 ? std::min(w - 4, (w - 4) * source.positionSeconds() / total) : 0;
-    renderer.fillRect(x + 2, barY + 2, std::max(fill, 2), 10, true);
-  }
-
-  // Ayuda fija: en este aparato Atrás hace dos cosas y hay que decirlo.
-  renderer.drawText(SMALL_FONT_ID, x, y + 96,
-                    renderer.truncatedText(SMALL_FONT_ID, tr(STR_MUSIC_BACK_HELP), w).c_str());
-  return NOW_H;
+  const int clockW = renderer.getTextWidth(SMALL_FONT_ID, clock) + 10;
+  const int barW = w - clockW;
+  renderer.fillRoundedRect(x, y, barW, h, 3, Color::White);
+  inset(renderer, x, y, barW, h);
+  const int span = MUSIC.durationSeconds();
+  const int usable = barW - 6;
+  const int fill = span > 0 ? std::min(usable, usable * MUSIC.positionSeconds() / span) : 0;
+  if (fill > 0) renderer.fillRectDither(x + 3, y + 3, fill, h - 6, Color::DarkGray);
+  // El cursor: un bloque macizo, que es lo que se ve de lejos.
+  const int thumb = std::min(usable - 1, std::max(0, fill - 5));
+  renderer.fillRect(x + 3 + thumb, y + 2, 10, h - 4, true);
+  renderer.drawText(SMALL_FONT_ID, x + barW + 10, y + (h - renderer.getTextHeight(SMALL_FONT_ID)) / 2, clock);
 }
 
-// Los seis mandos, que ahora se eligen de verdad con la palanca y se activan
-// con OK (antes eran un dibujo: no había forma de tocarlos).
-int MusicActivity::drawControls(const int x, const int y, const int w) const {
-  const int gap = 6;
-  const int bw = (w - gap * (CTRL_COUNT - 1)) / CTRL_COUNT;
-  const int bh = CTRL_H - 4;
-  const bool sounding = playing && !paused;
-  for (int i = 0; i < CTRL_COUNT; ++i) {
+// Los iconos de la botonera, dibujados a mano: a este tamaño quedan más nítidos
+// que cualquier fuente y no dependen de nada bajado del servidor.
+void MusicActivity::drawTransportIcon(const int action, const int cx, const int cy) const {
+  switch (action) {
+    case ACT_PREV:
+      renderer.fillRect(cx - 10, cy - 8, 3, 16, true);
+      triangle(renderer, cx - 6, cy - 8, 8, false);
+      break;
+    case ACT_PLAYPAUSE:
+      if (MUSIC.isSounding()) {  // pausa
+        renderer.fillRect(cx - 7, cy - 8, 5, 16, true);
+        renderer.fillRect(cx + 2, cy - 8, 5, 16, true);
+      } else {
+        triangle(renderer, cx - 6, cy - 8, 8, true);
+      }
+      break;
+    case ACT_NEXT:
+      triangle(renderer, cx - 2, cy - 8, 8, true);
+      renderer.fillRect(cx + 7, cy - 8, 3, 16, true);
+      break;
+    case ACT_STOP:
+      renderer.fillRect(cx - 7, cy - 7, 14, 14, true);
+      break;
+    case ACT_SHUFFLE:
+      // Las dos flechas cruzadas de siempre: cada línea termina EN su punta,
+      // si no parece una tijera (se veía así en la simulación).
+      renderer.drawLine(cx - 10, cy - 6, cx + 4, cy + 6, 2, true);
+      renderer.drawLine(cx - 10, cy + 6, cx + 4, cy - 6, 2, true);
+      triangle(renderer, cx + 4, cy + 2, 5, true);
+      triangle(renderer, cx + 4, cy - 12, 5, true);
+      break;
+    case ACT_REPEAT:
+      // Lazo: el rectángulo con un hueco arriba a la derecha y la punta ahí
+      // mismo. Sin el hueco se leía como una flecha de "subir archivo".
+      renderer.drawRect(cx - 10, cy - 7, 20, 14, 2, true);
+      renderer.fillRect(cx + 1, cy - 9, 10, 4, false);  // el hueco
+      triangle(renderer, cx + 3, cy - 11, 4, true);
+      break;
+    default:
+      break;
+  }
+}
+
+// La botonera: seis botones biselados. El que tiene el foco va hundido, y los
+// interruptores encendidos llevan una barrita abajo.
+void MusicActivity::drawTransport(const int x, const int y, const int w, const int h) const {
+  const int gap = 4;
+  const int bw = (w - gap * (TRANSPORT_COUNT - 1)) / TRANSPORT_COUNT;
+  for (int i = 0; i < TRANSPORT_COUNT; ++i) {
     const int bx = x + i * (bw + gap);
-    const bool focused = zone == ZONE_TRANSPORT && controlIndex == i;
-    renderer.drawRect(bx, y, bw, bh, focused ? 3 : 1, true);
-    const int cx = bx + bw / 2;
-    const int iconY = y + 8;
-    switch (i) {
-      case CTRL_PLAY:
-        if (sounding) {  // pausa
-          renderer.fillRect(cx - 7, iconY, 5, 16, true);
-          renderer.fillRect(cx + 2, iconY, 5, 16, true);
-        } else {
-          triangle(renderer, cx - 5, iconY, 8, true, true);
-        }
-        break;
-      case CTRL_PREV:
-        renderer.fillRect(cx - 8, iconY, 3, 16, true);
-        triangle(renderer, cx - 3, iconY, 8, false, true);
-        break;
-      case CTRL_NEXT:
-        triangle(renderer, cx - 8, iconY, 8, true, true);
-        renderer.fillRect(cx + 5, iconY, 3, 16, true);
-        break;
-      case CTRL_STOP:
-        renderer.fillRect(cx - 7, iconY + 1, 14, 14, true);
-        break;
-      case CTRL_SHUFFLE:  // dos líneas que se cruzan
-        renderer.drawLine(cx - 9, iconY + 1, cx + 9, iconY + 14, 2, true);
-        renderer.drawLine(cx - 9, iconY + 14, cx + 9, iconY + 1, 2, true);
-        break;
-      case CTRL_REPEAT:  // lazo
-        renderer.drawRect(cx - 9, iconY + 2, 18, 12, 2, true);
-        break;
-      default:
-        break;
-    }
-    centeredText(renderer, SMALL_FONT_ID, bx, bw, y + bh - 16,
-                 renderer.truncatedText(SMALL_FONT_ID, controlLabel(i), bw - 6).c_str(), true);
-    // Estado de los interruptores: barra llena arriba cuando están activados
-    // (abajo se pisaba con la palabra del mando).
-    const bool on = (i == CTRL_SHUFFLE && shuffle) || (i == CTRL_REPEAT && repeat);
-    if (on) renderer.fillRect(bx + 4, y + 3, bw - 8, 3, true);
+    const bool focused = selected == i && !volumeMode;
+    bevel(renderer, bx, y, bw, h, 6, focused);
+    drawTransportIcon(rows.empty() ? i : static_cast<int>(rows[i].action), bx + bw / 2, y + h / 2 - 4);
+    const bool on = (i == ACT_SHUFFLE && MUSIC.shuffle) || (i == ACT_REPEAT && MUSIC.repeat);
+    if (on) renderer.fillRect(bx + 8, y + h - 9, bw - 16, 4, true);
   }
-  return CTRL_H;
 }
 
-int MusicActivity::drawVolume(const int x, const int y, const int w) const {
-  focusFrame(renderer, x - 6, y - 4, w + 12, VOL_H, zone == ZONE_VOLUME);
-  renderer.drawText(UI_10_FONT_ID, x, y, tr(STR_MUSIC_VOLUME));
+// Volumen: "VOL" + la corredera y el número. Con el foco lleva marco grueso; en
+// modo volumen, además, la corredera se dibuja rellena para que se note que la
+// palanca la está moviendo.
+void MusicActivity::drawVolume(const int x, const int y, const int w, const int h) const {
+  const bool focused = !rows.empty() && selected < static_cast<int>(rows.size()) &&
+                       rows[selected].kind == ROW_ACTION && rows[selected].action == ACT_VOLUME;
+  if (focused) renderer.drawRoundedRect(x - 4, y - 3, w + 8, h + 6, volumeMode ? 3 : 2, 6, true);
+  renderer.drawText(SMALL_FONT_ID, x, y + (h - renderer.getTextHeight(SMALL_FONT_ID)) / 2, "VOL", true,
+                    EpdFontFamily::BOLD);
   char value[16];
-  snprintf(value, sizeof(value), "%d %%", volume);
-  renderer.drawText(UI_10_FONT_ID, x + w - renderer.getTextWidth(UI_10_FONT_ID, value), y, value);
-  const int barY = y + 20;
-  renderer.drawRect(x, barY, w, 16, true);
-  const int volFill = (w - 4) * volume / 100;
-  if (volFill > 0) renderer.fillRect(x + 2, barY + 2, volFill, 12, true);
-  renderer.drawText(SMALL_FONT_ID, x, y + 40,
-                    renderer.truncatedText(SMALL_FONT_ID, tr(STR_MUSIC_VOLUME_HELP), w).c_str());
-  return VOL_H;
+  snprintf(value, sizeof(value), "%d %%", MUSIC.volume());
+  const int valueW = renderer.getTextWidth(UI_10_FONT_ID, value) + 10;
+  const int barX = x + 44;
+  const int barW = w - 44 - valueW;
+  renderer.fillRoundedRect(barX, y + 4, barW, h - 8, 3, Color::White);
+  inset(renderer, barX, y + 4, barW, h - 8);
+  const int fill = (barW - 6) * MUSIC.volume() / 100;
+  if (fill > 0) renderer.fillRectDither(barX + 3, y + 7, fill, h - 14, Color::DarkGray);
+  renderer.fillRect(barX + 3 + std::max(0, fill - 5), y + 6, 10, h - 12, true);
+  renderer.drawText(UI_10_FONT_ID, x + w - valueW + 10, y + (h - renderer.getTextHeight(UI_10_FONT_ID)) / 2, value);
 }
 
-void MusicActivity::drawList(const int x, const int y, const int w, const int h) const {
-  focusFrame(renderer, x - 6, y - 4, w + 12, h + 8, zone == ZONE_LIST);
+// La lista de abajo, con la pinta del editor de listas de Winamp: encabezado,
+// número de pista y la que suena marcada.
+void MusicActivity::drawPlaylist(const int x, const int y, const int w, const int h) {
   const bool inFolders = level == FOLDERS;
-  renderer.fillRect(x, y, w, LIST_HEADER_H, true);
-  const std::string header = inFolders ? std::string(tr(STR_MUSIC_FOLDERS)) : folderName;
-  renderer.drawText(UI_10_FONT_ID, x + 8, y + 5,
-                    renderer.truncatedText(UI_10_FONT_ID, header.c_str(), w - 90).c_str(), false);
+  renderer.drawRect(x, y, w, h, 2, true);
+  // Cabecera de la lista: sobre BLANCO y separada por una regla de 1 px. La
+  // barra negra con el texto en blanco era el único bloque macizo de esta mitad
+  // de la pantalla y dejaba fantasma en el parcial siguiente; la regla no.
+  const std::string header = inFolders ? std::string(tr(STR_MUSIC_CHOOSE_FOLDER)) : folderName;
+  const int headerY = y + 3;
+  const int right = x + w - LIST_PAD;
+  const int listCount = static_cast<int>(rows.size()) - (TRANSPORT_COUNT + 1);
+  int headerRoom = w - 2 * LIST_PAD;
+  if (listCount > 0 && selected > TRANSPORT_COUNT) {
+    char pager[16];
+    snprintf(pager, sizeof(pager), "%d / %d", selected - TRANSPORT_COUNT, listCount);
+    const int pw = renderer.getTextWidth(UI_10_FONT_ID, pager);
+    renderer.drawText(UI_10_FONT_ID, right - pw, headerY, pager);
+    headerRoom -= pw + LIST_META_GAP;
+  }
+  if (headerRoom > 0) {
+    renderer.drawText(
+        UI_10_FONT_ID, x + LIST_PAD, headerY,
+        renderer.truncatedText(UI_10_FONT_ID, header.c_str(), headerRoom, EpdFontFamily::BOLD).c_str(), true,
+        EpdFontFamily::BOLD);
+  }
+  renderer.fillRect(x + 2, y + LIST_HEADER_H, w - 4, 1, true);
 
   const int top = y + LIST_HEADER_H + 4;
-  const int rows = std::max(1, (h - LIST_HEADER_H - 6) / LIST_ROW_H);
-  const int count = inFolders ? static_cast<int>(folders.size()) : static_cast<int>(tracks.size());
-  const int selected = inFolders ? folderIndex : trackIndex;
-  const int first = count > 0 ? (selected / rows) * rows : 0;
-
-  if (count == 0) {
-    renderer.drawText(UI_10_FONT_ID, x + 8, top + 6, inFolders ? tr(STR_MUSIC_EMPTY) : tr(STR_MUSIC_NO_TRACKS));
-    renderer.drawText(SMALL_FONT_ID, x + 8, top + 30,
-                      renderer.truncatedText(SMALL_FONT_ID, tr(STR_MUSIC_EMPTY_HELP), w - 16).c_str());
+  const int listH = h - (LIST_HEADER_H + 4) - LIST_TAIL;
+  if ((inFolders && folders.empty()) || (!inFolders && tracks.empty())) {
+    renderer.drawText(UI_10_FONT_ID, x + LIST_PAD, top + 8, tr(STR_MUSIC_EMPTY), true, EpdFontFamily::BOLD);
+    renderer.drawText(SMALL_FONT_ID, x + LIST_PAD, top + 34,
+                      renderer.truncatedText(SMALL_FONT_ID, tr(STR_MUSIC_EMPTY_HELP), w - 2 * LIST_PAD).c_str());
     return;
   }
 
-  for (int i = first; i < count && i < first + rows; ++i) {
-    const int ry = top + (i - first) * LIST_ROW_H;
-    const bool sel = i == selected;
-    if (sel) renderer.fillRect(x + 2, ry, w - 4, LIST_ROW_H - 3, true);
+  clampScroll(top);
+  const int numW = renderer.getTextWidth(UI_10_FONT_ID, "00");
+  const int visible = std::min(listH / ROW_H, static_cast<int>(rows.size()) - scroll);
+  for (int i = 0; i < visible; ++i) {
+    const int idx = scroll + i;
+    const Row& row = rows[idx];
+    const int ry = top + i * ROW_H;
+    if (idx == selected) drawSelectionRow(renderer, x + 3, ry, w - 6, ROW_H - 4, 6);
+
+    char num[8] = "";
     std::string label;
-    if (inFolders) {
-      const std::string& p = folders[i];
+    if (row.kind == ROW_FOLDER) {
+      const std::string& p = folders[row.index];
       label = p == resolveMusicRoot() ? std::string("/") : p.substr(p.find_last_of('/') + 1);
     } else {
-      label = std::to_string(i + 1) + ". " + trackNames[i];
+      snprintf(num, sizeof(num), "%02d", row.index + 1);
+      label = trackNames[row.index];
     }
-    const bool isPlaying = !inFolders && playing && folderIndex == playFolderIndex && i == playingIndex;
-    const int tx = x + 10 + (isPlaying ? 18 : 0);
-    if (isPlaying) triangle(renderer, x + 10, ry + 8, 6, true, !sel);
-    renderer.drawText(UI_12_FONT_ID, tx, ry + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, label.c_str(), x + w - 10 - tx).c_str(), !sel);
-  }
-  if (count > rows) {
-    char pages[16];
-    snprintf(pages, sizeof(pages), "%d/%d", selected / rows + 1, (count + rows - 1) / rows);
-    renderer.drawText(UI_10_FONT_ID, x + w - 8 - renderer.getTextWidth(UI_10_FONT_ID, pages), y + 5, pages, false);
+    // El texto arranca a LIST_PAD del borde del panel, o sea por FUERA de las
+    // franjas tramadas que el resalte pone en los costados de la fila elegida.
+    int textX = x + LIST_PAD;
+    if (num[0]) {
+      renderer.drawText(UI_10_FONT_ID, textX, ry + 6, num, SELECTION_INK);
+      textX += numW + 10;
+    }
+    const bool sounding =
+        row.kind == ROW_TRACK && MUSIC.isActive() && MUSIC.folderPath() == folderPath && MUSIC.index() == row.index;
+    if (sounding) {
+      triangle(renderer, textX, ry + 8, 6);
+      textX += 14;
+    }
+    // Cuánto dura, alineado a la derecha en su columna: es el dato que uno mira
+    // para elegir, y pegado al título no se lee ("Chan Chan 4:17").
+    int metaW = 0;
+    if (row.kind == ROW_TRACK) {
+      const int seconds = trackDuration(row.index);
+      if (seconds > 0) {
+        char time[16];
+        formatTime(time, sizeof(time), seconds);
+        metaW = renderer.getTextWidth(UI_10_FONT_ID, time);
+        renderer.drawText(UI_10_FONT_ID, right - metaW, ry + 6, time, SELECTION_INK);
+        metaW += LIST_META_GAP;
+      }
+    }
+    const int labelW = right - metaW - textX;
+    if (labelW <= 0) continue;
+    const EpdFontFamily::Style style = sounding ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+    renderer.drawText(UI_10_FONT_ID, textX, ry + 6,
+                      renderer.truncatedText(UI_10_FONT_ID, label.c_str(), labelW, style).c_str(), SELECTION_INK,
+                      style);
   }
 }
 
@@ -581,29 +742,38 @@ void MusicActivity::render(RenderLock&&) {
   const int pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
+  buildRows();
+  if (selected >= static_cast<int>(rows.size())) selected = std::max(0, static_cast<int>(rows.size()) - 1);
 
-  const int x = SIDE + 6;               // el marco de foco vive en los 6 px de afuera
-  const int w = pageWidth - 2 * x;
-  int y = metrics.topPadding + 10;
+  const int x = SIDE;
+  const int w = pageWidth - 2 * SIDE;
+  int y = metrics.topPadding + 4;
 
-  // Título de la pantalla
-  renderer.drawText(UI_12_FONT_ID, x, y, tr(STR_HUB_MUSIC), true, EpdFontFamily::BOLD);
-  renderer.drawLine(x, y + 24, x + w, y + 24, true);
-  y += 34;
+  drawTitleBar(x, y, w, TITLEBAR_H);
+  y += TITLEBAR_H + GAP;
+  drawDisplay(x, y, w, DISPLAY_H);
+  y += DISPLAY_H + GAP;
+  drawPosition(x, y, w, POS_H);
+  y += POS_H + GAP;
+  drawTransport(x, y, w, TRANSPORT_H);
+  y += TRANSPORT_H + GAP;
+  drawVolume(x + 4, y, w - 8, VOL_H);
+  y += VOL_H + GAP + 4;
 
-  y += drawNowPlaying(x, y, w) + BAND_GAP;
-  y += drawControls(x, y, w) + BAND_GAP;
-  y += drawVolume(x, y, w) + BAND_GAP;
+  const int listH = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - y;
+  drawPlaylist(x, y, w, listH);
 
-  const int listH = pageHeight - metrics.buttonHintsHeight - metrics.verticalSpacing - y - 4;
-  if (listH > LIST_HEADER_H + LIST_ROW_H) drawList(x, y, w, listH);
-
-  const Zone nextZone = static_cast<Zone>((zone + 1) % ZONE_COUNT);
-  const auto labels = mappedInput.mapLabels(zoneLabel(nextZone), confirmLabel(), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
+  // La barra de abajo dice SIEMPRE qué hace cada botón acá y ahora.
+  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel(),
+                                            volumeMode ? tr(STR_MUSIC_VOL_UP) : tr(STR_DIR_UP),
+                                            volumeMode ? tr(STR_MUSIC_VOL_DOWN) : tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
-  lastShownSecond = playing ? source.positionSeconds() : -1;
-  const bool clean = ++partials >= PARTIALS_BEFORE_CLEAN;
-  if (clean) partials = 0;
+  lastShownSecond = MUSIC.positionSeconds();
+  const bool clean = forceClean || ++partials >= PARTIALS_BEFORE_CLEAN;
+  if (clean) {
+    partials = 0;
+    forceClean = false;
+  }
   renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
 }

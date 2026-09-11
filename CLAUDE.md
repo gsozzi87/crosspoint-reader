@@ -19,22 +19,30 @@ REGLA FIJA: el aparato NUNCA tiene entrada por teclado (ni en pantalla ni físic
 usuario tenga que ingresar entra por voz (mic → servidor → transcripción). Las respuestas pueden ser texto en
 pantalla. No usar `KeyboardEntryActivity` en nada nuestro.
 
-## Estado (2026-09-04)
+## Estado (2026-09-10)
 
 Funciona: boot, pantalla (orientación y polaridad correctas), botones, SD, WiFi, web UI, deep sleep,
-batería vía PMIC, RTC, OTA desde servidor propio.
+batería vía PMIC, RTC, OTA desde servidor propio, audio (graba y reproduce), música, voz, hub.
 
-Pendiente de verificar en hardware: refresco periódico de un solo destello (parche `halfrefresh`), porcentaje de
-batería real, hora tras apagado sin WiFi.
+**Pendiente de verificar en hardware (1.5.47, lo más nuevo y lo más riesgoso):**
 
-Audio verificado en hardware (1.5.9): graba y reproduce bien, se escucha bajo. Pendiente: control de volumen (DAC reg 0x32,
-hoy fijo en 0xB2 = vendor 70 %; PGA del mic reg 0x14). Detalle: Settings → System → Audio test graba 3 s por el mic del ES8311 y
-los reproduce; captura por `AudioManager::beginCapture`, DIN GPIO21, MCLK-fed init del vendor).
+- **PWR por el PMIC** (`src/util/PowerKey`): toque corto = limpiar pantalla, mantener 3 s = dormir con la
+  barrita. La polaridad del flanco se APRENDE en caliente y se loguea (`press edge = …` en `/board/log`),
+  porque ni la hoja de datos ni el proyecto de referencia coinciden. Si el botón no responde, ahí está la
+  respuesta. El corte duro del PMIC está programado a los 10 s como escape de emergencia.
+- **Coordinador de refresco** (`lib/GfxRenderer/PanelRefreshCoordinator`): 12 parciales → HALF, cada 2 HALF
+  un FULL, y una sombra de 48 KB en PSRAM que saltea el pintado cuando el cuadro es idéntico. Falta medir si
+  0xD7 restaura el blanco o hace falta bajar `CLEANS_BEFORE_FULL`.
+- **Pre-roll de grabación**: el micrófono abre ANTES del pitido y las muestras del tono se recortan
+  (`spokenStart`). Falta confirmar que la primera palabra ya no se pierde.
+- **IMU**: hay que calibrar los ejes en Ajustes → Movimiento antes de creerle a los gestos, y confirmar que
+  el motor de golpes del chip contesta (la pantalla lo dice).
+- Lo de siempre: porcentaje de batería real, hora tras apagado sin WiFi.
 
-Pendiente de implementar (Fase 0): trackball + 2 botones vía PCF8574 en I²C (SDA 41 / SCL 42, INT GPIO44) cuando
-llegue el hardware.
+Descartado: trackball + 2 botones vía PCF8574. El usuario decidió que el aparato va con la palanca y el
+botón del costado, y nada más ("me acomodé bien con la palanca y el botón del costado").
 
-## Build y release
+## Build y release## Build y release
 
 - `pio run -e ws397` — env en `platformio.ini`. Versión = `1.5.<WS397_BUILD>-ws397` desde `include/ws397_version.h`
   (NO ponerla en un -D flag: fuerza rebuild completo).
@@ -83,6 +91,35 @@ llegue el hardware.
   I²S (full duplex, una sola tasa para reproducir y grabar); no PDM. Init del códec = vendor `es8311_init` con MCLK
   desde el pin (reg01 0x3F), volumen 0xB2.
 - Sensores: SHTC3 en 0x70 (sin driver aún), QMI8658 en 0x6B.
+
+## Modo memoria USB (la tarjeta como disco)
+
+- `-DFREEINK_CAP_USB_MSC=1 -DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=1` en el env `ws397`. La variante prebuilt
+  `qio_opi` que usa esta placa ya trae TinyUSB con `CONFIG_TINYUSB_MSC_ENABLED=1`, así que **no** hay que cambiar
+  `board_build.arduino.memory_type` (el X4 Pro lo hace por otro motivo).
+- `ARDUINO_USB_MODE=0` cambia el tipo de `Serial` de `HWCDC` a `USBCDC`; `lib/Logging/Logging.h` lo contempla ahora
+  (una referencia del tipo equivocado no compila). El log por cable sigue saliendo por USB CDC, pero acá el log que
+  importa es el que se sube al servidor y se lee en `/board/log`.
+- Se llega por **Ajustes → Sistema → Modo memoria USB** (`SettingAction::UsbDrive` → `UsbDriveActivity` del SDK) y
+  también por Transferir archivos, donde en las placas con MSC la memoria USB es la **primera** opción
+  (`menuModes[]` en `NetworkModeSelectionActivity`: el orden de la pantalla dejó de coincidir con el de
+  `NetworkMode`). Cuesta ~23 KB de RAM y ~60 KB de flash.
+- Con esto se cargan libros y MP3 sin sacar la tarjeta. La subida de archivos por la web quedó **descartada**.
+
+## Identidad del aparato y cuentas (multiusuario)
+
+- El aparato se genera su token solo, la primera vez que arranca: 32 bytes de `esp_random` en hexa
+  (`ServerCredentialStore::ensureToken()`, llamado desde `setup()`), guardados en `/.crosspoint/server.json`.
+  `ServerCredentialStore::deviceId()` es la MAC de fábrica en hexa y es la identidad **pública**.
+- **El token NO se deriva de la MAC**, ni siquiera por HMAC: eso obliga a meter un secreto de fábrica en el
+  firmware, y cualquiera que baje un `.bin` lo saca y calcula el token de cualquier aparato a partir de su MAC —
+  que va impresa en la caja. Perder el token no pierde datos: los datos son de la CUENTA, así que se vuelve a
+  vincular con el código y listo.
+- Vincular sin teclado (`DevicePairActivity`, Ajustes → Sistema → Vincular con mi cuenta): `POST /api/pair/start`
+  `{deviceId, token}` **sin Bearer** → `{ok, code, expiresIn}`; la pantalla muestra el código de seis dígitos en
+  dígitos de segmentos y consulta `GET /api/pair/status` cada 3 s hasta que del otro lado lo escriban en
+  `/board` → Aparatos. `ServerClient::postJson` acepta `auth=false` justamente para el primero (un Bearer que el
+  servidor todavía no conoce daría 401 antes de llegar al handler).
 
 ## Servidor propio (Fase 1, cliente HTTP común)
 
@@ -146,12 +183,15 @@ llegue el hardware.
   del visor dice qué guardó; una pregunta se muestra con lo entendido como título. Back → hub con `silentRestart()`.
   Servidor: `src/voice.ts` (transcribe con `transcribeWav` de `transcribe.ts`, clasifica con salida estructurada de
   Claude, modelo `VOICE_MODEL`/`ASK_MODEL` default `claude-haiku-4-5`, ejecuta contra `src/store.ts` →
-  `/data/store.json`: recordatorios, listas por nombre con Entrada/Casa/Trabajo/Administrativo/Compras de fábrica,
-  notas, mensajes). `hub.ts` toma recordatorios y mensajes del store; `hub-data.json` queda para la agenda.
-- Recordatorios y listas en el aparato (`AgendaActivity`, mosaico Recordatorios): secciones (Recordatorios y cada
-  lista con su cantidad) e ítems desde la caché de `HubStore` (`reminders[{id,title,when}]`, `lists[{name,
-  items[{id,text}]}]` que trae `GET /api/hub`); OK tilda: se saca de la caché y `POST /api/hub/done` sale por
-  `postOrQueue` (cola offline si no hay WiFi, la vacía la próxima sincronización).
+  `/data/store.json`: recordatorios, DOS listas fijas —compras y tareas—, notas). `hub.ts` toma los recordatorios y
+  las listas del store; `hub-data.json` queda para la agenda. Las listas viajan con `key` (clave canónica del store,
+  la que hay que devolver al mover un ítem) y `name` (el nombre ya traducido, el que se muestra).
+- Recordatorios y listas en el aparato (`AgendaActivity`, mosaico Recordatorios): tres secciones y nada más —
+  Recordatorios, Compras y Tareas—, con sus ítems desde la caché de `HubStore` (`reminders[{id,title,when}]`,
+  `lists[{key,name,items[{id,text}]}]` que trae `GET /api/hub`); OK tilda: se saca de la caché y `POST /api/hub/done`
+  sale por `postOrQueue` (cola offline si no hay WiFi, la vacía la próxima sincronización). **Las categorías de
+  listas se sacaron en 1.5.44** ("son muchas cosas"): el servidor migra solo lo que hubiera en Entrada, Casa,
+  Trabajo, Administrativo o en proyectos sueltos a la lista de tareas.
 - Recordatorios que suenan (`ReminderAlertActivity`): `HubStore::Reminder.dueAt` (epoch del servidor). Al dormir,
   `armReminderWake()` en main.cpp arma el timer de deep sleep al próximo `dueAt` (GPIO45 del RTC no es RTC GPIO, no
   sirve para despertar); al arrancar por timer, si hay uno vencido se muestra el alerta y si no vuelve a dormir. En el
@@ -171,13 +211,32 @@ llegue el hardware.
   `ReminderAlertActivity` sobre las pantallas tranquilas (hub, home, agenda, notas, ajustes, clima), no solo desde el
   tick del hub. Todo camino de deep sleep pasa por `sleepNow()`, que arma el wake: antes el re-sleep por wake espurio
   del botón dormía sin nada armado y el temporizador quedaba mudo para siempre.
-- OJO con los botones: en esta placa OK es confirm+power compartidos, así que `wasLongPressed(Confirm, ...)` NUNCA es
-  cierto (mantener OK apaga). Las funciones que estaban colgadas de "OK largo" no existían: el Clima quedó como
-  mosaico propio (en el lugar de Juegos, que decía "Próximamente").
+- OJO con los botones: **OK largo NUNCA llega**. Hasta 1.5.46 era porque OK era confirm+power compartidos (mantenerlo
+  apagaba); desde 1.5.47 el encendido es un botón aparte contra el PMIC y OK es solo confirmar, pero
+  `wasLongPressed(Confirm, ...)` sigue sin dispararse. Ninguna función puede colgar de ahí. El Clima quedó como
+  mosaico propio por ese motivo.
+- **El botón PWR es del PMIC, no un GPIO** (`src/util/PowerKey`, singleton `POWER_KEY`, `pump()` desde el loop):
+  está cableado al PWRKEY del AXP2101 y el chip lo reporta por su IRQ (GPIO38, `pmicIrq` en el perfil). Toque corto =
+  **menú de pantalla** (limpiar, bloquear, dormir; se dibuja encima de lo que haya y sin pasar por una Activity, así
+  funciona también dentro del lector, que es donde se acumula el fantasma); mantener 3 s = barrita y a dormir; el corte
+  duro del PMIC está a los 10 s como escape. Bloqueada, PWR es lo único que llega: ni la palanca, ni OK, ni los gestos,
+  y los botones dejan de contar como actividad (el aparato en la mochila puede reposar aunque la palanca se apriete
+  sola). Un recordatorio desbloquea. NO pasa por el `InputManager` del SDK a propósito: su antirrebote de 5 ms se come una
+  pulsación entera que aparece y desaparece entre dos lecturas. La polaridad del flanco se aprende en caliente y se
+  guarda en RTC RAM. GPIO38 no es RTC GPIO, así que **el que despierta sigue siendo OK** (GPIO5), y eso ahora está en
+  el perfil de la placa (`InputPins.wakePin`) en vez de escondido en el código.
 - Atajo de voz global: **dos toques de Atrás** abren Hablar desde cualquier pantalla tranquila
   (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 500 ms). ARRIBA/ABAJO es una palanca física
-  (arriba XOR abajo, nunca las dos), OK es el botón de encendido y Atrás mantenido ya sincroniza o actualiza.
+  (arriba XOR abajo, nunca las dos) y Atrás mantenido ya sincroniza o actualiza.
   Atrás en el hub no hace nada: el hub es el fondo (antes abría el último libro y no había forma de quedarse).
+- **El movimiento es una entrada más** (`src/input/MotionInput`, singleton `MOTION`, `poll()` cada 80 ms desde el
+  loop): inclinar, sacudir, girar, horizontal, boca abajo y doble golpe. Tres son globales y salen de
+  `checkMotionGestures()` en `main.cpp`: boca abajo calla lo que suena, sacudir cancela (corta la grabación abierta o
+  descarta la alarma), doble golpe abre Hablar. El resto los consume cada pantalla con `MOTION.take(Event)`.
+  El INT1 del IMU está cableado al enable del amplificador (GPIO39), así que **no se puede usar la interrupción**: se
+  consulta. El doble golpe lo detecta el motor del propio chip, porque a 80 ms no hay forma de ver un golpe de 10 ms.
+  **Cómo está montado el sensor no está documentado**: hay que calibrar los ejes en Ajustes → Movimiento
+  (`HubStore::imuMap`) o "inclinar a la derecha" puede ser cualquier eje.
 - OJO con el audio: el I2S es uno solo y cada clase (`SpeechOut`, `AlertBeep`, `VoiceRecorder`) tiene su propio
   `AudioManager`. Abrir el micrófono mientras habla el parlante da "Falló la captura del micrófono", y navegar
   mientras habla corta la frase. Regla: `speech.stop()` antes de grabar, y si hay que hacer algo después de hablar,
@@ -197,12 +256,11 @@ llegue el hardware.
 - Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
   hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
   mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
-- Página web `GET /board` (`server/src/board.ts`), con pestañas: Pizarra (mensajes, recordatorios, memoria), Listas,
+- Página web `GET /board` (`server/src/board.ts`), con pestañas: Pizarra (recordatorios, memoria), Listas,
   Notas, Fotos, Noticias, **IA** (proveedor, modelo, claves, token), Ajustes (clima, idioma, voz, volumen) y Log.
   Todo desde el teléfono con el token del aparato; altas en
   `POST /api/board/*`, borrados por `POST /api/hub/edit {kind, id, action:"delete"}` (kind = reminder, item, note,
-  feed, memory). Los mensajes llegan por `GET /api/hub` (`messages[{id,from,text}]`) y se ven en Recordatorios →
-  Mensajes (OK = leído, `POST /api/hub/done {kind:"message"}`).
+  feed, memory).
   El token se pide en un formulario de la propia página (no `prompt()`) y se guarda en `localStorage`; los botones
   de las listas van por delegación con `data-act`, nunca por `onclick` armado con comillas (una comilla escapada
   dentro del template literal rompía el script entero y dejaba la página muerta).
@@ -222,22 +280,47 @@ llegue el hardware.
   `parseRefLocal()` resuelve la cita ("primera de Juan 4 8") con los nombres que ya están en la SD y `searchStep()`
   busca todas las palabras en cada versículo, un libro por pasada. Lo único que sigue necesitando el servidor es
   pasar la voz a texto. Lógica probada de escritorio con `g++` contra el archivo real de Juan.
-- Música (`MusicActivity`, mosaico Música), con pinta de Winamp pero al tamaño de esta pantalla (480x800): título y
-  artista grandes, contador de 7 segmentos de 68 px, barra de posición gruesa, botones de transporte de 56x38 y
-  volumen con número; la playlist va en filas de 38 px. La versión anterior copiaba las proporciones de la skin
-  original (275x116) y en el aparato quedaba todo minúsculo. MP3 de `/Music/<carpeta>/` en la SD. `src/music/Mp3Source` decodifica con
-  Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una `AudioManager::WavSource` con cabecera WAV
-  sintética, así el SDK no cambia; tags ID3v2/v1; volumen en `HubStore::musicVolume`. Pausa = volumen 0.
+- Música. **POR QUÉ NUNCA SONÓ hasta 1.5.44**: `AudioManager::parseWavHeader` no lee la cabecera de corrido, la
+  recorre por chunks — `seek(0)`, `seek(12)` para el "fmt " y `seek(36)` para el "data" antes del `seek(44)` final —
+  y el `seek` de `Mp3Source::wavSource()` sólo aceptaba 0 y 44, así que el segundo devolvía false y `play()` fallaba
+  siempre. Ahora acepta cualquier posición dentro de la cabecera sintética.
+  `src/music/MusicPlayer` (singleton `MUSIC`): el reproductor vive **fuera de la Activity**, así salir no corta la
+  canción, el hub muestra qué suena (chip en la barra + punto en el mosaico) y `MUSIC.pump()` en el loop de
+  `main.cpp` encadena la pista siguiente. Mientras hay música, `UiSound` se calla; `AlertBeep`, `SpeechOut` y
+  `VoiceRecorder` la cortan primero (el I2S es uno solo). Dormir la corta (`sleepNow`).
+  **La pantalla es un Winamp vertical** (1.5.45; la lista pelada de 1.5.44 no le gustó a nadie): barra de título
+  negra, visor con el contador de 7 segmentos (`src/components/SevenSegment.h`, compartido con el temporizador), el
+  analizador, título/artista y la línea "192 kbps 44 kHz estéreo"; barra de posición con cursor; botonera de seis
+  botones biselados; corredera de volumen; y abajo la lista con pinta del editor de listas de Winamp.
+  **El analizador NO es una FFT**: son los picos reales de cada bloque que decodifica `Mp3Source` (`level(i)`),
+  guardados en un anillo de 24. Con el panel repintando cada varios segundos una FFT no tendría sentido, y esto
+  igual dice la verdad sobre el audio.
+  Por dentro sigue siendo **una sola lista**: las seis primeras posiciones son los botones de la botonera, la
+  séptima el volumen y de la octava en adelante las carpetas o las pistas. Por eso la palanca recorre la botonera
+  de izquierda a derecha y sigue de largo hacia abajo, sin "zonas" ni modos escondidos (las tres zonas invisibles
+  de 1.5.43 se fueron). El volumen tiene su modito: OK sobre la barra y la palanca sube y baja. También se toca
+  desde Ajustes → Sistema. Carpeta `/Music` o `/music` (se prueban las dos, y `/MUSIC`, `/Musica`, `/musica`).
+  `src/music/Mp3Source` decodifica con Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una
+  `AudioManager::WavSource` con cabecera WAV sintética; tags ID3v2/v1; volumen en `HubStore::musicVolume`.
+  Pausa = volumen 0.
 - Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se
   cargan en `/board`, artículo limpiado a texto sin LLM); titulares y artículos leídos cacheados en `/.crosspoint/rss/`.
-  El hub pasa a 3x4: Leer, Hablar, Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos,
-  Ajustes (Juegos todavía dice "Próximamente").
+  El hub quedó en 14 mosaicos (1.5.48): fila ancha "Mi día" + Conversor, y debajo 4x3 con Leer, Hablar, Traductor,
+  Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos, Ajustes. **Ya no hay "Próximamente"**: los
+  catorce abren de verdad.
 - Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`). La
   foto se sube **tal como sale del teléfono** y la convierte el servidor con `sharp` (`toDeviceBmp`: rota por EXIF,
   escala a 480x800, 4 grises con Floyd-Steinberg y BMP de 2 bpp, ~150 ms); el navegador ya no arma nada. El aparato
   pide la lista al servidor cada vez que se entra, baja a `/Photos` de la SD y dibuja con el **pipeline de grises**
   del SDK (base BW + pasada LSB + pasada MSB + `displayGrayBuffer`): una sola pasada en modo BW pintaba de negro todo
   lo que no fuera blanco puro y la foto salía como una mancha.
+- Conversor de unidades (`UnitsActivity`, mosaico Conversor, 1.5.48): **la cuenta es toda del aparato**; lo único
+  que necesita servidor es pasar la voz a texto. Siete familias — longitud, peso, temperatura, volumen, superficie,
+  velocidad y **cocina** (con ingrediente, para pasar tazas a gramos) — con la cantidad en dígitos de 7 segmentos,
+  la equivalencia grande y el resto de la familia en una lista debajo. La palanca cambia el dígito o el campo y OK
+  pasa al siguiente; sólo la temperatura admite signo. Se dicta ("doce pulgadas a centímetros") por
+  `POST /api/transcribe` y lo resuelve `parseSpoken()` en el aparato, tomando la familia de la pantalla cuando el
+  dictado no nombra unidad. La última familia, unidad e ingrediente se guardan en un archivo propio de la SD.
 - Clima: Open-Meteo primero y **met.no de respaldo** (`server/src/metno.ts`, mismo formato traducido con
   `wmoFromSymbol`, User-Agent obligatorio): desde Railway Open-Meteo devolvía 502 sin parar y el hub quedaba vacío.
 - Clima detallado (`WeatherActivity`, mosaico Clima): `GET /api/hub/forecast?lang=` (Open-Meteo: ahora, horas y seis
@@ -254,16 +337,100 @@ llegue el hardware.
   acepta `audio/adpcm` o `audio/wav` (`toWav` en `transcribe.ts`) y devuelve tiempos por etapa en `ms`.
 - Voz común: `src/voice/VoiceRecorder` (toma de hasta N s a PSRAM, `start/pump/stop/abort`, pitidos al abrir y cerrar el mic) y
   `src/voice/SpeechToText::transcribe` (`POST /api/transcribe`). Toda Activity que grabe usa eso.
-- Widgets: clima, próximo recordatorio, agenda de hoy (o la frase si no hay eventos), contador de mensajes en la
-  barra. Íconos de 24 px en `src/components/icons/hubWidgetIcons.h`. Pendiente: temperatura interior (SHTC3).
+- Widgets del hub (sumario de cuatro renglones separados por reglas de 1 px, 1.5.48): clima (temperatura en UI_14,
+  interior del SHTC3 con humedad a la derecha), próximo recordatorio, **música-o-libro** y agenda de hoy (o la frase
+  si no hay eventos). El renglón de medios es uno solo: con música sonando muestra la pista y "3 / 14 · 4:12", y si
+  no suena nada muestra el libro abierto — **la música salió de la barra de estado**. Íconos de 24 px en
+  `src/components/icons/hubWidgetIcons.h`.
+- **Los mensajes se sacaron del sistema en 1.5.44** ("me parece algo irrelevante"): no están más ni en el aparato,
+  ni en `GET /api/hub`, ni en la Pizarra, ni como intención de voz (lo que el modelo clasifique como mensaje se
+  guarda como nota).
+- **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
+  jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
+  `drawSelectionRow()`) es pestaña negra de 5 px a la izquierda + marco + franjas tramadas SOLO en los márgenes, con
+  el centro blanco y el texto negro: el negro macizo con texto invertido pegaba un salto de contraste enorme y dejaba
+  fantasma, y la trama sobre toda la fila dejaba el renglón elegido como el menos legible de la pantalla. Estilos
+  `Row` (listas) y `Tile` (mosaicos). Vale para el hub y para toda lista nuestra.
+- **El sistema visual se aplicó a TODAS las pantallas nuestras en 1.5.48** (ola B, siete paquetes en paralelo con
+  revisión adversarial: 51 hallazgos, 24 refutados, 19 arreglados). Lo compartido vive en dos archivos:
+  `src/activities/ListStyle.h` (namespace `listui`: margen de 24 px, grilla de 8, fila de dos renglones
+  título UI_12 + detalle UI_10, metadato a la derecha, casilla de 18x18, encabezado UI_14 con regla, paginador
+  "Página 2 de 5") y `src/activities/games/GameUi.{h,cpp}` para los juegos. Pasaron por ahí: hub, Recordatorios,
+  Notas, Noticias, Fotos, Viajes, Mi día, Música, visores, diálogos y popups, Ajustes → Movimiento y los doce juegos.
+  Se fueron las pastillas negras macizas con texto blanco (pestañas, distintivos, cartas emparejadas) y los
+  paginadores "1/12" en una esquina.
+- **Escala tipográfica**: `SevenSegment` para los números grandes, **UI_14** (Ubuntu 14 bold, nueva en 1.5.48) para
+  títulos, UI_12 para el cuerpo, UI_10 para etiquetas, SMALL (NotoSans 8, **ahora con negrita**) para pies. Las dos
+  caras nuevas cuestan 122 KB de flash y se generan con `lib/EpdFont/scripts/convert-builtin-fonts.sh` +
+  `build-font-ids.sh`.
+- `GfxRenderer::drawPixel` ya NO escribe una línea de log por píxel fuera de pantalla: los cuenta y avisa una vez por
+  segundo. Un solo cartel más ancho que la pantalla dejaba miles de líneas de "Outside range" y se comía el log
+  entero (el que mandó el usuario en 1.5.43 tenía 2900 líneas y 2877 eran eso).
+
+## Energía: el reposo en tres etapas (1.5.48)
+
+- Hasta 1.5.47 había dos estados y nada en el medio: despierto (~40 mA, el loop cada 10 ms) o deep sleep, que es
+  un reset al volver. `src/util/IdleSleep` (singleton `IDLE_SLEEP`, `tick()` desde el loop) agrega la etapa del
+  medio: a los **45 s** de quietud entra en `esp_light_sleep_start()` por **ciclos de 2 s**. La pantalla queda
+  como estaba (el panel es biestable: retener no cuesta nada), el estado sigue vivo y vuelve en menos de 10 ms.
+- Despiertan: los cuatro botones (arriba 4, OK 5, abajo 6, BOOT 0) por nivel bajo, la IRQ del PMIC (GPIO38, por
+  ahí entra PWR), el INT del RTC (GPIO45) y el timer. **En light sleep no hace falta que el pin sea RTC GPIO**:
+  eso es lo que destraba GPIO38 y GPIO45, que para el deep sleep no sirven.
+- Cada ciclo mira el acelerómetro: si se movió más de 60 mg entre muestras, o si el chip dejó un gesto latcheado
+  (un doble golpe dura 10 ms y entre dos muestras de 2 s no se ve como diferencia), despierta. Levantar el
+  aparato lo enciende.
+- **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
+  de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
+  decide DESPUÉS, así nunca puede impedirlo.
+- **Alarma del RTC** (`src/util/RtcAlarm`, singleton `RTC_ALARM`): PCF85063, registros 0x0B-0x0F, AIE/AF en
+  Control_2 (0x01). Se arma al próximo recordatorio o al fin del temporizador con la hora en UTC, que es lo que
+  guarda el RTC. El timer del light sleep se corta a la hora; la alarma del chip aguanta las esperas largas y
+  despierta en el segundo exacto. **La bandera AF se limpia siempre**: si queda puesta, GPIO45 se queda en bajo,
+  el light sleep se rechaza en bucle y el aparato gasta más despierto que sin reposo. Sigue sin servir para el
+  deep sleep (GPIO45 no es RTC GPIO): eso lo arma `armReminderWake()` con el timer, y así queda.
+
+## Disciplina de tareas (1.5.48)
+
+- `src/TaskConfig.h` declara núcleo, prioridad, stack y para qué de cada tarea, y ahora eso se puede **medir**:
+  cada una se anota al arrancar (`tasks::attach`) y `usage()` devuelve la marca de agua del stack. Las del SDK,
+  que nacen y mueren solas (`audio_play`), se buscan por nombre. El loop de Arduino está en el registro porque es
+  el que más cerca está del límite: por ahí pasan el TLS, el parseo de EPUB y todo lo que no tiene tarea propia.
+- `tasks::runBounded(nombre, stack, fn, arg)` corre trabajo pesado en una tarea de vida corta con el stack
+  declarado y devuelve cuántos bytes usó. **No** es para no frenar la UI (el llamador espera, igual que antes):
+  es para que un stack grande exista sólo mientras dura ese trabajo en vez de estar reservado para siempre en el
+  loop. Su primer usuario de verdad son las apps en Lua.
+- **Ajustes → Sistema → Memoria** (`TaskStatsActivity`): heap interno con su mínimo histórico y el bloque
+  contiguo mayor (el número que decide si una asignación grande entra), PSRAM, el stack usado contra el declarado
+  de cada tarea, y cómo va el reposo. Se repinta sólo si algún número se movió más de 2 KB.
+
+## Apps en Lua desde la tarjeta (1.5.48)
+
+- Una app es **un archivo** en `/Apps` de la tarjeta (`/Apps/dados.lua`). Se copia por el modo memoria USB y se
+  abre en **Juegos → Apps de la tarjeta**. Contrato de callbacks (`on_open`, `on_key`, `on_tick`, `on_draw`), no
+  de bucle propio: en tinta el refresco lo decide el firmware, y una app con su `while true` se comería el loop,
+  los recordatorios y el reposo. El contrato entero está en `docs/ws397/APPS_LUA.md` y hay ejemplos en
+  `examples/Apps/`.
+- **El cajón** (`src/lua/LuaSandbox.cpp`): están `math`, `string`, `table`, `utf8`, `coroutine` y la base; NO
+  están `io`, `os`, `package`, `debug`, `require`, `load`, `loadstring`, `dofile`, `loadfile` ni `string.dump`
+  (los `.c` de esas bibliotecas ni se copiaron a `lib/Lua`). Topes: 192 KB de memoria desde PSRAM, 400.000
+  instrucciones por llamada (un `while true do end` termina en error de la app, no en un aparato colgado) y
+  32 KB de stack en un worker de `runBounded`.
+- Está separado de `LuaApp` justamente para poder probarlo sin placa: **`./test/lua_sandbox/run.sh`** verifica de
+  escritorio que lo que tiene que estar está, que lo que no, no, que la guardia corta un bucle infinito sin tocar
+  uno normal, que el techo de memoria aguanta y que las apps de ejemplo corren sus callbacks sin error.
+- Lua 5.4.7 con `LUA_32BITS` (el S3 tiene FPU de simple precisión) cuesta **108 KB** de flash. La configuración va
+  editada en `lib/Lua/src/luaconf.h` y no con un `-D`: ese archivo define `LUA_32BITS` sin protección, un `-D`
+  quedaría pisado, y además lo incluyen tanto el intérprete como nuestro código.
 
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
 (fusión de lo planeado con lo que hacen el reTerminal Sticky y el ZecTrix Note 4). Resumen:
 
-0. Hardware: volumen, trackball/botones PCF8574, wake por alarma del RTC, driver SHTC3, deep sleep medido, IMU
-   por polling (boca abajo = silenciar, doble golpe = PTT, sacudir = cancelar; modo atril horizontal para el hub).
+0. Hardware: volumen (hecho), botón PWR por el PMIC (hecho, 1.5.47), coordinador de refresco (hecho), driver SHTC3
+   en dos tiempos (hecho), IMU por polling con boca abajo = silenciar, doble golpe = PTT y sacudir = cancelar
+   (hecho), reposo en tres etapas con light sleep y alarma del RTC por GPIO45 (hecho, 1.5.48), consumo y stacks
+   medidos desde Ajustes → Sistema → Memoria (hecho, 1.5.48). Descartado: trackball y botones PCF8574.
 1. Hub + preguntarle al libro + cliente HTTP + sincronización con `GET /api/hub` y widgets + Hablar con
    clasificador de intención (hecho). Falta: pizarra de mensajes desde el teléfono (1.8), ajustes del hub en la web UI.
 2. Voz: el servidor clasifica la intención de una sola grabación (pregunta, tarea, recordatorio, compras,
@@ -273,7 +440,8 @@ La lista completa de funciones, con fase, estado y contrato del servidor, está 
 3. Contenido: Biblia (hecha, capítulos cacheados; falta descarga por libro e índice offline), MP3 estilo Winamp
    (hecho), versículo/frase del día, RSS/lectura web, álbum de imágenes en 4 grises, clima detallado.
 4. Juegos: damas, cartas (rummy, solitario, blackjack), retos mentales (sudoku, acertijos, cálculo), memoria
-   (parejas, Simón), Tetris experimental, ajedrez opcional.
+   (parejas, Simón), Tetris experimental, ajedrez opcional. Y lo que no viene compilado: apps en Lua desde la
+   tarjeta (hecho, 1.5.48).
 
 Descartado: radio por streaming, Casa Cerebro, lectura en voz alta de libros, Spotify (DRM; solo Connect online
 con cspot, no offline), auto-rotación por IMU, chino.

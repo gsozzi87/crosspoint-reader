@@ -8,20 +8,25 @@
 
 #include "BlackjackActivity.h"
 #include "CardsActivity.h"
+#include "Game2048Activity.h"
+#include "MazeActivity.h"
 #include "CheckersActivity.h"
 #include "ChessActivity.h"
 #include "ConnectFourActivity.h"
 #include "MappedInputManager.h"
+#include "LuaAppsActivity.h"
 #include "MathActivity.h"
 #include "MemoryActivity.h"
 #include "RummyActivity.h"
 #include "SudokuActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr int ROW_H = 52;
-constexpr int SIDE = 20;
+constexpr int SIDE = 24;      // ÚNICO margen lateral de la pantalla
+constexpr int TEXT_PAD = 24;  // borde de la fila -> texto: por dentro de la franja del resalte
 
 using Factory = std::unique_ptr<Activity> (*)(GfxRenderer&, MappedInputManager&);
 
@@ -53,6 +58,13 @@ const GameSpec GAMES[] = {
     {StrId::STR_GAME_BLACKJACK, StrId::STR_GAME_BLACKJACK_DESC, &make<BlackjackActivity>},
     {StrId::STR_GAME_RUMMY, StrId::STR_GAME_RUMMY_DESC, &make<RummyActivity>},
     {StrId::STR_GAME_CARDS, StrId::STR_GAME_CARDS_DESC, &make<CardsActivity>},
+    // Los dos que usan el sensor de movimiento. Siguen siendo por turnos: una
+    // inclinación es una jugada y una repintada, igual que soltar una ficha.
+    {StrId::STR_GAME_MAZE, StrId::STR_MAZE_HINT, &make<MazeActivity>},
+    {StrId::STR_GAME_2048, StrId::STR_2048_HINT, &make<Game2048Activity>},
+    // Lo que no viene compilado: las apps en Lua que el usuario copia a /Apps
+    // de la tarjeta. Va última porque es la puerta a lo de afuera, no un juego.
+    {StrId::STR_LUA_APPS, StrId::STR_LUA_APPS_DESC, &make<LuaAppsActivity>},
 };
 constexpr int GAME_COUNT = sizeof(GAMES) / sizeof(GAMES[0]);
 }  // namespace
@@ -109,25 +121,34 @@ void GamesActivity::render(RenderLock&&) {
 
   const int rows = visibleRows();
   const int top = metrics.topPadding + metrics.headerHeight + 14;
-  const int textW = pageWidth - 2 * SIDE - 12;
+  // La fila del resalte arranca en el margen y el texto 24 px más adentro: así
+  // cae por dentro de las franjas tramadas que dibuja `drawSelectionRow`
+  // ([x+3, x+19] y [x+w-19, x+w-3]). NUNCA hay letras sobre trama, y hasta
+  // 1.5.48 la primera letra de "Damas" o "Sudoku" quedaba justo encima.
+  const int rowW = pageWidth - 2 * SIDE;
+  const int textX = SIDE + TEXT_PAD;
+  const int textW = rowW - 2 * TEXT_PAD;
   for (int row = 0; row < rows && scroll + row < GAME_COUNT; ++row) {
     const int i = scroll + row;
     const int y = top + row * ROW_H;
     const bool sel = i == selected;
-    if (sel) renderer.fillRoundedRect(SIDE - 8, y, pageWidth - 2 * (SIDE - 8), ROW_H - 8, 10, Color::Black);
+    if (sel) drawSelectionRow(renderer, SIDE, y, rowW, ROW_H - 8, 10);
     const char* name = I18N.get(GAMES[i].name);
     const char* hint = I18N.get(GAMES[i].hint);
-    renderer.drawText(UI_12_FONT_ID, SIDE, y + 6,
-                      renderer.truncatedText(UI_12_FONT_ID, name, textW, EpdFontFamily::BOLD).c_str(), !sel,
+    renderer.drawText(UI_12_FONT_ID, textX, y + 6,
+                      renderer.truncatedText(UI_12_FONT_ID, name, textW, EpdFontFamily::BOLD).c_str(), SELECTION_INK,
                       EpdFontFamily::BOLD);
-    renderer.drawText(SMALL_FONT_ID, SIDE, y + 28,
-                      renderer.truncatedText(SMALL_FONT_ID, hint, textW).c_str(), !sel);
+    renderer.drawText(SMALL_FONT_ID, textX, y + 28,
+                      renderer.truncatedText(SMALL_FONT_ID, hint, textW).c_str(), SELECTION_INK);
   }
 
   // Solo cuando hay más juegos de los que entran: dice cuál de cuántos es.
+  // La frase entera ("Página 3 de 11") y no "3/11": la barra sola no se
+  // entiende, y el buffer va holgado porque en ruso y en alemán la misma frase
+  // ocupa el doble de bytes.
   if (GAME_COUNT > rows) {
-    char pager[16];
-    snprintf(pager, sizeof(pager), "%d/%d", selected + 1, GAME_COUNT);
+    char pager[64];
+    snprintf(pager, sizeof(pager), tr(STR_PAGE_FORMAT), selected + 1, GAME_COUNT);
     const int w = renderer.getTextWidth(SMALL_FONT_ID, pager);
     renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - w, metrics.topPadding + metrics.headerHeight - 6, pager);
   }

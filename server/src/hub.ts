@@ -10,7 +10,7 @@
 //     weather: { line, detail },             // "Nublado · 18°" / "Máx 22° · Mín 11° · Humedad 60 %"
 //     reminders: [{ title, when }],          // el primero es el próximo
 //     events: [{ when, title }],             // agenda de hoy (máx. 4)
-//     messages: [{ from, text }],            // pizarra (máx. 5)
+//     lists: [{ key, name, items }],         // solo dos: compras y tareas
 //     quote: string
 //   }
 //
@@ -23,25 +23,25 @@
 // Clima: Open-Meteo, gratis y sin key. Env de respaldo en Railway:
 //   HUB_LAT, HUB_LON   (si no hay lugar guardado; sin nada, weather queda vacío)
 //   HUB_TZ             default "America/Argentina/Buenos_Aires"
-// Recordatorios, agenda y mensajes: por ahora se leen de /data/hub-data.json
+// Recordatorios y agenda: por ahora se leen de /data/hub-data.json
 // (volumen de Railway) con la misma forma que la respuesta; la Fase 2 los
 // reemplaza por las tablas de verdad. Si el archivo no existe, van vacíos.
 import { Hono } from "hono";
-import { readJsonSafe, writeJsonAtomic } from "./fsjson";
+import { readDoc, writeDoc } from "./fsjson";
+import { accountOf, type AppEnv } from "./tenant";
+import { DEFAULT_ACCOUNT, multiUser } from "./db";
 import { readBody } from "./net";
 import { hubSlice, markDone, editEntry } from "./voice";
 import { QUOTES, LABELS, describeWeather, normalizeLang, type Lang } from "./lang";
 import { VOICES } from "./tts";
 import { metNoForecast, type MetNoData } from "./metno";
-import { load as loadStore, save as saveStore, DEFAULT_SETTINGS, refreshTimeZone, repeatText, whenLabel, upsertReminder, normalizeRepeat, repeatToWire, localToEpoch } from "./store";
+import { load as loadStore, save as saveStore, DEFAULT_SETTINGS, refreshTimeZone, forgetTimeZone, repeatText, whenLabel, upsertReminder, normalizeRepeat, repeatToWire, localToEpoch } from "./store";
 import { agendaConfigured, todayForHub } from "./agenda";
 import { verseOfTheDay } from "./bible";
 
 const LAT = process.env.HUB_LAT ?? "";
 const LON = process.env.HUB_LON ?? "";
 const TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
-const DATA_FILE = process.env.HUB_DATA_FILE ?? "/data/hub-data.json";
-const SETTINGS_FILE = process.env.HUB_SETTINGS_FILE ?? "/data/hub-settings.json";
 const WEATHER_TTL_MS = 15 * 60 * 1000;
 
 type Place = { name: string; label: string; lat: number; lon: number; timezone: string };
@@ -57,8 +57,24 @@ function tzOffsetMs(at: number, tz: string = TZ): number {
   return Date.UTC(get("year"), get("month") - 1, get("day"), get("hour"), get("minute"), get("second")) - Math.floor(at / 1000) * 1000;
 }
 
-let placeCache: Place | null = null;
-let forecastCache: { at: number; lang: Lang; value: object } | null = null;
+// Las cachés son POR CUENTA: con un solo lugar global, el aparato de una casa
+// veía el clima de otra. Con tope, que 1000 cuentas en un Map sin límite es una
+// fuga de memoria.
+const MAX_CACHED = 256;
+
+function cacheSet<T>(m: Map<number, T>, k: number, v: T): T {
+  m.delete(k);
+  m.set(k, v);
+  while (m.size > MAX_CACHED) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+  return v;
+}
+
+const placeCache = new Map<number, Place>();
+const forecastCache = new Map<number, { at: number; lang: Lang; value: object }>();
 
 // Ojo: el "no hay lugar" NO se cachea. Si se cacheara, un proceso que arrancó
 // antes de que se guardara el lugar no volvería a leer el archivo nunca más y el
@@ -79,20 +95,21 @@ function validPlace(raw: unknown): Place | null {
   };
 }
 
-async function place(): Promise<Place | null> {
-  if (placeCache) return placeCache;
+async function place(accountId: number): Promise<Place | null> {
+  const hit = placeCache.get(accountId);
+  if (hit) return hit;
   const fromEnv = LAT && LON ? validPlace({ lat: LAT, lon: LON, timezone: TZ }) : null;
-  const saved = validPlace(await readJsonSafe<unknown>(SETTINGS_FILE, null));
+  const saved = validPlace(await readDoc<unknown>(accountId, "hub-settings", null));
   if (!saved) return fromEnv;
-  placeCache = saved;
-  return placeCache;
+  return cacheSet(placeCache, accountId, saved);
 }
 
-async function savePlace(p: Place): Promise<void> {
-  await writeJsonAtomic(SETTINGS_FILE, p);
-  placeCache = p;
-  weatherCache = null;
-  forecastCache = null;  // el pronóstico cacheado era del lugar viejo
+async function savePlace(accountId: number, p: Place): Promise<void> {
+  await writeDoc(accountId, "hub-settings", p);
+  cacheSet(placeCache, accountId, p);
+  weatherCache.delete(accountId);
+  forecastCache.delete(accountId);  // el pronóstico cacheado era del lugar viejo
+  forgetTimeZone(accountId);        // y la zona horaria también cambió
 }
 
 type Weather = { line: string; detail: string; noPlace?: boolean; error?: string };
@@ -110,7 +127,7 @@ async function openMeteoOrMetNo(url: string, p: Place): Promise<MetNoData> {
   }
 }
 
-let weatherCache: { at: number; lang: Lang; value: Weather } | null = null;
+const weatherCache = new Map<number, { at: number; lang: Lang; value: Weather }>();
 
 // Open-Meteo desde Railway falla de a ratos (corte de red, 429 por IP compartida).
 // Con un solo intento el clima quedaba vacío hasta el próximo ciclo de 15 minutos.
@@ -129,12 +146,13 @@ async function fetchRetry(url: string, tries = 3): Promise<Response> {
   throw last instanceof Error ? last : new Error(String(last));
 }
 
-async function weather(lang: Lang): Promise<Weather> {
-  const p = await place();
+async function weather(accountId: number, lang: Lang): Promise<Weather> {
+  const p = await place(accountId);
   // Sin lugar guardado no hay clima posible: el aparato lo dice tal cual
   // ("cargá el lugar en la web") en vez de un "sin datos" que no explica nada.
   if (!p) return { line: "", detail: "", noPlace: true };
-  if (weatherCache && weatherCache.lang === lang && Date.now() - weatherCache.at < WEATHER_TTL_MS) return weatherCache.value;
+  const cached = weatherCache.get(accountId);
+  if (cached && cached.lang === lang && Date.now() - cached.at < WEATHER_TTL_MS) return cached.value;
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${p.lat}&longitude=${p.lon}` +
     `&current=temperature_2m,relative_humidity_2m,weather_code` +
@@ -149,23 +167,22 @@ async function weather(lang: Lang): Promise<Weather> {
         `${l.max} ${Math.round(data.daily.temperature_2m_max[0])}° · ${l.min} ${Math.round(data.daily.temperature_2m_min[0])}°` +
         ` · ${l.hum} ${Math.round(data.current.relative_humidity_2m)} %`,
     };
-    weatherCache = { at: Date.now(), lang, value };
+    cacheSet(weatherCache, accountId, { at: Date.now(), lang, value });
     return value;
   } catch (err) {
     console.error("hub weather:", p.label || `${p.lat},${p.lon}`, err);
-    return weatherCache?.value ?? { line: "", detail: "", error: String(err).slice(0, 200) };
+    return weatherCache.get(accountId)?.value ?? { line: "", detail: "", error: String(err).slice(0, 200) };
   }
 }
 
 type HubData = {
   reminders?: { title: string; when: string }[];
   events?: { when: string; title: string }[];
-  messages?: { from: string; text: string }[];
   quote?: string;
 };
 
-async function data(): Promise<HubData> {
-  const raw = await readJsonSafe<unknown>(DATA_FILE, {});
+async function data(accountId: number): Promise<HubData> {
+  const raw = await readDoc<unknown>(accountId, "hub-data", {});
   const r = (raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {}) as Record<string, any>;
   // Lo que no sea array se ignora: este archivo se edita a mano y un campo
   // suelto no tiene que tirar abajo la sincronización entera del aparato.
@@ -173,7 +190,6 @@ async function data(): Promise<HubData> {
   return {
     reminders: arr(r.reminders),
     events: arr(r.events),
-    messages: arr(r.messages),
     quote: typeof r.quote === "string" ? r.quote : undefined,
   };
 }
@@ -184,7 +200,16 @@ function quoteOfTheDay(lang: Lang): string {
   return list[day % list.length];
 }
 
-export const hub = new Hono();
+// `HUB_ICS_URL` es una variable del entorno, o sea del OPERADOR, no de una
+// cuenta: si se usara para todas, el calendario privado del que puso la variable
+// se lo verían los 1000 aparatos. En multiusuario vale solo para la cuenta 1
+// (la que ya venía andando con esa variable puesta).
+function icsFor(accountId: number): boolean {
+  if (!agendaConfigured()) return false;
+  return !multiUser || accountId === DEFAULT_ACCOUNT;
+}
+
+export const hub = new Hono<AppEnv>();
 
 // Geocoding de Open-Meteo (gratis). La consulta llega transcripta de voz
 // ("Rosario", "Rosario Argentina", "Ciudad de México"): probamos el texto entero
@@ -231,8 +256,9 @@ hub.post("/location", async (c) => {
     lon,
     timezone: (body.timezone ?? TZ).toString().slice(0, 64),
   };
+  const acc = accountOf(c);
   try {
-    await savePlace(p);
+    await savePlace(acc, p);
   } catch (err) {
     // Sin volumen montado esto tiraba un 500 pelado y el aparato decía "error".
     console.error("hub place:", err);
@@ -241,20 +267,22 @@ hub.post("/location", async (c) => {
   console.log("hub place:", p.label || `${lat},${lon}`);
   // Se consulta el clima ahí mismo: así /board muestra enseguida si el lugar
   // nuevo anda, sin esperar a que el aparato sincronice.
-  const w = await weather(normalizeLang(c.req.query("lang")));
+  const w = await weather(acc, normalizeLang(c.req.query("lang")));
   return c.json({ ok: true, place: p, weather: w });
 });
 
-hub.get("/location", async (c) => c.json({ ok: true, place: await place() }));
+hub.get("/location", async (c) => c.json({ ok: true, place: await place(accountOf(c)) }));
 
 // Pronóstico para la pantalla de Clima del aparato: hoy por horas y los
 // próximos días. Una sola llamada, cacheada 15 minutos como el resumen.
 hub.get("/forecast", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
-  const p = await place();
+  const acc = accountOf(c);
+  const p = await place(acc);
   if (!p) return c.json({ ok: false, noPlace: true, error: "no place set" }, 503);
-  if (forecastCache && forecastCache.lang === lang && Date.now() - forecastCache.at < WEATHER_TTL_MS) {
-    return c.json(forecastCache.value);
+  const cached = forecastCache.get(acc);
+  if (cached && cached.lang === lang && Date.now() - cached.at < WEATHER_TTL_MS) {
+    return c.json(cached.value);
   }
   const tz = p.timezone || TZ;
   const url =
@@ -304,42 +332,48 @@ hub.get("/forecast", async (c) => {
       hours,
       days,
     };
-    forecastCache = { at: Date.now(), lang, value };
+    cacheSet(forecastCache, acc, { at: Date.now(), lang, value });
     return c.json(value);
   } catch (err) {
     console.error("forecast:", err);
     // Un pronóstico viejo sirve, pero no uno de ayer.
-    if (forecastCache && Date.now() - forecastCache.at < 6 * 3600 * 1000) return c.json(forecastCache.value);
+    const stale = forecastCache.get(acc);
+    if (stale && Date.now() - stale.at < 6 * 3600 * 1000) return c.json(stale.value);
     return c.json({ ok: false, error: String(err).slice(0, 200) }, 502);
   }
 });
 
 // Cuándo fue la última vez que el aparato pidió sus datos. Se ve en /board para
-// saber si ya se llevó lo que se cargó desde el teléfono.
-export let lastDeviceFetch = 0;
+// saber si ya se llevó lo que se cargó desde el teléfono. Por cuenta: con una
+// sola variable, la web de una cuenta mostraba la sincronización de otra.
+const lastFetchByAccount = new Map<number, number>();
 
 // Lo que /board muestra para saber por qué el clima está vacío y si el aparato
 // ya vino a buscar los datos.
-export async function hubDiagnostics(): Promise<{ place: Place | null; weather: Weather; lastDeviceFetch: number }> {
-  return { place: await place(), weather: await weather("es"), lastDeviceFetch };
+export async function hubDiagnostics(accountId: number): Promise<{ place: Place | null; weather: Weather; lastDeviceFetch: number }> {
+  return {
+    place: await place(accountId),
+    weather: await weather(accountId, "es"),
+    lastDeviceFetch: lastFetchByAccount.get(accountId) ?? 0,
+  };
 }
 
 hub.get("/", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
-  lastDeviceFetch = Date.now();
+  const acc = accountOf(c);
+  cacheSet(lastFetchByAccount, acc, Date.now());
   // La zona del lugar guardado, antes de armar las horas de los recordatorios.
-  await refreshTimeZone();
-  const [w, d, s, ics, verse, store] = await Promise.all([weather(lang), data(), hubSlice(lang), agendaConfigured() ? todayForHub(lang) : Promise.resolve([]), verseOfTheDay(lang), loadStore()]);
-  // Recordatorios, listas y mensajes salen del store del asistente (voice.ts);
-  // el hub-data.json a mano sigue sirviendo para la agenda y como respaldo.
+  await refreshTimeZone(acc);
+  const [w, d, s, ics, verse, store] = await Promise.all([weather(acc, lang), data(acc), hubSlice(acc, lang), icsFor(acc) ? todayForHub(lang) : Promise.resolve([]), verseOfTheDay(lang), loadStore(acc)]);
+  // Recordatorios y listas salen del store del asistente (voice.ts); el
+  // hub-data.json a mano sigue sirviendo para la agenda y como respaldo.
   return c.json({
     ok: true,
     now: Math.floor(Date.now() / 1000),
     weather: w,
     reminders: s.reminders.length ? s.reminders : (d.reminders ?? []).slice(0, 5),
     lists: s.lists,
-    events: agendaConfigured() ? ics : (d.events ?? []).slice(0, 4),
-    messages: s.messages.length ? s.messages : (d.messages ?? []).slice(0, 5),
+    events: icsFor(acc) ? ics : (d.events ?? []).slice(0, 4),
     notes: s.notes,
     quote: d.quote || quoteOfTheDay(lang),
     verse,  // { ref, text } del día, o null si la Biblia no está
@@ -360,7 +394,7 @@ hub.post("/edit", async (c) => {
   let body: { kind?: string; id?: number; action?: string; list?: string; dueDate?: string | null };
   body = await readBody(c);
   if (!Number.isFinite(Number(body.id))) return c.json({ ok: false, error: "id required" }, 400);
-  return c.json({ ok: true, found: await editEntry(body) });
+  return c.json({ ok: true, found: await editEntry(accountOf(c), body) });
 });
 
 // Alta y EDICIÓN de un recordatorio desde el aparato o desde /board: título,
@@ -371,17 +405,18 @@ hub.post("/edit", async (c) => {
 //     repeat: { kind, days?, interval?, until? } }
 //   -> { ok, reminder: { id, title, dueAt, at, when, repeat, repeatText }, created }
 hub.post("/reminder", async (c) => {
-  await refreshTimeZone();
+  const acc = accountOf(c);
+  await refreshTimeZone(acc);
   const lang = normalizeLang(c.req.query("lang"));
   const body = await readBody(c);
-  const store = await loadStore();
+  const store = await loadStore(acc);
   const res = upsertReminder(store, body);
   if (!res.ok) {
     return res.error === "not_found"
       ? c.json({ ok: false, error: "no existe ese recordatorio", code: "not_found" }, 404)
       : c.json({ ok: false, error: "title required" }, 400);
   }
-  await saveStore(store);
+  await saveStore(acc, store);
   const r = res.reminder;
   console.log(`hub reminder ${res.created ? "nuevo" : "editado"}: ${r.id} "${r.title}" ${r.dueAt ?? "sin fecha"} (${repeatText(r.repeat, r.dueAt, "es")})`);
   return c.json({
@@ -405,9 +440,9 @@ hub.post("/done", async (c) => {
   let body: { kind?: string; id?: number; snooze?: number };
   body = await readBody(c);
   const id = Number(body.id);
-  if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item" && body.kind !== "message")) {
-    return c.json({ ok: false, error: "kind (reminder|item|message) and id required" }, 400);
+  if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item")) {
+    return c.json({ ok: false, error: "kind (reminder|item) and id required" }, 400);
   }
-  const found = await markDone(body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0);
+  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0);
   return c.json({ ok: true, found });
 });

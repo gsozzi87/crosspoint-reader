@@ -1,5 +1,7 @@
 #include "MathActivity.h"
 
+#include "GameUi.h"
+
 #include <GfxRenderer.h>
 #include <HalDisplay.h>
 #include <I18n.h>
@@ -10,6 +12,7 @@
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "components/Selection.h"
 
 namespace {
 constexpr int SIDE = 24;          // margen lateral
@@ -584,7 +587,7 @@ void MathActivity::drawOptions(const int top, const int rowHeight, const int gap
     const bool filled = cursorHere || isAnswer;
 
     if (filled) {
-      renderer.fillRoundedRect(SIDE, y, boxW, rowHeight, 12, Color::Black);
+      drawSelectionRow(renderer, SIDE, y, boxW, rowHeight, 12);
     } else {
       renderer.drawRoundedRect(SIDE, y, boxW, rowHeight, 2, 12, true);
     }
@@ -594,7 +597,7 @@ void MathActivity::drawOptions(const int top, const int rowHeight, const int gap
     }
 
     snprintf(buf, sizeof(buf), "%d", options[static_cast<size_t>(i)]);
-    drawBigText(buf, pageWidth / 2, y + rowHeight / 2, boxW - 48, rowHeight - 16, !filled);
+    drawBigText(buf, pageWidth / 2, y + rowHeight / 2, boxW - 48, rowHeight - 16, SELECTION_INK);
   }
 }
 
@@ -606,8 +609,10 @@ void MathActivity::drawReady(const int top, const int bottom) const {
   // Una cuenta de muestra, para que se vea de qué va.
   drawBigText("7*8", pageWidth / 2, cy - 60, pageWidth - 2 * SIDE, 150, true);
 
-  renderer.fillRoundedRect(SIDE, cy + 50, pageWidth - 2 * SIDE, 56, 12, Color::Black);
-  renderer.drawCenteredText(UI_12_FONT_ID, cy + 66, I18N.get(StrId::STR_GAME_NEW), false, EpdFontFamily::BOLD);
+  // Sin pastilla negra con texto en blanco: la jerarquía la hace la tipografía
+  // (UI_14) y una regla de 1 px, que además no fantasmea en el parcial siguiente.
+  renderer.drawCenteredText(UI_14_FONT_ID, cy + 60, I18N.get(StrId::STR_GAME_NEW));
+  gameui::rule(renderer, SIDE, cy + 60 + renderer.getLineHeight(UI_14_FONT_ID) + 6, pageWidth - 2 * SIDE);
 
   if (bestScore > 0) {
     snprintf(buf, sizeof(buf), "%s %u", I18N.get(StrId::STR_GAME_BEST), static_cast<unsigned>(bestScore));
@@ -621,9 +626,8 @@ void MathActivity::drawSummary(const int top, const int bottom) const {
   int y = top + (bottom - top) / 2 - 190;
 
   const bool perfect = correctCount >= QUESTIONS;
-  renderer.fillRoundedRect(SIDE, y, pageWidth - 2 * SIDE, 58, 12, Color::Black);
-  renderer.drawCenteredText(UI_12_FONT_ID, y + 18, I18N.get(perfect ? StrId::STR_GAME_WON : StrId::STR_GAME_OVER),
-                            false, EpdFontFamily::BOLD);
+  renderer.drawCenteredText(UI_14_FONT_ID, y + 12, I18N.get(perfect ? StrId::STR_GAME_WON : StrId::STR_GAME_OVER));
+  gameui::rule(renderer, SIDE, y + 12 + renderer.getLineHeight(UI_14_FONT_ID) + 6, pageWidth - 2 * SIDE);
   y += 96;
 
   // Aciertos, enormes.
