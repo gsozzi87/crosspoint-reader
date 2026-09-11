@@ -1,0 +1,129 @@
+From 7cb8dddf27511d6d9dfddde009a95b84806f8a2c Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 11 Sep 2026 16:33:33 +0000
+Subject: [PATCH 14/14] ws397: beginCapture() says WHICH step failed, in a way
+ the consumer can log
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+A caller could only report "capture failed", and on a board with no cable
+and no serial monitor that one sentence covered four different problems: a
+board with no codec mic, a codec that never came up, an I2S port already
+owned by another AudioManager instance, and an RX channel that refused to
+enable. Four different fixes, and telling them apart by guessing costs a
+whole test round each time.
+
+Every early return in beginCapture() now logs its own reason AND leaves it
+in a static that lastCaptureError() exposes. The static is the point:
+log_e() goes out over the cable, but the log that actually gets read on
+this board is the one the consumer uploads to its server with its own
+logger — so the reason had to be reachable from the outside, not just
+printed on a port nobody is attached to.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../AudioManager/include/AudioManager.h       |  9 +++++
+ .../AudioManager/src/AudioManager.cpp         | 34 ++++++++++++++++---
+ 2 files changed, 38 insertions(+), 5 deletions(-)
+
+diff --git a/libs/hardware/AudioManager/include/AudioManager.h b/libs/hardware/AudioManager/include/AudioManager.h
+index 31d2b1c..7d5963e 100644
+--- a/libs/hardware/AudioManager/include/AudioManager.h
++++ b/libs/hardware/AudioManager/include/AudioManager.h
+@@ -71,6 +71,13 @@ class AudioManager {
+   // call this once from setup(). No-op on boards with no ampEnable.
+   static void silenceAmp();
+ 
++  // Por qué falló el último beginCapture(). Existe porque log_e() sale por el
++  // cable y el log que de verdad se lee en esta placa es el que se sube al
++  // servidor (/board/log), y ese lo escribe el consumidor con SU logger: sin
++  // esto, el motivo se quedaba del lado de adentro. Devuelve nullptr si el
++  // último intento salió bien.
++  static const char* lastCaptureError() { return s_lastCaptureError; }
++
+   // Full release: stop playback and capture, power the codec down and delete
+   // the I2S channels, so a later begin()/play() (or another instance) can
+   // re-create the port. powerDown() alone keeps the channels allocated.
+@@ -116,6 +123,8 @@ class AudioManager {
+     size_t dataLength = 0;
+   };
+ 
++  static const char* s_lastCaptureError;
++
+   static void taskEntry(void* self);
+   void taskLoop();
+   bool parseWavHeader(const WavSource& source, WavInfo& info);
+diff --git a/libs/hardware/AudioManager/src/AudioManager.cpp b/libs/hardware/AudioManager/src/AudioManager.cpp
+index 7eac3ff..cc09dfe 100644
+--- a/libs/hardware/AudioManager/src/AudioManager.cpp
++++ b/libs/hardware/AudioManager/src/AudioManager.cpp
+@@ -6,6 +6,7 @@
+ // Vive fuera del #if para que el stub sin audio también enlace.
+ namespace freeink {
+ uint8_t AudioManager::s_micGain = AudioManager::MIC_GAIN_DEFAULT;
++const char* AudioManager::s_lastCaptureError = nullptr;
+ }  // namespace freeink
+ 
+ // Capability-gated like FrontlightManager: devices without FREEINK_CAP_AUDIO
+@@ -417,28 +418,51 @@ void AudioManager::teardownI2s() {
+   currentRate_ = 0;
+ }
+ 
++// Every early return says WHY. A caller can only report "capture failed", and
++// from the device — no cable, no serial monitor — that one sentence covered a
++// missing mic, a codec that never came up, an I2S port already owned by another
++// AudioManager instance, and a channel that refused to enable. Those are four
++// different problems with four different fixes, and telling them apart by
++// guessing costs a whole test round each time.
+ bool AudioManager::beginCapture(uint32_t sampleRate) {
+-  if (!captureAvailable()) return false;
+-  if (sampleRate < 8000 || sampleRate > 48000) return false;
+-  if (!begun_ && !begin()) return false;
++  if (!captureAvailable()) {
++    s_lastCaptureError = "la placa no tiene micrófono por códec";
++    log_e("beginCapture: this board has no codec mic");
++    return false;
++  }
++  if (sampleRate < 8000 || sampleRate > 48000) {
++    s_lastCaptureError = "tasa de muestreo fuera de rango";
++    log_e("beginCapture: rate %u out of range", (unsigned)sampleRate);
++    return false;
++  }
++  if (!begun_ && !begin()) {
++    s_lastCaptureError = "el códec no levantó (begin)";
++    log_e("beginCapture: begin() failed (codec did not come up)");
++    return false;
++  }
+   if (capturing_ && currentRate_ == sampleRate) return true;
+   // One clock per port: playback (if any) yields, and a running capture at
+   // another rate is restarted.
+   stop();
+   if (capturing_) endCapture();
+   if (!ensureI2s(sampleRate) || !rxChan_) {
+-    log_e("i2s capture setup failed");
++    s_lastCaptureError = "no se pudo armar el I2S (puerto ocupado o sin canal RX)";
++    log_e("beginCapture: i2s setup failed at %u Hz (port busy or no RX channel)", (unsigned)sampleRate);
+     return false;
+   }
+   codecCapture(true);
+   if (!rxEnabled_) {
+-    if (i2s_channel_enable((i2s_chan_handle_t)rxChan_) != ESP_OK) {
++    const esp_err_t err = i2s_channel_enable((i2s_chan_handle_t)rxChan_);
++    if (err != ESP_OK) {
++      s_lastCaptureError = "el canal RX no se pudo habilitar";
++      log_e("beginCapture: i2s_channel_enable(rx) -> %d", (int)err);
+       codecCapture(false);
+       return false;
+     }
+     rxEnabled_ = true;
+   }
+   capturing_ = true;
++  s_lastCaptureError = nullptr;
+   return true;
+ }
+ 
+-- 
+2.43.0
+

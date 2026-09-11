@@ -912,6 +912,12 @@ void setup() {
   halTiltSensor.begin();
   // Los gestos comparten el mismo integrado que el giro para pasar página, así
   // que van después y sobre la misma instancia (ver HalTiltSensor::imu()).
+  // El enable del amplificador (GPIO39) queda en bajo desde el arranque. Sin
+  // esto flotaba desde el reset hasta el primer sonido, porque AudioManager
+  // configura ese pin recién en begin(), que es perezoso: lo que haga un enable
+  // de clase D al aire lo decide la fuga de la placa, no nosotros.
+  AudioManager::silenceAmp();
+
   MOTION.begin();
   halClock.begin();
   // Después de los botones y del IMU: prueba los pines que despiertan del reposo.

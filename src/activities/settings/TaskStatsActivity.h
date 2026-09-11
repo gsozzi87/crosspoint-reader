@@ -64,4 +64,15 @@ class TaskStatsActivity final : public Activity {
   unsigned long lastOkHoldMs = 0;  // lo que duró la última pulsación
   bool lastOkFired = false;        // si en esa llegó el evento
   bool sawOkHold = false;          // ya hubo al menos una, hay algo que mostrar
+
+  // --- Desplazamiento ----------------------------------------------------
+  //
+  // Seis secciones no entran en 800 px: en el aparato real la última quedaba
+  // dibujada DEBAJO de la barra de botones y no se podía leer. En vez de
+  // achicar filas (que es pelear con el sistema visual) o de tirar secciones
+  // (que es tirar justo lo que uno vino a mirar), la pantalla se desplaza con
+  // la palanca. Así además aguanta que mañana haya una sección más.
+  static constexpr int SCROLL_STEP = 120;
+  int scroll = 0;      // píxeles corridos hacia arriba
+  int contentH = 0;    // alto total dibujado, para no pasarse del final
 };

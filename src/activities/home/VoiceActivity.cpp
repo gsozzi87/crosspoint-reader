@@ -1,5 +1,7 @@
 #include "VoiceActivity.h"
 
+#include <AudioManager.h>
+
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
@@ -91,7 +93,12 @@ void VoiceActivity::startRecording() {
   speech.stop();  // el parlante y el micrófono comparten el I2S: si sigue hablando, la captura falla
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder.start(why)) {
-    fail(why);
+    // El motivo exacto va EN PANTALLA, no sólo al log: el log viaja al
+    // servidor y el servidor puede estar caído, sin red o con el aparato sin
+    // vincular, que es justo cuando uno necesita saber qué pasó. `fail` ya
+    // muestra el detalle debajo del cartel.
+    const char* motivo = AudioManager::lastCaptureError();
+    fail(why, motivo ? motivo : std::string());
     return;
   }
   state = RECORDING;

@@ -316,13 +316,18 @@ void MotionActivity::renderLive(const int width, const int bottom) const {
                                    EpdFontFamily::BOLD)
                     .c_str(),
                 true);
-  drawRightText(
-      renderer, SMALL_FONT_ID, inRight, y + 70,
-      renderer
-          .truncatedText(SMALL_FONT_ID,
-                         I18N.get(MOTION.tapTrusted() ? StrId::STR_MOTION_TAP_ON : StrId::STR_MOTION_TAP_OFF),
-                         stateW)
-          .c_str());
+  // Cuando el motor de golpes no contesta, acá va POR QUÉ y no sólo que no
+  // contesta: el paso que falló es lo único que permite arreglarlo, y pedirlo
+  // por el log no sirve cuando el log depende del servidor.
+  char tapLine[64];
+  if (MOTION.tapTrusted() || !MOTION.tapFailure()) {
+    snprintf(tapLine, sizeof(tapLine), "%s",
+             I18N.get(MOTION.tapTrusted() ? StrId::STR_MOTION_TAP_ON : StrId::STR_MOTION_TAP_OFF));
+  } else {
+    snprintf(tapLine, sizeof(tapLine), "%s · %s", I18N.get(StrId::STR_MOTION_TAP_OFF), MOTION.tapFailure());
+  }
+  drawRightText(renderer, SMALL_FONT_ID, inRight, y + 70,
+                renderer.truncatedText(SMALL_FONT_ID, tapLine, stateW).c_str());
   y += VISOR_H + GAP;
 
   // --- Acelerómetro --------------------------------------------------------

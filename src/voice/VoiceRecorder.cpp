@@ -100,9 +100,15 @@ bool VoiceRecorder::start(StrId& why) {
   recorded = 0;
   // Los dos caminos de error liberan la toma: son cientos de KB de PSRAM
   // (VoiceRecorder{12} pide 384 KB) y quedaban vivos hasta el próximo start().
+  // Los dos pasos se reportan DISTINTO. Hasta 1.5.49 los dos decían "Falló la
+  // captura del micrófono" y no había forma de saber, desde el aparato, si lo
+  // que falló fue levantar el códec o abrir el canal de entrada — que son dos
+  // problemas completamente distintos (uno es el ES8311 o el I2C, el otro es el
+  // puerto I2S ya tomado por otra instancia).
   if (!audio.begin()) {
     release();
-    why = StrId::STR_AUDIO_CAPTURE_FAILED;
+    LOG_ERR(TAG, "grabar: audio.begin() falló (el códec no levantó)");
+    why = StrId::STR_AUDIO_INIT_FAILED;
     return false;
   }
   // El micrófono abre ANTES del pitido, no después: el códec es full duplex y
@@ -114,6 +120,9 @@ bool VoiceRecorder::start(StrId& why) {
   if (!audio.beginCapture(SAMPLE_RATE)) {
     audio.end();
     release();
+    const char* motivo = AudioManager::lastCaptureError();
+    LOG_ERR(TAG, "grabar: beginCapture(%u) falló: %s", (unsigned)SAMPLE_RATE,
+            motivo ? motivo : "sin motivo del SDK");
     why = StrId::STR_AUDIO_CAPTURE_FAILED;
     return false;
   }

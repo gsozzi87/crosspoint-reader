@@ -69,6 +69,11 @@ class MotionInput {
   // El motor de golpes del chip contestó el diálogo de CTRL9 y la gravedad que
   // se leyó al arrancar era plausible.
   bool tapTrusted() const { return tapTrusted_; }
+  // Por qué NO contestó, para mostrarlo en la pantalla de diagnóstico. Depender
+  // del log para esto no sirve: el log viaja al servidor y el servidor puede
+  // estar caído, sin vincular o sin red, que es justo cuando uno necesita
+  // diagnosticar. nullptr si contestó bien.
+  const char* tapFailure() const { return tapFailure_; }
 
   // Consume el evento pendiente si es el que se pide.
   bool take(Event want);
@@ -111,6 +116,7 @@ class MotionInput {
   bool available_ = false;
   bool diagnostics_ = false;
   bool tapTrusted_ = false;
+  const char* tapFailure_ = nullptr;
   bool gyroOn_ = false;
   unsigned long lastPollMs_ = 0;
   unsigned long lastEventAt_ = 0;

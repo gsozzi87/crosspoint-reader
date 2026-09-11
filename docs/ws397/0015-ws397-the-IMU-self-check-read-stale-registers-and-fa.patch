@@ -1,0 +1,99 @@
+From c48d78869941bb9ada21b3cad9b5d0caa1305ec3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 11 Sep 2026 16:54:19 +0000
+Subject: [PATCH] ws397: the IMU self-check read stale registers and failed a
+ healthy part
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+begin() configures the accelerometer at +/-2 g and 28 Hz, waits 20 ms and
+reads one sample to check that the magnitude at rest is about one g. But a
+sample at 28 Hz takes ~36 ms, so after 20 ms the output registers still hold
+whatever was there before. On a WARM restart — the common case for a
+consumer that restarts itself rather than the rare one — that is counts from
+the previous session's range: a consumer that picked +/-8 g leaves the part
+there, since a firmware restart does not reset it, and reading +/-8 g counts
+through the +/-2 g scale set here divides the magnitude by four. ~0.25 g,
+comfortably outside the window, so a perfectly healthy part failed its own
+sanity check and everything gated on selfCheckPassed() stayed off for the
+whole session.
+
+Now it samples up to five times, one real period apart, and takes the first
+plausible reading. Worst case ~200 ms, once, at begin().
+
+lastSelfCheckG() exposes what it measured, so a consumer can show WHY it
+failed instead of only that it did: 0.25 says wrong scale, 0.00 says the
+part is not answering, 1.0 says it passed.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ libs/hardware/Imu/include/Imu.h |  6 ++++++
+ libs/hardware/Imu/src/Imu.cpp   | 24 +++++++++++++++++++++---
+ 2 files changed, 27 insertions(+), 3 deletions(-)
+
+diff --git a/libs/hardware/Imu/include/Imu.h b/libs/hardware/Imu/include/Imu.h
+index 4786783..05a7bb6 100644
+--- a/libs/hardware/Imu/include/Imu.h
++++ b/libs/hardware/Imu/include/Imu.h
+@@ -75,12 +75,18 @@ class Imu {
+   // False when begin() saw an implausible gravity vector: the part answers on
+   // I2C but its numbers cannot be trusted, so a consumer should not present
+   // gesture detection as working.
++  // La magnitud que midió el autochequeo, en g. Sirve para que el consumidor
++  // pueda MOSTRAR por qué falló en vez de decir sólo "no responde": un 0,25
++  // grita "escala equivocada" y un 0,00 grita "el chip no contesta".
++  float lastSelfCheckG() const { return lastSelfCheckG_; }
++
+   bool selfCheckPassed() const { return selfCheckOk_; }
+ 
+  private:
+   bool begun_ = false;
+   Mode mode_ = Mode::Off;
+   bool selfCheckOk_ = false;
++  float lastSelfCheckG_ = 0.0f;
+   uint8_t ctrl2_ = 0;  // last accelerometer CTRL2 written
+   uint8_t ctrl3_ = 0;  // last gyroscope CTRL3 written
+   float accelScale_ = 0.0f;  // g per LSB for the configured full scale
+diff --git a/libs/hardware/Imu/src/Imu.cpp b/libs/hardware/Imu/src/Imu.cpp
+index eab3222..4842e6e 100644
+--- a/libs/hardware/Imu/src/Imu.cpp
++++ b/libs/hardware/Imu/src/Imu.cpp
+@@ -204,12 +204,30 @@ bool Imu::begin() {
+   // one g. Anything far from that means the numbers are not acceleration (wrong
+   // byte order, wrong scale, a part that answers but is not configured), and a
+   // consumer must not offer gestures as if they worked.
++  //
++  // The wait is the whole point, and a single delay(20) was not enough. The
++  // config above leaves the accelerometer at 28 Hz, so one sample takes ~36 ms:
++  // reading after 20 ms returns whatever the output registers still hold. On a
++  // WARM restart — which is the common case, not the rare one — those registers
++  // hold data from the previous session's range (a consumer that picked +/-8 g
++  // leaves it there; the part is not reset by a firmware restart), and reading
++  // +/-8 g counts through the +/-2 g scale set here divides the magnitude by
++  // four: ~0.25 g, comfortably outside the window, so a perfectly healthy part
++  // failed its own sanity check and every gesture built on selfCheckPassed()
++  // stayed off for the whole session.
++  //
++  // So: sample until the numbers are fresh, a few periods at a time, and take
++  // the first plausible one. Worst case this costs ~200 ms once, at begin().
+   selfCheckOk_ = false;
+-  delay(20);
+-  Sample probe = {};
+-  if (read(probe)) {
++  constexpr int SELF_CHECK_TRIES = 5;
++  constexpr uint32_t SAMPLE_PERIOD_MS = 40;  // one period at 28 Hz, rounded up
++  for (int attempt = 0; attempt < SELF_CHECK_TRIES && !selfCheckOk_; ++attempt) {
++    delay(SAMPLE_PERIOD_MS);
++    Sample probe = {};
++    if (!read(probe)) continue;
+     const float magnitude = sqrtf(probe.ax * probe.ax + probe.ay * probe.ay + probe.az * probe.az);
+     selfCheckOk_ = magnitude > 0.6f && magnitude < 1.6f;
++    lastSelfCheckG_ = magnitude;
+   }
+   return true;
+ }
+-- 
+2.43.0
+
