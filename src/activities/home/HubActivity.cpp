@@ -41,7 +41,6 @@
 #include "components/Selection.h"
 #include "music/MusicPlayer.h"
 
-#include "activities/home/UnitsActivity.h"
 
 namespace {
 constexpr int SIDE = 24;        // único margen lateral, y todo cae en la grilla de 8
@@ -77,7 +76,7 @@ struct TileSpec {
 
 // El orden manda: tiene que coincidir con el enum Tile del .h.
 const TileSpec TILES[] = {
-    {StrId::STR_HUB_DAY, &icon_hub_day_48},           {StrId::STR_UNITS_TITLE, &icon_hub_units_48},
+    {StrId::STR_HUB_DAY, &icon_hub_day_48},
     {StrId::STR_HUB_READ, &icon_hub_read_48},         {StrId::STR_HUB_TALK, &icon_hub_ask_48},
     {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_48},
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
@@ -86,7 +85,7 @@ const TileSpec TILES[] = {
     {StrId::STR_HUB_GAMES, &icon_hub_games_48},       {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
     {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
-static_assert(sizeof(TILES) / sizeof(TILES[0]) == 14, "TILES tiene que seguir a Tile");
+static_assert(sizeof(TILES) / sizeof(TILES[0]) == 13, "TILES tiene que seguir a Tile");
 
 // "4:12" para el renglón de lo que suena.
 std::string minutesSeconds(const int seconds) {
@@ -152,11 +151,6 @@ void HubActivity::activate(const int tile) {
         loadLastBook();
         requestUpdate();
       });
-      break;
-    case TILE_UNITS:
-      // Como Hablar y el Traductor: usa WiFi para el dictado, así que reemplaza
-      // el hub en vez de apilarse encima (el heap del TLS no vuelve de otra forma).
-      activityManager.replaceActivity(std::make_unique<UnitsActivity>(renderer, mappedInput));
       break;
     case TILE_REMINDERS:
       startActivityForResult(std::make_unique<AgendaActivity>(renderer, mappedInput), [this](const ActivityResult&) {
@@ -607,9 +601,10 @@ void HubActivity::drawAgendaRow(const int x, const int y, const int w, const int
   }
 }
 
-// La grilla es una TABLA: un marco y reglas de 1 px entre celdas, no catorce
-// cajas sueltas con aire en el medio. "Mi día" ocupa las dos primeras columnas
-// de la primera fila y el Conversor la tercera.
+// La grilla es una TABLA: un marco y reglas de 1 px entre celdas, no trece
+// cajas sueltas con aire en el medio. "Mi día" ocupa la primera fila ENTERA:
+// el Conversor, que le hacía compañía en la tercera columna, se sacó en 1.5.50
+// ("no me es útil, eso prefiero preguntárselo a la IA en Hablar").
 void HubActivity::drawGrid(const int x, const int y, const int w, const int h) const {
   const int cw = w / COLUMNS;
   const int ch = h / GRID_ROWS;
@@ -621,15 +616,14 @@ void HubActivity::drawGrid(const int x, const int y, const int w, const int h) c
   }
   for (int row = 0; row < GRID_ROWS; ++row) {
     for (int col = 1; col < COLUMNS; ++col) {
-      if (row == 0 && col == 1) continue;  // adentro del mosaico ancho no va raya
+      if (row == 0) continue;  // la primera fila es un solo mosaico ancho: no va raya
       renderer.drawLine(x + col * cw, y + row * ch, x + col * cw, y + (row + 1) * ch - 1, true);
     }
   }
 
-  drawWideTile(TILE_DAY, x, y, 2 * cw, ch);
-  drawTile(TILE_UNITS, x + 2 * cw, y, cw, ch);
-  for (int i = TILE_UNITS + 1; i < TILE_COUNT; ++i) {
-    const int cell = i - (TILE_UNITS + 1);
+  drawWideTile(TILE_DAY, x, y, gridW, ch);
+  for (int i = TILE_DAY + 1; i < TILE_COUNT; ++i) {
+    const int cell = i - (TILE_DAY + 1);
     drawTile(i, x + (cell % COLUMNS) * cw, y + (1 + cell / COLUMNS) * ch, cw, ch);
   }
 }

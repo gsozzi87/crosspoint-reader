@@ -33,6 +33,12 @@ class ServerTestActivity final : public Activity {
   int authStatus = 0;
   size_t queued = 0;
   int flushed = 0;
+  // El log sube acá a propósito: hasta 1.5.49 sólo salía con la sincronización
+  // del hub (cada 6 h), así que para diagnosticar algo había que esperar o
+  // forzar una sincronización entera. Esta pantalla ya levanta el WiFi y ya es
+  // "el diagnóstico", así que es el lugar natural para mandarlo a pedido.
+  bool logSent = false;
+  size_t logBytes = 0;
 
   void onWifiSelectionComplete(bool connected);
   void runChecks();

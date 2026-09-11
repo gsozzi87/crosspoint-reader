@@ -211,10 +211,16 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `ReminderAlertActivity` sobre las pantallas tranquilas (hub, home, agenda, notas, ajustes, clima), no solo desde el
   tick del hub. Todo camino de deep sleep pasa por `sleepNow()`, que arma el wake: antes el re-sleep por wake espurio
   del botón dormía sin nada armado y el temporizador quedaba mudo para siempre.
-- OJO con los botones: **OK largo NUNCA llega**. Hasta 1.5.46 era porque OK era confirm+power compartidos (mantenerlo
-  apagaba); desde 1.5.47 el encendido es un botón aparte contra el PMIC y OK es solo confirmar, pero
-  `wasLongPressed(Confirm, ...)` sigue sin dispararse. Ninguna función puede colgar de ahí. El Clima quedó como
-  mosaico propio por ese motivo.
+- **OK mantenido: la razón por la que "nunca llegaba" se había vuelto falsa.** Hasta 1.5.46 era cierto y tenía
+  explicación: con `InputStyle::DigitalConfirmPowerHold` el SDK NO levanta el bit de Confirm mientras la tecla está
+  abajo (`updateConfirmPowerHold` sólo emite un clic sintético al soltar), así que `isPressed(Confirm)` era siempre
+  false y `wasLongPressed` no podía dar true ni queriendo. En 1.5.47 el encendido pasó al PMIC y la placa cambió a
+  `InputStyle::DigitalButtons`, donde `getDigitalState()` sí levanta el bit mientras se mantiene — pero el atajo
+  quedó: `EpubReaderActivity::confirmLongPressThreshold()` tenía un `if (WS397) return 0;` que apagaba la rama
+  entera, y con ella el marcador del lector. **Se sacó en 1.5.49**; ahora manda el ajuste de siempre
+  (Ajustes → Controles → menú de pulsación larga, que de fábrica viene apagado).
+  Para comprobarlo en el aparato sin cable: **Ajustes → Sistema → Memoria** mide el último OK mantenido y dice si
+  el evento llegó. El Clima sigue siendo mosaico propio, que igual está mejor.
 - **El botón PWR es del PMIC, no un GPIO** (`src/util/PowerKey`, singleton `POWER_KEY`, `pump()` desde el loop):
   está cableado al PWRKEY del AXP2101 y el chip lo reporta por su IRQ (GPIO38, `pmicIrq` en el perfil). Toque corto =
   **menú de pantalla** (limpiar, bloquear, dormir; se dibuja encima de lo que haya y sin pasar por una Activity, así
@@ -382,12 +388,42 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
   de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
   decide DESPUÉS, así nunca puede impedirlo.
+- **Modo de energía** (Ajustes → Sistema, 1.5.49): tres opciones con nombre —Ahorro (5 min), Normal (10 min) y
+  **Siempre encendido**— en vez del número suelto de 1 a 31 donde 31 quería decir "nunca" y no había forma de
+  adivinarlo. El número crudo se esconde en esta placa; en la web y en las demás sigue igual. "Siempre encendido"
+  ya no significa "gastando a pleno para siempre" como antes de 1.5.48: significa **reposar** para siempre, con la
+  pantalla viva y las alarmas en hora. Tiene red de seguridad: si el reposo queda bloqueado media hora seguida
+  estando ocioso y sin USB, se duerme igual y lo dice en el log (si no, una red que quedó arriba se come la
+  batería en una noche sin que nadie se entere).
+- **Con los gestos apagados no hay sondeo**: sin acelerómetro que mirar, el ciclo de reposo no arma timer y duerme
+  hasta que alguien toque un botón o venza la alarma del RTC. Es el reposo más profundo que se puede tener.
+- **El reloj se congela reposando**: la hora en pantalla queda en el minuto en que entró. Es a propósito —
+  despertar cada minuto a repintar sería un parcial por minuto, o sea un completo cada cuarto de hora para
+  siempre, que es exactamente lo que la regla del panel prohíbe. Se corrige sola en cuanto alguien lo toca.
 - **Alarma del RTC** (`src/util/RtcAlarm`, singleton `RTC_ALARM`): PCF85063, registros 0x0B-0x0F, AIE/AF en
   Control_2 (0x01). Se arma al próximo recordatorio o al fin del temporizador con la hora en UTC, que es lo que
   guarda el RTC. El timer del light sleep se corta a la hora; la alarma del chip aguanta las esperas largas y
   despierta en el segundo exacto. **La bandera AF se limpia siempre**: si queda puesta, GPIO45 se queda en bajo,
   el light sleep se rechaza en bucle y el aparato gasta más despierto que sin reposo. Sigue sin servir para el
   deep sleep (GPIO45 no es RTC GPIO): eso lo arma `armReminderWake()` con el timer, y así queda.
+
+## Batería: no hay miliamperímetro, hay un diario (1.5.49)
+
+- **El AXP2101 NO tiene registro de corriente de batería.** Tiene ADC de VBAT, VBUS, VSYS, TS y temperatura de
+  pastilla, y nada más; el AXP192 sí lo tenía, este no. El medidor del SDK sólo expone porcentaje, milivoltios y
+  si carga. O sea que un "consumo instantáneo en mA" en esta placa **no se puede** y no hay que volver a
+  intentarlo.
+- Así que se mide como se mide la autonomía de verdad: **anotando el porcentaje contra el reloj y mirando la
+  pendiente**. `src/util/BatteryLog` agrega una línea a `/.crosspoint/battery.csv` cada 10 minutos y, sobre todo,
+  **justo antes de dormir** (esa es la que abre el tramo largo, que es el que dice la verdad). 300 líneas como
+  mucho, después rota a la mitad.
+- `analyze()` toma la ventana **más larga** que termine en la muestra más nueva y que sea una descarga limpia: sin
+  carga en el medio y sin que el porcentaje haya estado por debajo del actual (si hacia atrás baja, en algún
+  momento subió, o sea que lo enchufaron). Menos de diez minutos no se mide: el medidor tiene 1 % de resolución,
+  que en una batería de 1500 mAh son 15 mAh.
+- La cuenta vive en el header como función pura, sin nada del aparato adentro, justamente para poder probarla sin
+  placa: **`./test/battery_drain/run.sh`** (17 casos, incluido el de haberlo enchufado en el medio).
+- Se ve en **Ajustes → Sistema → Memoria**: "%/h · quedan N h (N días)" y sobre qué ventana se midió.
 
 ## Disciplina de tareas (1.5.48)
 

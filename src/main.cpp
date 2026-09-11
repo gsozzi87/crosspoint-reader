@@ -57,6 +57,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/PowerKey.h"
 #include "util/Shtc3.h"
+#include "util/BatteryLog.h"
 #include "util/IdleSleep.h"
 #include "util/RtcAlarm.h"
 #include "input/MotionInput.h"
@@ -373,6 +374,10 @@ static void sleepNow() {
 // Ajustes no sonaba nunca. Se dispara sobre las pantallas tranquilas; el lector y
 // las que usan red o audio se dejan en paz (ahí manda el wake por deep sleep).
 constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atrás
+// Media hora de ocio sin poder reposar ni una vez: algo lo está bloqueando y en
+// "siempre encendido" nadie más va a mandar a dormir. Ver la red de seguridad
+// en el loop.
+constexpr unsigned long REST_BLOCKED_GIVE_UP_MS = 30UL * 60UL * 1000UL;
 
 // Pantallas "tranquilas" (ver abajo) pero con el micrófono abierto NO lo son:
 // Notas, Agenda y Calendario ahora graban, y un recordatorio que se abriera
@@ -564,6 +569,11 @@ void enterDeepSleep(bool fromTimeout = false) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
+
+  // El diario de la batería, con la tarjeta todavía montada: esta es la muestra
+  // que cierra el tramo despierto y abre el tramo dormido, que es el largo y el
+  // que de verdad dice cuánto dura.
+  batterylog::sampleNow("antes de dormir");
 
   halTiltSensor.deepSleep();
   display.deepSleep();
@@ -1182,6 +1192,7 @@ void loop() {
   POWER_KEY.pump();  // ws397: PMIC key state for this pass (no-op elsewhere)
   MOTION.poll();     // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
   shtc3::tick();     // temperatura de adentro, en dos tiempos y sin bloquear
+  batterylog::tick();  // el diario de la batería, una línea cada diez minutos
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
@@ -1342,6 +1353,26 @@ void loop() {
     const bool restBlocked = activityManager.preventAutoSleep() || activityManager.skipLoopDelay() ||
                              MUSIC.isActive() || busyRecording() || POWER_KEY.pressed() || gpio.isUsbConnected() ||
                              WiFi.getMode() != WIFI_MODE_NULL || screenMenuOpen;
+    // Red de seguridad del modo "siempre encendido" (sleepTimeoutMs == 0): ahí
+    // nadie va a mandar el aparato a dormir, así que si algo bloquea el reposo
+    // de forma permanente —la red que quedó arriba, el menú abierto— la batería
+    // se termina en una noche sin que nadie se entere. A la media hora de ocio
+    // sin haber podido reposar ni una vez, se duerme igual y queda dicho en el
+    // log por qué. Enchufado no aplica: ahí la batería no es el problema.
+    static unsigned long restBlockedSince = 0;
+    if (restBlocked && !gpio.isUsbConnected() && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
+      if (restBlockedSince == 0) restBlockedSince = millis();
+      if (sleepTimeoutMs == 0 && millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS) {
+        LOG_ERR("MAIN", "siempre encendido: el reposo lleva %lu ms bloqueado, se duerme igual",
+                millis() - restBlockedSince);
+        restBlockedSince = 0;
+        enterDeepSleep(true);
+        return;
+      }
+    } else {
+      restBlockedSince = 0;
+    }
+
     IDLE_SLEEP.capNextRest(msUntilNextAlarm());
     switch (IDLE_SLEEP.tick(millis() - lastActivityTime, restBlocked)) {
       case IdleSleep::Woke::Button:

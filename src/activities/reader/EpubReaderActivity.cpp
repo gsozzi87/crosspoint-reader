@@ -917,11 +917,21 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
 }
 
 unsigned long EpubReaderActivity::confirmLongPressThreshold() const {
-  // En la ws397 OK es confirm + power compartidos: mantenerlo apaga el aparato, así
-  // que wasLongPressed(Confirm, ...) nunca puede dar true. Devolver 0 deja la rama de
-  // "OK largo" apagada (la lógica upstream queda intacta para las demás placas) y en
-  // SettingsList el ajuste ni se ofrece.
-  if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) return 0;
+  // Acá había un `if (WS397) return 0;` que apagaba la rama entera de "OK largo".
+  // La razón que decía era cierta hasta 1.5.46, cuando OK era confirm y power
+  // compartidos (InputStyle::DigitalConfirmPowerHold) y el SDK NUNCA levantaba
+  // el bit de Confirm mientras la tecla estaba abajo: sólo emitía un clic
+  // sintético al soltar (`updateConfirmPowerHold`), así que isPressed(Confirm)
+  // era siempre false y wasLongPressed no podía dar true ni queriendo.
+  //
+  // En 1.5.47 el encendido pasó al PMIC y la placa cambió a
+  // InputStyle::DigitalButtons, donde `getDigitalState()` sí levanta el bit
+  // mientras se mantiene. O sea que el motivo dejó de existir, pero el atajo
+  // quedó y con él el marcador del lector, que es lo único que colgaba de OK
+  // mantenido. Ahora se decide por el ajuste, como en cualquier otra placa.
+  //
+  // Para comprobarlo en el aparato sin cable: Ajustes → Sistema → Memoria
+  // mide el último OK mantenido y dice si el evento llegó.
   switch (SETTINGS.longPressMenuFunction) {
     case CrossPointSettings::LP_MENU_BOOKMARK:
     case CrossPointSettings::LP_MENU_DICTIONARY:

@@ -44,6 +44,19 @@ deviceLog.post("/", async (c) => {
   return c.json({ ok: true, size });
 });
 
+// DELETE /api/log: vaciar. Hasta 1.5.49 no había forma de borrarlo, así que el
+// log de hace tres días seguía arriba de todo y para leer lo de recién había que
+// bajar media pantalla. Borrar es lo que permite "vacío el log, reproduzco el
+// problema, miro" — que es la única forma cómoda de diagnosticar sin cable.
+deviceLog.delete("/", async (c) => {
+  const FILE = deviceLogFile(accountOf(c));
+  await serialize(FILE, async () => {
+    await writeAtomicNow(FILE, "");
+    return 0;
+  });
+  return c.json({ ok: true });
+});
+
 // La página en sí no lleva datos: pide el log con la sesión de /board (modo
 // multiusuario) o con el token guardado en el navegador (como siempre). Antes
 // servía el log entero sin token y ahí están los nombres de las redes WiFi de la
@@ -57,7 +70,8 @@ logPage.get("/", (c) =>
 header{position:sticky;top:0;background:#000;padding:8px 12px;display:flex;gap:12px;align-items:center}
 a{color:#7cf}pre{margin:0;padding:12px;white-space:pre-wrap;word-break:break-word}
 input,button{font:inherit;padding:6px 8px;border-radius:6px;border:1px solid #555;background:#222;color:#ddd}</style></head>
-<body><header><strong>Log del aparato</strong><span id="size"></span><a href="/board">&larr; Pizarra</a><a href="javascript:location.reload()">Actualizar</a></header>
+<body><header><strong>Log del aparato</strong><span id="size"></span><a href="/board">&larr; Pizarra</a>
+<a href="javascript:location.reload()">Actualizar</a><button id="copy">Copiar</button><button id="clear">Vaciar</button></header>
 <pre id="l"></pre>
 <script>
 const token = localStorage.getItem("deviceToken") || "";
@@ -89,6 +103,33 @@ async function ask() {
     location.reload();
   });
 }
+// Copiar: el navegador no deja usar el portapapeles sin un gesto del usuario, y
+// clipboard.writeText no existe fuera de HTTPS, así que hay un camino de
+// respaldo con un textarea y execCommand para cuando falta.
+document.getElementById("copy").addEventListener("click", async () => {
+  const t = document.getElementById("l").textContent || "";
+  const boton = document.getElementById("copy");
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch (e) {
+    const a = document.createElement("textarea");
+    a.value = t;
+    document.body.appendChild(a);
+    a.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    document.body.removeChild(a);
+  }
+  boton.textContent = "Copiado";
+  setTimeout(() => { boton.textContent = "Copiar"; }, 1500);
+});
+
+document.getElementById("clear").addEventListener("click", async () => {
+  if (!confirm("¿Vaciar el log del aparato?")) return;
+  const headers = token ? { Authorization: "Bearer " + token } : {};
+  await fetch("/api/log", { method: "DELETE", headers: headers, credentials: "same-origin" });
+  load();
+});
+
 load();
 </script></body></html>`,
   ),
