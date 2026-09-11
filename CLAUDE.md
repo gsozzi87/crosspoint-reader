@@ -388,6 +388,18 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
   de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
   decide DESPUÉS, así nunca puede impedirlo.
+- **Modo de energía** (Ajustes → Sistema, 1.5.49): tres opciones con nombre —Ahorro (5 min), Normal (10 min) y
+  **Siempre encendido**— en vez del número suelto de 1 a 31 donde 31 quería decir "nunca" y no había forma de
+  adivinarlo. El número crudo se esconde en esta placa; en la web y en las demás sigue igual. "Siempre encendido"
+  ya no significa "gastando a pleno para siempre" como antes de 1.5.48: significa **reposar** para siempre, con la
+  pantalla viva y las alarmas en hora. Tiene red de seguridad: si el reposo queda bloqueado media hora seguida
+  estando ocioso y sin USB, se duerme igual y lo dice en el log (si no, una red que quedó arriba se come la
+  batería en una noche sin que nadie se entere).
+- **Con los gestos apagados no hay sondeo**: sin acelerómetro que mirar, el ciclo de reposo no arma timer y duerme
+  hasta que alguien toque un botón o venza la alarma del RTC. Es el reposo más profundo que se puede tener.
+- **El reloj se congela reposando**: la hora en pantalla queda en el minuto en que entró. Es a propósito —
+  despertar cada minuto a repintar sería un parcial por minuto, o sea un completo cada cuarto de hora para
+  siempre, que es exactamente lo que la regla del panel prohíbe. Se corrige sola en cuanto alguien lo toca.
 - **Alarma del RTC** (`src/util/RtcAlarm`, singleton `RTC_ALARM`): PCF85063, registros 0x0B-0x0F, AIE/AF en
   Control_2 (0x01). Se arma al próximo recordatorio o al fin del temporizador con la hora en UTC, que es lo que
   guarda el RTC. El timer del light sleep se corta a la hora; la alarma del chip aguanta las esperas largas y

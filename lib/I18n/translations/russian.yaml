@@ -1098,3 +1098,7 @@ STR_MEMORY_BATTERY_WAIT: "Измеряю: подождите несколько 
 STR_MEMORY_BATTERY_LEFT: "осталось"
 STR_MEMORY_BATTERY_WINDOW: "измерено за"
 STR_MEMORY_BATTERY_DAYS: "дн."
+STR_POWER_MODE: "Режим питания"
+STR_POWER_SAVER: "Экономный"
+STR_POWER_NORMAL: "Обычный"
+STR_POWER_ALWAYS_ON: "Всегда включён"
