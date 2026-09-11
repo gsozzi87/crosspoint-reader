@@ -99,5 +99,7 @@ class MusicActivity final : public Activity {
   void drawTransport(int x, int y, int w, int h) const;
   void drawVolume(int x, int y, int w, int h) const;
   void drawPlaylist(int x, int y, int w, int h);
-  void drawTransportIcon(int action, int cx, int cy) const;
+  // `inverted` = la cara del boton es negra (interruptor encendido): el glifo
+  // va en blanco.
+  void drawTransportIcon(int action, int cx, int cy, bool inverted = false) const;
 };

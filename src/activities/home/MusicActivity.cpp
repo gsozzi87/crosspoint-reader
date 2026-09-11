@@ -59,12 +59,13 @@ void formatTime(char* out, const size_t size, int seconds) {
 }
 
 // Triangulito lleno. `right=false` lo da vuelta (el de "anterior").
-void triangle(const GfxRenderer& r, const int x, const int y, const int size, const bool right = true) {
+void triangle(const GfxRenderer& r, const int x, const int y, const int size, const bool right = true,
+              const bool black = true) {
   for (int i = 0; i < size; ++i) {
     const int len = right ? size - i : i + 1;
     const int sx = right ? x : x + size - len;
-    r.fillRect(sx, y + i, len, 1, true);
-    r.fillRect(sx, y + 2 * size - 1 - i, len, 1, true);
+    r.fillRect(sx, y + i, len, 1, black);
+    r.fillRect(sx, y + 2 * size - 1 - i, len, 1, black);
   }
 }
 
@@ -580,59 +581,83 @@ void MusicActivity::drawPosition(const int x, const int y, const int w, const in
 
 // Los iconos de la botonera, dibujados a mano: a este tamaño quedan más nítidos
 // que cualquier fuente y no dependen de nada bajado del servidor.
-void MusicActivity::drawTransportIcon(const int action, const int cx, const int cy) const {
+void MusicActivity::drawTransportIcon(const int action, const int cx, const int cy, const bool inverted) const {
+  const bool ink = !inverted;  // sobre cara negra el glifo va en blanco
   switch (action) {
     case ACT_PREV:
-      renderer.fillRect(cx - 10, cy - 8, 3, 16, true);
-      triangle(renderer, cx - 6, cy - 8, 8, false);
+      renderer.fillRect(cx - 11, cy - 8, 3, 16, ink);
+      triangle(renderer, cx - 6, cy - 8, 8, false, ink);
       break;
     case ACT_PLAYPAUSE:
       if (MUSIC.isSounding()) {  // pausa
-        renderer.fillRect(cx - 7, cy - 8, 5, 16, true);
-        renderer.fillRect(cx + 2, cy - 8, 5, 16, true);
+        renderer.fillRect(cx - 7, cy - 8, 5, 16, ink);
+        renderer.fillRect(cx + 3, cy - 8, 5, 16, ink);
       } else {
-        triangle(renderer, cx - 6, cy - 8, 8, true);
+        triangle(renderer, cx - 5, cy - 8, 8, true, ink);
       }
       break;
     case ACT_NEXT:
-      triangle(renderer, cx - 2, cy - 8, 8, true);
-      renderer.fillRect(cx + 7, cy - 8, 3, 16, true);
+      triangle(renderer, cx - 3, cy - 8, 8, true, ink);
+      renderer.fillRect(cx + 8, cy - 8, 3, 16, ink);
       break;
     case ACT_STOP:
-      renderer.fillRect(cx - 7, cy - 7, 14, 14, true);
+      renderer.fillRect(cx - 7, cy - 7, 15, 15, ink);
       break;
     case ACT_SHUFFLE:
-      // Las dos flechas cruzadas de siempre: cada línea termina EN su punta,
-      // si no parece una tijera (se veía así en la simulación).
-      renderer.drawLine(cx - 10, cy - 6, cx + 4, cy + 6, 2, true);
-      renderer.drawLine(cx - 10, cy + 6, cx + 4, cy - 6, 2, true);
-      triangle(renderer, cx + 4, cy + 2, 5, true);
-      triangle(renderer, cx + 4, cy - 12, 5, true);
+      // Las dos flechas cruzadas de siempre: cada una entra por la izquierda,
+      // cruza en diagonal y sale por la derecha con su punta. Que se crucen EN
+      // EL MEDIO es lo que hace que se lea "mezclar"; encimadas parecian un
+      // garabato.
+      renderer.drawLine(cx - 12, cy - 7, cx - 4, cy - 7, 2, ink);
+      renderer.drawLine(cx - 4, cy - 7, cx + 5, cy + 6, 2, ink);
+      triangle(renderer, cx + 5, cy + 2, 5, true, ink);
+      renderer.drawLine(cx - 12, cy + 6, cx - 4, cy + 6, 2, ink);
+      renderer.drawLine(cx - 4, cy + 6, cx + 5, cy - 7, 2, ink);
+      triangle(renderer, cx + 5, cy - 11, 5, true, ink);
       break;
     case ACT_REPEAT:
-      // Lazo: el rectángulo con un hueco arriba a la derecha y la punta ahí
-      // mismo. Sin el hueco se leía como una flecha de "subir archivo".
-      renderer.drawRect(cx - 10, cy - 7, 20, 14, 2, true);
-      renderer.fillRect(cx + 1, cy - 9, 10, 4, false);  // el hueco
-      triangle(renderer, cx + 3, cy - 11, 4, true);
+      // Lazo CERRADO con un hueco arriba a la derecha y la punta saliendo por
+      // ahi: asi se lee "vuelve a empezar". Abierto parecia exportar un archivo.
+      renderer.drawLine(cx - 11, cy - 8, cx + 3, cy - 8, 2, ink);
+      renderer.drawLine(cx + 11, cy - 5, cx + 11, cy + 8, 2, ink);
+      renderer.drawLine(cx + 11, cy + 8, cx - 11, cy + 8, 2, ink);
+      renderer.drawLine(cx - 11, cy + 8, cx - 11, cy - 8, 2, ink);
+      triangle(renderer, cx + 4, cy - 13, 5, true, ink);
       break;
     default:
       break;
   }
 }
 
-// La botonera: seis botones biselados. El que tiene el foco va hundido, y los
-// interruptores encendidos llevan una barrita abajo.
+// La botonera, a lo Winamp de verdad. Lo que habia eran seis rectangulos
+// redondeados iguales, separados y con un brillito arriba: eso es un boton de
+// telefono, no una botonera. Ahora:
+//   - CUADRADOS, sin redondeo, con marco negro de 2 px y cara blanca;
+//   - el transporte va PEGADO (los bordes se comparten, como la botonera
+//     original), y los dos interruptores aparte a la derecha;
+//   - el foco es un marco interior, no un relleno gris (en tinta el gris es
+//     trama y deja fantasma);
+//   - shuffle y repeat encendidos se pintan con la cara NEGRA y el glifo en
+//     blanco, que es como los marca Winamp, en vez de una barrita abajo.
 void MusicActivity::drawTransport(const int x, const int y, const int w, const int h) const {
-  const int gap = 4;
-  const int bw = (w - gap * (TRANSPORT_COUNT - 1)) / TRANSPORT_COUNT;
+  constexpr int TRANSPORT = 4;  // prev, play/pausa, siguiente, stop
+  constexpr int TOGGLES = TRANSPORT_COUNT - TRANSPORT;
+  constexpr int SEP = 18;       // aire entre el transporte y los interruptores
+  const int bw = (w - SEP + (TRANSPORT - 1) * 2) / TRANSPORT_COUNT;
+  const int tw = bw + (w - SEP - (TRANSPORT * bw - (TRANSPORT - 1) * 2) - TOGGLES * bw) / TOGGLES;
+
   for (int i = 0; i < TRANSPORT_COUNT; ++i) {
-    const int bx = x + i * (bw + gap);
-    const bool focused = selected == i && !volumeMode;
-    bevel(renderer, bx, y, bw, h, 6, focused);
-    drawTransportIcon(rows.empty() ? i : static_cast<int>(rows[i].action), bx + bw / 2, y + h / 2 - 4);
-    const bool on = (i == ACT_SHUFFLE && MUSIC.shuffle) || (i == ACT_REPEAT && MUSIC.repeat);
-    if (on) renderer.fillRect(bx + 8, y + h - 9, bw - 16, 4, true);
+    const int action = rows.empty() ? i : static_cast<int>(rows[i].action);
+    const bool toggle = i >= TRANSPORT;
+    const bool on = (action == ACT_SHUFFLE && MUSIC.shuffle) || (action == ACT_REPEAT && MUSIC.repeat);
+    const int cw = toggle ? tw : bw;
+    const int bx = toggle ? x + TRANSPORT * (bw - 2) + SEP + (i - TRANSPORT) * cw : x + i * (bw - 2);
+    renderer.fillRect(bx, y, cw, h, on);       // cara
+    renderer.drawRect(bx, y, cw, h, 2, true);  // marco
+    if (selected == i && !volumeMode) {
+      renderer.drawRect(bx + 4, y + 4, cw - 8, h - 8, 2, !on);  // marco interior = foco
+    }
+    drawTransportIcon(action, bx + cw / 2, y + h / 2, on);
   }
 }
 
