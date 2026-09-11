@@ -147,7 +147,9 @@ void LuaAppsActivity::renderList() {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_LUA_APPS));
+  // El mismo nombre que el mosaico del hub: "Juegos" que abría "Apps de la tarjeta"
+  // parecía otra pantalla. Ahora las dos dicen "Apps".
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_GAMES));
 
   if (apps.empty()) {
     renderer.drawCenteredText(UI_12_FONT_ID, renderer.getScreenHeight() / 2 - 20, tr(STR_LUA_NONE), true);

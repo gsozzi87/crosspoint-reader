@@ -63,7 +63,10 @@ void UiSound::play(const uisound::Sound sound) {
     why("la placa no tiene audio");
     return;
   }
-  if (!ensureTask()) return;
+  if (!ensureTask()) {
+    why("no se pudo crear la tarea ui_sound");
+    return;
+  }
 
   int volume = HUB_STORE.musicVolume;
   if (volume < 0) volume = 0;
@@ -133,7 +136,13 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
 
   if (audio_ == nullptr) audio_ = new AudioManager();
   if (audio_ == nullptr) return false;
+  // Cada etapa deja rastro: "los sonidos no suenan" ya se diagnosticó dos veces
+  // leyendo el código en vez del log, y las dos veces se arregló otra cosa.
+  static unsigned long lastTraceMs = 0;
+  const bool trace = millis() - lastTraceMs >= 5000;
+  if (trace) lastTraceMs = millis();
   if (!audio_->begin()) {
+    LOG_ERR("UISOUND", "sin sonido: el códec no arrancó (begin)");
     release();
     return false;
   }
@@ -141,14 +150,22 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   // Mismo volumen que el resto del aparato: lo bajo de estos sonidos ya está en
   // la muestra (gainFor), no en el registro del códec, que es compartido.
   audio_->setVolume(volume);
-  if (!audio_->playBuffer(wav_, wav::HEADER_BYTES + samples * sizeof(int16_t), false)) {
+  const size_t bytes = wav::HEADER_BYTES + samples * sizeof(int16_t);
+  if (!audio_->playBuffer(wav_, bytes, false)) {
+    LOG_ERR("UISOUND", "sin sonido: playBuffer falló (%u bytes, %u Hz)", static_cast<unsigned>(bytes),
+            static_cast<unsigned>(uisound::RATE));
     release();
     return false;
   }
   // playBuffer vuelve enseguida (el SDK reproduce en su propia tarea). Esperar
   // acá a que termine es lo que evita que el clic siguiente llame a play() en
   // medio del anterior, que lo cortaría y haría sonar el amplificador.
-  for (int i = 0; i < 120 && audio_->isPlaying(); ++i) vTaskDelay(pdMS_TO_TICKS(5));
+  int waited = 0;
+  for (; waited < 120 && audio_->isPlaying(); ++waited) vTaskDelay(pdMS_TO_TICKS(5));
+  if (trace) {
+    LOG_INF("UISOUND", "sonó %d: %u muestras, nivel %u, vol %u, %d ms de reproducción", static_cast<int>(sound),
+            static_cast<unsigned>(samples), static_cast<unsigned>(level), static_cast<unsigned>(volume), waited * 5);
+  }
   return true;
 }
 

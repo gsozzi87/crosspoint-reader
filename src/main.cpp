@@ -756,8 +756,19 @@ static bool handlePowerHold(const bool gateOpen) {
 
   if (pressed) {
     // No sleep permission yet (just woke / just booted) or DOWN held (screenshot
-    // combo): the hold is not ours.
-    if (!gateOpen || gpio.isPressed(HalGPIO::BTN_DOWN)) return false;
+    // combo): the hold is not ours. Se dice UNA vez por pulsación: "no carga la
+    // barrita" puede ser el PMIC que no reportó el flanco (eso lo dice PWRKEY)
+    // o esta guarda, y desde afuera son lo mismo.
+    static unsigned long ignoredPressAt = 0;
+    if (!gateOpen || gpio.isPressed(HalGPIO::BTN_DOWN)) {
+      const unsigned long startAt = millis() - held;
+      if (ignoredPressAt == 0 || startAt - ignoredPressAt > 100) {
+        ignoredPressAt = startAt;
+        LOG_INF("MAIN", "PWR apretado pero ignorado: gate=%d abajo=%d held=%lu ms", gateOpen ? 1 : 0,
+                gpio.isPressed(HalGPIO::BTN_DOWN) ? 1 : 0, held);
+      }
+      return false;
+    }
     if (held >= POWER_HOLD_OFF_MS) {
       LOG_INF("MAIN", "PWR mantenido %lu ms: se apaga", held);
       bannerStage = 0;
@@ -769,6 +780,7 @@ static bool handlePowerHold(const bool gateOpen) {
     if (bannerStage == 0 && held >= POWER_HOLD_ACTION_MS) {
       bannerStage = 1;
       POWER_KEY.consumeHold();  // the release after the bar is not a short press
+      LOG_INF("MAIN", "PWR mantenido %lu ms: barrita", held);
       drawPowerHoldBanner(held, false);
     } else if (bannerStage == 1 && held >= POWER_HOLD_WARN_MS) {
       bannerStage = 2;

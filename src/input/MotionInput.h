@@ -125,6 +125,7 @@ class MotionInput {
   // golpe mueve la lectura, un registro viejo no.
   uint8_t lastTapStatus_ = 0;
   bool tapStatusSeen_ = false;
+  bool status1Works_ = false;  // STATUS1 ya reportó un golpe alguna vez: el byte deja de ser respaldo
   unsigned long lastTapEmitMs_ = 0;
   unsigned long lastBigMoveMs_ = 0;
   const char* tapFailure_ = nullptr;

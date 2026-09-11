@@ -206,38 +206,36 @@ void MotionInput::poll() {
 
   // --- 2. Doble golpe: lo dice el motor del chip ----------------------------
   //
-  // Pero el registro NO se limpia al leerlo: se queda con el último evento. Si
-  // se pregunta cada 80 ms y se cree la respuesta, un solo golpe de hace media
-  // hora sigue contestando que sí para siempre. Hasta 1.5.54 eso quedaba tapado
-  // porque el gesto sólo valía en nueve pantallas; en cuanto valió en todas, el
-  // aparato se metía solo en Hablar sin parar.
-  //
-  // Tres condiciones, y las tres hacen falta:
-  //   1. el byte del registro CAMBIÓ (es un evento nuevo, no el mismo de antes),
-  //   2. pasó el tiempo muerto desde el último doble golpe que dimos por bueno,
-  //   3. el acelerómetro vio un sacudón hace poco — un golpe de verdad mueve la
-  //      lectura, y un registro viejo no mueve nada.
-  // (La marca del sacudon se pone mas abajo, cuando se EMITE una sacudida:
-  // ver el comentario del doble golpe.)
+  // TAP_STATUS (0x59) NO se limpia al leerlo: describe el último golpe hasta que
+  // llega el siguiente. Hasta 1.5.65 se intentaba deducir "hay uno nuevo" por
+  // si el BYTE cambiaba — y dos dobles golpes iguales (mismo eje, mismo
+  // sentido) dan el mismo byte, o sea que el segundo no existía. El evento de
+  // verdad está en STATUS1 (0x2F), que sí se limpia al leerlo: eso es lo que
+  // se consulta ahora. Por si el silicio no levantara ese bit, el cambio de
+  // byte sigue valiendo como respaldo hasta la primera vez que STATUS1 conteste.
   if (tapTrusted_) {
+    bool tapped = false;
     uint8_t tap = 0;
-    if (imu.readTapStatus(tap)) {
-      const bool isDouble = (tap & 0x03) == 0x02;
-      const bool fresh = !tapStatusSeen_ || tap != lastTapStatus_;
+    if (imu.readTapEvent(tapped, tap)) {
+      const bool changed = tapStatusSeen_ && tap != lastTapStatus_;
       lastTapStatus_ = tap;
       tapStatusSeen_ = true;
-      // OJO CON ESTA GUARDA. En 1.5.58 pedía 1,2 s de quietud después de
-      // CUALQUIER movimiento grande, para que azotar el aparato no se leyera
-      // como doble golpe. Pero un doble golpe ES un movimiento grande: los
-      // propios golpes reseteaban el contador y el gesto se bloqueaba a sí
-      // mismo — con golpes suaves entraba y con golpes firmes no entraba nunca.
-      // Ahora la marca la pone sólo una SACUDIDA emitida (oscilación sostenida,
-      // que es lo que de verdad hay que distinguir de un golpe seco).
-      if (isDouble && fresh && !debounced && now - lastTapEmitMs_ >= TAP_REFRACTORY_MS &&
-          now - lastBigMoveMs_ >= BIG_MOVE_QUIET_MS) {
-        lastTapEmitMs_ = now;
-        emit(Event::DoubleTap);
-        return;
+      if (tapped) status1Works_ = true;
+      const bool event = tapped || (!status1Works_ && changed);
+      if (event) {
+        const bool isDouble = (tap & 0x03) == 0x02;
+        // La marca de sacudida la pone sólo una SACUDIDA emitida (oscilación
+        // sostenida): un golpe seco también mueve el acelerómetro, y si él
+        // mismo reseteara el contador se bloquearía solo (pasó en 1.5.58).
+        const bool quiet = now - lastBigMoveMs_ >= BIG_MOVE_QUIET_MS;
+        const bool rested = now - lastTapEmitMs_ >= TAP_REFRACTORY_MS;
+        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple",
+                debounced ? " (debounce)" : "", quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)");
+        if (isDouble && !debounced && rested && quiet) {
+          lastTapEmitMs_ = now;
+          emit(Event::DoubleTap);
+          return;
+        }
       }
     }
   }

@@ -1,4 +1,6 @@
 #pragma once
+
+#include <Logging.h>
 #include <I18n.h>
 #include <esp_heap_caps.h>
 
@@ -135,6 +137,15 @@ class OptionPopup {
     // se llegara a ver: se abria y se volvia al hub solo.
     if (millis() - shownAtMs < SHOW_GRACE_MS) return true;
 
+    // Y ADEMAS: OK y Atras valen al SOLTAR, pero solo si el dialogo vio la
+    // PULSACION. Una tecla que se apreto antes de que el dialogo existiera (la
+    // que lo abrio, o una de la pantalla anterior) y se suelta despues de la
+    // gracia no es una decision sobre este dialogo. Sin esto, mantener OK un
+    // poco mas de medio segundo al abrir el temporizador elegia la primera
+    // opcion sin que nadie la eligiera.
+    if (input.wasPressed(MappedInputManager::Button::Confirm)) confirmArmed = true;
+    if (input.wasPressed(MappedInputManager::Button::Back)) backArmed = true;
+
     // Match the render cap: only the first MAX_OPTIONS rows exist on screen,
     // so button wrap-around must not select an invisible option.
     const int total = static_cast<int>(ownedStrings.size());
@@ -200,11 +211,20 @@ class OptionPopup {
       requestUpdate();
       return true;
     } else if (input.wasReleased(MappedInputManager::Button::Confirm)) {
+      if (!confirmArmed) {
+        LOG_INF("POPUP", "OK soltado sin pulsacion vista (%lu ms tras abrir): se ignora", millis() - shownAtMs);
+        return true;
+      }
       active = false;
       if (onSelectCallback) onSelectCallback(selectedIndex);
       requestUpdate();
       return true;
     } else if (input.wasReleased(MappedInputManager::Button::Back)) {
+      if (!backArmed) {
+        LOG_INF("POPUP", "Atras soltado sin pulsacion vista (%lu ms tras abrir): se ignora", millis() - shownAtMs);
+        return true;
+      }
+      LOG_INF("POPUP", "cerrado con Atras a los %lu ms", millis() - shownAtMs);
       active = false;
       requestUpdate();
       return true;
@@ -474,11 +494,15 @@ class OptionPopup {
     resolveIcons();
     uiReady = false;
     shownAtMs = millis();
+    confirmArmed = false;
+    backArmed = false;
     active = true;
   }
 
   static constexpr unsigned long SHOW_GRACE_MS = 500;  // lo que tarda el panel en mostrarlo
   unsigned long shownAtMs = 0;
+  bool confirmArmed = false;  // el dialogo vio apretar OK (no solo soltarlo)
+  bool backArmed = false;
 
   void resolveIcons() {
     icons.assign(ownedStrings.size(), nullptr);

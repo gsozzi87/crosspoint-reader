@@ -40,7 +40,7 @@ constexpr int LIST_HEADER_H = 28;  // cabecera de la lista + su regla de 1 px
 constexpr int LIST_META_GAP = 12;  // título de la pista -> duración de la derecha
 constexpr int LIST_TAIL = 4;       // aire entre la última fila y el marco del panel
 constexpr int TITLEBAR_H = 30;
-constexpr int DISPLAY_H = 160;  // tres renglones debajo del contador, sin que el último toque el marco
+constexpr int DISPLAY_H = 176;  // contador + título + artista + línea de estado, medidos con las fuentes de verdad
 constexpr int POS_H = 20;
 constexpr int TRANSPORT_H = 54;
 constexpr int VOL_H = 30;
@@ -561,52 +561,50 @@ void MusicActivity::drawDisplay(const int x, const int y, const int w, const int
   const int anaW = x + w - pad - anaX;
   if (anaW > 60) drawAnalyzer(anaX, y + pad, anaW, segH);
 
-  // Título, artista y la línea técnica, abajo del visor.
+  // Título, artista y la línea de estado, abajo del visor.
   //
   // Se apilan DE ABAJO HACIA ARRIBA, midiendo cada fuente. Antes iban con saltos
   // fijos (+26, +50) desde arriba, y la línea de la calidad caía justo sobre el
   // marco del visor: se veía cortada al medio. Con las alturas reales de cada
   // fuente no puede pasar, cambie la tipografía que cambie.
+  //
+  // El estado ("SONANDO 1/1") ya NO es un renglón propio: iba entre el contador
+  // y el título, y con las alturas reales de las fuentes no había lugar para
+  // cinco renglones en el visor — quedaba montado sobre los dígitos. Ahora va
+  // en la misma línea que la calidad: "SONANDO · 1/1 · 320 kbps 44 kHz estéreo".
   const int tw = w - 2 * pad;
   const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
   const int subH = renderer.getLineHeight(UI_10_FONT_ID);
   const int techH = renderer.getLineHeight(SMALL_FONT_ID);
-  const bool hasTech = MUSIC.isActive();
   const int techY = y + h - pad - techH;
-  const int subY = (hasTech ? techY : y + h - pad) - 4 - subH;
-  const int titleY = subY - 4 - titleH;
-
-  // Estado y número de pista, entre el contador y el título. Iban a `y + pad + 50`,
-  // un salto fijo que no sabía nada del título de abajo: con una tipografía más
-  // alta (o un visor más bajo) "SONANDO 1/1" se montaba encima del nombre de la
-  // pista. Ahora cuelga del contador y, si no entra, se corre hacia arriba.
-  char sub[32] = "";
-  if (MUSIC.isActive()) snprintf(sub, sizeof(sub), "%d/%d", MUSIC.index() + 1, MUSIC.count());
-  const char* state = !MUSIC.isActive() ? tr(STR_MUSIC_STOPPED)
-                      : MUSIC.isPaused() ? tr(STR_MUSIC_PAUSED)
-                                         : tr(STR_MUSIC_PLAYING);
-  const int stateH = renderer.getLineHeight(SMALL_FONT_ID);
-  const int stateY = std::min(y + pad + segH + 6, titleY - 2 - stateH);
-  renderer.drawText(SMALL_FONT_ID, x + pad, stateY, state, true, EpdFontFamily::BOLD);
-  if (sub[0]) {
-    renderer.drawText(SMALL_FONT_ID, x + pad + seg - renderer.getTextWidth(SMALL_FONT_ID, sub), stateY, sub);
-  }
+  // Artista o carpeta; una carpeta raíz ("/") no dice nada y se saltea el renglón.
+  std::string sub2 = MUSIC.isActive() ? (MUSIC.artist().empty() ? MUSIC.folderName() : MUSIC.artist())
+                                      : std::string(tr(STR_MUSIC_HELP_START));
+  if (sub2 == "/") sub2.clear();
+  const int subY = techY - 4 - subH;
+  const int titleY = (sub2.empty() ? techY : subY) - 4 - titleH;
 
   const std::string title = MUSIC.isActive() ? MUSIC.title() : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
   renderer.drawText(UI_12_FONT_ID, x + pad, titleY,
                     renderer.truncatedText(UI_12_FONT_ID, title.c_str(), tw, EpdFontFamily::BOLD).c_str(), true,
                     EpdFontFamily::BOLD);
-  const std::string sub2 = MUSIC.isActive() ? (MUSIC.artist().empty() ? MUSIC.folderName() : MUSIC.artist())
-                                            : std::string(tr(STR_MUSIC_HELP_START));
-  renderer.drawText(UI_10_FONT_ID, x + pad, subY,
-                    renderer.truncatedText(UI_10_FONT_ID, sub2.c_str(), tw).c_str());
-  if (hasTech) {
-    char tech[48];
-    snprintf(tech, sizeof(tech), "%d kbps  %d kHz  %s", MUSIC.bitrateKbps(), MUSIC.sampleRate() / 1000,
-             MUSIC.channels() == 1 ? tr(STR_MUSIC_MONO) : tr(STR_MUSIC_STEREO));
-    renderer.drawText(SMALL_FONT_ID, x + pad, techY,
-                      renderer.truncatedText(SMALL_FONT_ID, tech, tw).c_str());
+  if (!sub2.empty()) {
+    renderer.drawText(UI_10_FONT_ID, x + pad, subY, renderer.truncatedText(UI_10_FONT_ID, sub2.c_str(), tw).c_str());
   }
+
+  const char* state = !MUSIC.isActive() ? tr(STR_MUSIC_STOPPED)
+                      : MUSIC.isPaused() ? tr(STR_MUSIC_PAUSED)
+                                         : tr(STR_MUSIC_PLAYING);
+  char tech[96];
+  if (MUSIC.isActive()) {
+    snprintf(tech, sizeof(tech), "%s · %d/%d · %d kbps  %d kHz  %s", state, MUSIC.index() + 1, MUSIC.count(),
+             MUSIC.bitrateKbps(), MUSIC.sampleRate() / 1000,
+             MUSIC.channels() == 1 ? tr(STR_MUSIC_MONO) : tr(STR_MUSIC_STEREO));
+  } else {
+    snprintf(tech, sizeof(tech), "%s", state);
+  }
+  renderer.drawText(SMALL_FONT_ID, x + pad, techY, renderer.truncatedText(SMALL_FONT_ID, tech, tw).c_str(), true,
+                    EpdFontFamily::BOLD);
 }
 
 // Barra de posición con el cursor, hundida como la de Winamp.
