@@ -6,6 +6,9 @@
 #include "components/UiAppHost.h"
 
 class UsbDriveActivity final : public Activity, private UiAppHost {
+  // Cuánto hay que mantener Atrás para cortar la conexión desde el aparato.
+  static constexpr unsigned long EXIT_HOLD_MS = 1000;
+
  public:
   UsbDriveActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
       : Activity("UsbDrive", renderer, mappedInput), UiAppHost(renderer) {}
