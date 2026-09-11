@@ -316,6 +316,28 @@ static bool loadSleepFrameBuffer() {
 // the chip through the PCF85063 alarm. The deep-sleep timer does it instead:
 // armed to the next pending reminder (from the hub cache), the boot path then
 // shows ReminderAlertActivity. Needs the RTC set (server clock or NTP).
+// Cuándo hay que volver a estar despierto: lo vencido primero, después lo
+// próximo, y el temporizador compitiendo con los dos.
+//
+// El orden importa y estaba al revés: se preguntaba primero por `nextDueAt`,
+// que SÓLO devuelve vencimientos futuros, y recién se miraba lo vencido si no
+// había ninguno futuro. Con un recordatorio vencido hace un minuto y otro para
+// mañana, el aparato se dormía hasta mañana y el vencido no sonaba nunca. Lo
+// vencido gana siempre: ya tendría que haber sonado.
+//
+// Devuelve 0 si no hay nada que esperar.
+static time_t nextWakeInstant(const time_t now) {
+  // Vencido: despertar ya (el llamador le pone el piso de segundos).
+  if (HUB_STORE.dueReminder(now) != nullptr) return now;
+  if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= now) return now;
+
+  time_t due = HUB_STORE.nextDueAt(now);
+  if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt > now && (due == 0 || HUB_STORE.timerEndAt < due)) {
+    due = HUB_STORE.timerEndAt;
+  }
+  return due;
+}
+
 static bool reminderWakeArmed = false;  // enterDeepSleep() arms with the log; sleepNow() only fills the gap
 static void armReminderWake(const bool quiet = false) {
   if (reminderWakeArmed) return;
@@ -326,16 +348,8 @@ static void armReminderWake(const bool quiet = false) {
     return;
   }
   reminderWakeArmed = true;
-  time_t due = HUB_STORE.nextDueAt(now);
-  // A running timer wakes the device too, and wins when it fires first.
-  if (HUB_STORE.timerEndAt > 0 && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
-  // Algo ya vencido (venció en otra pantalla o mientras se apagaba) tiene que
-  // despertar al toque, no quedarse mudo para siempre.
-  if (due == 0) {
-    const HubStore::Reminder* overdue = HUB_STORE.dueReminder(now);
-    if (!overdue) return;
-    due = now;
-  }
+  const time_t due = nextWakeInstant(now);
+  if (due == 0) return;
   uint64_t seconds = due > now ? static_cast<uint64_t>(due - now) : 0;
   if (seconds < 5) seconds = 5;
   esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
@@ -441,8 +455,10 @@ static bool checkTimeAlarms() {
 static unsigned long msUntilNextAlarm() {
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) return 0;
-  time_t due = HUB_STORE.nextDueAt(now);
-  if (HUB_STORE.timerRunning() && (due == 0 || HUB_STORE.timerEndAt < due)) due = HUB_STORE.timerEndAt;
+  // El mismo criterio que el deep sleep: lo vencido primero. Si no, reposando
+  // se repetía el mismo error, con el agravante de que el ciclo de reposo puede
+  // durar horas cuando los gestos están apagados.
+  const time_t due = nextWakeInstant(now);
   // La alarma del chip es la que aguanta las esperas largas: el timer del light
   // sleep se corta a la hora (más allá de eso no vale la pena estar
   // recontando), pero el PCF85063 despierta por GPIO45 en el segundo exacto

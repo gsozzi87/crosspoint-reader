@@ -147,7 +147,18 @@ ServerClient::Result ServerClient::postOrQueue(const std::string& path, const st
   Response local;
   Response& resp = out ? *out : local;
   const Result r = postJson(path, json, resp);
-  if (r == Result::NoNetwork || r == Result::Transport) {
+  // Se encola TODO lo que puede andar más tarde, no sólo la falta de red.
+  //
+  // Antes sólo NoNetwork y Transport iban a la cola: un 503 del servidor, un
+  // 429 por exceso de pedidos o un 401 porque el token todavía no está
+  // vinculado devolvían error y la operación se perdía ahí mismo, mientras la
+  // pantalla ya la había dado por hecha. El 401 es el caso más doloroso, porque
+  // es transitorio por definición: el aparato recupera el acceso vinculándose,
+  // y lo que se hizo mientras tanto tendría que seguir estando.
+  const bool puedeAndarDespues =
+      r == Result::NoNetwork || r == Result::Transport || r == Result::Unauthorized ||
+      (r == Result::HttpError && retryable(resp.status));
+  if (puedeAndarDespues) {
     return enqueue(path, json) ? Result::Queued : r;
   }
   return r;
@@ -215,14 +226,26 @@ int ServerClient::flushQueue(size_t maxItems) {
       r = requestOnce("POST", joinUrl(base, path), &payload, true, id.empty() ? newRequestId() : id, resp);
       if (!retryable(resp.status)) break;
     }
-    if (r == Result::Ok || r == Result::HttpError || r == Result::Unauthorized) {
-      if (r != Result::Ok) LOG_ERR(TAG, "queue: server rejected %s with %d, dropping", path.c_str(), resp.status);
+    if (r == Result::Ok) {
       items.remove(0);
       changed = true;
       ++done;
       continue;
     }
-    LOG_DBG(TAG, "queue: stopping at %s (%s)", path.c_str(), resultName(r));
+    // Sólo se tira lo que NUNCA va a andar: un 4xx definitivo (cuerpo mal
+    // formado, ítem que ya no existe). Un 429, un 5xx o un 401 se conservan: el
+    // servidor puede estar saturado, caído o el aparato sin vincular todavía, y
+    // en los tres casos la operación sigue siendo válida. Antes se borraban los
+    // tres y la acción desaparecía sin haber llegado nunca.
+    if (r == Result::HttpError && !retryable(resp.status)) {
+      LOG_ERR(TAG, "queue: %s rechazado con %d (definitivo), se descarta", path.c_str(), resp.status);
+      items.remove(0);
+      changed = true;
+      ++done;
+      continue;
+    }
+    LOG_DBG(TAG, "queue: se detiene en %s (%s, estado %d): queda pendiente", path.c_str(), resultName(r),
+            resp.status);
     break;
   }
   if (changed) PersistableStoreBase::writeDocToFile(QUEUE_PATH, doc);
