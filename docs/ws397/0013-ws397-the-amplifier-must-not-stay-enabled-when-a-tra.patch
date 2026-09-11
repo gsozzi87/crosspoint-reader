@@ -1,8 +1,8 @@
 From 48eb7e39247d6bd4f7c521968c54efccf1fb5f6d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Fri, 11 Sep 2026 16:22:12 +0000
-Subject: [PATCH] ws397: the amplifier must not stay enabled when a track ends
- on its own
+Subject: [PATCH 13/14] ws397: the amplifier must not stay enabled when a track
+ ends on its own
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
