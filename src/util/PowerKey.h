@@ -50,6 +50,14 @@ class PowerKey {
   // The PMIC answered in begin() and the key is being decoded.
   bool available() const { return available_; }
 
+  // APAGAR DE VERDAD, no dormir: el AXP2101 corta sus rieles (bit0 de 0x10,
+  // soft off) y el aparato queda consumiendo lo que consume el PMIC y nada
+  // más. No hay alarmas, no hay reloj en pantalla, no hay wake por botón: se
+  // vuelve con PWR mantenido 1 s, que es lo que la hoja de datos llama
+  // PressOn. Devuelve false si el PMIC no contesta (ahí el llamador se
+  // conforma con dormir, que es lo que hacía antes).
+  bool powerOff() const;
+
  private:
   static constexpr uint8_t BIT_POSITIVE = 0x01;  // INTSTS2 bit0: PWRKEY positive edge
   static constexpr uint8_t BIT_NEGATIVE = 0x02;  // INTSTS2 bit1: PWRKEY negative edge

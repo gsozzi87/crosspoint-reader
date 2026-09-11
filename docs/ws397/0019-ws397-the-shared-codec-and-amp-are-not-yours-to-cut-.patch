@@ -1,0 +1,113 @@
+From 969b14ac7293e9ba98886eea28cd4bf86bd251bf Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 11 Sep 2026 19:11:14 +0000
+Subject: [PATCH] ws397: the shared codec and amp are not yours to cut when you
+ lost the port
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There is one ES8311 and one class-D amp on the board, but every class keeps its
+own AudioManager (UI clicks, beeps, Piper, music, the recorder). ensureI2s()
+already hands the I2S port over to whoever asks for it — but stop() and
+powerDown() went on dropping the amp enable, muting the DAC and cutting the
+codec rail unconditionally, from an instance that no longer owned anything.
+So the click that played 250 ms ago tore down the codec under the song that had
+just started, and the music went silent with nobody having stopped it.
+
+Both now no-op on the shared hardware when another instance owns the port.
+
+portBusy() is the question consumers actually need answered. "Is the port
+allocated?" is useless: stop() does not release the channels (only end() does),
+so after the very first sound the port belongs to someone forever, and asking
+the driver whether a channel can be created returns no from then on. What
+matters is whether that owner is playing or capturing right now.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../AudioManager/include/AudioManager.h       |  9 ++++++
+ .../AudioManager/src/AudioManager.cpp         | 31 ++++++++++++++++---
+ 2 files changed, 35 insertions(+), 5 deletions(-)
+
+diff --git a/libs/hardware/AudioManager/include/AudioManager.h b/libs/hardware/AudioManager/include/AudioManager.h
+index e5bcf0f..d787e17 100644
+--- a/libs/hardware/AudioManager/include/AudioManager.h
++++ b/libs/hardware/AudioManager/include/AudioManager.h
+@@ -86,6 +86,14 @@ class AudioManager {
+   // call this once from setup(). No-op on boards with no ampEnable.
+   static void silenceAmp();
+ 
++  // ¿Hay alguien REPRODUCIENDO o GRABANDO ahora mismo? Distinto de "el puerto
++  // está tomado": stop() no suelta los canales (sólo end() lo hace), así que
++  // después del primer sonido el puerto queda siempre asignado a alguien y
++  // preguntarle al driver si se puede crear un canal da que no para siempre.
++  // ensureI2s() ya sabe pedírselo al dueño; lo que hay que saber antes de
++  // pisar a otro es si ese otro está usándolo de verdad.
++  static bool portBusy();
++
+   // Por qué falló el último beginCapture(). Existe porque log_e() sale por el
+   // cable y el log que de verdad se lee en esta placa es el que se sube al
+   // servidor (/board/log), y ese lo escribe el consumidor con SU logger: sin
+@@ -165,6 +173,7 @@ class AudioManager {
+   void codecMute(bool mute);
+   void codecCapture(bool on);  // ES8311 ADC / PGA power and mic routing
+   void setAmp(bool on);
++  bool otherOwnsPort() const;
+ 
+   bool begun_ = false;
+   volatile bool playing_ = false;
+diff --git a/libs/hardware/AudioManager/src/AudioManager.cpp b/libs/hardware/AudioManager/src/AudioManager.cpp
+index c4f1086..0218e22 100644
+--- a/libs/hardware/AudioManager/src/AudioManager.cpp
++++ b/libs/hardware/AudioManager/src/AudioManager.cpp
+@@ -286,6 +286,13 @@ void AudioManager::powerDown() {
+   const auto& cfg = BoardConfig::ACTIVE.audio;
+   if (!begun_) return;
+   stop();
++  // El riel del códec también es compartido: cortarlo mientras otra instancia
++  // tiene el puerto deja sonando a nadie. Se marca como apagada esta instancia
++  // y se deja el hardware como está.
++  if (otherOwnsPort()) {
++    begun_ = false;
++    return;
++  }
+   if (cfg.output == BoardConfig::AudioOutput::I2sEs8311) {
+     // Like M5Unified's disable path: drop the amp and the codec rail.
+     setAmp(false);
+@@ -595,13 +602,27 @@ void AudioManager::stop() {
+     }
+   }
+   // Drop the amp and mute the DAC so nothing residual reaches the output
+-  // between alarms. Unconditionally: a stop() after a capture-only session (the
+-  // amp is enabled by begin(), not by playback) used to leave the amplifier
+-  // powered and hissing until the next play.
+-  setAmp(false);
+-  codecMute(true);
++  // between alarms. A stop() after a capture-only session (the amp is enabled
++  // by begin(), not by playback) used to leave the amplifier powered and
++  // hissing until the next play.
++  //
++  // PERO no si el puerto lo tiene OTRA instancia: el amplificador y el códec
++  // son UNO SOLO para toda la placa. Cada clase tiene su AudioManager (clics,
++  // pitidos, voz, música, micrófono) y la que perdió el puerto seguía bajando
++  // el amp y muteando el DAC por debajo de la que está sonando — la música se
++  // quedaba muda sin que nadie la hubiera parado.
++  if (!otherOwnsPort()) {
++    setAmp(false);
++    codecMute(true);
++  }
+ }
+ 
++// El puerto lo tiene otra instancia viva: lo que sea del códec o del
++// amplificador no es nuestro para tocarlo.
++bool AudioManager::otherOwnsPort() const { return s_portOwner != nullptr && s_portOwner != this; }
++
++bool AudioManager::portBusy() { return s_portOwner != nullptr && (s_portOwner->playing_ || s_portOwner->capturing_); }
++
+ void AudioManager::setPaused(const bool paused) {
+   if (paused_ == paused) return;
+   paused_ = paused;
+-- 
+2.43.0
+

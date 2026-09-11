@@ -264,7 +264,39 @@ std::string devlog::tail(const size_t maxBytes) {
       out += chunk;
     }
   };
-  if (Storage.exists(PREVIOUS) && maxBytes > 8 * 1024) readInto(PREVIOUS);
+  // EL ORDEN IMPORTA, y estaba al reves: se leia PREVIOUS primero y, como el
+  // archivo rotado suele estar lleno (64 KB), se comia el presupuesto entero y
+  // a CURRENT le quedaban cero bytes. O sea que el aparato subia SIEMPRE el
+  // final del log VIEJO y nunca una linea de lo que acababa de pasar: en
+  // /board/log se veia la misma tanda de hace semanas en cada sincronizacion,
+  // y borrarla no servia de nada porque la siguiente subida repetia lo mismo.
+  //
+  // Ahora manda lo nuevo: primero el final de CURRENT y, solo si sobra lugar,
+  // el final de PREVIOUS delante para dar contexto.
   readInto(CURRENT);
+  if (out.size() < maxBytes && Storage.exists(PREVIOUS)) {
+    const size_t room = maxBytes - out.size();
+    std::string current;
+    current.swap(out);
+    std::string tailOfPrev;
+    {
+      HalFile f;
+      if (Storage.openFileForRead("LOG", PREVIOUS, f)) {
+        const size_t n = f.size();
+        const size_t want = std::min(n, room);
+        if (want > 0) {
+          tailOfPrev.resize(want);
+          f.seek(n - want);
+          const int got = f.read(&tailOfPrev[0], want);
+          if (got > 0) tailOfPrev.resize(got);
+          else tailOfPrev.clear();
+        }
+        f.close();
+      }
+    }
+    out = tailOfPrev;
+    if (!out.empty()) out += "\n--- (arriba: log anterior) ---\n";
+    out += current;
+  }
   return out;
 }

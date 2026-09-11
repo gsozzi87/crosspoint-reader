@@ -167,6 +167,15 @@ void PowerKey::begin() {
   available_ = true;
 }
 
+bool PowerKey::powerOff() const {
+  if (!available_) return false;
+  uint8_t cfg = 0;
+  if (!readReg(REG_COMMON_CONFIG, cfg)) return false;
+  // bit0 = soft off. Se deja el resto del registro como está: los rieles y la
+  // carga los configuró el PMIC y no son nuestros (regla de CLAUDE.md).
+  return writeReg(REG_COMMON_CONFIG, static_cast<uint8_t>(cfg | 0x01));
+}
+
 void PowerKey::logSnapshot() const {
   if (!snapshotValid_) return;
   LOG_INF(TAG, "AXP2101 regs at boot: 10=%02X 20=%02X 21=%02X 22=%02X 27=%02X 40=%02X 41=%02X 42=%02X 48=%02X 49=%02X 4A=%02X",

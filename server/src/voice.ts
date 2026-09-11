@@ -22,7 +22,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
-import { load, mutate, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
+import { load, mutate, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, rollForwardIfPast, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
@@ -135,6 +135,8 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "OJO con la unidad: `seconds` va SIEMPRE en SEGUNDOS. '20 segundos' → 20 (no 1200). '10 minutos' → 600. " +
     "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repetí en la reply la misma unidad que dijo el usuario.",
     "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
+    "UNA HORA SIN DIA ES SIEMPRE LA PROXIMA VEZ QUE PASA: si ya pasó hoy, es MAÑANA. Dicho a las 12:52,",
+    "'a las ocho de la mañana' es mañana a las 08:00, NO hoy. Nunca devuelvas un dueAt anterior a ahora.",
     "REPETICIONES: 'todos los días' → {kind:daily}. 'todos los días hábiles', 'de lunes a viernes', 'entre semana' →",
     "{kind:weekdays}. 'los lunes y miércoles', 'cada martes' → {kind:weekly, days:[1,3]} (0=domingo, 1=lunes ... 6=sábado).",
     "'cada dos semanas' → {kind:weekly, interval:2}; 'un día sí y uno no', 'cada dos días' → {kind:daily, interval:2}.",
@@ -293,7 +295,7 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
         const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}/.test(a.dueAt) ? a.dueAt : null;
         const repeat = repeatFromAction(a.repeat);
         // "Los martes y jueves" dicho un lunes arranca el martes.
-        const aligned = dueAt ? alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10) : null;
+        const aligned = rollForwardIfPast(dueAt ? alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10) : null, repeat);
         store.reminders.push({ id: nextId(store), title, dueAt: aligned, repeat, done: false, createdAt: stamp });
         saved.push({ kind: "reminder", title, when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
         break;
@@ -331,7 +333,7 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
         const dueAt = a.dueAt && /^\d{4}-\d{2}-\d{2}T/.test(a.dueAt) ? a.dueAt : null;
         if (!dueAt) break;
         const repeat = repeatFromAction(a.repeat);
-        const aligned = alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10);
+        const aligned = rollForwardIfPast(alignToRepeat(dueAt.slice(0, 10), repeat) + dueAt.slice(10), repeat) ?? dueAt;
         store.reminders.push({ id: nextId(store), title: title || "Alarma", dueAt: aligned, repeat, done: false, createdAt: stamp });
         saved.push({ kind: "reminder", title: title || "Alarma", when: whenLabel(aligned, lang), repeatText: repeatText(repeat, aligned, lang) });
         break;
@@ -387,7 +389,7 @@ voice.post("/", async (c) => {
   try {
     if (pending) {
       const dueAt = await parseTimeReply(text, lang, pendingDate);
-      const aligned = dueAt ? alignToRepeat(dueAt.slice(0, 10), pendingRepeat) + dueAt.slice(10) : null;
+      const aligned = rollForwardIfPast(dueAt ? alignToRepeat(dueAt.slice(0, 10), pendingRepeat) + dueAt.slice(10) : null, pendingRepeat);
       // parseTimeReply (que llama al modelo) queda AFUERA del candado.
       await mutate(acc, (store) => {
         store.reminders.push({ id: nextId(store), title: pending, dueAt: aligned, repeat: pendingRepeat, done: false, createdAt: new Date().toISOString() });

@@ -472,6 +472,28 @@ function untilDate(until: number): string {
 // La primera fecha que cumple la repetición desde `date` (incluida). Sirve al
 // guardar: si el usuario elige "los martes y jueves" un lunes, el recordatorio
 // arranca el martes y no el lunes.
+// Un recordatorio NUEVO no puede nacer vencido.
+//
+// "Recordame tomar la pastilla a las ocho de la mañana" dicho a las 12:52: el
+// modelo devuelve las 08:00 de HOY, que ya pasaron, y el aparato lo hace sonar
+// en el acto — el usuario ve "listo, recordatorio para las 8:00" y al segundo
+// le suena la alarma. Acá se corre a la próxima ocurrencia.
+//
+// SOLO cuando la hora es explícita: sin hora, `localToEpoch` asume las 9 de la
+// mañana como relleno y correr la fecha convertiría "recordame HOY comprar
+// pan" en mañana, que no es lo que pidió.
+export function rollForwardIfPast(dueAt: string | null, repeat: Repeat, nowEpoch = Math.floor(Date.now() / 1000)): string | null {
+  if (!dueAt || !dueAt.includes("T")) return dueAt;
+  if (localToEpoch(dueAt) > nowEpoch) return dueAt;
+  const time = dueAt.slice(10);  // "T08:00"
+  let day = dueAt.slice(0, 10);
+  for (let i = 0; i < 400; i++) {
+    day = alignToRepeat(addDays(day, 1), repeat);
+    if (localToEpoch(day + time) > nowEpoch) return day + time;
+  }
+  return dueAt;
+}
+
 export function alignToRepeat(date: string, repeat: Repeat): string {
   const r = normalizeRepeat(repeat);
   if (!isDateStr(date)) return date;

@@ -3,7 +3,6 @@
 #include <Arduino.h>
 #include <AudioManager.h>
 #include <BoardConfig.h>
-#include <driver/i2s_std.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -22,18 +21,18 @@ namespace {
 constexpr uint32_t IDLE_MS = 250;
 constexpr size_t WAV_BYTES = wav::HEADER_BYTES + uisound::MAX_SAMPLES * sizeof(int16_t);
 
-// ¿Está libre el I2S? El SDK le da un AudioManager propio a cada clase (voz,
-// música, pitido, micrófono) y el puerto es uno solo: si alguno lo tiene
-// abierto, i2s_new_channel falla. Preguntarlo así no toca el códec — llamar a
-// begin() para enterarse le bajaría el volumen a la música y apagaría el
-// amplificador en medio de una frase.
-bool i2sPortFree() {
-  i2s_chan_config_t cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  i2s_chan_handle_t tx = nullptr;
-  if (i2s_new_channel(&cfg, &tx, nullptr) != ESP_OK) return false;
-  i2s_del_channel(tx);
-  return true;
-}
+// POR QUE LOS CLICS DEJARON DE SONAR. Acá había un i2sPortFree() que le
+// preguntaba al driver si se podía crear un canal, y con eso decidía si el clic
+// entraba. Funcionó hasta que el puerto pasó a tener dueño explícito: stop() NO
+// suelta los canales (sólo end() lo hace), así que en cuanto sonó el primer
+// pitido o la primera frase de Piper, ESA instancia se quedó con I2S_NUM_0
+// para siempre y el driver contestó "ocupado" de ahí en adelante. Resultado:
+// después del primer sonido del sistema, ningún clic volvía a sonar nunca.
+//
+// Lo que hay que saber no es si el puerto está asignado —siempre lo está— sino
+// si alguien lo está USANDO: Piper hablando, la música, el pitido del
+// temporizador, el micrófono abierto. Si está quieto, ensureI2s() se lo pide al
+// dueño y listo. Eso es AudioManager::portBusy().
 
 }  // namespace
 
@@ -97,7 +96,7 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   // Otro tiene el puerto (Piper hablando, música, el pitido del temporizador):
   // el clic se saltea y listo. Nunca corta lo que está sonando ni espera a que
   // termine — un clic que llega tarde es peor que un clic que no suena.
-  if (!hot_ && !i2sPortFree()) return false;
+  if (!hot_ && AudioManager::portBusy()) return false;
 
   if (wav_ == nullptr) {
     wav_ = static_cast<uint8_t*>(heap_caps_malloc(WAV_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

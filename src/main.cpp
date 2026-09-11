@@ -81,9 +81,15 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 
 // ws397: PWR hold timings (see handlePowerHold below). The key is the AXP2101
 // PWRKEY decoded by PowerKey, not a GPIO.
-constexpr unsigned long POWER_HOLD_ACTION_MS = PowerKey::SHORT_PRESS_MAX_MS;  // 600 ms: the sleep bar appears
-constexpr unsigned long POWER_HOLD_WARN_MS = 2200;    // second banner: about to sleep
-constexpr unsigned long POWER_HOLD_SLEEP_MS = 3000;   // sleep
+constexpr unsigned long POWER_HOLD_ACTION_MS = PowerKey::SHORT_PRESS_MAX_MS;  // 600 ms: aparece la barrita
+// Dormir y apagar son DOS cosas distintas y ahora se piden distinto:
+//   soltar entre 1,2 s y 3 s  -> dormir (deep sleep, las alarmas siguen vivas)
+//   seguir apretando hasta 3 s -> APAGAR (el PMIC corta los rieles)
+// Por eso dormir pasa al SOLTAR y no al cruzar el umbral: si durmiera a los
+// 1,2 s con el botón abajo, nunca se podría llegar a los 3.
+constexpr unsigned long POWER_HOLD_SLEEP_MS = 1200;   // soltando acá o después: a dormir
+constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // segundo cartel: está por apagarse
+constexpr unsigned long POWER_HOLD_OFF_MS = 3000;     // apagar de verdad
 }  // namespace
 
 // A wake hold must never become an in-app button action. Boot may continue
@@ -567,6 +573,27 @@ static void paintWallpaperForSleep() {
   }
 }
 
+// APAGAR, no dormir. Deja el fondo de pantalla puesto (el panel es biestable:
+// lo que queda pintado se queda pintado con el aparato muerto), desmonta la
+// tarjeta y le pide al PMIC que corte los rieles. Vuelve sólo si el PMIC no
+// contestó, para que el llamador se conforme con dormir.
+static void powerOffNow() {
+  MUSIC.stop();
+  HUB_STORE.saveToFile();
+  APP_STATE.showBootScreen = false;
+  APP_STATE.saveToFile();
+  paintWallpaperForSleep();
+  devlog::event("MAIN", "apagado por PWR mantenido");
+  devlog::close();
+  Storage.prepareForDeepSleep();
+  if (!POWER_KEY.powerOff()) {
+    LOG_ERR("MAIN", "el PMIC no aceptó el apagado: se duerme");
+    return;
+  }
+  // El corte no es instantáneo: el PMIC baja los rieles en unos ms.
+  delay(500);
+}
+
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
@@ -660,7 +687,7 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   const int barY = y + 76;
   constexpr int barH = 16;
   renderer.drawRect(barX, barY, barW, barH, 2, true);
-  const int filled = static_cast<int>(barW * held / POWER_HOLD_SLEEP_MS);
+  const int filled = static_cast<int>(barW * std::min(held, POWER_HOLD_OFF_MS) / POWER_HOLD_OFF_MS);
   if (filled > 4) renderer.fillRect(barX + 2, barY + 2, filled - 4, barH - 4, true);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -680,11 +707,12 @@ static bool handlePowerHold(const bool gateOpen) {
     // No sleep permission yet (just woke / just booted) or DOWN held (screenshot
     // combo): the hold is not ours.
     if (!gateOpen || gpio.isPressed(HalGPIO::BTN_DOWN)) return false;
-    if (held >= POWER_HOLD_SLEEP_MS) {
-      LOG_DBG("MAIN", "PWR held %lums, sleeping", held);
+    if (held >= POWER_HOLD_OFF_MS) {
+      LOG_INF("MAIN", "PWR mantenido %lu ms: se apaga", held);
       bannerStage = 0;
+      powerOffNow();
+      // Si el PMIC no contestó, no queda colgado: se duerme, que es lo de antes.
       enterDeepSleep();
-      // Not reached: enterDeepSleep() ends in esp_deep_sleep_start.
       return true;
     }
     if (bannerStage == 0 && held >= POWER_HOLD_ACTION_MS) {
@@ -699,8 +727,14 @@ static bool handlePowerHold(const bool gateOpen) {
   }
 
   if (bannerStage == 0) return false;
-  // Released before 3 s: nothing happens, the banner just goes away.
+  const unsigned long lastHold = held;  // heldMs() guarda el largo del hold que terminó
   bannerStage = 0;
+  if (lastHold >= POWER_HOLD_SLEEP_MS) {
+    LOG_DBG("MAIN", "PWR soltado a los %lu ms: a dormir", lastHold);
+    enterDeepSleep();
+    return true;  // no se llega: enterDeepSleep termina en esp_deep_sleep_start
+  }
+  // Soltado antes de 1,2 s: no pasa nada, la barrita se va.
   activityManager.requestUpdate();
   return true;
 }

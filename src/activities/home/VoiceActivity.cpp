@@ -34,7 +34,9 @@ constexpr unsigned long SPEAK_MAX_MS = 300000;
 constexpr int SIDE = 16;
 
 // Todo lo que el servidor sabe clasificar (server/src/voice.ts: question,
-// reminder, task, shopping, note, message, timer, alarm, translate, memory),
+// reminder, task, shopping, note, timer, alarm, translate, memory). "Mensaje"
+// NO esta mas: la pizarra se saco del producto en 1.5.44 y el ejemplo seguia
+// ofreciendo algo que el aparato ya no hace.
 // con un ejemplo por tipo. Sin esto el usuario no tiene forma de saber que se
 // le puede pedir: la pantalla de grabacion es el unico lugar donde mirarlo.
 struct VoiceExample {
@@ -48,7 +50,6 @@ const VoiceExample EXAMPLES[] = {
     {StrId::STR_VOICE_CAT_TASK, StrId::STR_VOICE_SAY_TASK},
     {StrId::STR_VOICE_CAT_SHOPPING, StrId::STR_VOICE_SAY_SHOPPING},
     {StrId::STR_VOICE_CAT_NOTE, StrId::STR_VOICE_SAY_NOTE},
-    {StrId::STR_VOICE_CAT_MESSAGE, StrId::STR_VOICE_SAY_MESSAGE},
     {StrId::STR_VOICE_CAT_TIMER, StrId::STR_VOICE_SAY_TIMER},
     {StrId::STR_VOICE_CAT_ALARM, StrId::STR_VOICE_SAY_ALARM},
     {StrId::STR_VOICE_CAT_TRANSLATE, StrId::STR_VOICE_SAY_TRANSLATE},
