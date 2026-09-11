@@ -229,11 +229,38 @@ static bool finishWifiSessionWithoutRestart() {
 }
 #endif
 
+// ws397: el "reinicio silencioso" es un ESP.restart() de verdad, y existe por un
+// solo motivo — TLS deja el heap hecho pedazos y el parseo de un EPUB necesita
+// bloques contiguos grandes. Pero se llamaba SIEMPRE al salir de cualquier
+// pantalla con red: volver de Hablar o de una sincronización reiniciaba el
+// aparato, y con el cable puesto eso se ve del otro lado como que el USB se
+// desconecta y se vuelve a conectar. Encima cuesta los 2-3 s de arranque.
+//
+// Reiniciar sólo cuando hace falta: si el bloque contiguo más grande sigue
+// siendo holgado, se apaga la red en el lugar y listo. El umbral está por
+// encima de lo que necesita abrir un libro, que es el caso que motivó el
+// reinicio; por debajo se reinicia como siempre y queda dicho en el log.
+constexpr size_t HEAP_BLOCK_OK_BYTES = 96 * 1024;
+
+static bool finishWifiSessionIfHeapIsHealthy() {
+  if (!BoardConfig::isWS397()) return false;
+  const size_t largest = ESP.getMaxAllocHeap();
+  if (largest < HEAP_BLOCK_OK_BYTES) {
+    LOG_INF("MAIN", "reinicio: el bloque mayor quedó en %u KB", static_cast<unsigned>(largest / 1024));
+    return false;
+  }
+  WiFi.mode(WIFI_OFF);
+  delay(50);
+  LOG_INF("MAIN", "red apagada sin reiniciar (bloque mayor %u KB)", static_cast<unsigned>(largest / 1024));
+  return true;
+}
+
 void silentRestart() {
   if (deepSleepInProgress) return;  // sleeping supersedes the heap-defrag reboot
 #if FREEINK_CAP_TOUCH
   if (finishWifiSessionWithoutRestart()) return;
 #endif
+  if (finishWifiSessionIfHeapIsHealthy()) return;
   silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=home)");
@@ -398,6 +425,10 @@ constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atr
 // "siempre encendido" nadie más va a mandar a dormir. Ver la red de seguridad
 // en el loop.
 constexpr unsigned long REST_BLOCKED_GIVE_UP_MS = 30UL * 60UL * 1000UL;
+// Una alarma que venció hace más de esto es basura de una sesión vieja, no algo
+// que el usuario esté esperando: suena sola en cualquier pantalla y no hay forma
+// de entender por qué.
+constexpr long STALE_ALARM_S = 2 * 60 * 60;
 
 // Pantallas "tranquilas" (ver abajo) pero con el micrófono abierto NO lo son:
 // Notas, Agenda y Calendario ahora graban, y un recordatorio que se abriera
@@ -463,10 +494,21 @@ static bool checkTimeAlarms() {
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) return false;
   if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= now) {
+    // Un temporizador que venció hace horas no tiene por qué sonar ahora: eso
+    // pasa cuando el aparato estuvo apagado o sin reloj y deja una alarma
+    // fantasma que salta sola en cualquier pantalla. Se descarta en silencio.
+    if (now - HUB_STORE.timerEndAt > STALE_ALARM_S) {
+      LOG_INF("MAIN", "temporizador vencido hace %ld s: se descarta", static_cast<long>(now - HUB_STORE.timerEndAt));
+      HUB_STORE.clearTimer();
+      HUB_STORE.saveToFile();
+      return false;
+    }
+    LOG_INF("MAIN", "suena el temporizador desde %s", activityManager.currentActivityName());
     activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
     return true;
   }
   if (const HubStore::Reminder* due = HUB_STORE.dueReminder(now)) {
+    LOG_INF("MAIN", "suena el recordatorio %d desde %s", due->id, activityManager.currentActivityName());
     activityManager.pushActivity(
         std::make_unique<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
     return true;

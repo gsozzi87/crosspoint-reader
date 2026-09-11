@@ -126,7 +126,7 @@ class MotionInput {
   uint8_t lastTapStatus_ = 0;
   bool tapStatusSeen_ = false;
   unsigned long lastTapEmitMs_ = 0;
-  unsigned long lastJoltMs_ = 0;
+  unsigned long lastBigMoveMs_ = 0;
   const char* tapFailure_ = nullptr;
   bool gyroOn_ = false;
   unsigned long lastPollMs_ = 0;

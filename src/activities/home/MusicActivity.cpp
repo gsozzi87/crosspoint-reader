@@ -58,14 +58,21 @@ void formatTime(char* out, const size_t size, int seconds) {
   snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
 
-// Triangulito lleno. `right=false` lo da vuelta (el de "anterior").
+// Triangulito lleno de alto 2*size y ancho size. `right=false` lo da vuelta.
+//
+// ESTE HELPER NUNCA DIBUJO UN "PLAY". Con right=true hacia `len = size - i`, o
+// sea que la fila de ARRIBA era la mas ancha y la del medio la mas angosta: eso
+// no es un triangulo apuntando a la derecha, es una cuna con una muesca. Por eso
+// en la pantalla el boton de reproducir se veia como una "K" y el de siguiente
+// apuntaba para el lado equivocado. Un triangulo que apunta a la derecha es al
+// reves: angosto arriba y ancho en el medio, que es donde esta la punta.
 void triangle(const GfxRenderer& r, const int x, const int y, const int size, const bool right = true,
               const bool black = true) {
   for (int i = 0; i < size; ++i) {
-    const int len = right ? size - i : i + 1;
-    const int sx = right ? x : x + size - len;
-    r.fillRect(sx, y + i, len, 1, black);
-    r.fillRect(sx, y + 2 * size - 1 - i, len, 1, black);
+    const int len = i + 1;                             // crece hacia el medio
+    const int sx = right ? x : x + size - len;         // la punta cae del lado que toca
+    r.fillRect(sx, y + i, len, 1, black);              // mitad de arriba
+    r.fillRect(sx, y + 2 * size - 1 - i, len, 1, black);  // espejada abajo
   }
 }
 
@@ -382,6 +389,13 @@ void MusicActivity::goBack() {
     return;
   }
   if (level == PLAYLIST) {
+    // Con UNA sola carpeta, subir un nivel deja una lista con un solo renglón y
+    // parece que Atrás "borró" las canciones. Ahí Atrás sale del reproductor
+    // directamente, que es lo que uno quiere decir.
+    if (folders.size() <= 1) {
+      activityManager.goHome();
+      return;
+    }
     level = FOLDERS;
     buildRows();
     selected = TRANSPORT_COUNT + 1;
@@ -394,10 +408,17 @@ void MusicActivity::goBack() {
 }
 
 void MusicActivity::loop() {
-  // El contador de tiempo se repinta cada 5 s mientras suena.
+  // El contador y el analizador se repintan cada 2 s mientras suena.
+  //
+  // No puede ser cada segundo y no es un descuido: cada repintado es un refresco
+  // parcial, y la regla del panel es un refresco COMPLETO cada 10-15 parciales.
+  // A 1 Hz eso da un completo cada 12-24 s para siempre, que es justo lo que
+  // deja fantasma y se come la batería. A 2 s el analizador se mueve y el
+  // completo cae cada 48 s, que el panel aguanta mientras uno está mirando esta
+  // pantalla. Estaba en 5 s y por eso parecía congelado.
   if (MUSIC.isSounding()) {
     const int sec = MUSIC.positionSeconds();
-    if (sec / 5 != lastShownSecond / 5) requestUpdate();
+    if (sec / 2 != lastShownSecond / 2) requestUpdate();
   }
   buttonNavigator.onNext([this] { moveSelection(1); });
   buttonNavigator.onPrevious([this] { moveSelection(-1); });
