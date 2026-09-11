@@ -1,6 +1,6 @@
 import sys
 sys.path.insert(0, "/tmp/claude-0/-home-user-crosspoint-reader/8ba53e74-1f42-5706-9b62-733865469812/scratchpad/btn")
-from sim import R, triangle, strip_actual, W
+from sim import R, strip_actual, W
 from PIL import Image
 
 H = 260
@@ -15,12 +15,14 @@ def bar(r, x, y, w, h, black=True):
     r.fillRect(x, y, w, h, black)
 
 def tri(r, x, y, size, right, black=True):
-    for i in range(2 * size):
-        ln = max(1, size - abs(i - size) + 1)
-        if right:
-            r.fillRect(x, y + i, ln, 1, black)
-        else:
-            r.fillRect(x + size - ln, y + i, ln, 1, black)
+    # EXACTAMENTE src/activities/home/MusicActivity.cpp::triangle(), ya arreglado.
+    # El simulador tiene que usar el mismo codigo o el PNG miente, que es
+    # justo lo que paso con 1.5.57.
+    for i in range(size):
+        ln = i + 1
+        sx = x if right else x + size - ln
+        r.fillRect(sx, y + i, ln, 1, black)
+        r.fillRect(sx, y + 2 * size - 1 - i, ln, 1, black)
 
 def glyph(r, act, cx, cy, on):
     ink = not on  # cara negra -> glifo blanco
@@ -78,12 +80,12 @@ def strip_b(r, y, h=46, playing=True, focus=1, shuffle_on=True, repeat_on=False)
         glyph(r, a, bx + (bw + 10) // 2, y + h // 2, on)
 
 r = R(W, H)
-r.d.text((16, 6), "A - lo que hay hoy", fill=0)
-strip_actual(r, 26)
-r.d.text((16, 100), "B - propuesta (cuadrados, bordes compartidos, glifos nuevos)", fill=0)
-strip_b(r, 120)
-r.d.text((16, 180), "B con el foco en STOP y repeat encendido", fill=0)
-strip_b(r, 200, focus=3, shuffle_on=False, repeat_on=True)
+r.d.text((16, 10), "1.5.58 - con el triangulo arreglado", fill=0)
+strip_b(r, 34)
+r.d.text((16, 100), "foco en STOP, repeat encendido, sonando (pausa a la vista)", fill=0)
+strip_b(r, 124, focus=3, shuffle_on=False, repeat_on=True)
+r.d.text((16, 190), "en pausa: se ve el PLAY", fill=0)
+strip_b(r, 214, playing=False, focus=1, shuffle_on=False, repeat_on=False)
 r.im.resize((W * 2, H * 2), Image.NEAREST).save(
     "/tmp/claude-0/-home-user-crosspoint-reader/8ba53e74-1f42-5706-9b62-733865469812/scratchpad/btn/ab.png")
 print("ok")
