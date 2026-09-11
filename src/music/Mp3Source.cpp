@@ -211,7 +211,12 @@ bool Mp3Source::decodeFrame() {
         }
         if (peak > levelPeak_) levelPeak_ = peak;
         if (++levelFrames_ >= 8) {
-          levels_[levelPos_] = static_cast<uint8_t>(levelPeak_ >> 12);  // 0..15
+          // >> 11, no >> 12: una muestra de 16 bits llega hasta 32767 y con 12
+          // el maximo posible daba 7 sobre 15, o sea que la barra NUNCA podia
+          // pasar de media altura por mucho que sonara. Con 11 el fondo de
+          // escala es el fondo de escala.
+          const uint16_t scaled = static_cast<uint16_t>(levelPeak_ >> 11);
+          levels_[levelPos_] = static_cast<uint8_t>(scaled > 15 ? 15 : scaled);
           levelPos_ = (levelPos_ + 1) % LEVELS;
           levelPeak_ = 0;
           levelFrames_ = 0;

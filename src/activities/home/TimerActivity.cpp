@@ -17,6 +17,7 @@
 #include "voice/SpeechCache.h"
 
 namespace {
+constexpr const char* TAG = "TIMER";
 constexpr int DURATIONS_MIN[] = {1, 3, 5, 10, 15, 20, 25, 30, 45, 60};
 constexpr int DURATION_COUNT = sizeof(DURATIONS_MIN) / sizeof(DURATIONS_MIN[0]);
 constexpr long POMODORO_WORK_S = 25 * 60;
@@ -33,6 +34,11 @@ void drawDigit(const GfxRenderer& r, int digit, int x, int y, int w, int h, int 
 
 void TimerActivity::onEnter() {
   Activity::onEnter();
+  // Se sale solo al hub apenas se entra y no se pudo reproducir. Con esto el
+  // log dice por cual de los cuatro caminos se fue.
+  LOG_INF(TAG, "entra: preset=%d resumeFired=%d timerRunning=%d timerPaused=%d stopwatch=%d", presetSeconds,
+          resumeFired ? 1 : 0, HUB_STORE.timerRunning() ? 1 : 0, HUB_STORE.timerPaused() ? 1 : 0,
+          HUB_STORE.stopwatchActive() ? 1 : 0);
   if (resumeFired) {
     // Woken because the countdown ran out: show it finished and ring.
     mode = HUB_STORE.timerMode == 0 ? COUNTDOWN : POMODORO;
@@ -241,8 +247,12 @@ void TimerActivity::loop() {
   if (mode == PICK) {
     if (picker.handleInput(mappedInput, [this] { requestUpdate(); })) {
       if (mode == PICK && !picker.isActive()) {
-        if (pickingDuration) showModePicker();
-        else finish();  // pushed from the hub: back to it; after a voice handoff the empty stack goes home
+        if (pickingDuration) {
+          showModePicker();
+        } else {
+          LOG_INF(TAG, "sale: se cerro el menu de modo sin elegir");
+          finish();  // pushed from the hub: back to it; after a voice handoff the empty stack goes home
+        }
       }
     }
     return;
@@ -300,6 +310,7 @@ void TimerActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    LOG_INF(TAG, "sale: Atras (queda corriendo lo que hubiera)");
     persist();
     finish();
     return;

@@ -70,6 +70,10 @@ class ServerClient {
   // store del servidor numera desde 1 en cada cuenta), asi que reproducirlos
   // contra la nueva tilda o borra lo que le toco el mismo numero.
   void clearQueue();
+  // Sube lo pendiente apenas hay red, sin esperar a una sincronización. Se
+  // llama sola desde la primera petición de cada sesión de red; queda pública
+  // por si alguna pantalla quiere forzarla.
+  void flushOnConnect();
   // Replays queued POSTs in order while the network holds. Returns how many
   // were delivered (or rejected by the server and dropped); stops at the first
   // transport failure so ordering is preserved. -1 when there is no network,
@@ -80,6 +84,8 @@ class ServerClient {
   static bool networkUp();
 
  private:
+  bool inFlush_ = false;            // flushQueue() usa request(): no reentrar
+  bool flushedThisSession_ = false;  // ya se vació en esta sesión de red
   ServerClient() = default;
   struct Body {
     const char* contentType = nullptr;

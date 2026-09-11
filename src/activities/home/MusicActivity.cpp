@@ -40,7 +40,7 @@ constexpr int LIST_HEADER_H = 28;  // cabecera de la lista + su regla de 1 px
 constexpr int LIST_META_GAP = 12;  // título de la pista -> duración de la derecha
 constexpr int LIST_TAIL = 4;       // aire entre la última fila y el marco del panel
 constexpr int TITLEBAR_H = 30;
-constexpr int DISPLAY_H = 148;
+constexpr int DISPLAY_H = 160;  // tres renglones debajo del contador, sin que el último toque el marco
 constexpr int POS_H = 20;
 constexpr int TRANSPORT_H = 54;
 constexpr int VOL_H = 30;
@@ -418,7 +418,13 @@ void MusicActivity::loop() {
   // pantalla. Estaba en 5 s y por eso parecía congelado.
   if (MUSIC.isSounding()) {
     const int sec = MUSIC.positionSeconds();
-    if (sec / 2 != lastShownSecond / 2) requestUpdate();
+    if (sec / 2 != lastShownSecond / 2) {
+      // Los niveles del analizador al log: si las barritas se ven en el piso,
+      // esto dice si el problema es que llegan en cero o que se dibujan mal.
+      LOG_DBG(TAG, "analizador %u %u %u %u %u %u (sonando=%d)", MUSIC.level(18), MUSIC.level(19), MUSIC.level(20),
+              MUSIC.level(21), MUSIC.level(22), MUSIC.level(23), MUSIC.isSounding() ? 1 : 0);
+      requestUpdate();
+    }
   }
   buttonNavigator.onNext([this] { moveSelection(1); });
   buttonNavigator.onPrevious([this] { moveSelection(-1); });
@@ -558,21 +564,34 @@ void MusicActivity::drawDisplay(const int x, const int y, const int w, const int
   if (anaW > 60) drawAnalyzer(anaX, y + pad, anaW, 44);
 
   // Título, artista y la línea técnica, abajo del visor.
-  const int textY = y + pad + 68;
+  //
+  // Se apilan DE ABAJO HACIA ARRIBA, midiendo cada fuente. Antes iban con saltos
+  // fijos (+26, +50) desde arriba, y la línea de la calidad caía justo sobre el
+  // marco del visor: se veía cortada al medio. Con las alturas reales de cada
+  // fuente no puede pasar, cambie la tipografía que cambie.
   const int tw = w - 2 * pad;
+  const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int subH = renderer.getLineHeight(UI_10_FONT_ID);
+  const int techH = renderer.getLineHeight(SMALL_FONT_ID);
+  const bool hasTech = MUSIC.isActive();
+  const int techY = y + h - pad - techH;
+  const int subY = (hasTech ? techY : y + h - pad) - 4 - subH;
+  const int titleY = subY - 4 - titleH;
+
   const std::string title = MUSIC.isActive() ? MUSIC.title() : std::string(tr(STR_MUSIC_NOTHING_PLAYING));
-  renderer.drawText(UI_12_FONT_ID, x + pad, textY,
+  renderer.drawText(UI_12_FONT_ID, x + pad, titleY,
                     renderer.truncatedText(UI_12_FONT_ID, title.c_str(), tw, EpdFontFamily::BOLD).c_str(), true,
                     EpdFontFamily::BOLD);
   const std::string sub2 = MUSIC.isActive() ? (MUSIC.artist().empty() ? MUSIC.folderName() : MUSIC.artist())
                                             : std::string(tr(STR_MUSIC_HELP_START));
-  renderer.drawText(UI_10_FONT_ID, x + pad, textY + 26,
+  renderer.drawText(UI_10_FONT_ID, x + pad, subY,
                     renderer.truncatedText(UI_10_FONT_ID, sub2.c_str(), tw).c_str());
-  if (MUSIC.isActive()) {
+  if (hasTech) {
     char tech[48];
     snprintf(tech, sizeof(tech), "%d kbps  %d kHz  %s", MUSIC.bitrateKbps(), MUSIC.sampleRate() / 1000,
              MUSIC.channels() == 1 ? tr(STR_MUSIC_MONO) : tr(STR_MUSIC_STEREO));
-    renderer.drawText(SMALL_FONT_ID, x + pad, textY + 50, tech);
+    renderer.drawText(SMALL_FONT_ID, x + pad, techY,
+                      renderer.truncatedText(SMALL_FONT_ID, tech, tw).c_str());
   }
 }
 

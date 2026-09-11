@@ -100,9 +100,37 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   return Result::HttpError;
 }
 
+// LO PENDIENTE SUBE APENAS HAY RED, sin esperar a una sincronización.
+//
+// Antes la cola offline sólo se vaciaba en HubSyncActivity. O sea que un
+// recordatorio borrado en el aparato sin WiFi seguía apareciendo en la nube
+// hasta la próxima sincronización, aunque en el medio se hubiera usado Hablar,
+// la Biblia o las Noticias, que levantan la red igual. Ahora la primera llamada
+// de cada sesión de red vacía la cola antes de lo suyo: son unos pocos POST de
+// un par de cientos de bytes y el orden queda bien (primero lo que el aparato
+// hizo, después lo que se va a pedir).
+void ServerClient::flushOnConnect() {
+  if (inFlush_) return;
+  if (!networkUp()) {
+    flushedThisSession_ = false;  // la próxima vez que haya red se vuelve a intentar
+    return;
+  }
+  if (flushedThisSession_) return;
+  flushedThisSession_ = true;
+  if (queueSize() == 0) return;
+  inFlush_ = true;
+  const int done = flushQueue();
+  inFlush_ = false;
+  LOG_INF(TAG, "al conectarse se subieron %d pendientes", done);
+}
+
 ServerClient::Result ServerClient::request(const char* method, const std::string& path, const Body* body,
                                            bool auth, Response& out, uint32_t timeoutMs) {
-  if (!networkUp()) return Result::NoNetwork;
+  if (!networkUp()) {
+    flushedThisSession_ = false;
+    return Result::NoNetwork;
+  }
+  flushOnConnect();
   const std::string base = SERVER_STORE.getBaseUrl();
   if (base.empty()) return Result::NoServer;
   if (auth && !SERVER_STORE.hasToken()) return Result::NoToken;
