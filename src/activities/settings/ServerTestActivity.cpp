@@ -9,6 +9,7 @@
 #include "MappedInputManager.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
+#include "util/DeviceLog.h"
 #include "fontIds.h"
 
 #include "SilentRestart.h"
@@ -65,7 +66,21 @@ void ServerTestActivity::runChecks() {
     queued = SERVER_CLIENT.queueSize();
   }
 
-  LOG_INF("SERVER_TEST", "%s: reach=%s(%d) auth=%s(%d) queued=%u flushed=%d", baseUrl.c_str(),
+  // 4. Y el log se sube AHORA, no dentro de seis horas: es lo que permite
+  // reproducir un problema y leerlo en /board/log al toque.
+  logSent = false;
+  logBytes = 0;
+  if (auth == ServerClient::Result::Ok) {
+    const std::string tail = devlog::tail(24 * 1024);
+    if (tail.size() >= 64) {
+      ServerClient::Response logResp;
+      logBytes = tail.size();
+      logSent = SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()),
+                                        tail.size(), logResp) == ServerClient::Result::Ok;
+    }
+  }
+
+  LOG_INF("SERVER_TEST", "%s: reach=%s(%d) auth=%s(%d) queued=%u flushed=%d log=%s", baseUrl.c_str(),
           ServerClient::resultName(reach), reachStatus, ServerClient::resultName(auth), authStatus, (unsigned)queued,
           flushed);
   state = DONE;
@@ -140,6 +155,15 @@ void ServerTestActivity::render(RenderLock&&) {
         y += 30;
         snprintf(line, sizeof(line), tr(STR_SERVER_QUEUE_SENT_FORMAT), flushed);
         renderer.drawCenteredText(UI_10_FONT_ID, y, line);
+      }
+      // El log: lo que acaba de subir se lee en /board/log sin esperar la
+      // próxima sincronización.
+      y += 30;
+      if (logSent) {
+        snprintf(line, sizeof(line), "%s (%u KB)", tr(STR_SERVER_LOG_SENT), (unsigned)(logBytes / 1024));
+        renderer.drawCenteredText(UI_10_FONT_ID, y, line);
+      } else if (auth == ServerClient::Result::Ok) {
+        renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SERVER_LOG_FAILED));
       }
       break;
     }

@@ -35,8 +35,7 @@ class HubActivity final : public Activity {
   // Ningún mosaico dice ya "Próximamente": Juegos abre los juegos desde 1.5.47 y
   // el Conversor abre la app de unidades.
   enum Tile {
-    TILE_DAY = 0,  // fila 0, columnas 0 y 1
-    TILE_UNITS,    // fila 0, columna 2
+    TILE_DAY = 0,  // fila 0, las tres columnas
     TILE_READ,
     TILE_TALK,
     TILE_TRANSLATOR,
@@ -52,7 +51,7 @@ class HubActivity final : public Activity {
     TILE_COUNT
   };
   static constexpr int COLUMNS = 3;
-  static constexpr int GRID_ROWS = 5;  // la de "Mi día" + Conversor, y cuatro de mosaicos
+  static constexpr int GRID_ROWS = 5;  // la de "Mi día" a lo ancho, y cuatro de mosaicos
 
   ButtonNavigator buttonNavigator;
   const bool cleanInitialRefresh;
