@@ -1,0 +1,136 @@
+From de3174f7fa1a95cf9e8868e1014a3bcd383d0455 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 11 Sep 2026 17:27:10 +0000
+Subject: [PATCH] ws397: the I2S port needs one owner, not five instances
+ fighting for it
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+There is one I2S port (I2S_NUM_0) and every AudioManager instance tried to
+create its channels on it. Whoever got there first kept it for the rest of
+the session, because stop() does NOT release the channels — only end() does,
+and nobody calls end() on a path that merely finishes playing.
+
+So on a board with several instances alive (UI clicks, alert beeps, speech,
+music, the recorder), the first one that ever made a sound locked every other
+one out: i2s_new_channel returned an error and the recorder reported "capture
+failed" with nothing whatsoever wrong with the microphone. Same for the
+clicks, which were then silently dropped.
+
+The port now has an explicit owner. ensureI2s() asks the current owner to
+end() before creating its own channels, teardownI2s() releases ownership, and
+a destructor releases it too — s_portOwner is a raw pointer, so an instance
+destroyed while holding the port would leave it dangling and the next caller
+would end() freed memory.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../AudioManager/include/AudioManager.h       | 17 ++++++++++++++
+ .../AudioManager/src/AudioManager.cpp         | 22 +++++++++++++++++++
+ 2 files changed, 39 insertions(+)
+
+diff --git a/libs/hardware/AudioManager/include/AudioManager.h b/libs/hardware/AudioManager/include/AudioManager.h
+index 7d5963e..4b2041a 100644
+--- a/libs/hardware/AudioManager/include/AudioManager.h
++++ b/libs/hardware/AudioManager/include/AudioManager.h
+@@ -45,6 +45,12 @@ class AudioManager {
+ 
+   // Initializes the codec + enable pin. Returns false when the active board
+   // has no audio path (callers can treat audio as absent).
++  // Suelta el puerto I2S y los canales. Hace falta de verdad: `s_portOwner` es
++  // un puntero crudo a la instancia que tiene el puerto, así que una instancia
++  // que se destruye sin soltarlo lo dejaría colgado y el próximo que le pidiera
++  // el puerto escribiría sobre memoria liberada.
++  ~AudioManager();
++
+   bool begin();
+   bool present() const;
+ 
+@@ -125,6 +131,17 @@ class AudioManager {
+ 
+   static const char* s_lastCaptureError;
+ 
++  // El puerto I2S es UNO SOLO (I2S_NUM_0) y cada AudioManager intenta crear sus
++  // canales ahí. El primero que lo consigue se lo queda, porque stop() NO
++  // libera los canales — sólo end() lo hace. Con varias instancias vivas
++  // (clics, pitidos, voz, música, grabadora), la primera que sonó dejaba a
++  // todas las demás afuera para siempre: i2s_new_channel devolvía error y el
++  // micrófono "fallaba" sin que hubiera nada malo en el micrófono.
++  //
++  // Así que el puerto tiene dueño explícito y se lo cede: quien lo necesita se
++  // lo pide al que lo tiene.
++  static AudioManager* s_portOwner;
++
+   static void taskEntry(void* self);
+   void taskLoop();
+   bool parseWavHeader(const WavSource& source, WavInfo& info);
+diff --git a/libs/hardware/AudioManager/src/AudioManager.cpp b/libs/hardware/AudioManager/src/AudioManager.cpp
+index cc09dfe..3adbb3f 100644
+--- a/libs/hardware/AudioManager/src/AudioManager.cpp
++++ b/libs/hardware/AudioManager/src/AudioManager.cpp
+@@ -7,6 +7,7 @@
+ namespace freeink {
+ uint8_t AudioManager::s_micGain = AudioManager::MIC_GAIN_DEFAULT;
+ const char* AudioManager::s_lastCaptureError = nullptr;
++AudioManager* AudioManager::s_portOwner = nullptr;
+ }  // namespace freeink
+ 
+ // Capability-gated like FrontlightManager: devices without FREEINK_CAP_AUDIO
+@@ -270,6 +271,10 @@ void AudioManager::setMicGain(uint8_t percent) {
+   applyMicGain();
+ }
+ 
++AudioManager::~AudioManager() {
++  if (s_portOwner == this) end();
++}
++
+ void AudioManager::silenceAmp() {
+   const auto& cfg = BoardConfig::ACTIVE.audio;
+   if (cfg.ampEnable == BoardConfig::PIN_UNASSIGNED) return;
+@@ -364,6 +369,17 @@ bool AudioManager::ensureI2s(uint32_t sampleRate) {
+     return true;
+   }
+ 
++  // Nadie más puede tener el puerto: si otra instancia lo tiene, se le pide.
++  // end() la deja limpia (para su reproducción, suelta la captura, apaga el
++  // códec y borra sus canales), que es exactamente lo que hace falta para que
++  // i2s_new_channel de abajo tenga con qué. Sin esto, la primera instancia que
++  // sonó en toda la sesión se quedaba con I2S_NUM_0 y ninguna otra volvía a
++  // conseguirlo: stop() no suelta los canales, sólo end().
++  if (s_portOwner && s_portOwner != this) {
++    log_w("i2s: el puerto lo tenía otra instancia, se le pide");
++    s_portOwner->end();
++  }
++
+   i2s_chan_config_t chanCfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+   // Without auto_clear the DMA replays its last buffers on underrun — heard
+   // as a looping stutter after playback stops.
+@@ -398,10 +414,15 @@ bool AudioManager::ensureI2s(uint32_t sampleRate) {
+   chanEnabled_ = true;
+   rxEnabled_ = false;
+   currentRate_ = sampleRate;
++  s_portOwner = this;  // desde acá, el puerto es de esta instancia
+   return true;
+ }
+ 
+ void AudioManager::teardownI2s() {
++  // Se suelta la propiedad del puerto ANTES de borrar los canales: si esta
++  // instancia lo tenía, al salir de acá no lo tiene nadie y la próxima que lo
++  // pida lo va a poder crear.
++  if (s_portOwner == this) s_portOwner = nullptr;
+   if (rxChan_) {
+     i2s_chan_handle_t rx = (i2s_chan_handle_t)rxChan_;
+     if (rxEnabled_) i2s_channel_disable(rx);
+@@ -681,6 +702,7 @@ void AudioManager::setVolume(uint8_t) {}
+ bool AudioManager::play(const WavSource&, bool) { return false; }
+ bool AudioManager::playBuffer(const uint8_t*, size_t, bool) { return false; }
+ void AudioManager::stop() {}
++AudioManager::~AudioManager() {}
+ void AudioManager::powerDown() {}
+ void AudioManager::silenceAmp() {}
+ void AudioManager::end() {}
+-- 
+2.43.0
+

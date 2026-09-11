@@ -969,13 +969,43 @@ async function sendPhoto(){
   await refresh();
 }
 
+function logHeaders(){
+  // Con sesión alcanza la cookie; sin cuentas, el token del aparato. Mandar los
+  // dos deja que ande en los dos modos sin preguntar cuál es.
+  return token ? { "Authorization": "Bearer " + token } : {};
+}
+
 async function loadLog(){
   $("logBox").textContent = "Cargando...";
   try {
-    const r = await fetch("/api/log", { headers: { "Authorization": "Bearer " + token } });
+    const r = await fetch("/api/log", { headers: logHeaders(), credentials: "same-origin" });
     $("logBox").textContent = await r.text();
     $("logBox").scrollTop = $("logBox").scrollHeight;
   } catch (e) { $("logBox").textContent = "No se pudo leer el log"; }
+}
+
+// Copiar y vaciar. Sin vaciar, el log es un archivo que sólo crece: lo de hace
+// tres días queda arriba y lo de recién hay que ir a buscarlo al fondo. Vaciar
+// es lo que permite "vacío, reproduzco el problema, miro", que es la única
+// forma cómoda de diagnosticar a distancia.
+async function copyLog(){
+  const t = $("logBox").textContent || "";
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch (e) {
+    const a = document.createElement("textarea");
+    a.value = t; document.body.appendChild(a); a.select();
+    try { document.execCommand("copy"); } catch (e2) {}
+    document.body.removeChild(a);
+  }
+  toast("Log copiado");
+}
+
+async function clearLog(){
+  if (!confirm("¿Vaciar el log del aparato?")) return;
+  await fetch("/api/log", { method: "DELETE", headers: logHeaders(), credentials: "same-origin" });
+  toast("Log vaciado");
+  loadLog();
 }
 
 async function start(){
@@ -1030,6 +1060,8 @@ async function start(){
   $("setVolume").addEventListener("input", () => { $("volumeOut").textContent = $("setVolume").value + " %"; });
   $("llmPreset").addEventListener("change", () => fillModels($("llmPreset").value, null));
   $("logReload").addEventListener("click", loadLog);
+  $("logCopy").addEventListener("click", copyLog);
+  $("logClear").addEventListener("click", clearLog);
 
   $("settingsSave").addEventListener("click", async () => {
     await post("/api/board/settings", {
@@ -1632,7 +1664,9 @@ const PAGE = `<!doctype html>
 
 <section class="tab" id="tab-log">
   <div class="card"><h2>Log del aparato</h2>
-    <div class="row"><button class="ghost" id="logReload">Actualizar</button></div>
+    <div class="row"><button class="ghost" id="logReload">Actualizar</button>
+      <button class="ghost" id="logCopy">Copiar</button>
+      <button class="danger" id="logClear">Vaciar</button></div>
     <pre id="logBox"></pre>
   </div>
 </section>

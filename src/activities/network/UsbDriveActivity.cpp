@@ -5,6 +5,7 @@
 #include <I18n.h>
 
 #include "MappedInputManager.h"
+#include "fontIds.h"
 #include "SilentRestart.h"
 #include "components/UITheme.h"
 
@@ -39,6 +40,20 @@ void UsbDriveActivity::onExit() {
 }
 
 void UsbDriveActivity::loop() {
+  // Salir desde el aparato. Hasta 1.5.51 no había forma: la única manera de
+  // cortar era expulsar la unidad en la computadora o sacar el cable, y si la
+  // computadora no la reconocía uno quedaba mirando la pantalla sin salida.
+  // Va con Atrás MANTENIDO y no con un toque: mientras la computadora escribe,
+  // cortar de golpe es perder lo que estaba escribiendo, así que tiene que ser
+  // deliberado. Se le pide al host que se desconecte, igual que en el camino
+  // del error de E/S.
+  if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, EXIT_HOLD_MS)) {
+    LOG_INF("USB", "Atrás mantenido: se desconecta el host y se sale");
+    Storage.disconnectUsbDriveHost();
+    restartToHome();
+    return;
+  }
+
   if (!startFailed) {
     const State nextState = Storage.usbDriveState();
     if (nextState != state) {
@@ -96,6 +111,9 @@ void UsbDriveActivity::render(RenderLock&&) {
   renderUi();
 
   if (state == State::WaitingForHost || startFailed) {
+    // La pista de la salida, porque un gesto que no se anuncia no existe.
+    renderer.drawCenteredText(SMALL_FONT_ID, renderer.getScreenHeight() - metrics.buttonHintsHeight - 34,
+                              tr(STR_USB_DRIVE_EXIT_HINT), true);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
     GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   }
