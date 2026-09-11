@@ -73,12 +73,20 @@ void MotionInput::begin() {
 
   // El doble golpe lo detecta el propio chip: a 80 ms de consulta no hay forma
   // de ver un golpe de 10 ms desde el loop.
-  if (imu.selfCheckPassed() && imu.configureTap(TAP_PRIORITY, TAP_PEAK_WINDOW, TAP_WINDOW, TAP_DTAP_WINDOW, TAP_ALPHA,
-                                                TAP_GAMMA, TAP_PEAK_MAG, TAP_UDM) &&
-      imu.enableTap(true)) {
-    tapTrusted_ = true;
+  // Los tres pasos se loguean POR SEPARADO. Antes los tres colapsaban en un
+  // "no contestó" y desde el aparato no había forma de saber si lo que falló
+  // fue el autochequeo (chip mal identificado), la carga de parámetros (el
+  // diálogo CTRL9, que es lo que más se cuelga) o el encendido del motor.
+  if (!imu.selfCheckPassed()) {
+    LOG_ERR(TAG, "golpes: el autochequeo del chip no pasó");
+  } else if (!imu.configureTap(TAP_PRIORITY, TAP_PEAK_WINDOW, TAP_WINDOW, TAP_DTAP_WINDOW, TAP_ALPHA, TAP_GAMMA,
+                               TAP_PEAK_MAG, TAP_UDM)) {
+    LOG_ERR(TAG, "golpes: no se pudieron cargar los parámetros (diálogo CTRL9)");
+  } else if (!imu.enableTap(true)) {
+    LOG_ERR(TAG, "golpes: el motor no se pudo encender (CTRL8)");
   } else {
-    LOG_ERR(TAG, "el motor de golpes no contestó: el doble golpe queda apagado");
+    tapTrusted_ = true;
+    LOG_INF(TAG, "golpes: el motor del chip contestó");
   }
   const auto& map = HUB_STORE.imuMap;
   LOG_INF(TAG, "gestos %s, ejes n=%u(%d) x=%u(%d) y=%u(%d)%s", HUB_STORE.motionGestures ? "encendidos" : "apagados",
