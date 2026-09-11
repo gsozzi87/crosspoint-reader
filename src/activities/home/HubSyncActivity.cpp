@@ -435,6 +435,27 @@ void HubSyncActivity::cacheSpokenNotices() {
   LOG_INF(TAG, "spoken notices: %d fetched, %d stale removed", fetched, removed);
 }
 
+// /api/pair/status devuelve { ok, paired, account } y no necesita que el
+// aparato este vinculado: sirve igual con el modo de una sola cuenta (ahi
+// contesta single=true y account nulo, y no se toca nada).
+void HubSyncActivity::checkAccount() {
+  ServerClient::Response resp;
+  if (SERVER_CLIENT.get("/api/pair/status", resp) != ServerClient::Result::Ok) return;
+  JsonDocument doc;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) return;
+  const char* acc = doc["account"] | "";
+  if (!acc || !*acc) return;  // sin cuentas (single) o sin vincular: nada que comparar
+  const std::string now(acc);
+  if (HUB_STORE.account == now) return;
+  if (!HUB_STORE.account.empty()) {
+    LOG_INF(TAG, "el aparato cambio de cuenta: se descarta lo de la anterior");
+    SERVER_CLIENT.clearQueue();
+    HUB_STORE.clearAccountContent();
+  }
+  HUB_STORE.account = now;
+  HUB_STORE.saveToFile();
+}
+
 void HubSyncActivity::runSync() {
   // PRIMERO lo pendiente, DESPUÉS la descarga. El orden estaba al revés y no
   // era una carrera rara: era el camino normal.
@@ -449,6 +470,13 @@ void HubSyncActivity::runSync() {
   // rato.
   //
   // Subiendo primero, lo que se baja después ya incluye esos cambios.
+  // ANTES de subir nada: de que cuenta es este aparato AHORA. Desde /board se
+  // lo puede mudar a otra cuenta sin que le cambie el token, y los ids del
+  // store se numeran desde 1 en cada cuenta: reproducir la cola vieja contra la
+  // cuenta nueva tilda o borra lo que le haya tocado el mismo numero. Es un
+  // pedido chico (200 bytes) cada seis horas.
+  checkAccount();
+
   flushed = 0;
   if (SERVER_CLIENT.queueSize() > 0) {
     WiFi.setSleep(false);

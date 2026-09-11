@@ -12,6 +12,8 @@
 #include <WiFi.h>
 #include <ws397_version.h>  // ws397: el número de build vive acá, no en un -D
 
+#include <mbedtls/sha256.h>
+
 #include <cstdio>
 #include <cstdlib>
 
@@ -49,6 +51,25 @@ void ensureParentDirs(const std::string& path) {
     Storage.ensureDirectoryExists(path.substr(0, at).c_str());
     at = path.find('/', at + 1);
   }
+}
+
+// Los primeros 16 hex del sha256, que es lo que manda el manifiesto
+// (server/src/assets.ts, sha16()). mbedtls ya viene con el ESP-IDF.
+std::string sha16Of(const std::string& data) {
+  unsigned char out[32];
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  if (mbedtls_sha256_starts(&ctx, 0) != 0 ||
+      mbedtls_sha256_update(&ctx, reinterpret_cast<const unsigned char*>(data.data()), data.size()) != 0 ||
+      mbedtls_sha256_finish(&ctx, out) != 0) {
+    mbedtls_sha256_free(&ctx);
+    return {};
+  }
+  mbedtls_sha256_free(&ctx);
+  char hex[17];
+  for (int i = 0; i < 8; i++) snprintf(hex + i * 2, 3, "%02x", out[i]);
+  hex[16] = 0;
+  return std::string(hex);
 }
 
 std::string readWholeFile(const char* path) {
@@ -351,6 +372,22 @@ bool AssetSyncActivity::downloadItem(const Item& item) {
   if (r != ServerClient::Result::Ok || resp.body.empty()) {
     LOG_ERR(TAG, "%s: %s (%d)", item.id.c_str(), ServerClient::resultName(r), resp.status);
     return false;
+  }
+  // El cuerpo tiene que ser EL archivo, no cualquier cosa de 200: antes
+  // alcanzaba con que la escritura no fuera corta, se guardaba el sha ANUNCIADO
+  // y en la sincronizacion siguiente el archivo ya figuraba al dia aunque
+  // estuviera cortado o cambiado por el camino.
+  if (item.bytes > 0 && resp.body.size() != item.bytes) {
+    LOG_ERR(TAG, "%s: llegaron %u bytes y el manifiesto dice %lu", item.id.c_str(),
+            static_cast<unsigned>(resp.body.size()), static_cast<unsigned long>(item.bytes));
+    return false;
+  }
+  if (!item.sha.empty()) {
+    const std::string got = sha16Of(resp.body);
+    if (got.empty() || got != item.sha) {
+      LOG_ERR(TAG, "%s: sha %s, se esperaba %s", item.id.c_str(), got.c_str(), item.sha.c_str());
+      return false;
+    }
   }
   const std::string full = sdPath(item.path);
   ensureParentDirs(full);

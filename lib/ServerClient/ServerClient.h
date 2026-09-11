@@ -65,6 +65,11 @@ class ServerClient {
   // entry is dropped when full).
   bool enqueue(const std::string& path, const std::string& json);
   size_t queueSize();
+  // Tira la cola entera sin reproducirla. Existe para cuando el aparato cambia
+  // de cuenta: los POST pendientes llevan ids que son de la cuenta VIEJA (el
+  // store del servidor numera desde 1 en cada cuenta), asi que reproducirlos
+  // contra la nueva tilda o borra lo que le toco el mismo numero.
+  void clearQueue();
   // Replays queued POSTs in order while the network holds. Returns how many
   // were delivered (or rejected by the server and dropped); stops at the first
   // transport failure so ordering is preserved. -1 when there is no network,

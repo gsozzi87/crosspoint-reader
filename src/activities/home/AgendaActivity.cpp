@@ -168,11 +168,17 @@ void AgendaActivity::tickCurrent() {
   int id = 0;
   const char* kind = "item";
   switch (current().kind) {
-    case REMINDERS:
+    case REMINDERS: {
       kind = "reminder";
       id = HUB_STORE.reminders[itemIndex].id;
-      HUB_STORE.removeReminder(id);
+      // Los que repiten no se borran de la cache: se les corre la fecha, para
+      // que la alarma siga armada aunque no haya WiFi (el servidor hace lo
+      // mismo con advanceRepeat() y manda la version buena al sincronizar).
+      time_t now = 0;
+      halClock.getEpochUtc(now);
+      HUB_STORE.completeReminder(id, now);
       break;
+    }
     case LIST:
       id = HUB_STORE.lists[current().listIndex].items[itemIndex].id;
       HUB_STORE.removeItem(id);

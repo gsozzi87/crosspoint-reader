@@ -429,12 +429,31 @@ static void checkVoiceShortcut() {
   activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
 }
 
+// La alarma NO usa la lista blanca de pantallas tranquilas. Esa lista existe
+// para no robarle los controles a cada app (doble Atras, gestos), pero aplicada
+// a las alarmas dejaba mudos los doce juegos, las apps en Lua, Noticias, Fotos,
+// la Biblia y el Traductor: el temporizador vencia y no sonaba nunca. Ahora se
+// pregunta al reves: suena en todos lados MENOS donde molestaria de verdad.
+static bool isAlarmSilentScreen(const char* name) {
+  // Timer y ReminderAlert SON la alarma (apilar otra encima seria un bucle);
+  // Sleep es la barrita de apagado y Boot/Crash son pantallas de sistema.
+  static const char* SILENT[] = {"Timer", "ReminderAlert", "Sleep", "Boot", "Crash"};
+  for (const char* n : SILENT) {
+    if (strcmp(name, n) == 0) return true;
+  }
+  return false;
+}
+
 // Devuelve true cuando puso una alarma en pantalla: el llamador tiene que
 // tratar eso como actividad, o el reposo se lo lleva puesto antes de pintarlo.
 static bool checkTimeAlarms() {
   if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;
   if (busyRecording()) return false;
-  if (!isCalmScreen(activityManager.currentActivityName())) return false;
+  // preventAutoSleep() es "esta pantalla esta ocupada AHORA": red arriba,
+  // hablando, descargando. Es el mismo criterio con el que el reposo decide no
+  // dormir, asi que sirve igual para no pisar una transferencia a medio camino.
+  if (activityManager.preventAutoSleep()) return false;
+  if (isAlarmSilentScreen(activityManager.currentActivityName())) return false;
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) return false;
   if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= now) {

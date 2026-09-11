@@ -141,6 +141,13 @@ class HubStore : public PersistableStore<HubStore> {
   // aplican cuando esa revisión es mayor a la última aplicada, así lo que se
   // cambia en el aparato no se pisa en cada sincronización.
   int settingsRev = 0;
+  // Cuenta duena de todo lo que hay en esta cache (el correo que devuelve
+  // /api/pair/status). El aparato puede pasar de una cuenta a otra desde la web
+  // SIN que le cambie el token, y los ids del store del servidor se numeran
+  // desde 1 EN CADA CUENTA: sin esto, la cola offline de la cuenta vieja
+  // tildaba o borraba lo que le tocara el mismo numero en la nueva, y la cache
+  // seguia mostrando recordatorios y notas de la otra persona.
+  std::string account;
   std::string uiLang;          // idioma pedido desde la web ("es", "en", ...); lo aplica HubSyncActivity
   std::string ttsVoice;        // voz de Piper del servidor: entra en el nombre de los clips cacheados
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
@@ -155,6 +162,14 @@ class HubStore : public PersistableStore<HubStore> {
   void applySettings(JsonVariantConst settings);
   bool hasSynced() const { return syncedAt > 0; }
   // Local tick (the server gets POST /api/hub/done from the caller, queued if offline).
+  // Tildar un recordatorio: si repite, se le corre la fecha a la proxima
+  // ocurrencia en vez de borrarlo (devuelve true); si no repite, se borra.
+  // Sin esto, confirmar un diario SIN WiFi lo sacaba de la cache y con el se
+  // iba la alarma: no quedaba nada que armar hasta la proxima sincronizacion.
+  // `now` (epoch UTC, 0 = sin reloj) corre la fecha hasta que quede adelante:
+  // un diario confirmado tres dias tarde tiene que ir al de manana, no sonar
+  // tres veces seguidas.
+  bool completeReminder(int id, time_t now = 0);
   void removeReminder(int id);
   void removeItem(int id);
   // Earliest dueAt in the future (or 0): what the deep-sleep timer is armed to.
@@ -163,6 +178,10 @@ class HubStore : public PersistableStore<HubStore> {
   const Reminder* dueReminder(time_t now) const;
   void snoozeReminder(int id, time_t until);
   void removeNote(int id);
+  // Borra TODO el contenido que es de una cuenta (recordatorios, listas, notas,
+  // eventos, clima, frase, ajustes aplicados). Deja lo que es del aparato:
+  // volumen, gestos, temporizador, paquete de contenido.
+  void clearAccountContent();
   void moveItem(int id, const std::string& listKey);
 
  private:

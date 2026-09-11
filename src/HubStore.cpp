@@ -1,5 +1,7 @@
 #include "HubStore.h"
 
+#include <time.h>
+
 namespace {
 std::string str(JsonVariantConst v, const char* key) {
   const char* s = v[key] | "";
@@ -127,6 +129,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["assetsFiles"] = assetsFiles;
   doc["assetsPending"] = assetsPending;
   doc["settingsRev"] = settingsRev;
+  doc["account"] = account;
   doc["uiLang"] = uiLang;
   doc["ttsVoice"] = ttsVoice;
 }
@@ -188,6 +191,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   assetsFiles = doc["assetsFiles"] | 0;
   assetsPending = doc["assetsPending"] | false;
   settingsRev = doc["settingsRev"] | 0;
+  account = str(doc, "account");
   uiLang = str(doc, "uiLang");
   ttsVoice = str(doc, "ttsVoice");
   return true;
@@ -243,6 +247,120 @@ void HubStore::applySettings(JsonVariantConst s) {
   const std::string other = str(s, "translatorLang");
   if (!other.empty()) translatorLang = other;
   uiLang = str(s, "lang");
+}
+
+namespace {
+
+// Dias desde 1970-01-01 (Howard Hinnant), la misma cuenta que usa HalClock: no
+// depende de timegm() ni del huso del proceso.
+long daysFromCivil(int y, const int m, const int d) {
+  y -= m <= 2;
+  const int era = (y >= 0 ? y : y - 399) / 400;
+  const unsigned yoe = static_cast<unsigned>(y - era * 400);
+  const unsigned doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+  const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+  return era * 146097L + static_cast<long>(doe) - 719468L;
+}
+
+int daysInMonth(const int y, const int m) {
+  static const int DAYS[] = {31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+  if (m == 2 && ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0)) return 29;
+  return DAYS[m - 1];
+}
+
+// La proxima ocurrencia de un recordatorio que repite, calculada EN EL APARATO.
+// Es una aproximacion deliberada: el servidor es el que manda (nextOccurrence()
+// en server/src/store.ts sabe de "hasta", de varios dias por semana y de los
+// meses cortos), y la proxima sincronizacion pisa esto. Alcanza para que la
+// alarma siga sonando mientras no hay WiFi, que es de lo que se trata.
+time_t nextRepeatDue(const time_t due, const std::string& repeat, const int interval) {
+  if (due <= 0 || repeat.empty() || repeat == "once") return 0;
+  const long day = 86400L;
+  if (repeat == "daily") return due + day;
+  if (repeat == "weekdays") {
+    // 0 = domingo en gmtime; saltear sabado y domingo.
+    time_t next = due + day;
+    for (int i = 0; i < 7; i++) {
+      struct tm t = {};
+      gmtime_r(&next, &t);
+      if (t.tm_wday != 0 && t.tm_wday != 6) break;
+      next += day;
+    }
+    return next;
+  }
+  if (repeat == "weekly") return due + 7 * day;
+  if (repeat == "weeks") return due + 7L * day * (interval > 0 ? interval : 1);
+  if (repeat == "monthly" || repeat == "yearly") {
+    struct tm t = {};
+    gmtime_r(&due, &t);
+    int y = t.tm_year + 1900;
+    int m = t.tm_mon + 1;
+    if (repeat == "monthly") {
+      if (++m > 12) {
+        m = 1;
+        y++;
+      }
+    } else {
+      y++;
+    }
+    const int d = t.tm_mday <= daysInMonth(y, m) ? t.tm_mday : daysInMonth(y, m);
+    return static_cast<time_t>(daysFromCivil(y, m, d)) * day + t.tm_hour * 3600L + t.tm_min * 60L + t.tm_sec;
+  }
+  return 0;
+}
+
+}  // namespace
+
+bool HubStore::completeReminder(const int id, const time_t now) {
+  for (Reminder& r : reminders) {
+    if (r.id != id) continue;
+    time_t next = nextRepeatDue(r.dueAt, r.repeat, r.interval);
+    // Un diario que estuvo cuatro dias sin confirmarse: correrlo un solo paso
+    // lo dejaria vencido y volveria a sonar en el acto, cuatro veces. Se corre
+    // hasta pasar la hora actual (tope de 400 pasos: un anual no da mas de eso
+    // ni con el reloj perdido).
+    for (int i = 0; next > 0 && now > 0 && next <= now && i < 400; i++) {
+      const time_t step = nextRepeatDue(next, r.repeat, r.interval);
+      if (step <= next) break;
+      next = step;
+    }
+    if (next > 0) {
+      r.dueAt = next;
+      // `when` viene traducido y armado por el servidor ("hoy 08:00"), asi que
+      // aca queda viejo a proposito: no hay forma de rearmarlo sin duplicar el
+      // formateo del servidor, y la proxima sincronizacion lo corrige. Lo que
+      // importa es que el recordatorio siga existiendo y vuelva a sonar.
+      if (!reminders.empty()) {
+        reminderTitle = reminders[0].title;
+        reminderWhen = reminders[0].when;
+      }
+      return true;
+    }
+    break;
+  }
+  removeReminder(id);
+  return false;
+}
+
+void HubStore::clearAccountContent() {
+  weatherLine.clear();
+  weatherDetail.clear();
+  weatherNoPlace = false;
+  weatherError.clear();
+  reminderTitle.clear();
+  reminderWhen.clear();
+  reminders.clear();
+  lists.clear();
+  notes.clear();
+  events.clear();
+  quote.clear();
+  verseRef.clear();
+  verseText.clear();
+  // Los ajustes de /board son de la cuenta: con rev en 0, los de la cuenta
+  // nueva se aplican aunque su numero de revision sea mas bajo que el viejo.
+  settingsRev = 0;
+  syncedAt = 0;
+  lastAttemptAt = 0;
 }
 
 void HubStore::removeReminder(const int id) {

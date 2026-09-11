@@ -190,6 +190,15 @@ bool ServerClient::enqueue(const std::string& path, const std::string& json) {
   return ok;
 }
 
+void ServerClient::clearQueue() {
+  const size_t had = queueSize();
+  if (had == 0) return;
+  JsonDocument doc;
+  doc["items"].to<JsonArray>();
+  PersistableStoreBase::writeDocToFile(QUEUE_PATH, doc);
+  LOG_INF(TAG, "cola descartada: %u pendientes de otra cuenta", static_cast<unsigned>(had));
+}
+
 size_t ServerClient::queueSize() {
   JsonDocument doc;
   if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc)) return 0;

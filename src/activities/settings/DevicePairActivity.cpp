@@ -9,6 +9,8 @@
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 
+#include "HubStore.h"
+
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -133,6 +135,18 @@ void DevicePairActivity::poll() {
   if (deserializeJson(doc, res.body) != DeserializationError::Ok) return;
   if (!(doc["paired"] | false)) return;
   account = doc["account"] | "";
+  // Vincularse con OTRA cuenta deja adentro lo de la anterior: la cola offline
+  // (ids que en la cuenta nueva son de otra cosa) y la cache del hub
+  // (recordatorios, listas y notas de la otra persona). Se tiran acá mismo.
+  if (!account.empty() && HUB_STORE.account != account) {
+    if (!HUB_STORE.account.empty()) {
+      LOG_INF(TAG, "cuenta nueva: se descarta lo de la anterior");
+      SERVER_CLIENT.clearQueue();
+      HUB_STORE.clearAccountContent();
+    }
+    HUB_STORE.account = account;
+    HUB_STORE.saveToFile();
+  }
   state = PAIRED;
   requestUpdate();
 }

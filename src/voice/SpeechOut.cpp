@@ -83,11 +83,15 @@ void SpeechOut::stop() {
 void SpeechOut::pause() {
   if (!started || paused) return;
   paused = true;
+  // Igual que en la musica: bajar el volumen no frena nada, el WAV se drenaba
+  // igual y la frase se "terminaba" en pausa. setPaused() detiene la tarea.
   audio.setVolume(0);
+  audio.setPaused(true);
 }
 
 void SpeechOut::resume() {
   if (!started || !paused) return;
   paused = false;
+  audio.setPaused(false);
   audio.setVolume(deviceVolume());
 }

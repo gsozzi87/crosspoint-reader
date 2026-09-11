@@ -40,7 +40,11 @@ void ReminderAlertActivity::onExit() {
 }
 
 void ReminderAlertActivity::done() {
-  HUB_STORE.removeReminder(reminderId);
+  // Si repite, la cache se queda con la proxima ocurrencia: sin WiFi, borrarlo
+  // dejaba al aparato sin nada que armar y el diario no volvia a sonar nunca.
+  time_t now = 0;
+  halClock.getEpochUtc(now);
+  HUB_STORE.completeReminder(reminderId, now);
   HUB_STORE.saveToFile();
   std::string body;
   {

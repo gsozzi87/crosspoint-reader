@@ -82,7 +82,14 @@ void MusicPlayer::stop() {
 void MusicPlayer::togglePause() {
   if (!active_) return;
   paused_ = !paused_;
+  // Pausar era SOLO bajar el volumen a 0: el MP3 se seguia decodificando y el
+  // I2S se seguia escribiendo a velocidad de hardware, asi que la pausa gastaba
+  // lo mismo que sonar y la pista se terminaba sola estando "en pausa" (y
+  // pump() encadenaba la siguiente). setPaused() frena de verdad la tarea de
+  // audio; el volumen 0 queda igual, para que no se escape ni un pedacito de
+  // muestra entre la bandera y el silencio del DMA.
   audio_.setVolume(paused_ ? 0 : volume());
+  audio_.setPaused(paused_);
 }
 
 void MusicPlayer::next(const bool fromEnd) {
