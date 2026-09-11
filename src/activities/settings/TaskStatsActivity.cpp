@@ -11,6 +11,7 @@
 #include "activities/ListStyle.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/BatteryLog.h"
 #include "util/IdleSleep.h"
 
 namespace {
@@ -165,6 +166,26 @@ void TaskStatsActivity::render(RenderLock&&) {
     y += listui::ROW2_H;
   }
   y += listui::GAP;
+
+  // --- Batería ------------------------------------------------------------
+  // El AXP2101 no tiene registro de corriente, así que no hay miliamperios que
+  // mostrar: lo que se muestra es la pendiente real del porcentaje contra el
+  // reloj, que es lo que de verdad contesta "cuánto dura".
+  {
+    const batterylog::Drain d = batterylog::measure();
+    y = listui::sectionHeader(renderer, x, y, w, tr(STR_MEMORY_BATTERY), nullptr);
+    if (!d.valid) {
+      listui::row(renderer, x, y, w, listui::ROW1_H, {.title = tr(STR_MEMORY_BATTERY_WAIT), .rule = true});
+    } else {
+      char title[96];
+      char meta[48];
+      snprintf(title, sizeof(title), "%.1f %%/h  ·  %s %.0f h (%.1f %s)", d.pctPerHour, tr(STR_MEMORY_BATTERY_LEFT),
+               d.hoursLeft, d.hoursLeft / 24.0f, tr(STR_MEMORY_BATTERY_DAYS));
+      snprintf(meta, sizeof(meta), "%s %.1f h", tr(STR_MEMORY_BATTERY_WINDOW), d.hours);
+      listui::row(renderer, x, y, w, listui::ROW1_H, {.title = title, .meta = meta, .rule = true});
+    }
+    y += listui::ROW1_H + listui::GAP;
+  }
 
   // --- OK mantenido -------------------------------------------------------
   y = listui::sectionHeader(renderer, x, y, w, tr(STR_MEMORY_OK_HOLD), nullptr);

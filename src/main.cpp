@@ -57,6 +57,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/PowerKey.h"
 #include "util/Shtc3.h"
+#include "util/BatteryLog.h"
 #include "util/IdleSleep.h"
 #include "util/RtcAlarm.h"
 #include "input/MotionInput.h"
@@ -564,6 +565,11 @@ void enterDeepSleep(bool fromTimeout = false) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
+
+  // El diario de la batería, con la tarjeta todavía montada: esta es la muestra
+  // que cierra el tramo despierto y abre el tramo dormido, que es el largo y el
+  // que de verdad dice cuánto dura.
+  batterylog::sampleNow("antes de dormir");
 
   halTiltSensor.deepSleep();
   display.deepSleep();
@@ -1182,6 +1188,7 @@ void loop() {
   POWER_KEY.pump();  // ws397: PMIC key state for this pass (no-op elsewhere)
   MOTION.poll();     // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
   shtc3::tick();     // temperatura de adentro, en dos tiempos y sin bloquear
+  batterylog::tick();  // el diario de la batería, una línea cada diez minutos
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,

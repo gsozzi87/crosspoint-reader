@@ -395,6 +395,24 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   el light sleep se rechaza en bucle y el aparato gasta más despierto que sin reposo. Sigue sin servir para el
   deep sleep (GPIO45 no es RTC GPIO): eso lo arma `armReminderWake()` con el timer, y así queda.
 
+## Batería: no hay miliamperímetro, hay un diario (1.5.49)
+
+- **El AXP2101 NO tiene registro de corriente de batería.** Tiene ADC de VBAT, VBUS, VSYS, TS y temperatura de
+  pastilla, y nada más; el AXP192 sí lo tenía, este no. El medidor del SDK sólo expone porcentaje, milivoltios y
+  si carga. O sea que un "consumo instantáneo en mA" en esta placa **no se puede** y no hay que volver a
+  intentarlo.
+- Así que se mide como se mide la autonomía de verdad: **anotando el porcentaje contra el reloj y mirando la
+  pendiente**. `src/util/BatteryLog` agrega una línea a `/.crosspoint/battery.csv` cada 10 minutos y, sobre todo,
+  **justo antes de dormir** (esa es la que abre el tramo largo, que es el que dice la verdad). 300 líneas como
+  mucho, después rota a la mitad.
+- `analyze()` toma la ventana **más larga** que termine en la muestra más nueva y que sea una descarga limpia: sin
+  carga en el medio y sin que el porcentaje haya estado por debajo del actual (si hacia atrás baja, en algún
+  momento subió, o sea que lo enchufaron). Menos de diez minutos no se mide: el medidor tiene 1 % de resolución,
+  que en una batería de 1500 mAh son 15 mAh.
+- La cuenta vive en el header como función pura, sin nada del aparato adentro, justamente para poder probarla sin
+  placa: **`./test/battery_drain/run.sh`** (17 casos, incluido el de haberlo enchufado en el medio).
+- Se ve en **Ajustes → Sistema → Memoria**: "%/h · quedan N h (N días)" y sobre qué ventana se midió.
+
 ## Disciplina de tareas (1.5.48)
 
 - `src/TaskConfig.h` declara núcleo, prioridad, stack y para qué de cada tarea, y ahora eso se puede **medir**:
