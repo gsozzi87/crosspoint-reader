@@ -59,6 +59,13 @@ class NewsActivity final : public Activity {
   std::string failureDetail;
 
   // --- El artículo abierto y su lectura en voz alta -------------------------
+  // Un cuerpo más corto que esto no es una noticia: tiene el tamaño de los
+  // mensajes de "no se pudo traer" que antes se guardaban como si fueran la
+  // nota. Se usa para reintentar bajarla, nunca para borrarla.
+  static constexpr size_t RESCUE_MIN_CHARS = 400;
+  // Lo guardado mientras se reintenta, para no quedar con menos que antes.
+  std::string rescueTitle;
+  std::string rescueText;
   std::string articleTitle;
   std::string articleText;
   std::vector<textchunks::Span> chunks;

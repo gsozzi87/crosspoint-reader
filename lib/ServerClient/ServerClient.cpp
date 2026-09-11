@@ -143,10 +143,11 @@ ServerClient::Result ServerClient::postBytes(const std::string& path, const char
   return request("POST", path, &body, true, out, timeoutMs);
 }
 
-ServerClient::Result ServerClient::postOrQueue(const std::string& path, const std::string& json, Response* out) {
+ServerClient::Result ServerClient::postOrQueue(const std::string& path, const std::string& json, Response* out,
+                                              const uint32_t timeoutMs) {
   Response local;
   Response& resp = out ? *out : local;
-  const Result r = postJson(path, json, resp);
+  const Result r = timeoutMs > 0 ? postJson(path, json, resp, timeoutMs) : postJson(path, json, resp);
   // Se encola TODO lo que puede andar más tarde, no sólo la falta de red.
   //
   // Antes sólo NoNetwork y Transport iban a la cola: un 503 del servidor, un

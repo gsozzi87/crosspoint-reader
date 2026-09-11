@@ -24,7 +24,7 @@ class ServerClient {
  public:
   enum class Result {
     Ok,            // 2xx; body in Response
-    Queued,        // postOrQueue: no network / transport failure, saved for later
+    Queued,        // postOrQueue: se guardó para más tarde (sin red, transporte, 429/5xx o 401)
     NoNetwork,     // WiFi not connected
     NoServer,      // no base URL configured (custom or build-time)
     NoToken,       // token required but not set
@@ -58,7 +58,8 @@ class ServerClient {
   Result postBytes(const std::string& path, const char* contentType, const uint8_t* data, size_t len,
                    Response& out, uint32_t timeoutMs = 0);
   // postJson, and on NoNetwork/Transport the request is queued instead (Queued).
-  Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr);
+  Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr,
+                     uint32_t timeoutMs = 0);
 
   // Offline queue (SD, /.crosspoint/server-queue.json, bounded; the oldest
   // entry is dropped when full).

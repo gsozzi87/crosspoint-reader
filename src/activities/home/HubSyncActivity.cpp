@@ -436,18 +436,32 @@ void HubSyncActivity::cacheSpokenNotices() {
 }
 
 void HubSyncActivity::runSync() {
+  // PRIMERO lo pendiente, DESPUÉS la descarga. El orden estaba al revés y no
+  // era una carrera rara: era el camino normal.
+  //
+  // Antes se bajaba el estado del servidor, se reemplazaba la caché con él y
+  // recién ahí se vaciaba la cola. Como no se volvía a bajar nada, la
+  // instantánea que quedaba guardada era la de ANTES de aplicar lo que el
+  // aparato tenía pendiente: la tarea que habías tildado sin WiFi reaparecía
+  // sin tildar, y un recordatorio ya confirmado podía volver a sonar. Encima
+  // `syncedAt` quedaba actualizado, así que la próxima sincronización no
+  // entraba hasta seis horas después y el error se quedaba a la vista todo ese
+  // rato.
+  //
+  // Subiendo primero, lo que se baja después ya incluye esos cambios.
+  flushed = 0;
+  if (SERVER_CLIENT.queueSize() > 0) {
+    WiFi.setSleep(false);
+    flushed = SERVER_CLIENT.flushQueue();
+    WiFi.setSleep(true);
+  }
+
   const bool ok = fetchNow(&result, &status);
   if (!ok) uploadLog();  // sobre todo cuando falla: el log dice por qué
   if (ok) {
     WiFi.setSleep(false);
     cacheSpokenNotices();
     uploadLog();
-    WiFi.setSleep(true);
-  }
-  flushed = 0;
-  if (ok && SERVER_CLIENT.queueSize() > 0) {
-    WiFi.setSleep(false);
-    flushed = SERVER_CLIENT.flushQueue();
     WiFi.setSleep(true);
   }
   state = ok ? DONE : FAILED;

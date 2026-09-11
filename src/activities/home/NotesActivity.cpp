@@ -251,16 +251,20 @@ void NotesActivity::saveTextNote() {
     doc["lang"] = uiLanguageCode();
     serializeJson(doc, body);
   }
+  // postOrQueue y no postJson: la nota tiene que sobrevivir a un servidor
+  // saturado (429), caído (5xx) o que todavía no reconoce al aparato (401), no
+  // sólo a la falta de red. Antes esos tres devolvían error, la nota NO se
+  // encolaba, y la única copia quedaba en la caché del hub — que la próxima
+  // sincronización reemplaza con las notas del servidor. O sea: la pantalla
+  // decía "guardada" y la nota se perdía sola un rato después.
   ServerClient::Response resp;
-  const ServerClient::Result r = SERVER_CLIENT.postJson("/api/notes", body, resp, SAVE_TIMEOUT_MS);
+  const ServerClient::Result r = SERVER_CLIENT.postOrQueue("/api/notes", body, &resp, SAVE_TIMEOUT_MS);
   WiFi.setSleep(true);
   int id = 0;
   if (r == ServerClient::Result::Ok) {
     JsonDocument doc;
     if (deserializeJson(doc, resp.body) == DeserializationError::Ok) id = doc["id"] | 0;
   }
-  const bool retryable = r == ServerClient::Result::NoNetwork || r == ServerClient::Result::Transport;
-  if (retryable) SERVER_CLIENT.enqueue("/api/notes", body);
   LOG_INF(TAG, "POST /api/notes (%u caracteres): %s", (unsigned)noteText.size(), ServerClient::resultName(r));
 
   // Pase lo que pase con el servidor, lo transcripto no se pierde: entra en la
@@ -278,8 +282,11 @@ void NotesActivity::saveTextNote() {
     requestUpdate();
     return;
   }
-  message(retryable ? StrId::STR_NOTES_QUEUED : StrId::STR_NOTES_SAVE_FAILED,
-          retryable ? noteText : std::string(tr(STR_NOTES_KEPT_HERE)));
+  // `Queued` es la respuesta de postOrQueue cuando la guardó para más tarde:
+  // ese es el caso en que se le puede decir al usuario que va a salir sola.
+  const bool enCola = r == ServerClient::Result::Queued;
+  message(enCola ? StrId::STR_NOTES_QUEUED : StrId::STR_NOTES_SAVE_FAILED,
+          enCola ? noteText : std::string(tr(STR_NOTES_KEPT_HERE)));
 }
 
 // --- abrir, reproducir y borrar ---------------------------------------------

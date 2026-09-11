@@ -134,6 +134,18 @@ bool NewsActivity::fetchArticle(const int feed, const int item, std::string& tit
   title = doc["title"] | "";
   text = doc["text"] | "";
   if (text.empty()) return false;
+  // `cache:false` quiere decir que ese texto NO es la nota: es la explicación
+  // de por qué no se pudo traer ("el diario no contesta", "hay que
+  // suscribirse"). Se muestra, pero no se guarda.
+  //
+  // Guardarlo era lo peor de los dos mundos: `openArticle()` prioriza el
+  // archivo de la tarjeta, así que el mensaje de error quedaba pegado ahí para
+  // siempre y la nota de verdad no se volvía a pedir nunca, ni cuando el diario
+  // se recuperaba. Actualizar los titulares tampoco lo borraba.
+  if (!(doc["cache"] | true)) {
+    LOG_INF(TAG, "el servidor dice que esto no se cachea: se muestra pero no se guarda");
+    return true;
+  }
   HalFile f;
   if (Storage.openFileForWrite(TAG, articlePath(feed, item), f)) {
     f.write(reinterpret_cast<const uint8_t*>(title.data()), title.size());
@@ -150,8 +162,23 @@ void NewsActivity::openArticle() {
   const Item& item = feed.items[itemIndex];
   std::string title, text;
   if (readArticle(articlePath(feed.id, item.id), title, text)) {
-    showArticle(title, text);
-    return;
+    // Rescate de lo que quedó envenenado antes del arreglo de fetchArticle: en
+    // la tarjeta puede haber, guardado como si fuera la nota, el mensaje de
+    // "no se pudo traer". No hay forma de distinguirlo con certeza de una nota
+    // de verdad, pero un cuerpo de menos de RESCUE_MIN_CHARS no es una noticia
+    // y sí tiene el tamaño exacto de esas explicaciones. Se intenta bajarla de
+    // nuevo; si no hay red o el diario sigue sin contestar, se muestra lo
+    // guardado igual, así el rescate nunca deja al usuario con menos que antes.
+    if (text.size() >= RESCUE_MIN_CHARS) {
+      showArticle(title, text);
+      return;
+    }
+    LOG_INF(TAG, "artículo sospechosamente corto (%u bytes): se reintenta bajarlo", (unsigned)text.size());
+    rescueTitle = title;
+    rescueText = text;
+  } else {
+    rescueTitle.clear();
+    rescueText.clear();
   }
   pending = ARTICLE_FETCH;
   ensureConnected();
@@ -364,10 +391,22 @@ void NewsActivity::loop() {
         const bool ok = fetchArticle(feeds[feedIndex].id, feeds[feedIndex].items[itemIndex].id, title, text);
         WiFi.setSleep(true);
         if (!ok) {
+          // Si veníamos de rescatar un artículo corto guardado, se muestra lo
+          // que había: el rescate no puede dejar al usuario con menos de lo que
+          // ya tenía en la mano.
+          if (!rescueText.empty()) {
+            LOG_INF(TAG, "no se pudo rebajar: se muestra lo guardado");
+            showArticle(rescueTitle, rescueText);
+            rescueTitle.clear();
+            rescueText.clear();
+            break;
+          }
           // El detalle se pinta en pantalla: el titular del feed en vez de un "article" en inglés.
           fail(StrId::STR_ASK_FAILED, feeds[feedIndex].items[itemIndex].title);
           break;
         }
+        rescueTitle.clear();
+        rescueText.clear();
         showArticle(title, text);
       } else if (p == CLIP) {
         serveClip();
