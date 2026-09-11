@@ -418,13 +418,7 @@ void MusicActivity::loop() {
   // pantalla. Estaba en 5 s y por eso parecía congelado.
   if (MUSIC.isSounding()) {
     const int sec = MUSIC.positionSeconds();
-    if (sec / 2 != lastShownSecond / 2) {
-      // Los niveles del analizador al log: si las barritas se ven en el piso,
-      // esto dice si el problema es que llegan en cero o que se dibujan mal.
-      LOG_DBG(TAG, "analizador %u %u %u %u %u %u (sonando=%d)", MUSIC.level(18), MUSIC.level(19), MUSIC.level(20),
-              MUSIC.level(21), MUSIC.level(22), MUSIC.level(23), MUSIC.isSounding() ? 1 : 0);
-      requestUpdate();
-    }
+    if (sec / 2 != lastShownSecond / 2) requestUpdate();
   }
   buttonNavigator.onNext([this] { moveSelection(1); });
   buttonNavigator.onPrevious([this] { moveSelection(-1); });
@@ -524,13 +518,27 @@ void MusicActivity::drawTitleBar(const int x, const int y, const int w, const in
 
 // El analizador: el pico real de cada bloque decodificado, del más viejo al más
 // nuevo. Sin audio quedan todas en el piso, que es exactamente lo que pasa.
+// La altura de una barra a partir del pico crudo (0..127). En DECIBELES, como
+// cualquier vúmetro: la música normal anda por los -18 dBFS y con escala lineal
+// eso daba una barra de tres píxeles sobre cuarenta y cuatro — pegada al piso,
+// que es justo lo que se veía. La escala va de -42 dBFS (piso) a 0 (lleno).
+static int barHeightFromPeak(const int peak, const int h) {
+  if (peak <= 0) return 2;
+  constexpr float FLOOR_DB = -42.0f;
+  const float db = 20.0f * log10f(static_cast<float>(peak) / 127.0f);
+  if (db <= FLOOR_DB) return 2;
+  const float frac = (db - FLOOR_DB) / -FLOOR_DB;
+  const int bh = static_cast<int>(frac * static_cast<float>(h) + 0.5f);
+  return bh < 2 ? 2 : (bh > h ? h : bh);
+}
+
 void MusicActivity::drawAnalyzer(const int x, const int y, const int w, const int h) const {
   const int bars = MusicPlayer::LEVELS;
   const int bw = std::max(2, (w - (bars - 1) * 2) / bars);
   for (int i = 0; i < bars; ++i) {
     const int bx = x + i * (bw + 2);
     const int level = MUSIC.isSounding() ? MUSIC.level(i) : 0;
-    const int bh = std::max(2, level * h / 15);
+    const int bh = barHeightFromPeak(level, h);
     renderer.fillRect(bx, y + h - bh, bw, bh, true);
     // Cabecita clara arriba de cada barra, como el "peak" del analizador.
     if (bh > 4) renderer.fillRect(bx, y + h - bh, bw, 2, false);

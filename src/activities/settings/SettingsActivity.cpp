@@ -194,22 +194,28 @@ void SettingsActivity::rebuildSettingsLists() {
                                    .withSwitch());
       systemSettings.push_back(SettingInfo::Action(StrId::STR_MOTION_TITLE, SettingAction::Motion));
     }
-    // Modo de energía: lo que antes era un número suelto, con nombres y con el
-    // modo que el reposo hizo posible. "Siempre encendido" ya no significa
-    // "gastando a pleno para siempre" como antes de 1.5.48: significa reposar
-    // para siempre, con la pantalla viva y las alarmas en hora.
-    systemSettings.push_back(SettingInfo::DynamicEnum(
-        StrId::STR_POWER_MODE, {StrId::STR_POWER_SAVER, StrId::STR_POWER_NORMAL, StrId::STR_POWER_ALWAYS_ON},
-        []() -> uint8_t {
-          if (SETTINGS.sleepTimeoutMinutes >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) return 2;
-          return SETTINGS.sleepTimeoutMinutes <= 5 ? 0 : 1;
-        },
-        [](const uint8_t value) {
-          SETTINGS.sleepTimeoutMinutes = value == 0   ? static_cast<uint8_t>(5)
-                                         : value == 1 ? static_cast<uint8_t>(10)
-                                                      : CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES;
-          SETTINGS.saveToFile();
-        }));
+    // MODO DE ENERGIA: en esta placa no se elige. Elegir entre "ahorro" y
+    // "normal" era pedirle al usuario que decidiera algo que no puede evaluar
+    // —la diferencia son cinco minutos de espera antes de dormir— y la respuesta
+    // correcta es siempre la misma. Queda fijo en ahorro (5 min) y el ajuste no
+    // se muestra. En las demás placas sigue igual.
+    if (!isWs397) {
+      systemSettings.push_back(SettingInfo::DynamicEnum(
+          StrId::STR_POWER_MODE, {StrId::STR_POWER_SAVER, StrId::STR_POWER_NORMAL, StrId::STR_POWER_ALWAYS_ON},
+          []() -> uint8_t {
+            if (SETTINGS.sleepTimeoutMinutes >= CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES) return 2;
+            return SETTINGS.sleepTimeoutMinutes <= 5 ? 0 : 1;
+          },
+          [](const uint8_t value) {
+            SETTINGS.sleepTimeoutMinutes = value == 0   ? static_cast<uint8_t>(5)
+                                           : value == 1 ? static_cast<uint8_t>(10)
+                                                        : CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES;
+            SETTINGS.saveToFile();
+          }));
+    } else if (SETTINGS.sleepTimeoutMinutes != 5) {
+      SETTINGS.sleepTimeoutMinutes = 5;
+      SETTINGS.saveToFile();
+    }
     // La contracara de src/TaskConfig.h: acá se ve cuánto stack usó de verdad
     // cada tarea contra lo que tiene declarado, y cómo va el heap interno.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_SETTING_MEMORY, SettingAction::Memory));

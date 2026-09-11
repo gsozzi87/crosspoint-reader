@@ -38,7 +38,10 @@ class Mp3Source {
   // Lo escribe la tarea de audio y lo lee la UI; son bytes sueltos, una lectura
   // a destiempo pinta una barra distinta y nada más.
   static constexpr int LEVELS = 24;
-  uint8_t level(const int i) const { return levels_[(levelPos_ + i) % LEVELS]; }  // 0..15, del más viejo al más nuevo
+  // Pico crudo del bloque, 0..127 (la muestra de 16 bits sobre 256), del más
+  // viejo al más nuevo. NO es una altura de barra: la escala logarítmica la
+  // aplica el que dibuja (ver MusicActivity::drawAnalyzer).
+  uint8_t level(const int i) const { return levels_[(levelPos_ + i) % LEVELS]; }
 
  private:
   static constexpr size_t IN_BUF = 4096;

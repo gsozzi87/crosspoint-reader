@@ -126,6 +126,15 @@ class OptionPopup {
   bool handleInput(MappedInputManager& input, const std::function<void()>& requestUpdate) {
     if (!active) return false;
 
+    // NADA DE BOTONES HASTA QUE EL DIALOGO ESTE EN PANTALLA.
+    //
+    // En tinta un repintado tarda ~600 ms. Cualquier tecla que llegue antes es
+    // una tecla que el usuario apreto SIN HABER VISTO el dialogo — venia de la
+    // pantalla anterior, o la apreto de nuevo porque todavia no habia pasado
+    // nada. Eso es lo que cerraba el menu de modo del temporizador antes de que
+    // se llegara a ver: se abria y se volvia al hub solo.
+    if (millis() - shownAtMs < SHOW_GRACE_MS) return true;
+
     // Match the render cap: only the first MAX_OPTIONS rows exist on screen,
     // so button wrap-around must not select an invisible option.
     const int total = static_cast<int>(ownedStrings.size());
@@ -464,8 +473,12 @@ class OptionPopup {
     selectedIndex = count > 0 ? std::min(std::max(currentIndex, 0), count - 1) : 0;
     resolveIcons();
     uiReady = false;
+    shownAtMs = millis();
     active = true;
   }
+
+  static constexpr unsigned long SHOW_GRACE_MS = 500;  // lo que tarda el panel en mostrarlo
+  unsigned long shownAtMs = 0;
 
   void resolveIcons() {
     icons.assign(ownedStrings.size(), nullptr);

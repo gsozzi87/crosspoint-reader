@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <AudioManager.h>
 #include <BoardConfig.h>
+#include <Logging.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -38,11 +39,30 @@ constexpr size_t WAV_BYTES = wav::HEADER_BYTES + uisound::MAX_SAMPLES * sizeof(i
 
 void UiSound::play(const uisound::Sound sound) {
   const uint8_t level = HUB_STORE.uiSoundMode;
-  if (level == uisound::OFF || level > uisound::NORMAL) return;
+  // Por qué no suena, una vez cada cinco segundos: "los sonidos no andan" puede
+  // ser el ajuste apagado, la música tapándolos o el puerto ocupado, y desde el
+  // aparato no hay forma de distinguirlos.
+  static unsigned long lastWhyMs = 0;
+  const auto why = [&](const char* reason) {
+    const unsigned long now = millis();
+    if (now - lastWhyMs < 5000) return;
+    lastWhyMs = now;
+    LOG_DBG("UISOUND", "sin sonido: %s (ajuste=%u)", reason, static_cast<unsigned>(level));
+  };
+  if (level == uisound::OFF || level > uisound::NORMAL) {
+    why("apagado en Ajustes");
+    return;
+  }
   // "Cuando se reproduzca la música los demás sonidos no deben oírse, sólo la
   // música": con una canción puesta los clics se saltean sin más.
-  if (MUSIC.isActive()) return;
-  if (!BoardConfig::hasAudio()) return;
+  if (MUSIC.isActive()) {
+    why("hay música sonando");
+    return;
+  }
+  if (!BoardConfig::hasAudio()) {
+    why("la placa no tiene audio");
+    return;
+  }
   if (!ensureTask()) return;
 
   int volume = HUB_STORE.musicVolume;
@@ -96,7 +116,10 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   // Otro tiene el puerto (Piper hablando, música, el pitido del temporizador):
   // el clic se saltea y listo. Nunca corta lo que está sonando ni espera a que
   // termine — un clic que llega tarde es peor que un clic que no suena.
-  if (!hot_ && AudioManager::portBusy()) return false;
+  if (!hot_ && AudioManager::portBusy()) {
+    LOG_DBG("UISOUND", "sin sonido: el I2S lo está usando otro");
+    return false;
+  }
 
   if (wav_ == nullptr) {
     wav_ = static_cast<uint8_t*>(heap_caps_malloc(WAV_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

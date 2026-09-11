@@ -22,6 +22,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "components/Selection.h"
+#include "activities/ListStyle.h"
 
 namespace {
 constexpr int ROW_H = 52;
@@ -128,30 +129,34 @@ void GamesActivity::render(RenderLock&&) {
   const int rowW = pageWidth - 2 * SIDE;
   const int textX = SIDE + TEXT_PAD;
   const int textW = rowW - 2 * TEXT_PAD;
+  // El marco del resalte tiene que cubrir LOS DOS renglones. Iba con un alto
+  // fijo (ROW_H - 8) calculado a ojo, y el renglón de abajo quedaba cortado por
+  // el borde: en "Cálculo mental" se veía la mitad de "Cuentas contra reloj".
+  // Se mide cada fuente y el marco sale de ahí.
+  const int titleH = renderer.getLineHeight(UI_12_FONT_ID);
+  const int hintH = renderer.getLineHeight(SMALL_FONT_ID);
+  const int boxH = titleH + hintH + 10;  // 5 px de aire arriba y abajo
   for (int row = 0; row < rows && scroll + row < GAME_COUNT; ++row) {
     const int i = scroll + row;
     const int y = top + row * ROW_H;
     const bool sel = i == selected;
-    if (sel) drawSelectionRow(renderer, SIDE, y, rowW, ROW_H - 8, 10);
+    if (sel) drawSelectionRow(renderer, SIDE, y, rowW, boxH, 10);
     const char* name = I18N.get(GAMES[i].name);
     const char* hint = I18N.get(GAMES[i].hint);
-    renderer.drawText(UI_12_FONT_ID, textX, y + 6,
+    renderer.drawText(UI_12_FONT_ID, textX, y + 5,
                       renderer.truncatedText(UI_12_FONT_ID, name, textW, EpdFontFamily::BOLD).c_str(), SELECTION_INK,
                       EpdFontFamily::BOLD);
-    renderer.drawText(SMALL_FONT_ID, textX, y + 28,
+    renderer.drawText(SMALL_FONT_ID, textX, y + 5 + titleH,
                       renderer.truncatedText(SMALL_FONT_ID, hint, textW).c_str(), SELECTION_INK);
   }
 
-  // Solo cuando hay más juegos de los que entran: dice cuál de cuántos es.
-  // La frase entera ("Página 3 de 11") y no "3/11": la barra sola no se
-  // entiende, y el buffer va holgado porque en ruso y en alemán la misma frase
-  // ocupa el doble de bytes.
-  if (GAME_COUNT > rows) {
-    char pager[64];
-    snprintf(pager, sizeof(pager), tr(STR_PAGE_FORMAT), selected + 1, GAME_COUNT);
-    const int w = renderer.getTextWidth(SMALL_FONT_ID, pager);
-    renderer.drawText(SMALL_FONT_ID, pageWidth - SIDE - w, metrics.topPadding + metrics.headerHeight - 6, pager);
-  }
+  // El paginador compartido, que cuenta PÁGINAS. Acá había una cuenta propia que
+  // ponía "Página <el que está elegido> de <cuántos juegos hay>": con el cursor
+  // en el segundo de doce decía "Página 2 de 12", que no es una página ni de
+  // casualidad. Y con todo en una sola pantalla no va ninguno (pager no dibuja
+  // nada si hay una página).
+  listui::pager(renderer, SIDE, metrics.topPadding + metrics.headerHeight - 6, rowW, selected / rows + 1,
+                (GAME_COUNT + rows - 1) / rows);
 
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

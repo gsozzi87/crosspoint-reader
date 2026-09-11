@@ -211,12 +211,12 @@ bool Mp3Source::decodeFrame() {
         }
         if (peak > levelPeak_) levelPeak_ = peak;
         if (++levelFrames_ >= 8) {
-          // >> 11, no >> 12: una muestra de 16 bits llega hasta 32767 y con 12
-          // el maximo posible daba 7 sobre 15, o sea que la barra NUNCA podia
-          // pasar de media altura por mucho que sonara. Con 11 el fondo de
-          // escala es el fondo de escala.
-          const uint16_t scaled = static_cast<uint16_t>(levelPeak_ >> 11);
-          levels_[levelPos_] = static_cast<uint8_t>(scaled > 15 ? 15 : scaled);
+          // Se guarda el PICO CRUDO reducido a un byte (0..127), no una altura
+          // de barra. La escala la decide quien dibuja, porque tiene que ser
+          // logaritmica: con escala lineal la musica normal —que anda por los
+          // -18 dBFS— daba 1 o 2 sobre 15 y las barras quedaban pegadas al
+          // piso, que es exactamente lo que se veia en la pantalla.
+          levels_[levelPos_] = static_cast<uint8_t>(levelPeak_ >> 8);
           levelPos_ = (levelPos_ + 1) % LEVELS;
           levelPeak_ = 0;
           levelFrames_ = 0;
