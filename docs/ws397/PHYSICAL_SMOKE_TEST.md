@@ -145,3 +145,40 @@ Convención de botones: **ARRIBA/ABAJO** = palanca, **OK** = confirmar, **ATRÁS
    mensaje del intérprete (archivo y línea), y Atrás vuelve al catálogo. **El aparato no se reinicia.**
 7. Una app colgada: crear `/Apps/colgada.lua` con `function on_open() while true do end end`. Después de un rato
    corto tiene que aparecer el error "la app tardó demasiado", no un aparato trabado.
+
+## 11. Energía medida y OK mantenido (1.5.49)
+
+**El OK mantenido.** Veníamos dando por sentado que no llegaba nunca. Esto lo contesta en cinco segundos.
+
+1. Ajustes → Sistema → **Memoria**, sección "OK mantenido". Dice "Mantén OK aquí para probarlo".
+2. Mantener OK apretado un par de segundos y soltar. La pantalla tiene que repintarse y decir **cuánto duró** y
+   si **llegó el evento**. Anotar las dos cosas.
+3. Si dice "el evento no llegó" pero el tiempo es correcto (por ejemplo 2000 ms), entonces el botón se lee bien y
+   el problema está en `wasLongPressed`: **avisar con ese número**, que es el dato que faltaba.
+4. Si llegó: Ajustes → Controles → menú de pulsación larga → **Marcador**. Abrir un EPUB y mantener OK: tiene que
+   poner un marcador. Esa función estaba muerta desde siempre en esta placa.
+
+**La batería, medida de verdad.** El AXP2101 no tiene medidor de corriente, así que no hay miliamperios: lo que
+hay es la pendiente real del porcentaje contra el reloj.
+
+5. Ajustes → Sistema → Memoria, sección **Batería**. Al principio dice "Midiendo: deja pasar unas horas" — es lo
+   correcto, no es un error.
+6. **Dejarlo trabajar solo.** Con el RTC en hora, el aparato anota una línea cada diez minutos y otra cada vez que
+   se duerme. Después de una noche entera la sección tiene que decir algo como "0,4 %/h · quedan 200 h (8,3 días)"
+   y sobre qué ventana lo midió.
+7. **Que no mienta**: enchufar el cable un rato y desenchufar. La ventana tiene que reiniciarse después de la
+   carga (lo va a decir el "medido en N h", que baja). Si después de cargar dice "quedan 400 días", está mal y hay
+   que avisar.
+8. **La comparación que importa**: medirlo un día en Normal y otro día en Siempre encendido, y comparar los dos
+   "%/h". Eso decide si el modo siempre encendido es usable o no.
+
+**El modo de energía.**
+
+9. Ajustes → Sistema → **Modo de energía**: Ahorro / Normal / Siempre encendido. El número suelto de "tiempo hasta
+   dormir" ya no está en esta placa.
+10. En **Siempre encendido**, dejarlo una hora quieto: **no se duerme** (la pantalla sigue mostrando lo mismo y
+    vuelve al instante), pero en Memoria los ciclos de reposo tienen que ir subiendo. Si no suben, está despierto
+    a pleno y eso se come la batería: avisar.
+11. La red de seguridad: en Siempre encendido, si algo bloquea el reposo media hora seguida, el aparato se duerme
+    igual y lo dice en el log (`siempre encendido: el reposo lleva … bloqueado`). Es difícil de forzar a mano; si
+    aparece esa línea en `/board/log`, copiarla.
