@@ -458,6 +458,58 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   editada en `lib/Lua/src/luaconf.h` y no con un `-D`: ese archivo define `LUA_32BITS` sin protección, un `-D`
   quedaría pisado, y además lo incluyen tanto el intérprete como nuestro código.
 
+## Revisión externa de 1.5.52 (1.5.53)
+
+Diecisiete hallazgos sobre el commit `2c6b069`, verificados uno por uno contra el árbol (dieciséis seguían
+vigentes; uno ya estaba arreglado). Lo que salió de ahí:
+
+- **F02** — `postOrQueue` no encolaba los 5xx y `flushQueue` los DESCARTABA: un 502 de Railway mientras
+  sincronizás y la nota, la actividad del calendario o el ítem del viaje se perdían en silencio. Ahora lo
+  temporal (sin red, transporte, 429, 5xx) se conserva y solo el 4xx definitivo se tira.
+- **F03** — la sincronización bajaba primero y vaciaba la cola después, así que la instantánea que quedaba
+  guardada era la de ANTES de aplicar lo pendiente: la tarea tildada sin WiFi reaparecía sin tildar. Se invirtió.
+- **F16** — `SDCardManager::writeFile` borraba el archivo viejo antes de tener el nuevo. Ahora escribe a `.tmp`,
+  verifica el largo y recién ahí reemplaza; `readFile` rescata del `.tmp` si el destino no está.
+- **F08** — `armReminderWake` podía armar el deep sleep para el recordatorio SIGUIENTE y saltearse el vencido.
+  `nextWakeInstant()` es ahora el único criterio y lo vencido siempre gana.
+- **F05** / **F09** — Noticias respeta el `cache:false` del servidor y rescata los artículos cortos; Notas guarda
+  por `postOrQueue`.
+- **F10** — `POST /api/pair/start` le daba el código a CUALQUIERA que supiera el deviceId. Ahora un aparato ya
+  vinculado exige su token (403 `device_owned`) y el código del período de espera solo vuelve al mismo token.
+- **F07** — las alarmas estaban mudas en casi toda la máquina: `checkTimeAlarms()` usaba la lista blanca de
+  "pantallas tranquilas", que existe para no robarle los controles a cada app. El temporizador vencido en un
+  juego, en una app de Lua, en Noticias, Fotos, la Biblia o el Traductor no sonaba nunca. Ahora se pregunta al
+  revés: suena en todos lados menos donde molestaría (ocupada = `preventAutoSleep()`, más Timer/ReminderAlert,
+  que SON la alarma, y el lector, que está excluido a propósito desde siempre).
+- **F06** — confirmar un recordatorio que repite, sin WiFi, lo borraba de la caché y con él se iba la alarma.
+  `HubStore::completeReminder()` le corre la fecha a la próxima ocurrencia (y sigue corriendo hasta pasar la hora
+  actual, así un diario confirmado cuatro días tarde no suena cuatro veces). Es una aproximación a propósito: el
+  servidor manda la versión buena en la próxima sincronización.
+- **F04** — pausar era bajar el volumen a 0. El MP3 se seguía decodificando y el I2S escribiendo a velocidad de
+  hardware, o sea que la pausa gastaba lo mismo que sonar y la pista se terminaba sola "en pausa".
+  `AudioManager::setPaused()` frena la tarea, baja el amplificador y apaga el canal TX (parche 0018 del SDK).
+- **F11** — el aparato no tenía noción de cuenta. Desde `/board` se lo puede mudar a otra SIN que le cambie el
+  token, y los ids del store se numeran desde 1 EN CADA CUENTA: la cola offline de la cuenta vieja tildaba o
+  borraba lo que le tocara el mismo número en la nueva. `HubStore::account` guarda de quién es lo que hay;
+  `HubSyncActivity` lo consulta ANTES de vaciar la cola y `DevicePairActivity` al vincular.
+- **F17** — el paquete de contenido daba por bueno cualquier cuerpo de 200 y guardaba el sha ANUNCIADO. Ahora se
+  compara el tamaño y se recalcula el sha256 corto antes de tocar la tarjeta.
+- **F01** — tildar un recordatorio que repite no era idempotente: un reintento que llega porque se perdió la
+  RESPUESTA avanzaba un ciclo de más. El POST lleva `at` (el `dueAt` de la ocurrencia) y el servidor no avanza si
+  ya no coincide.
+- **F12** / **F13** — `store.ts` y `attachments.ts` eran los dos documentos que seguían con leer-modificar-escribir
+  sin candado. `store.mutate()` y `mutateDoc` lo hacen todo adentro del candado; las llamadas al modelo quedan
+  afuera a propósito.
+- **F14** — el tope mensual medía cuatro rutas y tres más llamaban al modelo por afuera (`/api/bible/ask`,
+  `/api/calendar/dictate`, `/api/suggest`). `METERED` es ahora una tabla con `llm` y `audio` por ruta.
+
+**Queda sin hacer, a propósito: F15** (`setInsecure()`). El aparato cifra pero NO autentica al servidor: no
+verifica el certificado ni el nombre del host, así que un intermediario puede hacerse pasar por el servidor,
+quedarse con el token o cambiar la descarga OTA. Arreglarlo no es sacar el `setInsecure`: hay que embeber las
+raíces, chequear el nombre del host en `SecureClient` (hoy no se llama a `wolfSSL_check_domain_name` en ningún
+lado) y, sobre todo, **poner el reloj en hora ANTES del primer TLS** — hoy nadie llama a `settimeofday` y un
+certificado se valida contra la fecha. Sin eso el arreglo deja al aparato sin red. Es una ola aparte.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
@@ -490,7 +542,8 @@ FreeRTOS separadas de la UI; el aparato nunca guarda claves de Anthropic.
 ## Convenciones
 
 - Commits: prefijo `ws397:`. Cambios al SDK en el submódulo, con su propio commit.
-- Los commits ws397 del SDK (perfil, waveform, battery, rtc, wake, halfrefresh) están exportados como `.patch` en
+- Los commits ws397 del SDK (perfil, waveform, battery, rtc, wake, halfrefresh, dueño del puerto I2S, escritura
+  segura en la SD, pausa de verdad del audio) están exportados como `.patch` en
   `docs/ws397/` (`git format-patch`); si al submódulo le falta alguno, `git am docs/ws397/NNNN-*.patch` dentro de
   `freeink-sdk/`. Regenerarlos cuando se agregue un commit al SDK.
 - No tocar la lógica upstream fuera de lo necesario para la placa; preferir `case Board::WS397` sobre `#if`.
