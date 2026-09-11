@@ -1,0 +1,109 @@
+From 48eb7e39247d6bd4f7c521968c54efccf1fb5f6d Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 11 Sep 2026 16:22:12 +0000
+Subject: [PATCH] ws397: the amplifier must not stay enabled when a track ends
+ on its own
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The class-D enable (PA_CTRL, GPIO39 on the Waveshare ePaper-3.97) was only
+ever dropped by stop() and powerDown(). A clip that played to completion
+left taskLoop() through its own exit path, which flushed silence, disabled
+the I2S channel and deleted the task — without touching the amp.
+
+So the codec was left with no MCLK/BCLK and an undefined analog output,
+into an amplifier that was still enabled and faithfully amplifying it. That
+is a permanent hiss, not a pop, and it lasted until something happened to
+call stop() or powerDown(). Every consumer that lets a clip finish by itself
+hit it.
+
+Two fixes:
+
+  - taskLoop() now drops the amp on its way out, BEFORE disabling the
+    channel. The order is the point: silence has just been flushed through
+    the DMA, so cutting the enable there lands in a quiet moment, whereas
+    cutting it after i2s_channel_disable() would leave a window of clockless
+    codec into a live amp. Unconditional — when a capture keeps TX enabled
+    for its BCLK, the speaker still has no business being live.
+
+  - AudioManager::silenceAmp(), a static that puts the enable in a known OFF
+    state without bringing the audio stack up. begin() is lazy (it runs on
+    the first sound), so from the reset until that first clip the pin was an
+    unconfigured input, and what a floating class-D enable does is up to
+    board leakage. Consumers call it once from setup().
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../AudioManager/include/AudioManager.h       |  7 +++++++
+ .../AudioManager/src/AudioManager.cpp         | 21 +++++++++++++++++++
+ 2 files changed, 28 insertions(+)
+
+diff --git a/libs/hardware/AudioManager/include/AudioManager.h b/libs/hardware/AudioManager/include/AudioManager.h
+index 975d66a..31d2b1c 100644
+--- a/libs/hardware/AudioManager/include/AudioManager.h
++++ b/libs/hardware/AudioManager/include/AudioManager.h
+@@ -64,6 +64,13 @@ class AudioManager {
+   // Codec power-down (CHIPPOWER off). begin() restores it.
+   void powerDown();
+ 
++  // Put the amplifier enable in a known OFF state WITHOUT bringing the audio
++  // stack up. begin() is lazy — it runs on the first sound — so between the
++  // reset and that first clip the enable pin is an unconfigured input, and what
++  // a floating class-D enable does is up to board leakage, not to us. Consumers
++  // call this once from setup(). No-op on boards with no ampEnable.
++  static void silenceAmp();
++
+   // Full release: stop playback and capture, power the codec down and delete
+   // the I2S channels, so a later begin()/play() (or another instance) can
+   // re-create the port. powerDown() alone keeps the channels allocated.
+diff --git a/libs/hardware/AudioManager/src/AudioManager.cpp b/libs/hardware/AudioManager/src/AudioManager.cpp
+index 478b72a..7eac3ff 100644
+--- a/libs/hardware/AudioManager/src/AudioManager.cpp
++++ b/libs/hardware/AudioManager/src/AudioManager.cpp
+@@ -269,6 +269,13 @@ void AudioManager::setMicGain(uint8_t percent) {
+   applyMicGain();
+ }
+ 
++void AudioManager::silenceAmp() {
++  const auto& cfg = BoardConfig::ACTIVE.audio;
++  if (cfg.ampEnable == BoardConfig::PIN_UNASSIGNED) return;
++  pinMode(cfg.ampEnable, OUTPUT);
++  digitalWrite(cfg.ampEnable, LOW);
++}
++
+ void AudioManager::powerDown() {
+   const auto& cfg = BoardConfig::ACTIVE.audio;
+   if (!begun_) return;
+@@ -616,6 +623,19 @@ void AudioManager::taskLoop() {
+     size_t written = 0;
+     if (i2s_channel_write(tx, outBuf, sizeof(outBuf), &written, pdMS_TO_TICKS(200)) != ESP_OK) break;
+   }
++  // Drop the amplifier here, not only in stop(), and BEFORE the channel goes
++  // down. A track that ended on its own used to leave the class-D enable HIGH
++  // while the I2S channel was disabled right under it, so the codec sat with no
++  // MCLK/BCLK and an undefined analog output and the amp faithfully amplified
++  // that — a permanent hiss lasting until something called stop() or
++  // powerDown(). The order matters: silence has just been flushed through the
++  // DMA, so cutting the enable now lands in a quiet moment; cutting it after
++  // i2s_channel_disable() would leave a window of clockless codec into a live
++  // amp, which is the burst of noise this is meant to avoid. Unconditional:
++  // when a capture keeps TX enabled for its BCLK, the speaker still has no
++  // business being live.
++  setAmp(false);
++
+   if (!capturing_) {
+     i2s_channel_disable(tx);
+     chanEnabled_ = false;
+@@ -638,6 +658,7 @@ bool AudioManager::play(const WavSource&, bool) { return false; }
+ bool AudioManager::playBuffer(const uint8_t*, size_t, bool) { return false; }
+ void AudioManager::stop() {}
+ void AudioManager::powerDown() {}
++void AudioManager::silenceAmp() {}
+ void AudioManager::end() {}
+ bool AudioManager::captureAvailable() const { return false; }
+ bool AudioManager::beginCapture(uint32_t) { return false; }
+-- 
+2.43.0
+
