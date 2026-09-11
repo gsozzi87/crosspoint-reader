@@ -45,7 +45,8 @@ class HubActivity final : public Activity {
     TILE_BIBLE,
     TILE_MUSIC,
     TILE_NEWS,
-    TILE_GAMES,
+    TILE_GAMES,   // ahora: apps en Lua
+    TILE_CARDS,   // tarjetas (figura + palabra en dos idiomas)
     TILE_WEATHER,
     TILE_SETTINGS,
     TILE_COUNT

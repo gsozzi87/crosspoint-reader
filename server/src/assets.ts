@@ -314,19 +314,33 @@ export async function renderCard(card: Card): Promise<Uint8Array> {
     const v = Math.max(0, Math.min(ART_HI, ((lum[i] - lo) / (hi - lo)) * ART_HI));
     gray[i] = 255 - alpha[i] * (255 - v);              // sobre blanco
   }
+  // SOLO BORDES, en blanco y negro puro.
+  //
+  // La tarjeta se dibujaba con los cuatro grises del panel, y eso en el aparato
+  // cuesta TRES pasadas de refresco (base en blanco y negro, pasada LSB, pasada
+  // MSB) más el render por franjas: pasar una tarjeta tardaba una eternidad.
+  // Con el dibujo a puro trazo alcanza UNA pasada, que es la diferencia entre
+  // esperar y no esperar.
+  //
+  // El trazo sale de los saltos de tono: donde dos píxeles vecinos se
+  // diferencian más que EDGE hay un borde. Eso agarra la silueta contra el
+  // fondo blanco y también el detalle de adentro (las manchas del ala de la
+  // mariposa), que es lo que un relleno plano se comería.
+  const EDGE = 28;
   const idx = new Uint8Array(n);
+  idx.fill(3);  // 3 = blanco
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const p = y * w + x;
-      const old = gray[p];
-      const q = Math.max(0, Math.min(3, Math.round(old / 85)));
-      idx[p] = q;
-      const err = old - LEVELS[q];
-      if (x + 1 < w) gray[p + 1] += (err * 7) / 16;
-      if (y + 1 < h) {
-        if (x > 0) gray[p + w - 1] += (err * 3) / 16;
-        gray[p + w] += (err * 5) / 16;
-        if (x + 1 < w) gray[p + w + 1] += (err * 1) / 16;
+      const g = gray[p];
+      const right = x + 1 < w && Math.abs(g - gray[p + 1]) > EDGE;
+      const down = y + 1 < h && Math.abs(g - gray[p + w]) > EDGE;
+      // Dos píxeles de grosor: uno solo, en tinta y a este tamaño, queda tan
+      // fino que el dibujo se lee desvaído.
+      if (right || down) {
+        idx[p] = 0;  // 0 = negro
+        if (right) idx[p + 1] = 0;
+        if (down) idx[p + w] = 0;
       }
     }
   }

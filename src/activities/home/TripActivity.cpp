@@ -267,6 +267,24 @@ bool TripActivity::fetchTrip(const std::string& id) {
   const std::string path = "/api/trip?id=" + id + "&lang=" + std::string(uiLanguageCode());
   const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
   if (r != ServerClient::Result::Ok) {
+    // 404 = el viaje se borró desde la web. Eso no es un error que haya que
+    // mostrarle a nadie: es la caché del aparato que quedó vieja. Se tira lo
+    // guardado y se vuelve a la lista, que es lo que el usuario espera ver.
+    if (resp.status == 404) {
+      LOG_INF(TAG, "el viaje %s ya no está en el servidor: se saca de la caché", id.c_str());
+      days.clear();
+      packing.clear();
+      attText.clear();
+      suggestLines.clear();
+      suggestPacking.clear();
+      suggestAt = 0;
+      suggestTripId.clear();
+      if (tripId == id) tripId.clear();
+      trips.erase(std::remove_if(trips.begin(), trips.end(), [&id](const TripRef& t) { return t.id == id; }),
+                  trips.end());
+      saveCache();
+      return fetchTrips();  // la lista fresca, sin el que ya no está
+    }
     failureDetail = std::string(ServerClient::resultName(r)) + " " + std::to_string(resp.status);
     LOG_ERR(TAG, "GET /api/trip: %s", failureDetail.c_str());
     return false;

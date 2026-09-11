@@ -25,7 +25,8 @@
 #include "BibleActivity.h"
 #include "MusicActivity.h"
 #include "NewsActivity.h"
-#include "activities/games/GamesActivity.h"
+#include "activities/games/CardsActivity.h"
+#include "activities/games/LuaAppsActivity.h"
 #include "WeatherActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
@@ -82,10 +83,11 @@ const TileSpec TILES[] = {
     {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
     {StrId::STR_HUB_NOTES, &icon_hub_notes_48},       {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
     {StrId::STR_HUB_MUSIC, &icon_hub_music_48},       {StrId::STR_HUB_NEWS, &icon_hub_news_48},
-    {StrId::STR_HUB_GAMES, &icon_hub_games_48},       {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
+    {StrId::STR_HUB_GAMES, &icon_hub_games_48},       {StrId::STR_GAME_CARDS, &icon_hub_photos_48},
+    {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
     {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
 };
-static_assert(sizeof(TILES) / sizeof(TILES[0]) == 13, "TILES tiene que seguir a Tile");
+static_assert(sizeof(TILES) / sizeof(TILES[0]) == 14, "TILES tiene que seguir a Tile");
 
 // "4:12" para el renglón de lo que suena.
 std::string minutesSeconds(const int seconds) {
@@ -174,7 +176,16 @@ void HubActivity::activate(const int tile) {
       activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
       break;
     case TILE_GAMES:
-      activityManager.replaceActivity(std::make_unique<GamesActivity>(renderer, mappedInput));
+      // El mosaico abre DIRECTO las apps en Lua. Los doce juegos compilados se
+      // sacaron: "los juegos que tenemos no sirven, vaciá ese menú, vamos a
+      // dejar ese espacio para que abra todo lo lua". Ya no hay un menú de
+      // juegos con "Apps de la tarjeta" adentro: es Lua y nada más.
+      activityManager.replaceActivity(std::make_unique<LuaAppsActivity>(renderer, mappedInput));
+      break;
+    case TILE_CARDS:
+      // Las tarjetas vivían adentro del menú de juegos, que se vació. Son lo
+      // único de ahí que se usa, así que pasan a tener mosaico propio.
+      activityManager.replaceActivity(std::make_unique<CardsActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
       activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));

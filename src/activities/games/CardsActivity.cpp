@@ -457,10 +457,13 @@ void CardsActivity::render(RenderLock&&) {
     partialCount = PARTIALS_BEFORE_CLEAN;
     forceClean = false;
   }
-  // Los cuatro grises del dibujo salen de la misma pasada que usa el lector. Se
-  // vuelve a dibujar SOLO la figura (el encabezado y los botones se quedan con
-  // la base en blanco y negro, como la barra de estado del lector).
-  const int cardTop = top;
-  const int cardBottom = bottom;
-  GrayText::displayPage(renderer, partialCount, [this, cardTop, cardBottom] { drawCard(cardTop, cardBottom); });
+  // UNA sola pasada, no tres.
+  //
+  // Las tarjetas se dibujaban con los cuatro grises del panel: base en blanco y
+  // negro, pasada LSB, pasada MSB y el render por franjas de por medio. Pasar
+  // una tarjeta tardaba una eternidad. Ahora el dibujo viene a puro trazo desde
+  // el servidor (`renderCard` en assets.ts saca los bordes y nada más), así que
+  // no hay grises que mandar y alcanza con el refresco normal.
+  drawCard(top, bottom);
+  renderer.displayBuffer(GrayText::nextRefreshMode(partialCount));
 }
