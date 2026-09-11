@@ -81,13 +81,15 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 
 // ws397: PWR hold timings (see handlePowerHold below). The key is the AXP2101
 // PWRKEY decoded by PowerKey, not a GPIO.
-constexpr unsigned long POWER_HOLD_ACTION_MS = PowerKey::SHORT_PRESS_MAX_MS;  // 600 ms: aparece la barrita
-// Dormir y apagar son DOS cosas distintas y ahora se piden distinto:
-//   soltar entre 1,2 s y 3 s  -> dormir (deep sleep, las alarmas siguen vivas)
-//   seguir apretando hasta 3 s -> APAGAR (el PMIC corta los rieles)
-// Por eso dormir pasa al SOLTAR y no al cruzar el umbral: si durmiera a los
-// 1,2 s con el botón abajo, nunca se podría llegar a los 3.
-constexpr unsigned long POWER_HOLD_SLEEP_MS = 1200;   // soltando acá o después: a dormir
+// PWR hace UNA sola cosa y se explica en una línea: mantenerlo.
+//   antes de 1,2 s ....... no pasa nada (no hay menú, no hay toque corto)
+//   a los 1,2 s .......... aparece la barrita
+//   soltar con la barrita  SUSPENDE (deep sleep; las alarmas siguen vivas)
+//   llegar a los 3 s ..... APAGA (el PMIC corta los rieles)
+// Suspender pasa al SOLTAR y no al cruzar el umbral: si durmiera a los 1,2 s
+// con el botón abajo, nunca se podría llegar a los 3.
+constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // aparece la barrita
+constexpr unsigned long POWER_HOLD_SLEEP_MS = POWER_HOLD_ACTION_MS;  // soltar acá o después: suspende
 constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // segundo cartel: está por apagarse
 constexpr unsigned long POWER_HOLD_OFF_MS = 3000;     // apagar de verdad
 }  // namespace
@@ -775,6 +777,9 @@ static bool handlePowerHold(const bool gateOpen) {
     return bannerStage != 0;
   }
 
+  // El toque corto ya no hace nada (el menú de pantalla se sacó), pero el flag
+  // es un latch: se vacía acá para que no quede colgado esperando a alguien.
+  POWER_KEY.tookShortPress();
   if (bannerStage == 0) return false;
   const unsigned long lastHold = held;  // heldMs() guarda el largo del hold que terminó
   bannerStage = 0;
@@ -788,144 +793,10 @@ static bool handlePowerHold(const bool gateOpen) {
   return true;
 }
 
-// ws397: el toque corto de PWR abre el menú de PANTALLA.
-//
-// Hasta 1.5.48 ese toque limpiaba la pantalla y nada más. Limpiar es lo que uno
-// más necesita en tinta, pero no es lo único: bloquear (para meterlo en la
-// mochila sin que la palanca cambie de página sola) y dormir a propósito
-// también salen de acá, y así el botón que uno aprieta cuando algo no anda hace
-// las tres cosas en vez de una. El menú se dibuja ENCIMA de lo que haya, igual
-// que el banner del hold, y sin pasar por una Activity: así funciona también
-// dentro del lector, que es justamente donde se acumula el fantasma.
-enum class ScreenMenuItem : uint8_t { Clean, Lock, Sleep, COUNT };
-constexpr unsigned long SCREEN_MENU_TIMEOUT_MS = 10000;  // solo: se cierra y no molesta
-
-static bool screenMenuOpen = false;
-static uint8_t screenMenuIndex = 0;
-static unsigned long screenMenuTouchedAt = 0;
-// El bloqueo vive fuera del menú: sobrevive a cambiar de pantalla y se sale
-// únicamente con PWR.
-static bool screenLocked = false;
-
-static void drawScreenMenu() {
-  RenderLock lock;
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
-  const int rowH = 56;
-  const int boxW = screenW - 72;
-  const int boxH = 40 + static_cast<int>(ScreenMenuItem::COUNT) * rowH + 24;
-  const int x = (screenW - boxW) / 2;
-  const int y = screenH / 2 - boxH / 2;
-
-  renderer.fillRoundedRect(x, y, boxW, boxH, 16, Color::White);
-  renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
-  renderer.drawCenteredText(UI_12_FONT_ID, y + 16, I18N.get(StrId::STR_SCREEN_MENU_TITLE), true, EpdFontFamily::BOLD);
-
-  static const StrId LABELS[] = {StrId::STR_SCREEN_CLEAN, StrId::STR_SCREEN_LOCK, StrId::STR_SCREEN_SLEEP};
-  const int rowX = x + 12;
-  const int rowW = boxW - 24;
-  int rowY = y + 48;
-  for (uint8_t i = 0; i < static_cast<uint8_t>(ScreenMenuItem::COUNT); ++i) {
-    // El resalte del sistema visual: pestaña + marco + franjas SOLO en los
-    // márgenes, el centro en blanco. Nunca letras sobre trama.
-    if (i == screenMenuIndex) drawSelectionRow(renderer, rowX, rowY, rowW, rowH, 0);
-    const char* text = I18N.get(LABELS[i]);
-    const int textY = rowY + (rowH - renderer.getTextHeight(UI_12_FONT_ID)) / 2;
-    renderer.drawText(UI_12_FONT_ID, rowX + 24, textY, text, true,
-                      i == screenMenuIndex ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
-    rowY += rowH;
-  }
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-}
-
-static void drawLockBanner() {
-  RenderLock lock;
-  const int screenW = renderer.getScreenWidth();
-  const int screenH = renderer.getScreenHeight();
-  const int boxW = screenW - 72;
-  const int boxH = 110;
-  const int x = (screenW - boxW) / 2;
-  const int y = screenH / 2 - boxH / 2;
-  renderer.fillRoundedRect(x, y, boxW, boxH, 16, Color::White);
-  renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
-  renderer.drawCenteredText(UI_12_FONT_ID, y + 28, I18N.get(StrId::STR_SCREEN_LOCKED), true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(UI_10_FONT_ID, y + 64, I18N.get(StrId::STR_SCREEN_UNLOCK_HINT), true);
-  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
-}
-
-// Bloqueada: no llega NADA a la pantalla de abajo salvo PWR. Devuelve true
-// mientras el bloqueo esté puesto, para que el llamador se vaya de la pasada.
-static bool handleScreenLock() {
-  if (!screenLocked) return false;
-  if (POWER_KEY.tookShortPress()) {
-    screenLocked = false;
-    LOG_INF("MAIN", "pantalla desbloqueada");
-    activityManager.requestUpdate();  // repinta lo que estaba debajo del cartel
-    return false;
-  }
-  // Los gestos del IMU se siguen leyendo (el reposo los necesita para saber si
-  // lo levantaron), pero acá se descartan: si no, al desbloquear se dispararía
-  // de golpe el sacudón de hace media hora dentro de la mochila.
-  MOTION.takeAny();
-  return true;
-}
-
-// Devuelve true cuando se queda con la pasada del loop (el menú está en
-// pantalla), para que la Activity de abajo no repinte encima.
-static bool handleScreenMenu() {
-  if (!screenMenuOpen) {
-    if (!POWER_KEY.tookShortPress()) return false;
-    screenMenuOpen = true;
-    screenMenuIndex = 0;
-    screenMenuTouchedAt = millis();
-    LOG_INF("MAIN", "PWR: menú de pantalla");
-    drawScreenMenu();
-    return true;
-  }
-
-  // Otro toque de PWR, Atrás, o diez segundos solo: se cierra sin hacer nada.
-  if (POWER_KEY.tookShortPress() || mappedInputManager.wasPressed(MappedInputManager::Button::Back) ||
-      millis() - screenMenuTouchedAt > SCREEN_MENU_TIMEOUT_MS) {
-    screenMenuOpen = false;
-    activityManager.requestUpdate();
-    return true;
-  }
-
-  const bool up = mappedInputManager.wasPressed(MappedInputManager::Button::Up);
-  const bool down = mappedInputManager.wasPressed(MappedInputManager::Button::Down);
-  if (up || down) {
-    constexpr uint8_t count = static_cast<uint8_t>(ScreenMenuItem::COUNT);
-    screenMenuIndex = static_cast<uint8_t>((screenMenuIndex + (down ? 1 : count - 1)) % count);
-    screenMenuTouchedAt = millis();
-    drawScreenMenu();
-    return true;
-  }
-
-  if (mappedInputManager.wasPressed(MappedInputManager::Button::Confirm)) {
-    screenMenuOpen = false;
-    switch (static_cast<ScreenMenuItem>(screenMenuIndex)) {
-      case ScreenMenuItem::Clean:
-        // El próximo pintado sale FULL (0xF7), que es lo que borra el fantasma.
-        LOG_INF("MAIN", "menú de pantalla: limpiar");
-        renderer.promoteNextRefresh(HalDisplay::FULL_REFRESH);
-        activityManager.requestUpdate();
-        break;
-      case ScreenMenuItem::Lock:
-        LOG_INF("MAIN", "menú de pantalla: bloquear");
-        screenLocked = true;
-        drawLockBanner();
-        break;
-      case ScreenMenuItem::Sleep:
-        LOG_INF("MAIN", "menú de pantalla: dormir");
-        enterDeepSleep();
-        break;
-      case ScreenMenuItem::COUNT:
-        break;
-    }
-    return true;
-  }
-  return true;
-}
+// El MENÚ DE PANTALLA se sacó: PWR hace una sola cosa, mantenerlo. Con él se
+// fueron "limpiar" y "bloquear", que eran sus otras dos entradas — limpiar ya lo
+// hace solo el coordinador de refresco (un completo cada 12 parciales) y el
+// bloqueo se quedó sin puerta; si hace falta, entra en Ajustes → Sistema.
 
 void setupDisplayAndFonts(bool seamless = false) {
 #if !FREEINK_MCU_C3
@@ -1367,7 +1238,7 @@ void loop() {
   // Con la pantalla bloqueada los botones NO cuentan como actividad: el aparato
   // en la mochila tiene que poder reposar aunque la palanca se apriete sola.
   // PWR sí cuenta siempre: es el que desbloquea.
-  const bool userInput = !screenLocked && (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() ||
+  const bool userInput = (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() ||
                                            halTiltSensor.hadActivity());
   if (userInput || activityManager.preventAutoSleep() || MUSIC.isActive() || POWER_KEY.pressed()) {
     lastActivityTime = millis();         // Reset inactivity timer
@@ -1393,13 +1264,6 @@ void loop() {
     }
     if (checkTimeAlarms()) {
       lastActivityTime = millis();
-      // Un recordatorio no puede quedar mudo porque la pantalla esté bloqueada:
-      // la alarma desbloquea, como en cualquier teléfono.
-      if (screenLocked) {
-        screenLocked = false;
-        LOG_INF("MAIN", "alarma: se desbloquea la pantalla");
-      }
-      screenMenuOpen = false;
     }
   }
 
@@ -1492,7 +1356,7 @@ void loop() {
     }
     const bool restBlocked = activityManager.preventAutoSleep() || activityManager.skipLoopDelay() ||
                              MUSIC.isActive() || busyRecording() || POWER_KEY.pressed() || cablePuesto ||
-                             WiFi.getMode() != WIFI_MODE_NULL || screenMenuOpen;
+                             WiFi.getMode() != WIFI_MODE_NULL;
     // Red de seguridad del modo "siempre encendido" (sleepTimeoutMs == 0): ahí
     // nadie va a mandar el aparato a dormir, así que si algo bloquea el reposo
     // de forma permanente —la red que quedó arriba, el menú abierto— la batería
@@ -1542,18 +1406,9 @@ void loop() {
   const bool powerGateOpen = powerReleasedSinceWake && millis() >= allowSleepAt;
 
   if (usePowerHoldTiers()) {
-    // ws397: PWR corto = menú de pantalla, PWR mantenido = barrita y a dormir.
+    // ws397: PWR mantenido = barrita; soltar suspende, llegar a los 3 s apaga.
     if (handlePowerHold(powerGateOpen)) {
       delay(10);  // banner on screen: no need to spin
-      return;
-    }
-    // Bloqueada, PWR es lo único que llega: ni la palanca ni OK ni los gestos.
-    if (handleScreenLock()) {
-      delay(10);
-      return;
-    }
-    if (handleScreenMenu()) {
-      delay(10);
       return;
     }
   } else if (powerGateOpen && gpio.isPressed(HalGPIO::BTN_POWER) &&

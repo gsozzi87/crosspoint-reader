@@ -454,7 +454,7 @@ STR_AUDIO_GAIN_TARGET: "Цель: 50-70 % при разговоре с 15-20 с�
 STR_AUDIO_LEVEL_LOW: "Слишком тихо: увеличьте усиление"
 STR_AUDIO_LEVEL_OK: "Уровень в норме"
 STR_AUDIO_LEVEL_CLIP: "Перегрузка: уменьшите усиление"
-STR_PWR_HOLD_OFF: "Удерживайте 3 с для выключения"
+STR_PWR_HOLD_OFF: "Отпустите — сон · 3 с — выключение"
 STR_PWR_HOLD_SLEEPING: "Выключение..."
 STR_SERVER: "Сервер"
 STR_SERVER_URL: "Адрес сервера"

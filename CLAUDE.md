@@ -539,13 +539,19 @@ certificado se valida contra la fecha. Sin eso el arreglo deja al aparato sin re
   controles a nadie: ahora anda en cualquier pantalla que no esté ocupada. El **doble Atrás** sigue atado a la
   lista blanca a propósito: ahí Atrás es un botón que cada app usa para salir.
 
-## Dormir y apagar son dos cosas distintas (1.5.54)
+## PWR hace UNA sola cosa: mantenerlo (1.5.59)
 
-- PWR soltado entre **1,2 s y 3 s** = dormir (deep sleep; las alarmas siguen vivas y el RTC despierta).
-- PWR mantenido hasta los **3 s** = **apagar**: se pinta el fondo de pantalla, se desmonta la tarjeta y el AXP2101
-  corta los rieles (bit0 de 0x10, soft off). No hay alarmas ni reloj; se vuelve con PWR mantenido 1 s (PressOn).
-- Dormir pasó al SOLTAR a propósito: si durmiera al cruzar el umbral con el botón abajo, nunca se podría llegar a
-  los 3 s. El corte duro del PMIC sigue a los 10 s como escape de emergencia.
+- Antes de **1,2 s**: nada. **No hay toque corto y no hay menú de pantalla** — se sacó en 1.5.59
+  ("el menú al presionar PWR no lo quiero más, sólo la barrita que carga").
+- A los **1,2 s** aparece la barrita.
+- **Soltar con la barrita en pantalla = suspender** (deep sleep; las alarmas siguen vivas y el RTC despierta).
+- **Llegar a los 3 s = apagar**: se pinta el fondo de pantalla, se desmonta la tarjeta y el AXP2101 corta los
+  rieles (bit0 de 0x10, soft off). No hay alarmas ni reloj; se vuelve con PWR mantenido 1 s (PressOn).
+- Suspender pasa al SOLTAR a propósito: si durmiera al cruzar el umbral con el botón abajo, nunca se podría
+  llegar a los 3 s. El corte duro del PMIC sigue a los 10 s como escape de emergencia.
+- Con el menú se fueron sus otras dos entradas: **limpiar pantalla** (que igual lo hace solo el coordinador de
+  refresco, un completo cada 12 parciales) y **bloquear**, que quedó sin puerta. Si hace falta, van a
+  Ajustes → Sistema.
 
 ## Lo dictado se abre donde vive (1.5.55)
 
