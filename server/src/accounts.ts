@@ -81,6 +81,40 @@ const MISSING = Symbol("sin archivo");
  *
  * Idempotente: con la tabla `accounts` ya poblada no toca nada.
  */
+// Rescate desde Railway: con ADMIN_PASSWORD puesta, al arrancar se le pone esa
+// contraseña a la cuenta de administrador.
+//
+// Existe porque la contraseña provisoria de `seedFromFiles` se imprime UNA sola
+// vez en los logs del despliegue, y perderse esa línea deja la cuenta —y con
+// ella la web, la vinculación del aparato y el log— inalcanzable para siempre,
+// sin forma de recuperarla salvo borrando la base. Quien puede escribir las
+// variables de entorno ya es dueño del servidor, así que esto no agrega
+// permisos que no tuviera: sólo evita que un descuido sea irreversible.
+export async function applyAdminPasswordFromEnv(): Promise<void> {
+  if (!multiUser) return;
+  const wanted = (process.env.ADMIN_PASSWORD ?? "").trim();
+  if (!wanted) return;
+  if (wanted.length < MIN_PASSWORD) {
+    console.error(`db: ADMIN_PASSWORD tiene menos de ${MIN_PASSWORD} caracteres: no se aplica`);
+    return;
+  }
+  const email = ADMIN_EMAIL;
+  if (!email) {
+    console.error("db: ADMIN_PASSWORD está puesta pero falta ADMIN_EMAIL: no se sabe a qué cuenta aplicarla");
+    return;
+  }
+  const hash = await Bun.password.hash(wanted, "argon2id");
+  const rows = (await db()`UPDATE accounts SET pass_hash = ${hash} WHERE email = ${email} RETURNING id`) as any[];
+  if (!rows.length) {
+    console.error(`db: ADMIN_PASSWORD: no hay ninguna cuenta con el correo ${email}`);
+    return;
+  }
+  console.log("─".repeat(70));
+  console.log(`db: contraseña de ${email} cambiada por ADMIN_PASSWORD`);
+  console.log("db: SACÁ esa variable del entorno ahora que ya entraste");
+  console.log("─".repeat(70));
+}
+
 export async function seedFromFiles(): Promise<void> {
   if (!multiUser) return;
   const rows = (await db()`SELECT count(*)::int AS n FROM accounts`) as { n: number }[];

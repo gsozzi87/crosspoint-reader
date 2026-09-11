@@ -8,7 +8,7 @@ import { warmUp } from "./tts";
 import { warmAssets } from "./assets";
 import { normalizeLang } from "./lang";
 import { redactSecrets } from "./net";
-import { auth, seedFromFiles } from "./accounts";
+import { applyAdminPasswordFromEnv, auth, seedFromFiles } from "./accounts";
 import { initDb, multiUser } from "./db";
 
 const app = new Hono();
@@ -29,6 +29,9 @@ app.notFound((c) => c.json({ ok: false, error: "not found", code: "not_found" },
 // había en /data a la cuenta 1 (ver `seedFromFiles`).
 await initDb();
 await seedFromFiles().catch((err) => console.error("db: no se pudo migrar /data", err));
+// Después de la migración: si está ADMIN_PASSWORD, la cuenta de administrador
+// queda con esa contraseña. Es la salida cuando se perdió la provisoria.
+await applyAdminPasswordFromEnv().catch((err) => console.error("db: ADMIN_PASSWORD falló", err));
 
 app.get("/", (c) => c.text("ws397 server ok"));
 app.route("/auth", auth);   // registro, login, logout y quién soy (solo con base de datos)

@@ -78,14 +78,22 @@ void MotionInput::begin() {
   // fue el autochequeo (chip mal identificado), la carga de parámetros (el
   // diálogo CTRL9, que es lo que más se cuelga) o el encendido del motor.
   if (!imu.selfCheckPassed()) {
-    LOG_ERR(TAG, "golpes: el autochequeo del chip no pasó");
+    // La magnitud medida es el dato que distingue los casos: ~0,25 g es la
+    // escala equivocada, 0,00 es un chip que no contesta, y 1,0 sería que pasó.
+    static char detalle[48];
+    snprintf(detalle, sizeof(detalle), "autochequeo: %.2f g", imu.lastSelfCheckG());
+    tapFailure_ = detalle;
+    LOG_ERR(TAG, "golpes: el autochequeo del chip no pasó (%.2f g)", imu.lastSelfCheckG());
   } else if (!imu.configureTap(TAP_PRIORITY, TAP_PEAK_WINDOW, TAP_WINDOW, TAP_DTAP_WINDOW, TAP_ALPHA, TAP_GAMMA,
                                TAP_PEAK_MAG, TAP_UDM)) {
+    tapFailure_ = "parámetros (CTRL9)";
     LOG_ERR(TAG, "golpes: no se pudieron cargar los parámetros (diálogo CTRL9)");
   } else if (!imu.enableTap(true)) {
+    tapFailure_ = "encendido (CTRL8)";
     LOG_ERR(TAG, "golpes: el motor no se pudo encender (CTRL8)");
   } else {
     tapTrusted_ = true;
+    tapFailure_ = nullptr;
     LOG_INF(TAG, "golpes: el motor del chip contestó");
   }
   const auto& map = HUB_STORE.imuMap;
