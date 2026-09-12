@@ -1,5 +1,7 @@
 #include "ZipFile.h"
 
+#include <limits>
+
 #include <HalStorage.h>
 #include <InflateStream.h>
 #include <Logging.h>
@@ -383,7 +385,8 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 
   const auto deflatedDataSize = fileStat.compressedSize;
   const auto inflatedDataSize = fileStat.uncompressedSize;
-  const auto dataSize = trailingNullByte ? inflatedDataSize + 1 : inflatedDataSize;
+  if (trailingNullByte && inflatedDataSize >= std::numeric_limits<size_t>::max()) return nullptr;
+  const size_t dataSize = static_cast<size_t>(inflatedDataSize) + (trailingNullByte ? 1 : 0);
   const auto data = static_cast<uint8_t*>(malloc(dataSize));
   if (data == nullptr) {
     LOG_ERR("ZIP", "Failed to allocate memory for output buffer (%zu bytes)", dataSize);
@@ -447,6 +450,7 @@ uint8_t* ZipFile::readFileToMemory(const char* filename, size_t* size, const boo
 }
 
 bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t chunkSize, const bool allowEarlyStop) {
+  if (chunkSize == 0) return false;
   const ScopedOpenClose zip{*this};
   if (!zip) return false;
 
@@ -470,13 +474,14 @@ bool ZipFile::readFileToStream(const char* filename, Print& out, const size_t ch
 
     size_t remaining = inflatedDataSize;
     while (remaining > 0) {
-      const size_t dataRead = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
-      if (dataRead == 0) {
+      const int readResult = file.read(buffer, remaining < chunkSize ? remaining : chunkSize);
+      if (readResult <= 0) {
         LOG_ERR("ZIP", "Could not read more bytes");
         free(buffer);
         return false;
       }
 
+      const size_t dataRead = static_cast<size_t>(readResult);
       if (out.write(buffer, dataRead) != dataRead) {
         free(buffer);
         if (allowEarlyStop) return true;  // sink has what it needs

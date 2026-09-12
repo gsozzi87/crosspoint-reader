@@ -87,3 +87,47 @@ test("public registration cannot claim ADMIN_EMAIL privileges", async () => {
   const rows = await db()`SELECT is_admin FROM accounts WHERE email = 'operator@example.test'`;
   expect(rows[0].is_admin).toBe(false);
 });
+
+test("board form keeps text and permits retry after a failed save", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const source = await Bun.file(new URL("../public/board/app.js", import.meta.url)).text();
+  const start = source.indexOf('document.addEventListener("submit"');
+  const end = source.indexOf('document.addEventListener("change"', start);
+  let submit: any;
+  let calls = 0;
+  runInNewContext(source.slice(start, end), {
+    document: {addEventListener: (_: string, fn: any) => {submit = fn;}},
+    parts: () => [], toast: () => {},
+    change: (fn: any) => fn(),
+    api: async () => {calls++; throw new Error("offline");},
+  });
+  const form = {dataset: {form: "item-add", list: "Compras"}, text: {value: "keep my draft"}};
+  const event = {target: {closest: () => form}, preventDefault: () => {}};
+  await submit(event);
+  expect(form.text.value).toBe("keep my draft");
+  expect((form.dataset as any).saving).toBeUndefined();
+  await submit(event);
+  expect(calls).toBe(2);
+});
+test("board form ignores a second submit while its first save is pending", async () => {
+  const { runInNewContext } = await import("node:vm");
+  const source = await Bun.file(new URL("../public/board/app.js", import.meta.url)).text();
+  const start = source.indexOf('document.addEventListener("submit"');
+  const end = source.indexOf('document.addEventListener("change"', start);
+  let submit: any, reject: any, calls = 0;
+  const pending = new Promise((_, no) => {reject = no;});
+  runInNewContext(source.slice(start, end), {
+    document: {addEventListener: (_: string, fn: any) => {submit = fn;}},
+    parts: () => [], toast: () => {},
+    change: (fn: any) => fn(),
+    api: () => {calls++; return pending;},
+  });
+  const form = {dataset: {form: "item-add", list: "Compras"}, text: {value: "one item"}};
+  const event = {target: {closest: () => form}, preventDefault: () => {}};
+  const first = submit(event);
+  await submit(event);
+  expect(calls).toBe(1);
+  reject(new Error("offline"));
+  await first;
+  expect((form.dataset as any).saving).toBeUndefined();
+});

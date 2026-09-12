@@ -1452,8 +1452,6 @@ document.addEventListener("click", async (ev) => {
   } catch (e) {
     // change() ya avisó; lo demás avisa acá.
     if (!/^No se pudo/.test(String(e.message))) toast("No se pudo: " + e.message, 3500);
-  } finally {
-    delete f.dataset.saving;
   }
 });
 
@@ -1519,6 +1517,8 @@ document.addEventListener("submit", async (ev) => {
     void tripId;
   } catch (e) {
     if (!/^No se pudo/.test(String(e.message))) toast("No se pudo: " + e.message, 3500);
+  } finally {
+    delete f.dataset.saving;
   }
 });
 
