@@ -326,3 +326,16 @@ agregar gestos, es que los que hay no molesten. Propuestas, todas **sin desperta
   hub con otro. Es peor que no hacer nada.
 - El masticador de noticias es el primer trabajo de fondo del servidor que gasta modelo **sin que
   nadie lo pida**. Sin el tope de `METERED` puede comerse el presupuesto de un mes en una noche.
+
+---
+
+## Estado de este plan (12/09/2026)
+
+- Las Olas 1 a 9 están **escritas y decididas**; no se escribió **nada de código** todavía.
+- El reconocimiento que respalda los hallazgos salió de siete lectores sobre el árbol real. Quedó
+  **sin terminar una sola cosa**: el relevamiento amplio de qué hacen otros aparatos de tinta con el
+  IMU (Boox, reMarkable, Bangle.js, Watchy, Followup). Lo que está escrito arriba sobre el IMU sale
+  de lo confirmado del ZecTrix Note 4 y del reTerminal Sticky, que es lo que se preguntó; el resto
+  queda para completar.
+- **Próximo paso concreto:** Ola 1, paso 1 (la barrita del PWR) y paso 2 (el viaje fantasma), que no
+  dependen de nada y ya tienen la causa localizada con archivo y línea.
