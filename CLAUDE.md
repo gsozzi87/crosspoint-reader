@@ -262,14 +262,22 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - Traductor (`TranslatorActivity`, app propia): elige el otro idioma (guardado en `HubStore::translatorLang`), OK =
   hablo yo, Arriba = habla el otro, Abajo = cambiar idioma; `POST /api/translate?from=&to=` (`server/src/translate.ts`,
   mismo cuerpo binario que `/api/voice`) y la traducción se lee con Piper en el idioma de destino.
-- Página web `GET /board` (`server/src/board.ts`), con pestañas: Pizarra (recordatorios, memoria), Listas,
-  Notas, Fotos, Noticias, **IA** (proveedor, modelo, claves, token), Ajustes (clima, idioma, voz, volumen) y Log.
-  Todo desde el teléfono con el token del aparato; altas en
-  `POST /api/board/*`, borrados por `POST /api/hub/edit {kind, id, action:"delete"}` (kind = reminder, item, note,
-  feed, memory).
-  El token se pide en un formulario de la propia página (no `prompt()`) y se guarda en `localStorage`; los botones
-  de las listas van por delegación con `data-act`, nunca por `onclick` armado con comillas (una comilla escapada
-  dentro del template literal rompía el script entero y dejaba la página muerta).
+- **La web se hizo de nuevo (servidor, después de 1.5.68)** ("super chafa… la web tiene que hacerse prácticamente de nuevo"). Vive en
+  `server/public/board/` (`index.html`, `app.js`, `style.css`) como archivos estáticos que sirve `board.ts`; ya NO es
+  un template literal adentro del `.ts` (el Dockerfile copia `public/`). Es una app de teléfono: barra de abajo con
+  **Hoy · Agenda · Listas · Notas · Más**, un `+` flotante para agregar rápido, y todo se edita en una hoja que sube
+  desde abajo al tocar la fila (todos los campos + Borrar). Bajo Más: Fotos, Noticias, Viajes, Memoria, Ajustes,
+  Aparatos (multiusuario), IA y Contenido (admin), Log y la cuenta. Modo oscuro por `prefers-color-scheme`.
+  **Regla de datos**: hay UN estado (`GET /api/board/state`, todo junto) y después de cada cambio se vuelve a pedir
+  entero y se repinta (`change()` en `app.js`); así no queda una parte vieja y otra nueva en la misma pantalla, que
+  era la queja ("al sincronizar cualquier cosa le faltan otras"). Lo que se agregó en el servidor para que TODO se
+  pueda tocar: `POST /api/board/item` con `id` (texto y `done` en los dos sentidos), `/note` con `id`, `/memory`
+  (alta y edición), `/feed` con `id` (renombrar), `uiSound` en `/settings`, `GET /api/photos/preview` y
+  `/api/attachment/preview` (BMP 2 bpp → PNG con `bmpToPng`), `GET /api/log/meta` (última subida, firmware y motivo
+  del arranque, parseados del log). Los borrados siguen por `POST /api/hub/edit {kind, id, action:"delete"}`.
+  Las imágenes se bajan con `fetch` + `Authorization` y se muestran como blob: el token nunca va en una URL.
+  Se probó con Chromium (Playwright) recorriendo todas las pantallas y editando desde la UI; no hay hardware que
+  sincronice contra este servidor de prueba, así que lo que falta ver es el aparato tomando los ajustes.
 - Ajustes desde la web (`store.ts` → `settings{rev,lang,speak,musicVolume,translatorLang}`, `POST /api/board/settings`):
   viajan en `GET /api/hub` y `HubStore::applySettings` los aplica solo si `rev` subió respecto de `settingsRev`, así
   lo que se cambia en el aparato no se pisa en cada sincronización. El idioma lo aplica `HubSyncActivity::applyUiLanguage()`

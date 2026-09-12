@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0f1115" media="(prefers-color-scheme: dark)">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<title>Mi aparato</title>
+<link rel="icon" href="/board/icon.svg">
+<link rel="apple-touch-icon" href="/board/icon.svg">
+<link rel="manifest" href="/board/manifest.webmanifest">
+<link rel="stylesheet" href="/board/style.css?v=__V__">
+</head>
+<body>
+
+<div id="gate" class="gate" hidden>
+  <h1>Mi aparato</h1>
+  <p class="muted">Para entrar hace falta el token del aparato. Está en la pantalla del aparato, en
+    <b>Ajustes → Servidor</b> (o en su web UI, pestaña Servidor).</p>
+  <div class="card">
+    <label class="f"><span>Token del aparato</span><input type="text" id="tokenInput" autocomplete="off" autocapitalize="off" spellcheck="false"></label>
+    <div class="msg" id="gateMsg"></div>
+    <button class="wide" id="tokenSave">Entrar</button>
+  </div>
+</div>
+
+<div id="login" class="gate" hidden data-mode="login">
+  <h1 id="loginTitle">Entrar</h1>
+  <p class="muted">Con tu cuenta manejas el aparato desde cualquier teléfono. Después de entrar,
+    vincúlalo con el código de 6 dígitos que muestra en <b>Ajustes → Vincular</b>.</p>
+  <div class="card">
+    <form id="loginForm">
+      <label class="f"><span>Correo</span><input type="email" id="loginEmail" autocomplete="username" required></label>
+      <label class="f"><span>Contraseña</span><input type="password" id="loginPass" autocomplete="current-password" required minlength="8"></label>
+      <div class="msg" id="loginMsg"></div>
+      <button class="wide" id="loginGo">Entrar</button>
+    </form>
+    <p style="margin-top:10px"><button class="link" id="loginSwitch">Crear una cuenta</button></p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header class="top">
+    <button class="iconbtn back" id="backBtn" hidden aria-label="Volver">‹</button>
+    <h1 id="title">Hoy</h1>
+    <button class="iconbtn" id="reloadBtn" aria-label="Actualizar">↻</button>
+  </header>
+  <main id="main"><div class="loading">Cargando…</div></main>
+  <button class="fab" id="fab" aria-label="Agregar">+</button>
+  <nav class="nav" id="nav">
+    <a href="#hoy" data-nav="hoy"><svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a2 2 0 0 1-2 2h-4v-6H9v6H5a2 2 0 0 1-2-2z"/></svg>Hoy</a>
+    <a href="#agenda" data-nav="agenda"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M16 3v4M8 3v4M3 10h18"/></svg>Agenda</a>
+    <a href="#listas" data-nav="listas"><svg viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>Listas</a>
+    <a href="#notas" data-nav="notas"><svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/></svg>Notas</a>
+    <a href="#mas" data-nav="mas"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>Más</a>
+  </nav>
+</div>
+
+<div class="sheet-bg" id="sheetBg" hidden></div>
+<div class="sheet" id="sheet" hidden role="dialog"></div>
+<div class="toast" id="toast"></div>
+
+<script src="/board/app.js?v=__V__"></script>
+</body>
+</html>

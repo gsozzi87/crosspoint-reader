@@ -113,6 +113,33 @@ export async function toDeviceBmp(input: Uint8Array): Promise<Uint8Array> {
   return buf;
 }
 
+// El BMP de 2 bpp del aparato -> PNG para verlo en el teléfono. Es el inverso
+// exacto de toDeviceBmp: paleta de 4 grises, filas de abajo hacia arriba,
+// alineadas a 4 bytes. Sirve también para las páginas de los adjuntos, que
+// tienen el mismo formato.
+export async function bmpToPng(bmp: Uint8Array): Promise<Buffer> {
+  if (bmp.length < 70 || bmp[0] !== 0x42 || bmp[1] !== 0x4d) throw new Error("no es un BMP");
+  const dv = new DataView(bmp.buffer, bmp.byteOffset, bmp.byteLength);
+  const off = dv.getUint32(10, true);
+  const w = dv.getInt32(18, true);
+  const hRaw = dv.getInt32(22, true);
+  const bpp = dv.getUint16(28, true);
+  const h = Math.abs(hRaw);
+  if (bpp !== 2 || w <= 0 || w > 4096 || h <= 0 || h > 4096) throw new Error("BMP raro");
+  const palette: number[] = [];
+  for (let i = 0; i < 4; i++) palette.push(bmp[54 + i * 4 + 1] ?? LEVELS[i]);  // el verde, da igual
+  const rowBytes = Math.ceil((w * 2) / 32) * 4;
+  const gray = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = off + (hRaw > 0 ? h - 1 - y : y) * rowBytes;
+    for (let x = 0; x < w; x++) {
+      const byte = bmp[row + (x >> 2)] ?? 0;
+      gray[y * w + x] = palette[(byte >> (6 - 2 * (x % 4))) & 3];
+    }
+  }
+  return sharp(Buffer.from(gray), { raw: { width: w, height: h, channels: 1 } }).png().toBuffer();
+}
+
 export async function savePhoto(accountId: number, name: string, bytes: Uint8Array): Promise<string> {
   const DIR = photosDir(accountId);
   await mkdir(DIR, { recursive: true });
@@ -142,6 +169,19 @@ photos.get("/file", async (c) => {
   try {
     const bytes = await readFile(`${photosDir(accountOf(c))}/${id}.bmp`);
     return new Response(bytes, { headers: { "Content-Type": "image/bmp", "Content-Length": String(bytes.length) } });
+  } catch {
+    return c.json({ ok: false, error: "not found" }, 404);
+  }
+});
+
+// La foto como la va a ver el aparato, en PNG para el navegador.
+photos.get("/preview", async (c) => {
+  const id = (c.req.query("id") ?? "").replace(/[^a-z0-9]/gi, "");
+  if (!id) return c.json({ ok: false, error: "id required" }, 400);
+  try {
+    const bmp = new Uint8Array(await readFile(`${photosDir(accountOf(c))}/${id}.bmp`));
+    const png = await bmpToPng(bmp);
+    return new Response(new Uint8Array(png), { headers: { "Content-Type": "image/png", "Cache-Control": "private, max-age=86400" } });
   } catch {
     return c.json({ ok: false, error: "not found" }, 404);
   }

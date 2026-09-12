@@ -29,7 +29,7 @@ import bwipjs from "bwip-js/node";
 import { readBarcodes, prepareZXingModule } from "zxing-wasm/reader";
 import { attachmentsDir, mutateDoc, readDoc, writeBytesAtomic } from "./fsjson";
 import { accountOf, type AppEnv } from "./tenant";
-import { toDeviceBmp } from "./photos";
+import { bmpToPng, toDeviceBmp } from "./photos";
 import { readBody } from "./net";
 
 // Los bitmaps son archivos: cada cuenta tiene su directorio (la 1, la que ya
@@ -790,6 +790,20 @@ attachmentApi.get("/", async (c) => {
     return new Response(new Uint8Array(bytes), {
       headers: { "Content-Type": "image/bmp", "Content-Length": String(bytes.length) },
     });
+  } catch {
+    return c.json({ ok: false, error: "not found" }, 404);
+  }
+});
+
+// Una página en PNG, para verla en el teléfono tal como la va a pintar el aparato.
+attachmentApi.get("/preview", async (c) => {
+  const id = safeId(c.req.query("id"));
+  const page = Math.max(0, Math.min(MAX_PAGES * 2, Number(c.req.query("page") ?? 0) || 0));
+  if (!id) return c.json({ ok: false, error: "id required" }, 400);
+  try {
+    const bmp = new Uint8Array(await readFile(`${dirFor(accountOf(c))}/${id}/p${page}.bmp`));
+    const png = await bmpToPng(bmp);
+    return new Response(new Uint8Array(png), { headers: { "Content-Type": "image/png", "Cache-Control": "private, max-age=86400" } });
   } catch {
     return c.json({ ok: false, error: "not found" }, 404);
   }

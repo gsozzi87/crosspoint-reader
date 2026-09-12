@@ -49,6 +49,7 @@ export type Settings = {
   speak: "none" | "short" | "all";
   musicVolume: number;    // 0-100
   translatorLang: string; // el otro idioma del traductor
+  uiSound?: "off" | "soft" | "normal";  // clics de la interfaz; sin la clave el aparato no los toca
 };
 
 export const DEFAULT_SETTINGS: Settings = { rev: 0, lang: "es", speak: "short", musicVolume: 70, translatorLang: "en" };

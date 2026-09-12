@@ -12,6 +12,25 @@ const MAX_BYTES = 512 * 1024;
 
 export const deviceLog = new Hono<AppEnv>();
 
+// Lo que la web muestra en la tarjeta del aparato sin bajar el log entero:
+// cuándo subió por última vez, qué versión de firmware corre (la del último
+// "=== 1.5.x-ws397 | arranque por ... ===" que se ve) y por qué arrancó.
+export async function logMeta(accountId: number): Promise<{ at: string; bytes: number; firmware: string; wake: string }> {
+  let text = "";
+  try {
+    text = await readFile(deviceLogFile(accountId), "utf8");
+  } catch {
+    return { at: "", bytes: 0, firmware: "", wake: "" };
+  }
+  const stamps = text.match(/===== (\d{4}-\d{2}-\d{2}T[^ ]+) =====/g) ?? [];
+  const at = stamps.length ? stamps[stamps.length - 1].slice(6, -6) : "";
+  const boots = [...text.matchAll(/=== (\d+\.\d+\.\d+[^ |]*) \| arranque por ([^=]+?) ===/g)];
+  const last = boots.length ? boots[boots.length - 1] : null;
+  return { at, bytes: text.length, firmware: last ? last[1] : "", wake: last ? last[2].trim() : "" };
+}
+
+deviceLog.get("/meta", async (c) => c.json({ ok: true, ...(await logMeta(accountOf(c))) }));
+
 // GET /api/log (con el Bearer del aparato): el texto del log, para la página.
 deviceLog.get("/", async (c) => {
   let text = "";

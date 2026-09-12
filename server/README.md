@@ -44,8 +44,11 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /firmware/latest` | aparato (sin token) | JSON con forma de release de GitHub: `tag_name`, `assets[firmware-ws397.bin]`. |
 | `GET /firmware/firmware-ws397.bin` | aparato | El binario. |
 | `PUT /firmware` | `release.sh` (Bearer `OTA_TOKEN`, `X-Version`) | Sube un binario nuevo. |
-| `GET /board` | teléfono | Página web: calendario, recordatorios, listas, notas, fotos, noticias, viajes y ajustes. Pide el token del aparato una vez. |
-| `POST /api/board/{reminder,item,note}` | página web | Altas desde la página. |
+| `GET /board` | teléfono | La app del teléfono (`public/board/`): Hoy, Agenda, Listas, Notas y Más (fotos, noticias, viajes, memoria, ajustes, aparatos, IA, contenido, log). Pide el token del aparato una vez, o correo y contraseña con base de datos. |
+| `GET /api/board/state` | página web | TODO el estado de la cuenta en una respuesta: recordatorios (pendientes y hechos), listas enteras, notas, memoria, feeds, ajustes, lugar y clima, estado del aparato (última sincronización, firmware, último log) y consumo del mes. La web lo vuelve a pedir después de cada cambio. |
+| `POST /api/board/{reminder,item,note,memory,feed}` | página web | Altas y **ediciones** (con `id`): texto, hecho/deshecho de un ítem, nombre de un feed. |
+| `GET /api/photos/preview?id=`, `GET /api/attachment/preview?id=&page=` | página web | La foto o la página del adjunto en PNG, tal como la va a pintar el aparato. |
+| `GET /api/log/meta` | página web | Última subida del log, versión de firmware y motivo del último arranque, sin bajar el log. |
 | `GET /api/ping` | aparato | Prueba del token. |
 | `POST /api/ask` | aparato | Pregunta sobre el libro (`text`) o general (sin `text`). `lang` = idioma de la UI. |
 | `POST /api/transcribe?lang=xx` | aparato | WAV → texto en el idioma de la UI. |

@@ -29,6 +29,7 @@ WORKDIR /app
 COPY package.json bun.lock* ./
 RUN bun install --production
 COPY src ./src
+COPY public ./public
 
 ENV PIPER_BIN=/opt/piper/piper PIPER_VOICES=/opt/piper/voices BIBLE_DIR=/opt/bible PORT=3000
 EXPOSE 3000

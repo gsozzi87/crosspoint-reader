@@ -1,0 +1,10 @@
+{
+  "name": "Mi aparato",
+  "short_name": "Aparato",
+  "start_url": "/board",
+  "scope": "/board",
+  "display": "standalone",
+  "background_color": "#f3f4f6",
+  "theme_color": "#111827",
+  "icons": [{ "src": "/board/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}
