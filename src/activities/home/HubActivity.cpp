@@ -715,6 +715,43 @@ void HubActivity::drawWideTile(const int index, const int x, const int y, const 
   if (withSub) renderer.drawText(SMALL_FONT_ID, tx, top + H_UI12 + 4, sub, SELECTION_INK);
 }
 
+// Parte el aviso en hasta dos renglones por los " · ", metiendo en el primero
+// todo lo que entre. Si entra entero, un solo renglón.
+std::vector<std::string> HubActivity::splitHint(const char* text, const int maxW) const {
+  std::vector<std::string> out;
+  if (renderer.getTextWidth(SMALL_FONT_ID, text) <= maxW) {
+    out.emplace_back(text);
+    return out;
+  }
+  const std::string all(text);
+  const std::string sep = " \xC2\xB7 ";  // " · " en UTF-8
+  std::vector<std::string> parts;
+  size_t from = 0;
+  while (true) {
+    const size_t at = all.find(sep, from);
+    if (at == std::string::npos) {
+      parts.push_back(all.substr(from));
+      break;
+    }
+    parts.push_back(all.substr(from, at - from));
+    from = at + sep.size();
+  }
+  std::string line;
+  for (size_t i = 0; i < parts.size(); i++) {
+    const std::string candidate = line.empty() ? parts[i] : line + sep + parts[i];
+    if (line.empty() || out.empty() && renderer.getTextWidth(SMALL_FONT_ID, candidate.c_str()) <= maxW) {
+      line = candidate;
+    } else if (out.empty()) {
+      out.push_back(line);
+      line = parts[i];
+    } else {
+      line = candidate;  // el segundo renglón se lleva el resto; si no entra, se trunca al dibujar
+    }
+  }
+  if (!line.empty()) out.push_back(line);
+  return out;
+}
+
 void HubActivity::render(RenderLock&&) {
   const auto& metrics = UITheme::getInstance().getMetrics();
   const int pageWidth = renderer.getScreenWidth();
@@ -728,7 +765,12 @@ void HubActivity::render(RenderLock&&) {
   // baja de MIN_TILE_H (lo que necesita el icono de 48 con su etiqueta adentro).
   const int summaryTop = metrics.topPadding + STATUS_H + 1;
   const int hintsTop = pageHeight - metrics.buttonHintsHeight;
-  const int hintLine = hintsTop - HINT_GAP;
+  // El aviso de los atajos entra en uno o dos renglones, cortado en los " · ":
+  // en un solo renglón se truncaba ("Atrás mantenido: si…") justo en la parte
+  // que explica cómo sincronizar, que es la que más falta hace.
+  const auto hintLines = splitHint(tr(STR_VOICE_SHORTCUT_HINT), contentW);
+  const int hintBlock = H_SMALL * static_cast<int>(hintLines.size()) + 2 * (static_cast<int>(hintLines.size()) - 1);
+  const int hintLine = hintsTop - HINT_GAP - (hintBlock - H_SMALL);
   const int gridBottom = hintLine - 12;
   const int available = gridBottom - summaryTop;
   const int tileH = std::min(MAX_TILE_H, std::max(MIN_TILE_H, (available - SUMMARY_MIN_H) / GRID_ROWS));
@@ -740,8 +782,10 @@ void HubActivity::render(RenderLock&&) {
 
   // Centrado, pero truncado contra el ancho útil: un texto más ancho que la
   // pantalla le deja a drawCenteredText una x negativa y se dibuja fuera del panel.
-  renderer.drawCenteredText(SMALL_FONT_ID, hintLine,
-                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_VOICE_SHORTCUT_HINT), contentW).c_str());
+  for (size_t i = 0; i < hintLines.size(); i++) {
+    renderer.drawCenteredText(SMALL_FONT_ID, hintLine + static_cast<int>(i) * (H_SMALL + 2),
+                              renderer.truncatedText(SMALL_FONT_ID, hintLines[i].c_str(), contentW).c_str());
+  }
 
   const auto labels = mappedInput.mapLabels(tr(STR_HUB_SYNC_HINT), tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);

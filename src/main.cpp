@@ -736,21 +736,45 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   RenderLock lock;
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
-  const int boxW = screenW - 72;
-  const int boxH = 118;
+  const int boxW = screenW - 56;
   const int x = (screenW - boxW) / 2;
+  const int textW = boxW - 32;
+
+  // El texto son dos frases separadas por " · " ("Suelta para suspender",
+  // "3 s para apagar"): van en dos renglones, porque en uno solo se salían del
+  // cuadro. Si un renglón igual no entra en UI_12, baja a UI_10.
+  const StrId what = aboutToSleep ? StrId::STR_PWR_HOLD_SLEEPING : StrId::STR_PWR_HOLD_OFF;
+  const std::string all = I18N.get(what);
+  std::string lines[2];
+  int nLines = 1;
+  const size_t sepAt = all.find(" \xC2\xB7 ");
+  if (sepAt != std::string::npos) {
+    lines[0] = all.substr(0, sepAt);
+    lines[1] = all.substr(sepAt + 4);
+    nLines = 2;
+  } else {
+    lines[0] = all;
+  }
+  int fontId = UI_12_FONT_ID;
+  for (int i = 0; i < nLines; i++) {
+    if (renderer.getTextWidth(fontId, lines[i].c_str(), EpdFontFamily::BOLD) > textW) fontId = UI_10_FONT_ID;
+  }
+  const int lineH = renderer.getLineHeight(fontId);
+  const int boxH = 24 + nLines * (lineH + 4) + 12 + 16 + 24;
   const int y = screenH / 2 - boxH / 2;
 
   renderer.fillRoundedRect(x, y, boxW, boxH, 16, Color::White);
   renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
-
-  const StrId what = aboutToSleep ? StrId::STR_PWR_HOLD_SLEEPING : StrId::STR_PWR_HOLD_OFF;
-  renderer.drawCenteredText(UI_12_FONT_ID, y + 30, I18N.get(what), true, EpdFontFamily::BOLD);
+  for (int i = 0; i < nLines; i++) {
+    renderer.drawCenteredText(fontId, y + 24 + i * (lineH + 4),
+                              renderer.truncatedText(fontId, lines[i].c_str(), textW, EpdFontFamily::BOLD).c_str(), true,
+                              EpdFontFamily::BOLD);
+  }
 
   // Bar: how much is left until sleep.
   const int barX = x + 24;
   const int barW = boxW - 48;
-  const int barY = y + 76;
+  const int barY = y + 24 + nLines * (lineH + 4) + 12;
   constexpr int barH = 16;
   renderer.drawRect(barX, barY, barW, barH, 2, true);
   const int filled = static_cast<int>(barW * std::min(held, POWER_HOLD_OFF_MS) / POWER_HOLD_OFF_MS);

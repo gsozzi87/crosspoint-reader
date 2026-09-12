@@ -24,6 +24,7 @@ class HubActivity final : public Activity {
   void onEnter() override;
   void loop() override;
   void render(RenderLock&&) override;
+  std::vector<std::string> splitHint(const char* text, int maxW) const;
   bool isHomeActivity() const override { return true; }
 
  private:
