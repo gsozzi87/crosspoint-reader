@@ -61,31 +61,25 @@ class ServerClient {
   Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr,
                      uint32_t timeoutMs = 0);
 
-  // Offline queue (SD, /.crosspoint/server-queue.json, bounded; the oldest
-  // entry is dropped when full).
+  // Offline queue (SD, /.crosspoint/server-queue.json). A full queue
+  // rejects new entries and preserves existing operations.
   bool enqueue(const std::string& path, const std::string& json);
   size_t queueSize();
   // Tira la cola entera sin reproducirla. Existe para cuando el aparato cambia
   // de cuenta: los POST pendientes llevan ids que son de la cuenta VIEJA (el
   // store del servidor numera desde 1 en cada cuenta), asi que reproducirlos
   // contra la nueva tilda o borra lo que le toco el mismo numero.
-  void clearQueue();
-  // Sube lo pendiente apenas hay red, sin esperar a una sincronización. Se
-  // llama sola desde la primera petición de cada sesión de red; queda pública
-  // por si alguna pantalla quiere forzarla.
-  void flushOnConnect();
+  bool clearQueue();
   // Replays queued POSTs in order while the network holds. Returns how many
   // were delivered (or rejected by the server and dropped); stops at the first
   // transport failure so ordering is preserved. -1 when there is no network,
   // server or token to try with.
-  int flushQueue(size_t maxItems = 32);
+  int flushQueue(size_t maxItems = 50);
 
   static const char* resultName(Result r);
   static bool networkUp();
 
  private:
-  bool inFlush_ = false;            // flushQueue() usa request(): no reentrar
-  bool flushedThisSession_ = false;  // ya se vació en esta sesión de red
   ServerClient() = default;
   struct Body {
     const char* contentType = nullptr;

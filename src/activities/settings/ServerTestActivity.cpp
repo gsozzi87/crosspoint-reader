@@ -58,13 +58,9 @@ void ServerTestActivity::runChecks() {
   auth = SERVER_CLIENT.get("/api/ping", resp, /*auth=*/true);
   authStatus = resp.status;
 
-  // 3. Whatever was queued while offline goes out now.
+  // 3. Report pending changes. Only HubSync may replay them after checking ownership.
   queued = SERVER_CLIENT.queueSize();
   flushed = 0;
-  if (queued > 0 && auth == ServerClient::Result::Ok) {
-    flushed = SERVER_CLIENT.flushQueue();
-    queued = SERVER_CLIENT.queueSize();
-  }
 
   // 4. Y el log se sube AHORA, no dentro de seis horas: es lo que permite
   // reproducir un problema y leerlo en /board/log al toque.

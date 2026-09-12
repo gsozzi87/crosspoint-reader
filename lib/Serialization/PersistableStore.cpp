@@ -19,17 +19,29 @@ bool PersistableStoreBase::writeDocToFile(const char* path, const JsonDocument& 
 }
 
 bool PersistableStoreBase::readDocFromFile(const char* path, JsonDocument& doc) {
-  if (!Storage.exists(path)) {
-    return false;  // Expected on first boot — not an error.
-  }
-  String json = Storage.readFile(path);
-  if (json.isEmpty()) {
-    LOG_ERR("PERSIST", "Failed to read %s (empty)", path);
+  // Validate an interrupted replacement before recovering it. Stream JSON:
+  // readFile() is capped at 50 KB, but the queue and notes can be larger.
+  const bool recovering = !Storage.exists(path);
+  const std::string source = recovering ? std::string(path) + ".tmp" : path;
+  if (!Storage.exists(source.c_str())) return false;
+  HalFile file;
+  if (!Storage.openFileForRead("PERSIST", source, file)) return false;
+  struct Reader {
+    HalFile& file;
+    int read() { return file.read(); }
+    size_t readBytes(char* buffer, size_t length) {
+      const int count = file.read(buffer, length);
+      return count > 0 ? static_cast<size_t>(count) : 0;
+    }
+  } reader{file};
+  const auto error = deserializeJson(doc, reader);
+  file.close();
+  if (error) {
+    LOG_ERR("PERSIST", "JSON parse error in %s: %s", source.c_str(), error.c_str());
     return false;
   }
-  auto error = deserializeJson(doc, json);
-  if (error) {
-    LOG_ERR("PERSIST", "JSON parse error in %s: %s", path, error.c_str());
+  if (recovering && !Storage.rename(source.c_str(), path)) {
+    LOG_ERR("PERSIST", "Could not recover %s", path);
     return false;
   }
   return true;

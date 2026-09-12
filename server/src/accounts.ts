@@ -205,9 +205,8 @@ auth.post("/register", async (c) => {
   if (password.length < MIN_PASSWORD) {
     return c.json({ ok: false, error: `la contraseña necesita al menos ${MIN_PASSWORD} caracteres`, code: "weak_password" }, 400);
   }
-  const count = (await db()`SELECT count(*)::int AS n FROM accounts`) as { n: number }[];
-  const first = num(count[0]?.n) === 0;
-  const isAdmin = first || (!!ADMIN_EMAIL && email === ADMIN_EMAIL);
+  // Public registration never grants operator privileges; bootstrap runs at startup.
+  const isAdmin = false;
   const hash = await Bun.password.hash(password, "argon2id");
   let id = 0;
   try {
@@ -379,23 +378,30 @@ accountApi.post("/pair", async (c) => {
   const name = cleanName(b.name);
   if (code.length !== 6) return c.json({ ok: false, error: "el código son 6 dígitos", code: "bad_code" }, 400);
   await dropExpired();
-  const rows = (await db()`SELECT device_id, token_hash FROM pairings WHERE code = ${code}`) as any[];
-  if (!rows.length) return c.json({ ok: false, error: "ese código no existe o venció", code: "not_found" }, 404);
-  const deviceId = String(rows[0].device_id);
-  const tokenHash = String(rows[0].token_hash);
   const accountId = accountOf(c);
-  // Si el aparato ya estaba en otra cuenta, se MUEVE a esta.
-  await db()`
-    INSERT INTO devices (account_id, device_id, token_hash, name, last_seen)
-    VALUES (${accountId}, ${deviceId}, ${tokenHash}, ${name || null}, now())
-    ON CONFLICT (device_id) DO UPDATE
-      SET account_id = EXCLUDED.account_id,
-          token_hash = EXCLUDED.token_hash,
-          name = COALESCE(EXCLUDED.name, devices.name),
-          last_seen = now()`;
-  await db()`DELETE FROM pairings WHERE code = ${code}`;
-  console.log(`aparato ${deviceId} vinculado a la cuenta ${accountId}`);
-  return c.json({ ok: true, deviceId });
+  const paired = await db().begin(async (tx) => {
+    // Consume once, in the same transaction as the ownership update.
+    const rows = (await tx`
+      DELETE FROM pairings
+      WHERE code = ${code} AND created_at >= now() - make_interval(secs => ${PAIR_TTL_S})
+      RETURNING device_id, token_hash`) as any[];
+    if (!rows.length) return { status: 404, deviceId: "" };
+    const deviceId = String(rows[0].device_id);
+    const tokenHash = String(rows[0].token_hash);
+    const devices = (await tx`
+      INSERT INTO devices (account_id, device_id, token_hash, name, last_seen)
+      VALUES (${accountId}, ${deviceId}, ${tokenHash}, ${name || null}, now())
+      ON CONFLICT (device_id) DO UPDATE
+        SET account_id = EXCLUDED.account_id,
+            name = COALESCE(EXCLUDED.name, devices.name),
+            last_seen = now()
+        WHERE devices.token_hash = EXCLUDED.token_hash
+      RETURNING device_id`) as any[];
+    return { status: devices.length ? 200 : 403, deviceId };
+  }) as unknown as { status: number; deviceId: string };
+  if (paired.status === 404) return c.json({ ok: false, error: "ese código no existe o venció", code: "not_found" }, 404);
+  if (paired.status === 403) return c.json({ ok: false, error: "el aparato cambió de credencial; solicita otro código", code: "device_owned" }, 403);
+  return c.json({ ok: true, deviceId: paired.deviceId });
 });
 
 accountApi.get("/devices", async (c) => {

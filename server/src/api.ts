@@ -34,7 +34,7 @@ import { readBody } from "./net";
 import { accountOf, bearerOf, requireTenant, type AppEnv } from "./tenant";
 import { withTimeZone } from "./store";
 import { normalizeLang } from "./lang";
-import { addUsage, audioSeconds, overQuota, QUOTA_CODE, QUOTA_MSG } from "./usage";
+import { reserveUsage, releaseUsage, audioSeconds, QUOTA_CODE, QUOTA_MSG } from "./usage";
 
 export const api = new Hono<AppEnv>();
 
@@ -49,7 +49,7 @@ api.post("/pair/start", async (c) => {
   const b = await readBody(c);
   const r = await startPairing(b.deviceId, b.token);
   if (!r.ok) return c.json({ ok: false, error: r.error, code: r.code }, r.status);
-  console.log(`pair: código ${r.code} para el aparato ${String(b.deviceId).slice(0, 32)}`);
+  console.log("pair: código solicitado");
   return c.json({ ok: true, code: r.code, expiresIn: r.expiresIn });
 });
 
@@ -96,18 +96,21 @@ const METERED: { path: string; llm: number; audio: boolean }[] = [
 api.use("*", async (c, next) => {
   const path = c.req.path;
   const m = METERED.find((e) => path === e.path || path.startsWith(`${e.path}/`));
-  if (!m) return next();
+  if (!m || c.req.method !== "POST") return next();
   const acc = accountOf(c);
-  if (await overQuota(acc)) {
+  // Hono caches the body, so the route can read the same bytes after metering.
+  const bytes = m.audio ? (await c.req.arrayBuffer()).byteLength : 0;
+  const reservation = await reserveUsage(acc, { llm: m.llm, sttSeconds: m.audio ? audioSeconds(bytes, c.req.header("content-type")) : 0 });
+  if (!reservation) {
     const lang = normalizeLang(c.req.query("lang"));
     return c.json({ ok: false, error: QUOTA_MSG[lang], code: QUOTA_CODE }, 429);
   }
-  const bytes = m.audio ? Number(c.req.header("content-length") ?? 0) || 0 : 0;
-  const type = c.req.header("content-type");
-  await next();
-  // Solo se cobra lo que salió bien: un 502 del proveedor no se le carga a nadie.
-  if (c.res.status < 400) {
-    void addUsage(acc, { llm: m.llm, sttSeconds: m.audio ? audioSeconds(bytes, type) : 0 });
+  let succeeded = false;
+  try {
+    await next();
+    succeeded = c.res.status < 400;
+  } finally {
+    if (!succeeded) await releaseUsage(acc, reservation);
   }
 });
 

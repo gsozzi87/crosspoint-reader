@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Logging.h>
+#include <HalStorage.h>
 #include <PersistableStore.h>
 #include <WiFi.h>
 #include <esp_random.h>
@@ -100,37 +101,11 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   return Result::HttpError;
 }
 
-// LO PENDIENTE SUBE APENAS HAY RED, sin esperar a una sincronización.
-//
-// Antes la cola offline sólo se vaciaba en HubSyncActivity. O sea que un
-// recordatorio borrado en el aparato sin WiFi seguía apareciendo en la nube
-// hasta la próxima sincronización, aunque en el medio se hubiera usado Hablar,
-// la Biblia o las Noticias, que levantan la red igual. Ahora la primera llamada
-// de cada sesión de red vacía la cola antes de lo suyo: son unos pocos POST de
-// un par de cientos de bytes y el orden queda bien (primero lo que el aparato
-// hizo, después lo que se va a pedir).
-void ServerClient::flushOnConnect() {
-  if (inFlush_) return;
-  if (!networkUp()) {
-    flushedThisSession_ = false;  // la próxima vez que haya red se vuelve a intentar
-    return;
-  }
-  if (flushedThisSession_) return;
-  flushedThisSession_ = true;
-  if (queueSize() == 0) return;
-  inFlush_ = true;
-  const int done = flushQueue();
-  inFlush_ = false;
-  LOG_INF(TAG, "al conectarse se subieron %d pendientes", done);
-}
-
 ServerClient::Result ServerClient::request(const char* method, const std::string& path, const Body* body,
                                            bool auth, Response& out, uint32_t timeoutMs) {
-  if (!networkUp()) {
-    flushedThisSession_ = false;
-    return Result::NoNetwork;
-  }
-  flushOnConnect();
+  out.status = 0;
+  out.body.clear();
+  if (!networkUp()) return Result::NoNetwork;
   const std::string base = SERVER_STORE.getBaseUrl();
   if (base.empty()) return Result::NoServer;
   if (auth && !SERVER_STORE.hasToken()) return Result::NoToken;
@@ -203,11 +178,13 @@ bool ServerClient::enqueue(const std::string& path, const std::string& json) {
     return false;
   }
   JsonDocument doc;
-  PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc);  // missing file = empty queue
+  const bool exists = Storage.exists(QUEUE_PATH) || Storage.exists((std::string(QUEUE_PATH) + ".tmp").c_str());
+  if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc) && exists) return false;
+  if (exists && !doc["items"].is<JsonArray>()) return false;
   JsonArray items = doc["items"].is<JsonArray>() ? doc["items"].as<JsonArray>() : doc["items"].to<JsonArray>();
-  while (items.size() >= QUEUE_MAX_ITEMS) {
-    LOG_ERR(TAG, "queue full, dropping oldest entry");
-    items.remove(0);
+  if (items.size() >= QUEUE_MAX_ITEMS) {
+    LOG_ERR(TAG, "queue full; existing operations preserved");
+    return false;
   }
   JsonObject item = items.add<JsonObject>();
   item["id"] = newRequestId();
@@ -218,19 +195,31 @@ bool ServerClient::enqueue(const std::string& path, const std::string& json) {
   return ok;
 }
 
-void ServerClient::clearQueue() {
-  const size_t had = queueSize();
-  if (had == 0) return;
-  JsonDocument doc;
-  doc["items"].to<JsonArray>();
-  PersistableStoreBase::writeDocToFile(QUEUE_PATH, doc);
-  LOG_INF(TAG, "cola descartada: %u pendientes de otra cuenta", static_cast<unsigned>(had));
+bool ServerClient::clearQueue() {
+  // Keep the old owner's operations for recovery, never replay them as another account.
+  const std::string temporary = std::string(QUEUE_PATH) + ".tmp";
+  const char* source = Storage.exists(QUEUE_PATH) ? QUEUE_PATH : temporary.c_str();
+  if (!Storage.exists(source)) return true;
+  const std::string archive = std::string(QUEUE_PATH) + "." + newRequestId() + ".quarantine";
+  if (!Storage.rename(source, archive.c_str())) {
+    LOG_ERR(TAG, "Could not quarantine pending operations");
+    return false;
+  }
+  // An interrupted write can leave a second version. Preserve that too.
+  if (Storage.exists(temporary.c_str())) {
+    const std::string backup = archive + ".tmp";
+    if (!Storage.rename(temporary.c_str(), backup.c_str())) return false;
+  }
+  return true;
 }
 
 size_t ServerClient::queueSize() {
   JsonDocument doc;
-  if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc)) return 0;
-  return doc["items"].is<JsonArray>() ? doc["items"].as<JsonArray>().size() : 0;
+  if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc)) {
+    // A damaged queue must block snapshot replacement, not look empty.
+    return Storage.exists(QUEUE_PATH) || Storage.exists((std::string(QUEUE_PATH) + ".tmp").c_str()) ? 1 : 0;
+  }
+  return doc["items"].is<JsonArray>() ? doc["items"].as<JsonArray>().size() : 1;
 }
 
 int ServerClient::flushQueue(size_t maxItems) {

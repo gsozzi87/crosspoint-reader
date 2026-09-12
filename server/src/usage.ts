@@ -89,3 +89,30 @@ export function audioSeconds(bytes: number, contentType: string | null | undefin
   const perSecond = adpcm ? 8_000 : 32_000;
   return Math.max(0, Math.round(bytes / perSecond));
 }
+
+export type UsageReservation = { month: string; llm: number; stt: number };
+
+/** Reserve before calling a provider; the conditional UPDATE serializes replicas. */
+export async function reserveUsage(accountId: number, add: { llm?: number; sttSeconds?: number }): Promise<UsageReservation | null> {
+  const ticket = { month: month(), llm: Math.max(0, Math.round(add.llm ?? 0)), stt: Math.max(0, Math.round(add.sttSeconds ?? 0)) };
+  if (!multiUser) return ticket;
+  await db()`
+    INSERT INTO usage (account_id, month, llm_calls, stt_seconds)
+    VALUES (${accountId}, ${ticket.month}::date, 0, 0)
+    ON CONFLICT (account_id, month) DO NOTHING`;
+  const rows = (await db()`
+    UPDATE usage SET llm_calls = llm_calls + ${ticket.llm}, stt_seconds = stt_seconds + ${ticket.stt}
+    WHERE account_id = ${accountId} AND month = ${ticket.month}::date
+      AND (${ticket.llm} = 0 OR ${MAX_LLM} <= 0 OR llm_calls + ${ticket.llm} <= ${MAX_LLM})
+      AND (${ticket.stt} = 0 OR ${MAX_STT} <= 0 OR stt_seconds + ${ticket.stt} <= ${MAX_STT})
+    RETURNING account_id`) as any[];
+  return rows.length ? ticket : null;
+}
+
+/** Refund failures against the reserved month, including across midnight/month end. */
+export async function releaseUsage(accountId: number, ticket: UsageReservation): Promise<void> {
+  if (!multiUser) return;
+  await db()`
+    UPDATE usage SET llm_calls = GREATEST(0, llm_calls - ${ticket.llm}), stt_seconds = GREATEST(0, stt_seconds - ${ticket.stt})
+    WHERE account_id = ${accountId} AND month = ${ticket.month}::date`;
+}

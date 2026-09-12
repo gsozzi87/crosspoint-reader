@@ -35,7 +35,7 @@ import { occurrencesBetween } from "./calendar";
 import { getTrip, tripOnDate, kindLabel, type Trip } from "./trips";
 import { hubDiagnostics } from "./hub";
 import { load as loadStore, memoryLines, todayLocal, pendingReminders } from "./store";
-import { addUsage } from "./usage";
+import { reserveUsage, releaseUsage, QUOTA_CODE, QUOTA_MSG } from "./usage";
 
 const MAX_PER_DAY = Math.max(1, Math.min(100, Number(process.env.SUGGEST_MAX_PER_DAY ?? 10) || 10));
 
@@ -260,7 +260,7 @@ async function generate(ask: Ask): Promise<Suggestion> {
   // Se cobra ACÁ y no en la ruta: la ruta sirve de la caché la mayoría de las
   // veces y ahí no se llama al modelo. chatSearch con búsqueda web es de lo
   // más caro que hace el servidor y hasta ahora no sumaba nada.
-  void addUsage(ask.accountId, { llm: 1 });
+
   const { lines, packing } = parseSections(res.text);
   return {
     key: ask.key,
@@ -299,14 +299,22 @@ async function serve(ask: Ask, refresh: boolean, extra: Record<string, unknown>)
     if (cached) return { status: 200 as const, body: { ...view(cached, true), ...extra, budget: "spent" } };
     return { status: 429 as const, body: { ok: false, error: "budget", ...extra } };
   }
+  const reservation = await reserveUsage(ask.accountId, { llm: 1 });
+  if (!reservation) {
+    if (cached) return { status: 200 as const, body: { ...view(cached, true), ...extra, budget: "spent" } };
+    return { status: 429 as const, body: { ok: false, code: QUOTA_CODE, error: QUOTA_MSG[ask.lang], ...extra } };
+  }
+  let generated = false;
   try {
     const entry = await generate(ask);
+    generated = true;
     if (!entry.lines.length && !entry.packing.length && cached) {
       return { status: 200 as const, body: { ...view(cached, true), ...extra } };
     }
     await remember(ask.accountId, entry);
     return { status: 200 as const, body: { ...view(entry), ...extra } };
   } catch (err) {
+    if (!generated) await releaseUsage(ask.accountId, reservation);
     const code = err instanceof LlmError ? err.code : "provider_error";
     console.error("suggest:", ask.key, err);
     if (cached) return { status: 200 as const, body: { ...view(cached, true), ...extra, warn: code } };

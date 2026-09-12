@@ -141,11 +141,11 @@ void DevicePairActivity::poll() {
   if (!account.empty() && HUB_STORE.account != account) {
     if (!HUB_STORE.account.empty()) {
       LOG_INF(TAG, "cuenta nueva: se descarta lo de la anterior");
-      SERVER_CLIENT.clearQueue();
+      if (!SERVER_CLIENT.clearQueue()) return;
       HUB_STORE.clearAccountContent();
     }
     HUB_STORE.account = account;
-    HUB_STORE.saveToFile();
+    if (!HUB_STORE.saveToFile()) return;
   }
   state = PAIRED;
   requestUpdate();

@@ -24,7 +24,11 @@ const queues = new Map<string, Promise<unknown>>();
 export function serialize<T>(path: string, job: () => Promise<T>): Promise<T> {
   const prev = queues.get(path) ?? Promise.resolve();
   const next = prev.then(job, job);
-  queues.set(path, next.then(() => {}, () => {}));
+  const settled = next.then(() => {}, () => {});
+  queues.set(path, settled);
+  void settled.then(() => {
+    if (queues.get(path) === settled) queues.delete(path);
+  });
   return next;
 }
 

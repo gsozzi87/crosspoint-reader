@@ -1,5 +1,7 @@
 #include "UiSound.h"
 
+#include <new>
+
 #include <Arduino.h>
 #include <AudioManager.h>
 #include <BoardConfig.h>
@@ -123,7 +125,7 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   // Otro tiene el puerto (Piper hablando, música, el pitido del temporizador):
   // el clic se saltea y listo. Nunca corta lo que está sonando ni espera a que
   // termine — un clic que llega tarde es peor que un clic que no suena.
-  if (!hot_ && AudioManager::portBusy()) {
+  if (MUSIC.isActive() || AudioManager::portBusy()) {
     LOG_DBG("UISOUND", "sin sonido: el I2S lo está usando otro");
     return false;
   }
@@ -138,7 +140,7 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   if (samples == 0) return false;
   wav::writeHeader(wav_, uisound::RATE, samples * sizeof(int16_t));
 
-  if (audio_ == nullptr) audio_ = new AudioManager();
+  if (audio_ == nullptr) audio_ = new (std::nothrow) AudioManager();
   if (audio_ == nullptr) return false;
   // Cada etapa deja rastro: "los sonidos no suenan" ya se diagnosticó dos veces
   // leyendo el código en vez del log, y las dos veces se arregló otra cosa.

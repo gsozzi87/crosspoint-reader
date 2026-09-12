@@ -84,6 +84,7 @@ async function api(path, body, method) {
 async function apiText(path, method) {
   const r = await fetch(path, { method: method || "GET", headers: authHeaders(), credentials: "same-origin" });
   if (r.status === 401) throw new Error("no autorizado");
+  if (!r.ok) throw new Error("error " + r.status);
   return r.text();
 }
 
@@ -97,6 +98,7 @@ async function change(fn, okMsg) {
   busy(true);
   try {
     const out = await fn();
+    clearCal();
     await loadState();
     render();
     if (okMsg) toast(okMsg);
@@ -110,6 +112,7 @@ async function change(fn, okMsg) {
 }
 
 async function refresh() {
+  clearCal();
   busy(true);
   $("reloadBtn").classList.add("spin");
   try {
@@ -169,8 +172,10 @@ function kb(b) { return b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024)
 
 // ── Hoja (editor) ───────────────────────────────────────────────────────────
 let sheetOpts = null;
+let sheetCloseTimer = 0;
 
 function openSheet(title, html, opts) {
+  clearTimeout(sheetCloseTimer);
   sheetOpts = opts || {};
   const sh = $("sheet");
   const bg = $("sheetBg");
@@ -199,7 +204,8 @@ function closeSheet() {
   const bg = $("sheetBg");
   sh.classList.remove("on");
   bg.classList.remove("on");
-  setTimeout(() => { sh.hidden = true; bg.hidden = true; sh.innerHTML = ""; }, 200);
+  clearTimeout(sheetCloseTimer);
+  sheetCloseTimer = setTimeout(() => { sh.hidden = true; bg.hidden = true; sh.innerHTML = ""; }, 200);
   sheetOpts = null;
 }
 
@@ -684,7 +690,7 @@ function fotosView() {
 const blobCache = {};
 function photoSrc(id) {
   const key = "p:" + id;
-  if (blobCache[key]) return blobCache[key];
+  if (blobCache[key] && blobCache[key] !== "loading") return blobCache[key];
   loadBlob("/api/photos/preview?id=" + encodeURIComponent(id), key);
   return "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 }
@@ -1446,6 +1452,8 @@ document.addEventListener("click", async (ev) => {
   } catch (e) {
     // change() ya avisó; lo demás avisa acá.
     if (!/^No se pudo/.test(String(e.message))) toast("No se pudo: " + e.message, 3500);
+  } finally {
+    delete f.dataset.saving;
   }
 });
 
@@ -1453,13 +1461,14 @@ document.addEventListener("submit", async (ev) => {
   const f = ev.target.closest("form[data-form]");
   if (!f) return;
   ev.preventDefault();
+  if (f.dataset.saving === "1") return;
+  f.dataset.saving = "1";
   const kind = f.dataset.form;
   const tripId = parts()[1] === "viajes" ? parts()[2] : "";
   try {
     if (kind === "item-add") {
       const text = f.text.value.trim();
       if (!text) return;
-      f.text.value = "";
       await change(() => api("/api/board/item", { list: f.dataset.list, text }));
       const again = qs($("main"), "form[data-form=item-add] input");
       if (again) again.focus();

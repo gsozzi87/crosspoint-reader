@@ -353,6 +353,13 @@ void NewsActivity::ensureConnected() {
 
 void NewsActivity::onWifiSelectionComplete(const bool connected) {
   if (!connected) {
+    if (pending == ARTICLE_FETCH && !rescueText.empty()) {
+      pending = NONE;
+      showArticle(rescueTitle, rescueText);
+      rescueTitle.clear();
+      rescueText.clear();
+      return;
+    }
     // Sin WiFi no hay voz, pero el artículo se sigue leyendo en pantalla: se
     // avisa ahí mismo en vez de tirar al usuario a la pantalla de error.
     if (pending == CLIP) {

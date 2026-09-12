@@ -170,77 +170,18 @@ function normalizeStore(raw: unknown): Store {
   return store;
 }
 
-// Caché por cuenta, con tope. Con 1000 aparatos un Map sin límite es una fuga
-// de memoria, así que se queda con las últimas MAX_CACHED cuentas (LRU por orden
-// de inserción del Map) y el resto vuelve a leerse de la base.
-const MAX_CACHED = 64;
-const cache = new Map<number, Store>();
-const loading = new Map<number, Promise<Store>>();
-
-function remember(accountId: number, store: Store): Store {
-  cache.delete(accountId);
-  cache.set(accountId, store);
-  while (cache.size > MAX_CACHED) {
-    const oldest = cache.keys().next().value;
-    if (oldest === undefined) break;
-    cache.delete(oldest);
-  }
-  return store;
+// Las lecturas consultan el documento confirmado: otra réplica puede haberlo
+// modificado. Las mutaciones se serializan en el almacenamiento.
+export async function load(accountId: number): Promise<Store> {
+  return normalizeStore(await readDoc<unknown>(accountId, "store", null));
 }
 
-export function load(accountId: number): Promise<Store> {
-  const hit = cache.get(accountId);
-  if (hit) return Promise.resolve(remember(accountId, hit));
-  // La promesa se cachea, no el resultado: dos pedidos juntos leían el archivo
-  // dos veces y se quedaban con dos objetos distintos (lo que guardaba uno lo
-  // pisaba el otro).
-  let pending = loading.get(accountId);
-  if (!pending) {
-    pending = readDoc<unknown>(accountId, "store", null).then((raw) => {
-      loading.delete(accountId);
-      return remember(accountId, normalizeStore(raw));
-    }, (err) => {
-      loading.delete(accountId);
-      throw err;
-    });
-    loading.set(accountId, pending);
-  }
-  return pending;
-}
-
-// Escritura a secas, sin candado: NO usarla para modificar (para eso está
-// mutate()). Queda para reemplazar el documento entero, que hoy no hace nadie.
 export async function save(accountId: number, store: Store): Promise<void> {
-  remember(accountId, store);
   await writeDoc(accountId, "store", store);
 }
 
-// TODO lo que modifica el store va por acá.
-//
-// load() + save() son dos operaciones separadas sobre el documento entero: lo
-// que se lee puede ser de la caché de ESTE proceso (que no sabe nada de lo que
-// escribió otra réplica ni de lo que se escribió antes del último redeploy) y
-// lo que se guarda pisa el documento completo. Dos pedidos que se cruzan —o dos
-// instancias— y el último borra lo que hizo el otro: un recordatorio que se
-// agregó por voz desaparece porque la web guardó un ajuste medio segundo
-// después.
-//
-// mutateDoc lee y escribe DENTRO del candado (pg_advisory_xact_lock en
-// Postgres, serialize() por archivo en el volumen), así que lo que se modifica
-// es siempre la versión que hay guardada en ese instante. El store era el único
-// documento que quedaba afuera, y es el que más se escribe.
 export async function mutate<R>(accountId: number, fn: (store: Store) => R | Promise<R>): Promise<R> {
-  try {
-    return await mutateDoc(accountId, "store", normalizeStore, async (store) => {
-      const out = await fn(store);
-      remember(accountId, store);  // la caché se queda con lo recién leído y cambiado
-      return out;
-    });
-  } catch (err) {
-    // Pudo quedar a medio cambiar y sin guardarse: mejor que se relea.
-    cache.delete(accountId);
-    throw err;
-  }
+  return mutateDoc(accountId, "store", normalizeStore, fn);
 }
 
 export function nextId(store: Store): number {

@@ -327,6 +327,13 @@ void HubSyncActivity::markAttempt(const bool ok) {
 }
 
 bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) {
+  // A server snapshot cannot replace local changes that have not been delivered.
+  if (SERVER_CLIENT.queueSize() > 0) {
+    if (resultOut) *resultOut = ServerClient::Result::Queued;
+    if (statusOut) *statusOut = 0;
+    markAttempt(false);
+    return false;
+  }
   WiFi.setSleep(false);
   ServerClient::Response resp;
   const ServerClient::Result result = SERVER_CLIENT.get(std::string("/api/hub?lang=") + uiLanguageCode(), resp, /*auth=*/true);
@@ -436,25 +443,32 @@ void HubSyncActivity::cacheSpokenNotices() {
   LOG_INF(TAG, "spoken notices: %d fetched, %d stale removed", fetched, removed);
 }
 
-// /api/pair/status devuelve { ok, paired, account } y no necesita que el
-// aparato este vinculado: sirve igual con el modo de una sola cuenta (ahi
-// contesta single=true y account nulo, y no se toca nada).
-void HubSyncActivity::checkAccount() {
+bool HubSyncActivity::checkAccount() {
   ServerClient::Response resp;
-  if (SERVER_CLIENT.get("/api/pair/status", resp) != ServerClient::Result::Ok) return;
+  result = SERVER_CLIENT.get("/api/pair/status", resp);
+  status = resp.status;
+  if (result != ServerClient::Result::Ok) return false;
   JsonDocument doc;
-  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) return;
-  const char* acc = doc["account"] | "";
-  if (!acc || !*acc) return;  // sin cuentas (single) o sin vincular: nada que comparar
-  const std::string now(acc);
-  if (HUB_STORE.account == now) return;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok || !(doc["ok"] | false)) {
+    result = ServerClient::Result::Transport;
+    return false;
+  }
+  if (doc["single"] | false) return true;
+  const std::string account = doc["account"] | "";
+  if (!(doc["paired"] | false) || account.empty()) {
+    result = ServerClient::Result::Unauthorized;
+    return false;
+  }
+  if (HUB_STORE.account == account) return true;
   if (!HUB_STORE.account.empty()) {
-    LOG_INF(TAG, "el aparato cambio de cuenta: se descarta lo de la anterior");
-    SERVER_CLIENT.clearQueue();
+    if (!SERVER_CLIENT.clearQueue()) {
+      result = ServerClient::Result::Transport;
+      return false;
+    }
     HUB_STORE.clearAccountContent();
   }
-  HUB_STORE.account = now;
-  HUB_STORE.saveToFile();
+  HUB_STORE.account = account;
+  return HUB_STORE.saveToFile();
 }
 
 void HubSyncActivity::runSync() {
@@ -476,7 +490,13 @@ void HubSyncActivity::runSync() {
   // store se numeran desde 1 en cada cuenta: reproducir la cola vieja contra la
   // cuenta nueva tilda o borra lo que le haya tocado el mismo numero. Es un
   // pedido chico (200 bytes) cada seis horas.
-  checkAccount();
+  if (!checkAccount()) {
+    markAttempt(false);
+    state = FAILED;
+    doneAt = millis();
+    requestUpdate();
+    return;
+  }
 
   flushed = 0;
   if (SERVER_CLIENT.queueSize() > 0) {
