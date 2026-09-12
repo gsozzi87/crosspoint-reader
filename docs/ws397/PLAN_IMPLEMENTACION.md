@@ -80,10 +80,13 @@ Sin dependencias. Es lo primero porque son todas molestias visibles.
    *Listo cuando:* se borra un viaje en la web, se entra a Viajes y no aparece ni en la lista ni en
    las sugerencias, con y sin WiFi.
 3. **El OTA repinta cada 10 %, no cada 2 %.** 50 refrescos → 10.
-4. **Documentación al día.** `CLAUDE.md`: el modo de energía dejó de ser tres opciones en 1.5.61 (hoy
-   está forzado y escondido), y por eso la red de seguridad de 30 minutos de `main.cpp` —que pregunta
-   por `sleepTimeoutMs == 0`— **está muerta en la ws397**. `docs/ws397/FUNCIONES.md`: sacar los doce
-   juegos compilados (se fueron en 1.5.63) y marcar los gestos del IMU como hechos.
+4. **Documentación al día.** `CLAUDE.md` describía un "Modo de energía" con tres opciones con nombre
+   (Ahorro / Normal / Siempre encendido) que **nunca llegó al árbol**: lo que hay es la fila de
+   siempre, `STR_TIME_TO_SLEEP`, un número de 1 a 31 minutos con default 10 donde 31 quiere decir
+   "nunca". La red de seguridad de 30 minutos de `main.cpp` **sí funciona** (se activa con 31
+   puesto, que es cuando `sleepTimeoutMs == 0`). Corregido.
+   `docs/ws397/FUNCIONES.md`: sacar los doce juegos compilados (se fueron en 1.5.63) y marcar los
+   gestos del IMU como hechos.
 
 ---
 
@@ -106,7 +109,8 @@ Depende de nada. Es la ola que decide si el producto se puede vender.
    - **10 min** quieto → deep sleep. Diez y no cinco a propósito: del light sleep se vuelve
      instantáneo y del deep sleep se vuelve con un arranque entero, así que conviene ser perezoso
      para bajar. El ahorro marginal entre light y deep es chico; la molestia de arrancar, no.
-   - Se saca el ajuste de la web y del aparato; el número crudo queda como constante.
+   - Se esconde la fila `STR_TIME_TO_SLEEP` en la ws397 y el número queda fijo en 10 minutos.
+     En las demás placas no se toca nada.
 7. **Deep sleep al mínimo.** Nada de esto se está haciendo hoy (verificado: no hay un solo
    `esp_sleep_pd_config()` en todo el árbol):
    - **El IMU.** Los tres `sleepNow()` del `setup()` (líneas 1057, 1082, 1131) duermen con el QMI8658

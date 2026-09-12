@@ -103,6 +103,25 @@ async function remember(accountId: number, entry: Suggestion): Promise<void> {
   });
 }
 
+// Las sugerencias de un viaje que ya no existe. Sin esto, borrar un viaje en la
+// web lo deja vivo acá para siempre: la clave es `trip:<id>:...` y el archivo
+// guarda las 40 más nuevas, así que la del viaje borrado sobrevive semanas y el
+// aparato la sigue mostrando ("reconoce un viaje que ya no existe").
+export async function forgetTrip(accountId: number, tripId: string): Promise<number> {
+  if (!tripId) return 0;
+  const prefixes = [`trip:${tripId}:`, `:${tripId}`];
+  return update(accountId, (store) => {
+    let n = 0;
+    for (const k of Object.keys(store.entries)) {
+      if (k.startsWith(prefixes[0]) || k.endsWith(prefixes[1])) {
+        delete store.entries[k];
+        n++;
+      }
+    }
+    return n;
+  });
+}
+
 // ---------------------------------------------------------------- formato
 
 // El modelo contesta en dos secciones para poder separar lo que se muestra de
@@ -355,7 +374,11 @@ suggest.get("/trip", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const id = (c.req.query("id") ?? "").toString();
   const refresh = c.req.query("refresh") === "1";
-  const trip = await getTrip(acc, id);
+  // Con id vacio `getTrip` devuelve el PRIMER viaje, que para /api/trip esta
+  // bien (es lo que pide el aparato cuando todavia no eligio) pero aca era el
+  // bug: un id borrado llegaba vacio y el servidor contestaba con otro viaje
+  // como si fuera el pedido, ademas de gastar modelo en algo que nadie pidio.
+  const trip = id ? await getTrip(acc, id) : null;
   if (!trip) return c.json({ ok: false, error: "not found" }, 404);
   const today = todayLocal();
   const user = [

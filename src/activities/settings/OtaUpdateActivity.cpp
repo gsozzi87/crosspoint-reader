@@ -123,11 +123,17 @@ void OtaUpdateActivity::render(RenderLock&&) {
   if (state == UPDATE_IN_PROGRESS) {
     LOG_DBG("OTA", "Update progress: %d / %d", updater.getProcessedSize(), updater.getTotalSize());
     updaterProgress = static_cast<float>(updater.getProcessedSize()) / static_cast<float>(updater.getTotalSize());
-    // Only update every 2% at the most
-    if (static_cast<int>(updaterProgress * 50) == lastUpdaterPercentage / 2) {
+    // Un parcial por cada tanto por ciento. En la ws397 va cada 10 y no cada 2:
+    // el .bin son 5,7 MB y a cada 2 % eran 50 refrescos de pantalla entera
+    // encima de la descarga, o sea que la barra costaba más que bajar el
+    // firmware. En el resto de las placas queda como estaba.
+    const int step = BoardConfig::isWS397() ? 10 : 2;
+    const int pct = static_cast<int>(updaterProgress * 100);
+    if (lastUpdaterPercentage != UNINITIALIZED_PERCENTAGE &&
+        pct / step == static_cast<int>(lastUpdaterPercentage) / step) {
       return;
     }
-    lastUpdaterPercentage = static_cast<int>(updaterProgress * 100);
+    lastUpdaterPercentage = pct;
   }
 
   if (state == CHECKING_FOR_UPDATE) {

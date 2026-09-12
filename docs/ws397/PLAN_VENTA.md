@@ -243,11 +243,12 @@ Sin el paso 5 nadie descubre la mitad del producto.
 
 ### B7. Documentación que miente
 
-- `CLAUDE.md` describe el modo de energía como tres opciones con nombre (Ahorro / Normal / Siempre
-  encendido). **Eso se sacó de la ws397 en 1.5.61**: hoy está forzado a 5 minutos y escondido.
-  Consecuencia real: la red de seguridad de 30 minutos en `main.cpp` pregunta por
-  `sleepTimeoutMs == 0`, y en la ws397 eso ya no puede pasar, así que **esa protección está
-  muerta**. Hay que decidir si vuelve el selector o si la red de seguridad se reescribe.
+- `CLAUDE.md` describía un **"Modo de energía" con tres opciones con nombre** (Ahorro / Normal / Siempre
+  encendido) que **nunca llegó al árbol**. Lo que existe es la fila de siempre, `STR_TIME_TO_SLEEP`: un número
+  de 1 a 31 minutos, default 10, donde 31 quiere decir "nunca". Y la red de seguridad de 30 minutos de
+  `main.cpp` **sí funciona** — se activa justamente con 31 puesto, que es cuando `sleepTimeoutMs == 0`.
+  Corregido en `CLAUDE.md`. La decisión para la venta es que en la ws397 la fila se esconda y el número quede
+  fijo (`PLAN_IMPLEMENTACION.md`, Ola 2).
 - `docs/ws397/FUNCIONES.md` todavía lista los doce juegos compilados (se fueron en 1.5.63) y los
   gestos del IMU como pendientes (están hechos).
 
@@ -260,7 +261,7 @@ Sin el paso 5 nadie descubre la mitad del producto.
    código.
 2. **Suspender: light sleep o deep sleep** (A8). Se decide con la medición, pero el criterio es
    tuyo: ¿preferís que PWR encienda siempre y volver sea instantáneo, aunque consuma un poco más?
-3. **Selector de modo de energía** (B7): ¿vuelve a la ws397 o se queda forzado?
+3. ~~Selector de modo de energía~~ — **resuelto**: no vuelve, los tiempos los fija el firmware.
 4. **Qué apps de Lua salen de fábrica.** Hoy `/Apps` va vacío. Con tres o cuatro buenas el mosaico
    Juegos deja de ser una promesa.
 

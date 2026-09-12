@@ -258,6 +258,30 @@ bool TripActivity::fetchTrips() {
   JsonDocument doc;
   if (deserializeJson(doc, resp.body) != DeserializationError::Ok) return false;
   parseTripList(doc["trips"]);
+  // La lista fresca manda: si el viaje que teniamos elegido (o el de las
+  // sugerencias guardadas) ya no esta, se suelta acá. Antes sobrevivia en la
+  // caché hasta que alguien entraba y se comia el 404, asi que el aparato
+  // seguia "reconociendo" un viaje borrado.
+  const auto enLaLista = [this](const std::string& id) {
+    if (id.empty()) return true;
+    for (const TripRef& t : trips) {
+      if (t.id == id) return true;
+    }
+    return false;
+  };
+  if (!enLaLista(tripId)) {
+    LOG_INF(TAG, "el viaje elegido %s ya no esta en la lista: se suelta", tripId.c_str());
+    tripId.clear();
+    days.clear();
+    packing.clear();
+    attText.clear();
+  }
+  if (!enLaLista(suggestTripId)) {
+    suggestTripId.clear();
+    suggestLines.clear();
+    suggestPacking.clear();
+    suggestAt = 0;
+  }
   saveCache();
   return true;
 }

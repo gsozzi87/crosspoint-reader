@@ -396,13 +396,16 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
   de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
   decide DESPUÉS, así nunca puede impedirlo.
-- **Modo de energía** (Ajustes → Sistema, 1.5.49): tres opciones con nombre —Ahorro (5 min), Normal (10 min) y
-  **Siempre encendido**— en vez del número suelto de 1 a 31 donde 31 quería decir "nunca" y no había forma de
-  adivinarlo. El número crudo se esconde en esta placa; en la web y en las demás sigue igual. "Siempre encendido"
-  ya no significa "gastando a pleno para siempre" como antes de 1.5.48: significa **reposar** para siempre, con la
-  pantalla viva y las alarmas en hora. Tiene red de seguridad: si el reposo queda bloqueado media hora seguida
-  estando ocioso y sin USB, se duerme igual y lo dice en el log (si no, una red que quedó arriba se come la
-  batería en una noche sin que nadie se entere).
+- **Tiempo para dormir** (Ajustes → Sistema, `STR_TIME_TO_SLEEP`): es un número suelto de 1 a 31 minutos, default
+  10, donde **31 quiere decir "nunca"** (`getSleepTimeoutMs()` devuelve 0 y `sleepNow` no se llama nunca por
+  inactividad). No hay tres opciones con nombre: se diseñaron en su momento y **nunca llegaron al árbol**; si esta
+  línea vuelve a decir "Ahorro / Normal / Siempre encendido", está mintiendo.
+  Con 31, o sea "nunca", el reposo (light sleep) sigue funcionando: "nunca" significa **no bajar a deep sleep**,
+  no "quedarse a pleno". Tiene red de seguridad: si el reposo queda bloqueado media hora seguida estando ocioso y
+  sin USB, se duerme igual y lo dice en el log (`REST_BLOCKED_GIVE_UP_MS` en main.cpp, y sólo aplica con
+  `sleepTimeoutMs == 0`, o sea con 31 puesto). Si no, una red que quedó arriba se come la batería en una noche.
+  **Decidido para la venta** (`docs/ws397/PLAN_IMPLEMENTACION.md`, Ola 2): en la ws397 la fila se esconde y los
+  tiempos quedan fijos; el usuario no elige modo de energía.
 - **Con los gestos apagados no hay sondeo**: sin acelerómetro que mirar, el ciclo de reposo no arma timer y duerme
   hasta que alguien toque un botón o venza la alarma del RTC. Es el reposo más profundo que se puede tener.
 - **El reloj se congela reposando**: la hora en pantalla queda en el minuto en que entró. Es a propósito —

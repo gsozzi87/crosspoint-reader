@@ -90,8 +90,14 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 // con el botón abajo, nunca se podría llegar a los 3.
 constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // aparece la barrita
 constexpr unsigned long POWER_HOLD_SLEEP_MS = POWER_HOLD_ACTION_MS;  // soltar acá o después: suspende
-constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // segundo cartel: está por apagarse
+constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // el cartel pasa a "Apagando..."
+// Cada cuánto se repinta la barrita. El panel no tiene refresco por región expuesto
+// (FreeInkDisplay::displayWindow existe pero está marcado EXPERIMENTAL y no sube ni a
+// HalDisplay ni a GfxRenderer), así que cada paso es un parcial de pantalla entera de
+// ~250 ms: 360 ms es lo más seguido que se puede pedir sin que el loop deje de ver la
+// suelta a tiempo. Da cinco pasos entre 1,2 s y 3 s, en vez de los dos saltos de antes.
 constexpr unsigned long POWER_HOLD_OFF_MS = 3000;     // apagar de verdad
+constexpr unsigned long POWER_HOLD_STEP_MS = 360;     // repintado de la barrita
 // Una pulsacion de PWR anclada antes de esto arranco con el aparato: no es un hold.
 constexpr unsigned long BOOT_KEY_IGNORE_MS = 3500;
 }  // namespace
@@ -777,7 +783,12 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   const int barY = y + 24 + nLines * (lineH + 4) + 12;
   constexpr int barH = 16;
   renderer.drawRect(barX, barY, barW, barH, 2, true);
-  const int filled = static_cast<int>(barW * std::min(held, POWER_HOLD_OFF_MS) / POWER_HOLD_OFF_MS);
+  // La barra mide lo que falta para apagar DESDE QUE APARECE: con el 0 en cero
+  // absoluto nacía al 40 % (1200 de 3000) y se apagaba al 88 %, o sea que ni
+  // empezaba vacía ni terminaba llena, y por eso parecía que no cargaba.
+  const unsigned long span = POWER_HOLD_OFF_MS - POWER_HOLD_ACTION_MS;
+  const unsigned long done = held <= POWER_HOLD_ACTION_MS ? 0 : std::min(held - POWER_HOLD_ACTION_MS, span);
+  const int filled = static_cast<int>(barW * done / span);
   if (filled > 4) renderer.fillRect(barX + 2, barY + 2, filled - 4, barH - 4, true);
 
   renderer.displayBuffer(HalDisplay::FAST_REFRESH);
@@ -830,14 +841,18 @@ static bool handlePowerHold(const bool gateOpen) {
       enterDeepSleep();
       return true;
     }
-    if (bannerStage == 0 && held >= POWER_HOLD_ACTION_MS) {
-      bannerStage = 1;
-      POWER_KEY.consumeHold();  // the release after the bar is not a short press
-      LOG_INF("MAIN", "PWR mantenido %lu ms: barrita", held);
-      drawPowerHoldBanner(held, false);
-    } else if (bannerStage == 1 && held >= POWER_HOLD_WARN_MS) {
-      bannerStage = 2;
-      drawPowerHoldBanner(held, true);  // second and last repaint: ink is expensive
+    if (held >= POWER_HOLD_ACTION_MS) {
+      // Un paso por cada POWER_HOLD_STEP_MS desde que aparece la barrita, así
+      // se llena parejo. `bannerStage` es el número del último paso pintado.
+      const int step = 1 + static_cast<int>((held - POWER_HOLD_ACTION_MS) / POWER_HOLD_STEP_MS);
+      if (step > bannerStage) {
+        if (bannerStage == 0) {
+          POWER_KEY.consumeHold();  // the release after the bar is not a short press
+          LOG_INF("MAIN", "PWR mantenido %lu ms: barrita", held);
+        }
+        bannerStage = step;
+        drawPowerHoldBanner(held, held >= POWER_HOLD_WARN_MS);
+      }
     }
     return bannerStage != 0;
   }

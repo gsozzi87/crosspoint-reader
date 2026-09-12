@@ -31,6 +31,7 @@ import { accountOf, type AppEnv } from "./tenant";
 import { readBody } from "./net";
 import { normalizeLang, type Lang } from "./lang";
 import { deleteAttachmentsOfTrip, listAttachments, type Attachment } from "./attachments";
+import { forgetTrip } from "./suggest";
 
 // El calendario es de `calendar.ts`: acá solo se espeja lo del viaje adentro de
 // su misma cola de escritura (ver `syncCalendar`).
@@ -458,10 +459,14 @@ tripApi.post("/delete", async (c) => {
   });
   if (!gone) return c.json({ ok: false, error: "not found" }, 404);
   await syncCalendar(accountOf(c), id);  // el viaje ya no está: esto le saca los eventos al calendario
+  // Y las sugerencias que se generaron para él, que viven aparte en suggest.json
+  // con la clave `trip:<id>:…`: si no se borran acá, el viaje sigue existiendo
+  // para el aparato aunque no esté en ninguna lista.
+  const olvidadas = await forgetTrip(accountOf(c), id);
   // Los bitmaps de los adjuntos son 96 KB por página: si no se borran acá,
   // quedan ocupando el volumen sin que nadie los pueda ver nunca más.
   const dropped = await deleteAttachmentsOfTrip(accountOf(c), id);
-  return c.json({ ok: true, attachments: dropped });
+  return c.json({ ok: true, attachments: dropped, suggestions: olvidadas });
 });
 
 // La nota del día ("día libre", "hay que estar 2 h antes").

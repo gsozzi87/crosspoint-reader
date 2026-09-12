@@ -59,8 +59,8 @@ modo memoria USB, clasificador de intención por voz y cuentas con vinculación 
 | 0.6 | Driver SHTC3 (temperatura y humedad interior, I²C 0x70) con CRC del datasheet y caché de un minuto; el widget de clima del hub muestra "Interior 23°" junto a lo de afuera | ✅ | 1.5.37, `src/util/Shtc3`. El SDK no lo maneja en esta placa (mapea un SHT40), así que va con Wire directo |
 | 0.7 | Porcentaje de batería real y consumo en deep sleep medidos | ⬜ | |
 | 0.8 | Refresco de un solo destello (halfrefresh) verificado | ⬜ | |
-| 0.9 | Driver QMI8658 por polling (INT1 está compartido con el amp) y gestos: **boca abajo** = silenciar alarma o temporizador y posponer; **doble golpe** = PTT alternativo; **sacudir** = cancelar la grabación o deshacer el último ítem | ⬜ | Se usa en 2.2, 2.8, 2.9 |
-| 0.10 | Modo atril: el hub, los widgets y el álbum en horizontal cuando el aparato está apoyado de costado (IMU). El lector siempre vertical | ⬜ | Opcional, se activa en Settings |
+| 0.9 | Driver QMI8658 por polling (INT1 está compartido con el amp) y gestos: **boca abajo** = silenciar alarma o temporizador; **doble golpe** = abre Hablar; **sacudir** = cancelar | ✅ | Hecho. Hay además inclinar, girar y horizontal, que consume cada pantalla con `MOTION.take()`. **Nunca despierta el aparato**: eso es siempre un botón (`PLAN_IMPLEMENTACION.md`, Ola 2) |
+| 0.10 | ~~Modo atril~~ | ❌ | Se cae con el álbum de fotos, que sale del producto |
 | 0.11 | Auto-rotación del lector por IMU | ❌ | |
 
 ## Fase 1 · Hub y servidor (base hecha)
@@ -116,12 +116,9 @@ modo memoria USB, clasificador de intención por voz y cuentas con vinculación 
 
 | # | Función | Estado | Notas |
 |---|---------|--------|-------|
-| 4.1 | Damas contra la máquina (motor local, minimax corto) | ⬜ | Tablero 8x8, cursor con trackball o UP/DOWN + OK |
-| 4.2 | Cartas: rummy (contra la máquina), solitario Klondike, blackjack; chinchón y escoba si sobra tiempo | ⬜ | Baraja dibujada a 4 grises |
-| 4.3 | Retos mentales: sudoku, acertijos y trivia que manda el servidor (por voz se responde), cálculo mental, secuencias lógicas | ⬜ | Los acertijos se cachean en la SD |
-| 4.4 | Memoria: parejas (Memory), Simón (secuencias con sonido por el parlante), recordar listas de palabras o números con puntaje | ⬜ | |
-| 4.5 | Tetris: viable a velocidad baja con refresco parcial (4 grises, refresco completo cada tantas piezas); necesita el trackball o los botones extra para izquierda/derecha/girar | ⬜ | Experimental; 2048 como alternativa más apta para la tinta |
-| 4.6 | Ajedrez contra el servidor | ⬜ | Opcional |
+| 4.1 | ~~Damas, cartas, retos mentales, memoria, Tetris, ajedrez — todo compilado~~ | ❌ | **Se fueron en 1.5.63.** "La pestaña juegos es sólo para LUA". Las tarjetas duraron una versión más y salieron en 1.5.65 |
+| 4.2 | Apps en Lua desde la tarjeta (`/Apps/*.lua`, contrato de callbacks, cajón sin io/os/package) | ✅ | 1.5.48. El mosaico Juegos abre directo la lista |
+| 4.3 | `cp.time()` para que una app sepa la hora, y tres o cuatro apps de fábrica en `/Apps` | ⬜ | `PLAN_IMPLEMENTACION.md`, Ola 9 |
 
 ## Idiomas
 
