@@ -153,7 +153,7 @@ class EpubReaderActivity final : public ReaderActivity {
   bool launchKOReaderSync();
   // "Ask the book": hands the chapter text read so far to AskBookActivity,
   // which replaces the reader (network needs the book's heap).
-  void launchAskBook();
+  void launchAskBook(std::string presetQuestion = "");
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void loadCachedBookmarks();

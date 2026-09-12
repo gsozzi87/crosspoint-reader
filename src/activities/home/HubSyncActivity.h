@@ -84,7 +84,7 @@ class HubSyncActivity final : public Activity {
   static void applyUiLanguage();
 
  private:
-  enum State { CONNECTING, SYNCING, DONE, FAILED };
+  enum State { CONNECTING, SYNCING, DONE, FAILED, ASSETS };
   State state = CONNECTING;
   ServerClient::Result result = ServerClient::Result::Transport;
   int status = 0;

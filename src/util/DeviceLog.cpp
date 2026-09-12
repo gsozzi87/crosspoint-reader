@@ -17,6 +17,7 @@ namespace {
 constexpr const char* DIR = "/.crosspoint";
 constexpr const char* CURRENT = "/.crosspoint/device.log";
 constexpr const char* PREVIOUS = "/.crosspoint/device.prev.log";
+constexpr size_t HEAD_BYTES = 3 * 1024;  // cabecera de la sesión que se manda siempre (ver tail)
 constexpr size_t MAX_BYTES = 64 * 1024;
 constexpr size_t FLUSH_EVERY = 2 * 1024;
 // Huella de la línea para deduplicar. Larga a propósito: dos líneas distintas
@@ -274,6 +275,31 @@ std::string devlog::tail(const size_t maxBytes) {
   // Ahora manda lo nuevo: primero el final de CURRENT y, solo si sobra lugar,
   // el final de PREVIOUS delante para dar contexto.
   readInto(CURRENT);
+  // El ARRANQUE de este log también va siempre: la cabecera de la sesión
+  // (versión, por qué arrancó, los registros del PMIC, la polaridad del PWR)
+  // está en las primeras líneas, y cuando la sesión es larga el final de 24 KB
+  // ya no la incluye. Un PWR "errático" sin esas líneas no se puede leer.
+  {
+    HalFile f;
+    if (Storage.openFileForRead("LOG", CURRENT, f)) {
+      const size_t n = f.size();
+      if (n > out.size() && HEAD_BYTES < maxBytes) {
+        // El tail no llegó al principio del archivo: se antepone el principio.
+        const size_t want = std::min(n - out.size(), HEAD_BYTES);
+        std::string head;
+        head.resize(want);
+        f.seek(0);
+        const int got = f.read(&head[0], want);
+        if (got > 0) {
+          head.resize(got);
+          head += "\n--- (... se saltó el medio del log ...) ---\n";
+          if (out.size() + head.size() > maxBytes) out.erase(0, out.size() + head.size() - maxBytes);
+          out = head + out;
+        }
+      }
+      f.close();
+    }
+  }
   if (out.size() < maxBytes && Storage.exists(PREVIOUS)) {
     const size_t room = maxBytes - out.size();
     std::string current;

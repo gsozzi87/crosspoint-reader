@@ -156,7 +156,8 @@ void SettingsActivity::rebuildSettingsLists() {
     // archivos.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_USB_DRIVE, SettingAction::UsbDrive));
 #endif
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_ASSETS_MENU, SettingAction::DownloadAssets));
+    // "Descargar contenido" salió del menú (1.5.68): el paquete se baja solo al
+    // sincronizar cuando hay algo nuevo, y después de cada actualización.
   }
   // Actualizar por SD: en la ws397 el firmware entra por OTA desde el servidor
   // propio, así que la entrada solo confunde.
@@ -168,10 +169,8 @@ void SettingsActivity::rebuildSettingsLists() {
   if (!isWs397) {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_KEYBOARD_LAYOUTS, SettingAction::KeyboardLayouts));
   }
-  // Speaker/mic diagnostic: only boards with an audio path (ws397: ES8311).
-  if (BoardConfig::hasAudio()) {
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_AUDIO_TEST, SettingAction::AudioTest));
-  }
+  // La prueba de audio salió del menú (1.5.68): "se va, ya no tiene sentido".
+  // AudioTestActivity queda en el código por si hay que volver a colgarla.
   if (isWs397) {
     // "Prueba de servidor" era un diagnóstico de desarrollo: lo mismo lo dice
     // Sincronizar hub, que además sirve para algo. Queda ServerTestActivity en
@@ -180,7 +179,8 @@ void SettingsActivity::rebuildSettingsLists() {
     // dígitos y la persona lo escribe desde el teléfono, ya con su sesión
     // iniciada. Es la única forma de asociarlo sin teclado.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_PAIR_TITLE, SettingAction::DevicePair));
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_SYNC, SettingAction::HubSync));
+    // Sincronizar hub salió del menú (1.5.68): queda sólo por botón (Atrás
+    // mantenido en el hub), y la ayuda de abajo del hub lo explica.
     // Gestos del IMU: encender o apagar, ver qué lee el sensor y calibrar cómo
     // está montado (sin eso, "inclinar a la derecha" puede ser cualquier eje).
     if (halTiltSensor.isAvailable()) {

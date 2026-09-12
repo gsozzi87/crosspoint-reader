@@ -18,6 +18,7 @@
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "WifiCredentialStore.h"
+#include "activities/home/AssetSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -503,9 +504,21 @@ void HubSyncActivity::loop() {
       runSync();
       break;
     case DONE:
+      // Con la red arriba y algo pendiente del paquete de contenido (una
+      // actualización recién instalada lo anota), se baja acá mismo: "después
+      // de actualizar por OTA que verifique si hay contenido nuevo y lo baje,
+      // no tiene sentido que sea desde ese menú".
+      if (AssetSyncActivity::isPending()) {
+        state = ASSETS;
+        startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput, /*wifiReady=*/true),
+                               [this](const ActivityResult&) { finish(); });
+        break;
+      }
       // Brief confirmation, then straight back (the restart repaints the hub).
       if (millis() - doneAt >= DONE_SCREEN_MS) finish();
       break;
+    case ASSETS:
+      break;  // la descarga tiene el foco; al volver, finish()
     case FAILED:
       if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
           mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {

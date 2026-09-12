@@ -387,13 +387,23 @@ void BibleActivity::showChapter(const std::string& text) {
   // El capítulo va al visor de lectura con la referencia de título (UI_14) y en
   // modo versículos: el número que abre cada uno sale en SMALL negrita, así se
   // sigue una cita sin que un número del tamaño del texto corte la lectura.
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, title, body,
-                                                                        /*htmlDefinition=*/false,
-                                                                        /*verseNumbers=*/true),
-                         [this](const ActivityResult&) {
-                           state = CHAPTERS;
-                           requestUpdate();
-                         });
+  auto viewer = std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, title, body,
+                                                               /*htmlDefinition=*/false,
+                                                               /*verseNumbers=*/true);
+  // "A la Biblia no le encuentro el comando para preguntarle cosas": preguntar
+  // solo existía en la lista de capítulos, y uno pregunta mientras LEE. Atrás
+  // mantenido dentro del capítulo abre el menú de voz con ese capítulo cargado,
+  // y la barra de abajo lo dice.
+  viewer->setVoiceHold(tr(STR_BIBLE_HOLD_ASK), [this] { askAfterViewer = true; });
+  startActivityForResult(std::move(viewer), [this](const ActivityResult&) {
+    state = CHAPTERS;
+    if (askAfterViewer) {
+      askAfterViewer = false;
+      openVoiceMenu();
+      return;
+    }
+    requestUpdate();
+  });
 }
 
 void BibleActivity::ensureConnected(const State next) {

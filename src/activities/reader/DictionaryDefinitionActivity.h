@@ -4,6 +4,7 @@
 #include <Epub/Page.h>
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -45,7 +46,17 @@ class DictionaryDefinitionActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
 
+  // Atrás MANTENIDO como botón de voz: el que abre el visor (la Biblia) le
+  // pasa qué hacer y cómo se llama en la barra de abajo. El visor avisa y se
+  // cierra; el dueño decide qué abrir con lo que estaba leyendo.
+  void setVoiceHold(const char* label, std::function<void()> fn) {
+    voiceHoldLabel = label;
+    onVoiceHold = std::move(fn);
+  }
+
  private:
+  const char* voiceHoldLabel = nullptr;
+  std::function<void()> onVoiceHold;
   // One wrapped display line: a byte span of `definition`. Wrapping keeps
   // lines under the screen width, so uint16_t length is ample.
   struct Line {

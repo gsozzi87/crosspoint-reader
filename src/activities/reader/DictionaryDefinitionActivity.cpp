@@ -290,6 +290,13 @@ void DictionaryDefinitionActivity::wrapText() {
 }
 
 void DictionaryDefinitionActivity::loop() {
+  // Atrás mantenido (1 s) = voz, si el dueño lo pidió. Va ANTES de la suelta
+  // corta: la misma pulsación termina soltando, y esa suelta ya no es "cerrar".
+  if (onVoiceHold && mappedInput.wasLongPressed(MappedInputManager::Button::Back, 1000)) {
+    onVoiceHold();
+    finish();
+    return;
+  }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
     finish();
     return;
@@ -403,7 +410,8 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   // lo que explica la barra; el folio "2 / 5" en una esquina no lo entendía nadie.
   listui::pager(renderer, x, pagerTop(), w, currentPage + 1, totalPages);
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", (currentPage > 0 ? tr(STR_DIR_UP) : ""),
+  const auto labels = mappedInput.mapLabels(voiceHoldLabel ? voiceHoldLabel : tr(STR_BACK), "",
+                                            (currentPage > 0 ? tr(STR_DIR_UP) : ""),
                                             (currentPage + 1 < totalPages ? tr(STR_DIR_DOWN) : ""));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // Esta pantalla es para leer (capítulos de la Biblia, respuestas, noticias),

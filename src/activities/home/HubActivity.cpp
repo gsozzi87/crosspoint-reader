@@ -26,6 +26,7 @@
 #include "MusicActivity.h"
 #include "NewsActivity.h"
 #include "activities/games/LuaAppsActivity.h"
+#include "activities/home/AssetSyncActivity.h"
 #include "WeatherActivity.h"
 #include "NotesActivity.h"
 #include "TimerActivity.h"
@@ -109,6 +110,9 @@ void HubActivity::onEnter() {
 // costs 10-20 s each time.
 bool HubActivity::shouldAutoSync() const {
   if (!SERVER_STORE.hasToken()) return false;
+  // Recién actualizado por OTA: el paquete de contenido está anotado como
+  // pendiente y la sincronización lo baja con la red que levanta para lo demás.
+  if (AssetSyncActivity::isPending()) return true;
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) {
     // No clock yet: only the very first run, so a dead server cannot loop us.

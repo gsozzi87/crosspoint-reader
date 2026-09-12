@@ -38,13 +38,14 @@ constexpr uint8_t TAP_PRIORITY = 4;      // Z > X > Y: el golpe entra por la tap
 // haber pasado desde el sacudón que lo acompaña. Un golpe con la yema mueve el
 // acelerómetro bastante más que el ruido de tenerlo en la mano.
 constexpr unsigned long TAP_REFRACTORY_MS = 1500;
+constexpr float TAP_FACE_UP_N = 0.3f;  // normal minima (g) para creerle a un doble golpe
 // Cuanto silencio hace falta despues de un movimiento grande para volver a
 // creerle al motor de golpes. Azotar el aparato lo dispara igual que un golpe
 // con la yema, y son dos gestos distintos.
 constexpr unsigned long BIG_MOVE_QUIET_MS = 1200;
 constexpr uint8_t TAP_PEAK_WINDOW = 10;  // muestras
 constexpr uint16_t TAP_WINDOW = 25;
-constexpr uint16_t TAP_DTAP_WINDOW = 125;  // medio segundo a 250 Hz
+constexpr uint16_t TAP_DTAP_WINDOW = 175;  // 0,7 s a 250 Hz: con 0,5 s la mitad de los dobles salian 'simple'
 constexpr float TAP_ALPHA = 0.0625f;
 constexpr float TAP_GAMMA = 0.25f;
 constexpr float TAP_PEAK_MAG = 0.8f;  // g^2
@@ -229,9 +230,18 @@ void MotionInput::poll() {
         // mismo reseteara el contador se bloquearía solo (pasó en 1.5.58).
         const bool quiet = now - lastBigMoveMs_ >= BIG_MOVE_QUIET_MS;
         const bool rested = now - lastTapEmitMs_ >= TAP_REFRACTORY_MS;
-        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple",
-                debounced ? " (debounce)" : "", quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)");
-        if (isDouble && !debounced && rested && quiet) {
+        // APOYAR EL APARATO EN LA MESA ES UN GOLPE para el motor del chip (el
+        // contacto con la mesa es un impacto seco, y boca abajo son dos: el
+        // borde y la cara). El log lo mostro clarito: "golpe: doble" y un
+        // segundo despues "boca abajo", y Hablar abierto sin que nadie lo
+        // pidiera. Un doble golpe de verdad se da con la pantalla mirando hacia
+        // arriba (en la mano o en la mesa boca arriba): con la normal hacia
+        // abajo no es un gesto, es que lo apoyaron.
+        const bool faceUp = r.n > TAP_FACE_UP_N;
+        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s%s%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple",
+                debounced ? " (debounce)" : "", quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)",
+                faceUp ? "" : " (no mira arriba: se ignora)");
+        if (isDouble && !debounced && rested && quiet && faceUp) {
           lastTapEmitMs_ = now;
           emit(Event::DoubleTap);
           return;

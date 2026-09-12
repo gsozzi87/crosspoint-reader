@@ -296,7 +296,12 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
 }
 
 void EpubReaderActivity::openDictionaryWordSelect() {
-  if (SETTINGS.dictionaryName[0] == '\0') {
+  // Sin diccionario en la tarjeta: en esta placa la palabra se le pregunta al
+  // servidor ("¿qué significa X en lo que estoy leyendo?"), con el capítulo de
+  // contexto. Antes salía un cartel de un segundo y volvía: "Buscar no dice
+  // nada". En las demás placas el cartel sigue, porque no tienen servidor.
+  const bool askServer = SETTINGS.dictionaryName[0] == '\0' && BoardConfig::isWS397();
+  if (SETTINGS.dictionaryName[0] == '\0' && !askServer) {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
     requestUpdate();
@@ -313,8 +318,17 @@ void EpubReaderActivity::openDictionaryWordSelect() {
   orientedMarginLeft += SETTINGS.screenMargin;
 
   startActivityForResult(std::make_unique<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
-                                                                        orientedMarginLeft, orientedMarginTop),
-                         [this](const ActivityResult&) { requestUpdate(); });
+                                                                        orientedMarginLeft, orientedMarginTop,
+                                                                        askServer),
+                         [this](const ActivityResult& result) {
+                           if (const auto* w = std::get_if<WordResult>(&result.data); w && !w->word.empty()) {
+                             char q[160];
+                             snprintf(q, sizeof(q), tr(STR_ASK_WORD_MEANING), w->word.c_str());
+                             launchAskBook(q);
+                             return;
+                           }
+                           requestUpdate();
+                         });
 }
 
 void EpubReaderActivity::loop() {
@@ -990,7 +1004,7 @@ bool EpubReaderActivity::launchKOReaderSync() {
   return true;
 }
 
-void EpubReaderActivity::launchAskBook() {
+void EpubReaderActivity::launchAskBook(std::string presetQuestion) {
   // Everything the question needs is gathered while the book is still open;
   // then the reader is torn down like launchKOReaderSync() so WiFi + TLS get
   // the heap.
@@ -1027,7 +1041,7 @@ void EpubReaderActivity::launchAskBook() {
 
   activityManager.replaceActivity(std::make_unique<AskBookActivity>(renderer, mappedInput, savedEpubPath, bookTitle,
                                                                     chapterTitle, std::move(contextText),
-                                                                    std::move(pageText)));
+                                                                    std::move(pageText), std::move(presetQuestion)));
 }
 
 void EpubReaderActivity::applyInitialOrientation() {

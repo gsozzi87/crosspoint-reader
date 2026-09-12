@@ -153,6 +153,17 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
 }
 
 void DictionaryWordSelectActivity::performLookup() {
+  if (askMode) {
+    // Sin diccionario en la tarjeta la palabra no se busca acá: vuelve al
+    // lector, que se la pregunta al servidor (mismo camino que "Preguntarle
+    // al libro"). Antes esto era un cartel de un segundo y volver: "no dice
+    // nada, se vuelve".
+    if (selected >= 0 && selected < static_cast<int>(words.size())) {
+      setResult(WordResult{std::string(words[selected].text)});
+    }
+    finish();
+    return;
+  }
   popup = Popup::Busy;
   if (!dictOpenAttempted) {
     dictOpenAttempted = true;

@@ -23,15 +23,18 @@ class AskBookActivity final : public Activity {
  public:
   static constexpr size_t MAX_CONTEXT_BYTES = 24 * 1024;
 
+  // presetQuestion: se manda tal cual, sin menú ni micrófono (la palabra
+  // elegida en la página cuando no hay diccionario en la tarjeta).
   explicit AskBookActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string epubPath,
                            std::string bookTitle, std::string chapterTitle, std::string contextText,
-                           std::string pageText)
+                           std::string pageText, std::string presetQuestion = "")
       : Activity("AskBook", renderer, mappedInput),
         epubPath(std::move(epubPath)),
         bookTitle(std::move(bookTitle)),
         chapterTitle(std::move(chapterTitle)),
         contextText(std::move(contextText)),
-        pageText(std::move(pageText)) {}
+        pageText(std::move(pageText)),
+        presetQuestion(std::move(presetQuestion)) {}
 
   // General mode (hub "Ask" tile): no book, voice question straight away,
   // the server answers from general knowledge; Back returns to the hub.
@@ -57,6 +60,7 @@ class AskBookActivity final : public Activity {
   std::string chapterTitle;
   std::string contextText;
   std::string pageText;
+  std::string presetQuestion;
 
   OptionPopup questionPopup;
   std::vector<std::string> questionOptions;

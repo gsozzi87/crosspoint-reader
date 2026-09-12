@@ -78,6 +78,15 @@ void AskBookActivity::fail(StrId why, std::string detail) {
 
 void AskBookActivity::showQuestionPicker() {
   recorder.release();
+  // Una pregunta ya armada (la palabra elegida en la página): se manda y listo.
+  // Se vacía para que, después de la respuesta, el menú de siempre aparezca.
+  if (!presetQuestion.empty()) {
+    voiceQuestion = false;
+    question = presetQuestion;
+    presetQuestion.clear();
+    connectThenSend();
+    return;
+  }
   // No list without a book: after an answer, a too-short take or Back while
   // recording, general mode just goes back to the hub.
   if (generalMode) {

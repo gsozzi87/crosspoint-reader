@@ -67,9 +67,15 @@ struct FilePathResult {
   std::string path;
 };
 
+// Una palabra elegida en la página (DictionaryWordSelectActivity sin diccionario
+// en la tarjeta): el lector se la pregunta al servidor.
+struct WordResult {
+  std::string word;
+};
+
 using ResultVariant =
     std::variant<std::monostate, WifiResult, KeyboardResult, MenuResult, ChapterResult, PercentResult, IntervalResult,
-                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult>;
+                 PageResult, ProgressChangeResult, NetworkModeResult, FootnoteResult, FilePathResult, WordResult>;
 
 struct ActivityResult {
   bool isCancelled = false;

@@ -55,6 +55,7 @@ class BibleActivity final : public Activity {
   // entendí del versículo 8 al 12, ¿qué quiso decir?") no.
   VoiceRecorder recorder{20};
   bool asking = false;         // la toma en curso es una pregunta, no una búsqueda
+  bool askAfterViewer = false; // Atrás mantenido dentro del capítulo: al cerrar el visor, menú de voz
   int shownSecond = -1;        // último segundo pintado del contador de grabación
   bool forceClean = false;     // pedir un refresco limpio al entrar/salir de la grabación
   bool suppressAssetOffer = false;  // este error no se arregla bajando el paquete
