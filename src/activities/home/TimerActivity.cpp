@@ -246,7 +246,13 @@ void TimerActivity::loop() {
   }
   if (mode == PICK) {
     if (picker.handleInput(mappedInput, [this] { requestUpdate(); })) {
-      if (mode == PICK && !picker.isActive()) {
+      // POR QUE "EL TEMPORIZADOR NO ENTRA". Elegir "Temporizador" con OK
+      // cierra el menu (isActive() = false) y deja pendingPicker = DURATION,
+      // que recien se atiende en la PROXIMA pasada. En ESTA pasada la
+      // condicion de abajo veia "menu cerrado sin elegir" y hacia finish():
+      // la pantalla volvia al hub justo al elegir. Un menu con algo pendiente
+      // no es un menu cancelado.
+      if (mode == PICK && !picker.isActive() && pendingPicker == NONE) {
         if (pickingDuration) {
           showModePicker();
         } else {

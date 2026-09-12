@@ -41,6 +41,8 @@ class PowerKey {
   bool pressed() const { return pressed_ && confirmed_; }
   // millis() since the press edge while pressed(); the last hold length after.
   unsigned long heldMs() const;
+  // Cuando empezo la pulsacion en curso (millis del flanco o del ancla del LONG).
+  unsigned long pressStartMs() const { return pressStartMs_; }
   // True once per release that came before SHORT_PRESS_MAX_MS of hold and
   // whose hold was not already acted upon (consumeHold).
   bool tookShortPress();

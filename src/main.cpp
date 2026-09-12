@@ -92,6 +92,8 @@ constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // aparece la barrita
 constexpr unsigned long POWER_HOLD_SLEEP_MS = POWER_HOLD_ACTION_MS;  // soltar acá o después: suspende
 constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // segundo cartel: está por apagarse
 constexpr unsigned long POWER_HOLD_OFF_MS = 3000;     // apagar de verdad
+// Una pulsacion de PWR anclada antes de esto arranco con el aparato: no es un hold.
+constexpr unsigned long BOOT_KEY_IGNORE_MS = 3500;
 }  // namespace
 
 // A wake hold must never become an in-app button action. Boot may continue
@@ -634,6 +636,18 @@ static void powerOffNow() {
   APP_STATE.showBootScreen = false;
   APP_STATE.saveToFile();
   paintWallpaperForSleep();
+  // NO se corta con el boton todavia apretado. El fondo tarda ~2 s en pintarse
+  // y el usuario sigue con el dedo puesto; si el PMIC corta los rieles con
+  // PWRON abajo, lo vuelve a encender enseguida (PressOn), el firmware arranca
+  // con la tecla mantenida, la toma como pulsacion nueva, a los 3 s vuelve a
+  // apagar... y asi hasta sacar la bateria. Se espera la suelta (el corte duro
+  // del propio PMIC a los 10 s sigue siendo el escape).
+  const unsigned long waitFrom = millis();
+  while (POWER_KEY.pressed() && millis() - waitFrom < 8000) {
+    POWER_KEY.pump();
+    delay(20);
+  }
+  LOG_INF("MAIN", "PWR soltado tras %lu ms de espera: se apaga", millis() - waitFrom);
   devlog::event("MAIN", "apagado por PWR mantenido");
   devlog::close();
   Storage.prepareForDeepSleep();
@@ -641,8 +655,9 @@ static void powerOffNow() {
     LOG_ERR("MAIN", "el PMIC no aceptó el apagado: se duerme");
     return;
   }
-  // El corte no es instantáneo: el PMIC baja los rieles en unos ms.
-  delay(500);
+  // El corte no es instantaneo: el PMIC baja los rieles en unos ms. Si en dos
+  // segundos seguimos vivos, no corto: se cae al deep sleep del llamador.
+  delay(2000);
 }
 
 // Enter deep sleep mode
@@ -753,6 +768,20 @@ static bool handlePowerHold(const bool gateOpen) {
 
   const bool pressed = POWER_KEY.pressed();
   const unsigned long held = POWER_KEY.heldMs();
+
+  // Una pulsacion que empezo antes de que el aparato terminara de arrancar es
+  // la que lo ENCENDIO (o la que lo apago recien y no se solto): no cuenta.
+  // powerReleasedSinceWake no alcanza para esto porque al arrancar el decoder
+  // todavia no la vio (el estado latcheado del PMIC se descarta en begin()) y
+  // "no apretado" se tomaba por "ya solto".
+  if (pressed && POWER_KEY.pressStartMs() < BOOT_KEY_IGNORE_MS) {
+    static bool said = false;
+    if (!said) {
+      said = true;
+      LOG_INF("MAIN", "PWR mantenido desde el arranque (%lu ms): se ignora hasta soltar", held);
+    }
+    return false;
+  }
 
   if (pressed) {
     // No sleep permission yet (just woke / just booted) or DOWN held (screenshot

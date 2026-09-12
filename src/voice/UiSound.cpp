@@ -19,7 +19,11 @@ namespace {
 // el códec en cada tecla mete ~20 ms de retardo y un ciclo del amplificador,
 // así que mientras el usuario navega seguido se deja caliente; en cuanto para,
 // se suelta para que la voz, la música o el micrófono puedan usarlo.
-constexpr uint32_t IDLE_MS = 250;
+// Eran 250 ms. Pero el SDK reinicia el codec ENTERO en cada begin() (reset del
+// vendor + tabla de registros + 20 ms de espera) y ademas cada reproduccion
+// levanta y baja el amplificador: con 250 ms cada clic era un arranque en frio.
+// Con 5 s, una tanda de navegacion paga el arranque del codec una sola vez.
+constexpr uint32_t IDLE_MS = 5000;
 constexpr size_t WAV_BYTES = wav::HEADER_BYTES + uisound::MAX_SAMPLES * sizeof(int16_t);
 
 // POR QUE LOS CLICS DEJARON DE SONAR. Acá había un i2sPortFree() que le
