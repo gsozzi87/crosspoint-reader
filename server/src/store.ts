@@ -247,6 +247,24 @@ export function nextId(store: Store): number {
   return store.nextId++;
 }
 
+// Alta en una lista SIN repetir: "leche" dicho dos veces (o "Leche" y "leche")
+// es un solo ítem. Si ya estaba pendiente, se devuelve ese; si estaba hecho,
+// se vuelve a poner pendiente (es lo que quiso decir el usuario). La fecha
+// nueva, si viene, pisa la vieja.
+export function addListItem(store: Store, list: string, text: string, dueDate: string | null = null): { item: Item; existed: boolean } {
+  const items = (store.lists[list] ??= []);
+  const key = foldName(text);
+  const same = items.find((i) => foldName(i.text) === key);
+  if (same) {
+    same.done = false;
+    if (dueDate) same.dueDate = dueDate;
+    return { item: same, existed: true };
+  }
+  const item: Item = { id: nextId(store), text, done: false, dueDate, createdAt: new Date().toISOString() };
+  items.push(item);
+  return { item, existed: false };
+}
+
 function foldName(s: string): string {
   return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 }

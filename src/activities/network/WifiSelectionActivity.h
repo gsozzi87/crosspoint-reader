@@ -6,7 +6,12 @@
 #include <string>
 #include <vector>
 
+#include <DNSServer.h>
+
+#include <memory>
+
 #include "activities/Activity.h"
+#include "network/CrossPointWebServer.h"
 #include "components/UiAppHost.h"
 #include "util/ButtonNavigator.h"
 
@@ -30,6 +35,7 @@ enum class WifiSelectionState {
   NETWORK_LIST,       // Displaying available networks
   HIDDEN_SSID_ENTRY,  // Entering SSID for a hidden network
   PASSWORD_ENTRY,     // Entering password for selected network
+  PHONE_ENTRY,        // ws397: la clave se carga desde el teléfono por el punto de acceso del aparato
   CONNECTING,         // Attempting to connect
   CONNECTED,          // Successfully connected
   SAVE_PROMPT,        // Asking user if they want to save the password
@@ -98,6 +104,21 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   int savePromptSelection = 0;
   int forgetPromptSelection = 0;
 
+  // ws397: sin teclado, la clave entra desde el teléfono. El aparato levanta su
+  // punto de acceso con la página de ajustes (la misma de "Crear punto de
+  // acceso"), la persona agrega la red ahí y esto se entera mirando el
+  // WifiCredentialStore. Reconocer una clave deletreada por voz sin red no se
+  // puede en este chip (no hay reconocedor español que quepa en el flash), y
+  // con red no hace falta.
+  std::unique_ptr<CrossPointWebServer> phoneServer;
+  std::unique_ptr<DNSServer> phoneDns;
+  unsigned long phonePollAt = 0;
+  size_t phoneCredsBefore = 0;
+  void startPhoneEntry();
+  void stopPhoneEntry();
+  void pumpPhoneEntry();
+  void renderPhoneEntry(const Rect* screen, const ThemeMetrics* metrics) const;
+
   // Connection timeout
   static constexpr unsigned long CONNECTION_TIMEOUT_MS = 15000;
   static constexpr unsigned long AUTO_CONNECTION_TIMEOUT_MS = 7000;
@@ -146,4 +167,8 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
+  // Mientras el teléfono carga la clave, el servidor web del aparato atiende
+  // desde el loop: sin pausa entre pasadas y sin reposo.
+  bool skipLoopDelay() override { return state == WifiSelectionState::PHONE_ENTRY; }
+  bool preventAutoSleep() override { return state == WifiSelectionState::PHONE_ENTRY; }
 };

@@ -77,11 +77,28 @@ void VoiceActivity::onExit() {
     WiFi.disconnect(false);
     delay(30);
     if (timerSeconds > 0) return;  // TimerActivity takes over; a restart would kill it
+    if (returnToCaller) {
+      // La pantalla de abajo sigue viva: se apaga la radio y se vuelve ahí.
+      // El reinicio silencioso es para el lector, que necesita el heap entero.
+      WiFi.mode(WIFI_OFF);
+      return;
+    }
     silentRestart();
   }
 }
 
-void VoiceActivity::leave() { activityManager.goHome(); }
+// Hasta 1.5.69 salir de Hablar era SIEMPRE ir al hub, aunque se hubiera abierto
+// desde Notas o desde la agenda con dos Atrás: "cuando salgo vuelve solo al
+// hub". Si hay una pantalla debajo, se vuelve a esa; desde el lector no (ese
+// se reinicia en silencio para recuperar la memoria).
+void VoiceActivity::leave() {
+  if (activityManager.hasStackedActivities() && !activityManager.isReaderActivity()) {
+    returnToCaller = true;
+    finish();
+    return;
+  }
+  activityManager.goHome();
+}
 
 void VoiceActivity::fail(StrId why, std::string detail) {
   LOG_ERR(TAG, "%s %s", I18N.get(why), detail.c_str());

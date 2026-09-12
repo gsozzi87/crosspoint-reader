@@ -1,5 +1,6 @@
 #include "WifiSelectionActivity.h"
 
+#include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <I18n.h>
@@ -162,6 +163,7 @@ void WifiSelectionActivity::onEnter() {
 
 void WifiSelectionActivity::onExit() {
   Activity::onExit();
+  if (state == WifiSelectionState::PHONE_ENTRY) stopPhoneEntry();  // una alarma pudo sacarnos con el AP arriba
 
   LOG_DBG("WIFI", "Free heap at onExit start: %d bytes", ESP.getFreeHeap());
 
@@ -342,6 +344,10 @@ void WifiSelectionActivity::selectNetwork(const int index) {
 }
 
 void WifiSelectionActivity::promptPasswordEntry() {
+  if (BoardConfig::isWS397()) {
+    startPhoneEntry();  // esta placa no tiene teclado: la clave entra por el teléfono
+    return;
+  }
   // Show password entry
   state = WifiSelectionState::PASSWORD_ENTRY;
   // Don't allow screen updates while changing activity
@@ -366,6 +372,10 @@ void WifiSelectionActivity::promptHiddenSsid() {
   enteredPassword.clear();
   autoConnecting = false;
 
+  if (BoardConfig::isWS397()) {
+    startPhoneEntry();  // nombre y clave de la red oculta, los dos desde el teléfono
+    return;
+  }
   // Suppress rendering during the activity transition (see render()).
   state = WifiSelectionState::HIDDEN_SSID_ENTRY;
   startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_SSID),
@@ -610,6 +620,11 @@ void WifiSelectionActivity::loop() {
       }
     }
     checkConnectionStatus();
+    return;
+  }
+
+  if (state == WifiSelectionState::PHONE_ENTRY) {
+    pumpPhoneEntry();
     return;
   }
 
@@ -883,9 +898,117 @@ void WifiSelectionActivity::render(RenderLock&&) {
     case WifiSelectionState::CONNECTION_FAILED:
       renderConnectionFailed(&screen, &metrics);
       break;
+    case WifiSelectionState::PHONE_ENTRY:
+      renderPhoneEntry(&screen, &metrics);
+      break;
   }
 
   renderer.displayBuffer();
+}
+
+// ── ws397: la clave desde el teléfono ───────────────────────────────────────
+
+void WifiSelectionActivity::startPhoneEntry() {
+  state = WifiSelectionState::PHONE_ENTRY;
+  phoneCredsBefore = WIFI_STORE.getCredentialCount();
+  phonePollAt = millis();
+  LOG_INF("WiFi", "clave por el teléfono: punto de acceso para %s", selectedSSID.empty() ? "(red oculta)" : selectedSSID.c_str());
+
+  WiFi.disconnect(false);
+  WiFi.mode(WIFI_AP);
+  delay(100);
+  // Mismo nombre, abierta y con portal cautivo, que "Crear punto de acceso":
+  // el teléfono la reconoce y abre la página solo.
+  if (!WiFi.softAP("CrossPoint-Reader", nullptr, 1, false, 4)) {
+    LOG_ERR("WiFi", "no se pudo levantar el punto de acceso");
+    stopPhoneEntry();
+    state = WifiSelectionState::NETWORK_LIST;
+    requestUpdate();
+    return;
+  }
+  delay(100);
+  phoneDns.reset(new DNSServer());
+  phoneDns->setErrorReplyCode(DNSReplyCode::NoError);
+  phoneDns->start(53, "*", WiFi.softAPIP());
+  phoneServer.reset(new CrossPointWebServer());
+  phoneServer->begin();
+  if (!phoneServer->isRunning()) {
+    LOG_ERR("WiFi", "no arrancó el servidor web del punto de acceso");
+    stopPhoneEntry();
+    state = WifiSelectionState::NETWORK_LIST;
+  }
+  requestUpdate();
+}
+
+void WifiSelectionActivity::stopPhoneEntry() {
+  if (phoneServer) {
+    phoneServer->stop();
+    phoneServer.reset();
+  }
+  if (phoneDns) {
+    phoneDns->stop();
+    phoneDns.reset();
+  }
+  WiFi.softAPdisconnect(true);
+  WiFi.mode(WIFI_STA);
+  delay(100);
+}
+
+void WifiSelectionActivity::pumpPhoneEntry() {
+  if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    stopPhoneEntry();
+    state = WifiSelectionState::NETWORK_LIST;
+    requestUpdate();
+    return;
+  }
+  if (phoneDns) phoneDns->processNextRequest();
+  if (phoneServer) phoneServer->handleClient();
+  if (millis() - phonePollAt < 500) return;
+  phonePollAt = millis();
+
+  // La página guarda en el WifiCredentialStore; acá solo se mira si apareció
+  // la red elegida (o cualquiera nueva, si era oculta).
+  std::optional<WifiCredential> cred;
+  if (!selectedSSID.empty()) {
+    cred = WIFI_STORE.findCredential(selectedSSID);
+  } else if (WIFI_STORE.getCredentialCount() > phoneCredsBefore) {
+    cred = WIFI_STORE.getCredentialAt(WIFI_STORE.getCredentialCount() - 1);
+  }
+  if (!cred) return;
+  LOG_INF("WiFi", "clave recibida del teléfono para %s", cred->ssid.c_str());
+  stopPhoneEntry();
+  selectedSSID = cred->ssid;
+  enteredPassword = cred->password;
+  selectedRequiresPassword = !cred->password.empty();
+  usedSavedPassword = true;  // ya quedó guardada: no hay que volver a preguntar
+  attemptConnection();
+}
+
+void WifiSelectionActivity::renderPhoneEntry(const Rect* screen, const ThemeMetrics* metrics) const {
+  const int x = screen->x + metrics->contentSidePadding;
+  const int w = screen->width - metrics->contentSidePadding * 2;
+  const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
+  int y = screen->y + metrics->topPadding + metrics->headerHeight + metrics->tabBarHeight + metrics->verticalSpacing * 2;
+
+  UITheme::drawCenteredWrappedText(renderer, Rect{x, y, w, lineH * 3}, UI_12_FONT_ID, tr(STR_WIFI_PHONE_TITLE), 2, true,
+                                   EpdFontFamily::BOLD);
+  y += lineH * 2 + metrics->verticalSpacing * 2;
+  if (!selectedSSID.empty()) {
+    const std::string net = std::string(tr(STR_TO_PREFIX)) + selectedSSID;
+    renderer.drawText(UI_10_FONT_ID, x, y, renderer.truncatedText(UI_10_FONT_ID, net.c_str(), w).c_str());
+    y += lineH + metrics->verticalSpacing;
+  }
+  const StrId steps[] = {StrId::STR_WIFI_PHONE_STEP1, StrId::STR_WIFI_PHONE_STEP2, StrId::STR_WIFI_PHONE_STEP3};
+  for (const StrId step : steps) {
+    const Rect box{x, y, w, lineH * 2 + 2};
+    UITheme::drawCenteredWrappedText(renderer, box, UI_10_FONT_ID, I18N.get(step), 2);
+    y += lineH * 2 + metrics->verticalSpacing;
+  }
+  y += metrics->verticalSpacing;
+  UITheme::drawCenteredWrappedText(renderer, Rect{x, y, w, lineH * 2 + 2}, UI_10_FONT_ID, tr(STR_WIFI_PHONE_WAIT), 2);
+
+  const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 
 void WifiSelectionActivity::listScreen(UiScreen& screen, void* user) {

@@ -49,6 +49,9 @@ class VoiceActivity final : public Activity {
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
   bool wifiActivated = false;
+  // Se vuelve a la pantalla que abrió Hablar (dos Atrás, doble golpe, la
+  // agenda) en vez de al hub; ahí no hay reinicio silencioso.
+  bool returnToCaller = false;
   bool requestPending = false;
   FriendlyWifi wifi;
   bool wifiPicker = false;  // la pantalla de seleccion tiene el foco

@@ -182,7 +182,7 @@ std::string AgendaActivity::sectionPreview(const int index) const {
       return out;
     }
   }
-  return tr(STR_AGENDA_EMPTY);
+  return tr(STR_AGENDA_EMPTY_VOICE);
 }
 
 std::string AgendaActivity::itemText(const int index, std::string& detail) const {
@@ -312,8 +312,18 @@ void AgendaActivity::onMenuPick(const int index) {
 // OK sobre una sección: abre su lista de ítems. Una sección vacía no se abre
 // (no hay nada que mostrar y la fila ya dice "Nada pendiente"): se queda en las
 // secciones, que es lo que explica qué hay adentro de cada una.
+// Sin nada adentro, OK no tenía efecto y no había forma de crear el primero:
+// "si no hay recordatorios o tareas no te deja entrar a generar uno nuevo". El
+// aparato no tiene teclado, así que lo nuevo se dicta.
+void AgendaActivity::dictateNew() {
+  activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
+}
+
 void AgendaActivity::openSection() {
-  if (sectionItemCount(sectionIndex) == 0) return;
+  if (sectionItemCount(sectionIndex) == 0) {
+    dictateNew();
+    return;
+  }
   level = ITEMS;
   itemIndex = 0;
   requestUpdate();
@@ -630,6 +640,8 @@ void AgendaActivity::loop() {
   if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
     if (level == SECTIONS) {
       openSection();
+    } else if (itemCount() == 0) {
+      dictateNew();  // se tildó el último: OK dicta el siguiente
     } else if (current().kind == REMINDERS) {
       openEditor();  // un recordatorio se abre para ver y cambiar cuándo suena
     } else {

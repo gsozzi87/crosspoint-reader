@@ -29,7 +29,7 @@
 import { Hono } from "hono";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { load, mutate, nextId, resolveList, upsertReminder, refreshTimeZone, repeatText, pendingReminders, normalizeRepeat, localToEpoch, whenLabel, todayLocal, DEFAULT_LISTS, listLabel, DEFAULT_SETTINGS, type Settings } from "./store";
+import { load, mutate, nextId, resolveList, addListItem, upsertReminder, refreshTimeZone, repeatText, pendingReminders, normalizeRepeat, localToEpoch, whenLabel, todayLocal, DEFAULT_LISTS, listLabel, DEFAULT_SETTINGS, type Settings } from "./store";
 import { logMeta } from "./devicelog";
 import { LIMITS, quotasOn, usageOf } from "./usage";
 import { multiUser } from "./db";
@@ -84,12 +84,12 @@ boardApi.post("/item", async (c) => {
   }
   const text = (b.text ?? "").toString().trim().slice(0, 200);
   if (!text) return c.json({ ok: false, error: "text required" }, 400);
-  const list = await mutate(acc, (store) => {
+  const res = await mutate(acc, (store) => {
     const l = resolveList(store, b.list);
-    store.lists[l].push({ id: nextId(store), text, done: false, dueDate: null, createdAt: new Date().toISOString() });
-    return l;
+    const r = addListItem(store, l, text);
+    return { list: l, id: r.item.id, existed: r.existed };
   });
-  return c.json({ ok: true, list });
+  return c.json({ ok: true, ...res });
 });
 
 // Memoria del asistente: alta y edición a mano (hasta ahora solo entraba por

@@ -108,6 +108,10 @@ class ActivityManager {
   // del loop principal para no abrirse encima de sí mismo.
   const char* currentActivityName() const;
 
+  // ¿Hay una pantalla esperando debajo de la actual? (la que la abrió con
+  // pushActivity). Con esto Hablar sabe si tiene adónde volver.
+  bool hasStackedActivities() const { return !stackActivities.empty(); }
+
   bool preventAutoSleep() const;
   bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;

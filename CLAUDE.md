@@ -596,6 +596,24 @@ certificado se valida contra la fecha. Sin eso el arreglo deja al aparato sin re
   `UiSound::play`). Es a pedido: "cuando se reproduzca la música los demás sonidos no deben oírse, sólo la música".
   Los avisos (`AlertBeep`, Piper) sí mandan: cortan la canción, porque el I2S es uno solo.
 
+## Lo de 1.5.70 (y el servidor que va con él)
+
+- **Hablar vuelve a donde se abrió.** `VoiceActivity::leave()` era siempre `goHome()`: desde Notas o la agenda con
+  dos Atrás, al salir se caía al hub ("cuando salgo de escuchar la nota de voz vuelve solo al hub"). Si hay una
+  pantalla debajo (`ActivityManager::hasStackedActivities()`) y no es el lector, `finish()` y `WiFi.mode(WIFI_OFF)`
+  sin reinicio silencioso; el reinicio queda para el lector, que necesita el heap entero.
+- **Agenda vacía: OK dicta uno nuevo.** Sin ítems no había forma de crear el primero. `AgendaActivity::dictateNew()`
+  abre Hablar desde una sección vacía o al tildar el último; el renglón vacío lo dice
+  (`STR_AGENDA_EMPTY_VOICE`).
+- **Las listas no repiten** (`store.addListItem`): mismo texto sin acentos ni mayúsculas = mismo ítem; si estaba
+  hecho vuelve a pendiente. Lo usan `/api/voice` y `/api/board/item`.
+- **La clave del WiFi entra por el teléfono** (`WifiSelectionActivity`, estado `PHONE_ENTRY`, solo ws397): en vez
+  del teclado en pantalla, el aparato levanta su punto de acceso abierto `CrossPoint-Reader` con portal cautivo y
+  la página `/settings` de siempre; la persona agrega la red ahí y el aparato, mirando el `WifiCredentialStore`
+  cada 500 ms, se conecta solo. Vale también para la red oculta (cualquier credencial nueva). **Dictar la clave
+  deletreada sin red NO se puede**: en el S3 no hay reconocedor de voz en español que quepa (ESP-SR MultiNet es
+  inglés y chino y pide varios MB de flash; estamos en 87 %), y con red no hace falta porque ya está conectado.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

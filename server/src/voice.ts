@@ -22,7 +22,7 @@
 import { Hono } from "hono";
 import Anthropic from "@anthropic-ai/sdk";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
-import { load, mutate, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, rollForwardIfPast, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
+import { addListItem, load, mutate, nextId, resolveList, listLabel, whenLabel, pendingReminders, localToEpoch, epochToLocal, advanceRepeat, normalizeRepeat, repeatText, repeatToWire, alignToRepeat, rollForwardIfPast, NO_REPEAT, memoryLines, rememberFact, timeZone, DEFAULT_LISTS, SHOPPING_LIST, type Repeat } from "./store";
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
@@ -306,16 +306,14 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
       }
       case "task": {
         const list = resolveList(store, a.list);
-        const tid = nextId(store);
-        store.lists[list].push({ id: tid, text: title, done: false, dueDate: a.dueAt ? a.dueAt.slice(0, 10) : null, createdAt: stamp });
-        saved.push({ kind: "task", id: tid, list: listLabel(list, lang), title });
+        const { item } = addListItem(store, list, title, a.dueAt ? a.dueAt.slice(0, 10) : null);
+        saved.push({ kind: "task", id: item.id, list: listLabel(list, lang), title: item.text });
         break;
       }
       case "shopping": {
         const list = resolveList(store, a.list ?? SHOPPING_LIST);
-        const sid = nextId(store);
-        store.lists[list].push({ id: sid, text: title, done: false, dueDate: null, createdAt: stamp });
-        saved.push({ kind: "shopping", id: sid, list: listLabel(list, lang), title });
+        const { item } = addListItem(store, list, title);
+        saved.push({ kind: "shopping", id: item.id, list: listLabel(list, lang), title: item.text });
         break;
       }
       // "message" ya no existe como intención (se sacó la pizarra del producto);

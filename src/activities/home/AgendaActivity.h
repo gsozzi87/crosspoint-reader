@@ -93,6 +93,7 @@ class AgendaActivity final : public Activity {
   const freeink::Icon* sectionIcon(int index) const;
   std::string sectionTitle(int index) const;
   int sectionItemCount(int index) const;
+  void dictateNew();
   // Lo que hay adentro de la sección, en una línea: es lo que convierte la
   // lista de secciones en la pantalla que explica qué hay en cada una.
   std::string sectionPreview(int index) const;
