@@ -119,6 +119,12 @@ están arreglados en la misma versión:
   `Woke::Rejected` que no toca el contador de ocio.
 - **Con una alarma vencida que la pantalla no atiende** (el lector, a propósito) el tope salía 1 ms
   y el aparato entraba y salía del light sleep sin parar. Ahora no se reposa por menos de 500 ms.
+- **Una pista EN PAUSA mantenía el aparato despierto para siempre.** `MUSIC.isActive()` es "hay
+  una pista cargada" y sigue siendo cierto pausado; decidía tanto el contador de ocio como el
+  bloqueo del reposo. Ahora las dos cosas preguntan `isSounding()`.
+- **La red de seguridad quedaba muerta.** Sólo corría con el tiempo en "nunca", y con el valor
+  forzado de la ws397 eso ya no puede pasar. Peor: medía contra un contador que `preventAutoSleep()`
+  congela. Ahora mide contra `lastUserInputTime`, que sólo reinician los botones y los gestos.
 - **`ReminderAlertActivity` pedía `preventAutoSleep()` para siempre**, y eso reinicia el contador de
   ocio: una alarma a las 3 AM que nadie atendía dejaba el aparato despierto hasta la mañana. Ahora
   lo pide sólo mientras suena, como el temporizador.

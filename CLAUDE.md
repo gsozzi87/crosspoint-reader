@@ -412,7 +412,17 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   (el lector, a propósito) el tope salía 1 ms y el aparato giraba entrando y saliendo del light sleep sin parar.
 - `preventAutoSleep()` **reinicia el contador de ocio**, así que una Activity que lo pida para siempre mantiene el
   aparato despierto para siempre. `ReminderAlertActivity` lo hacía: una alarma a las 3 AM que nadie atendía se
-  comía la batería hasta la mañana. Ahora lo pide sólo mientras suena, como el temporizador.
+  comía la batería hasta la mañana. Ahora lo pide sólo mientras suena, como el temporizador. `OpdsBookBrowserActivity`
+  sigue pidiéndolo fijo, pero es upstream y no se toca: para eso está la red de seguridad.
+- **Pausar no es estar sonando**: `MUSIC.isActive()` quiere decir "hay una pista cargada" y sigue siendo cierto en
+  pausa, así que usarlo para decidir si dormir dejaba el aparato despierto para siempre con la canción pausada —
+  lo contrario de lo que uno espera al pausar. El contador de ocio y el bloqueo del reposo preguntan `isSounding()`.
+- **Red de seguridad, la buena** (1.5.72): mide contra `lastUserInputTime`, que **sólo** lo reinician los botones y
+  los gestos, nunca `preventAutoSleep()` ni la música. Si nadie tocó el aparato en media hora, no está enchufado y
+  el reposo sigue bloqueado, se duerme igual. Antes esta red sólo corría con el tiempo en "nunca"
+  (`sleepTimeoutMs == 0`), o sea que con el valor forzado de la ws397 habría quedado muerta justo cuando más hace
+  falta: el auto-sleep de los diez minutos **no** alcanza, porque una Activity que pide "no duermas" congela el
+  contador de ocio y con él ese auto-sleep.
 - **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
   de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
   decide DESPUÉS, así nunca puede impedirlo.

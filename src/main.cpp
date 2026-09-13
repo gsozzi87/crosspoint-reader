@@ -1347,10 +1347,21 @@ void loop() {
   // PWR sí cuenta siempre: es el que desbloquea.
   const bool userInput = (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() ||
                                            halTiltSensor.hadActivity());
-  if (userInput || activityManager.preventAutoSleep() || MUSIC.isActive() || POWER_KEY.pressed()) {
+  // `isSounding()` y no `isActive()`: `isActive()` es "hay una pista cargada",
+  // que sigue siendo cierto EN PAUSA. Con `isActive()` una canción pausada
+  // reiniciaba el contador de ocio en cada pasada y el aparato se quedaba
+  // despierto a 40 mA para siempre, que es justo lo contrario de pausar. Desde
+  // F04 la pausa frena la tarea y apaga el canal TX, así que pausado no hay
+  // nada que proteger.
+  if (userInput || activityManager.preventAutoSleep() || MUSIC.isSounding() || POWER_KEY.pressed()) {
     lastActivityTime = millis();         // Reset inactivity timer
     powerManager.setPowerSaving(false);  // Restore normal CPU frequency on user activity
   }
+  // Lo ÚLTIMO que hizo una persona, sin contar lo que el firmware se impone
+  // solo. `lastActivityTime` lo reinician `preventAutoSleep()` y la música, así
+  // que no sirve para saber si el aparato está abandonado: para eso está éste.
+  static unsigned long lastUserInputTime = millis();
+  if (userInput) lastUserInputTime = millis();
 
   // Music and alarms run BEFORE any early return below (wake release,
   // screenshot combo, hold banner): holding PWR must not freeze the track or
@@ -1462,27 +1473,24 @@ void loop() {
               POWER_KEY.vbusPresent() ? 1 : 0, gpio.isUsbConnected() ? 1 : 0);
     }
     const bool restBlocked = activityManager.preventAutoSleep() || activityManager.skipLoopDelay() ||
-                             MUSIC.isActive() || busyRecording() || POWER_KEY.pressed() || cablePuesto ||
+                             MUSIC.isSounding() || busyRecording() || POWER_KEY.pressed() || cablePuesto ||
                              WiFi.getMode() != WIFI_MODE_NULL;
-    // Red de seguridad del modo "siempre encendido" (sleepTimeoutMs == 0): ahí
-    // nadie va a mandar el aparato a dormir, así que si algo bloquea el reposo
-    // de forma permanente —la red que quedó arriba, el menú abierto— la batería
-    // se termina en una noche sin que nadie se entere. A la media hora de ocio
-    // sin haber podido reposar ni una vez, se duerme igual y queda dicho en el
-    // log por qué. Enchufado no aplica: ahí la batería no es el problema.
-    // OJO: desde 1.5.72 la ws397 tiene el tiempo FORZADO a 10 minutos, así que
-    // acá `sleepTimeoutMs` nunca es 0 y esta rama no se alcanza. Se deja por si
-    // el valor forzado vuelve a ser configurable. Y ojo con el otro lado: el
-    // auto-sleep de más arriba tampoco es una garantía absoluta, porque
-    // `preventAutoSleep()` reinicia el contador de ocio unas líneas más arriba;
-    // por eso una Activity que lo pida para siempre mantiene el aparato
-    // despierto, y por eso ReminderAlertActivity dejó de pedirlo para siempre.
+    // Red de seguridad. Hasta 1.5.71 sólo corría con el tiempo en "nunca"
+    // (sleepTimeoutMs == 0); con el valor forzado de la ws397 eso ya no puede
+    // pasar, así que quedaría muerta justo cuando más hace falta. Ahora mide
+    // contra `lastUserInputTime`, que NO lo reinician ni `preventAutoSleep()`
+    // ni la música: si nadie tocó el aparato en media hora, no está enchufado y
+    // el reposo sigue bloqueado, se duerme igual y queda dicho por qué.
+    // Cubre lo que el auto-sleep no puede cubrir: una Activity que pide
+    // "no duermas" para siempre (OpdsBookBrowserActivity lo hace) congela el
+    // contador de ocio y con él el auto-sleep de los diez minutos.
     static unsigned long restBlockedSince = 0;
     if (restBlocked && !cablePuesto && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
       if (restBlockedSince == 0) restBlockedSince = millis();
-      if (sleepTimeoutMs == 0 && millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS) {
-        LOG_ERR("MAIN", "siempre encendido: el reposo lleva %lu ms bloqueado, se duerme igual",
-                millis() - restBlockedSince);
+      if (millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS &&
+          millis() - lastUserInputTime >= REST_BLOCKED_GIVE_UP_MS) {
+        LOG_ERR("MAIN", "el reposo lleva %lu ms bloqueado y nadie toca el aparato hace %lu ms: se duerme igual",
+                millis() - restBlockedSince, millis() - lastUserInputTime);
         restBlockedSince = 0;
         enterDeepSleep(true);
         return;
