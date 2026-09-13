@@ -285,9 +285,12 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
   }
 }
 
-void ActivityManager::goToSleep(bool fromTimeout) {
+void ActivityManager::goToSleep(bool fromTimeout, bool render) {
   replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout));
-  loop();  // Important: sleep screen must be rendered immediately, the caller will go to sleep right after this returns
+  // Important: sleep screen must be rendered immediately, the caller will go to
+  // sleep right after this returns. Salvo que el llamador vaya a pintar él otra
+  // cosa encima (ws397: el fondo de pantalla con información).
+  if (render) loop();
 }
 
 void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }

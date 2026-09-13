@@ -88,7 +88,12 @@ class ActivityManager {
   void goToRecentBooks();
   void goToBrowser();
   void goToReader(std::string path, bool allowFastInitialRefresh = false);
-  void goToSleep(bool fromTimeout = false);
+  // `render` en false deja la pantalla de sueño montada pero NO la pinta. Lo
+  // usa la ws397, donde el fondo de pantalla informativo se pinta justo
+  // después: pintar las dos es pagar dos refrescos de pantalla entera antes de
+  // dormir para que el segundo tape al primero. El reemplazo de Activity (y con
+  // él el onExit de la que estaba) pasa igual.
+  void goToSleep(bool fromTimeout = false, bool render = true);
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

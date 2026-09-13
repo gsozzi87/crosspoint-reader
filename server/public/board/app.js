@@ -644,7 +644,6 @@ function hoyView() {
 function masView() {
   const item = (href, ic, label, sub) => '<li><a href="' + href + '"><span class="ic">' + ic + '</span><span class="lbl">' + esc(label) + (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="chev">›</span></a></li>';
   let html = '<ul class="menu">' +
-    item("#mas/fotos", "🖼", "Fotos", "Las que ve el aparato en su álbum") +
     item("#mas/noticias", "📰", "Noticias", S.feeds.length ? S.feeds.length + " feed" + (S.feeds.length === 1 ? "" : "s") : "Ningún feed cargado") +
     item("#mas/viajes", "✈️", "Viajes", "Días, horarios y papeles") +
     item("#mas/memoria", "🧠", "Memoria del asistente", S.memories.length + " datos") +
@@ -661,82 +660,6 @@ function masView() {
 }
 
 // ── Fotos ───────────────────────────────────────────────────────────────────
-let photos = null;
-
-async function loadPhotos() {
-  const r = await api("/api/photos");
-  photos = r.photos;
-  return photos;
-}
-
-function fotosView() {
-  let html = '<div class="card"><p class="hint">Sube fotos tal como salen del teléfono: el servidor las pasa a 4 grises de 480x800 y el aparato las baja la próxima vez que entres a Fotos. Hasta 60; las más viejas se van solas.</p>' +
-    '<input type="file" id="photoFiles" accept="image/*" multiple hidden><button class="wide" data-act="photo-pick">Subir fotos</button><p class="muted" id="photoStatus" style="margin-top:8px"></p></div>';
-  if (!photos) { html += '<p class="loading">Cargando…</p>'; loadPhotos().then(render).catch((e) => toast(e.message)); return html; }
-  if (!photos.length) return html + '<p class="loading">Todavía no hay fotos.</p>';
-  html += '<div class="grid">' + photos.map((p) => '<button class="ph" data-act="photo-open" data-id="' + attr(p.id) + '"><img loading="lazy" src="' + photoSrc(p.id) + '" alt=""><span>' + esc(p.name) + "</span></button>").join("") + "</div>";
-  return html;
-}
-
-// Las imágenes se piden con <img>, que no manda cabeceras: con token va en la
-// URL... no: el token NO tiene que ir en URLs (quedan en el historial). Se bajan
-// con fetch y se muestran como blob.
-const blobCache = {};
-function photoSrc(id) {
-  const key = "p:" + id;
-  if (blobCache[key]) return blobCache[key];
-  loadBlob("/api/photos/preview?id=" + encodeURIComponent(id), key);
-  return "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
-}
-async function loadBlob(url, key) {
-  if (blobCache[key] === "loading") return;
-  blobCache[key] = "loading";
-  try {
-    const r = await fetch(url, { headers: authHeaders(), credentials: "same-origin" });
-    if (!r.ok) throw new Error("http " + r.status);
-    blobCache[key] = URL.createObjectURL(await r.blob());
-    qsa(document, "img[data-blob='" + key + "']").forEach((img) => { img.src = blobCache[key]; });
-    if (screenId() === "mas") render();
-  } catch (e) { delete blobCache[key]; }
-}
-
-async function uploadPhotos(files) {
-  const st = $("photoStatus");
-  let n = 0;
-  for (const f of files) {
-    if (st) st.textContent = "Subiendo " + f.name + " (" + kb(f.size) + ")…";
-    try {
-      const r = await fetch("/api/board/photo?name=" + encodeURIComponent(f.name.replace(/\.[^.]+$/, "")), {
-        method: "POST", headers: Object.assign({ "Content-Type": f.type || "application/octet-stream" }, authHeaders()), credentials: "same-origin", body: f,
-      });
-      const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || "http " + r.status);
-      n++;
-    } catch (e) { toast("No se pudo subir " + f.name + ": " + e.message, 4000); }
-  }
-  if (st) st.textContent = n ? n + " foto" + (n === 1 ? "" : "s") + " lista" + (n === 1 ? "" : "s") + ". El aparato las baja al entrar a Fotos." : "";
-  photos = null;
-  render();
-}
-
-function photoSheet(p) {
-  const key = "p:" + p.id;
-  openSheet(p.name,
-    '<img class="preview" data-blob="' + key + '" src="' + photoSrc(p.id) + '" alt="">' +
-    '<p class="muted">' + esc(fmtStamp(p.at)) + " · " + kb(p.size) + " en el aparato</p>",
-    {
-      del: async () => {
-        if (!sure("¿Borrar la foto «" + p.name + "»?")) return false;
-        await api("/api/photos/delete", { id: p.id });
-        photos = null;
-        toast("Borrada");
-        render();
-        return true;
-      },
-    });
-}
-
-// ── Noticias ────────────────────────────────────────────────────────────────
 function noticiasView() {
   let html = '<div class="card"><h2>Feeds</h2><p class="hint">Pega la dirección del diario o del feed (RSS o Atom). Se prueba antes de guardarlo. El aparato los lee en Noticias.</p>' +
     '<form data-form="feed-add"><div class="addbar"><input name="url" placeholder="https://diario.com/rss" autocomplete="off" inputmode="url"><button>Agregar</button></div><input name="name" placeholder="Nombre (opcional)" maxlength="40" style="margin-top:-2px"></form>' +
@@ -1231,7 +1154,7 @@ function quickAdd(kind) {
 function parts() { return (location.hash.replace(/^#/, "") || "hoy").split("/"); }
 function screenId() { return parts()[0]; }
 
-const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", mas: "Más", fotos: "Fotos", noticias: "Noticias", viajes: "Viajes", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
+const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", mas: "Más", noticias: "Noticias", viajes: "Viajes", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
 
 function render() {
   if (!entered || !S) return;
@@ -1255,8 +1178,7 @@ function render() {
       else {
         back = "#mas";
         title = TITLES[p[1]] || title;
-        if (p[1] === "fotos") html = fotosView();
-        else if (p[1] === "noticias") { html = noticiasView(); fab = false; }
+        if (p[1] === "noticias") { html = noticiasView(); fab = false; }
         else if (p[1] === "viajes") {
           if (p[2]) { back = "#mas/viajes"; title = (tripCache[p[2]] && tripCache[p[2]].name) || "Viaje"; html = tripView(p[2]); }
           else html = viajesView();
@@ -1380,8 +1302,6 @@ document.addEventListener("click", async (ev) => {
       }
 
       // Fotos
-      case "photo-pick": $("photoFiles").click(); break;
-      case "photo-open": { const p = (photos || []).find((x) => x.id === d.id); if (p) photoSheet(p); break; }
 
       // Ajustes
       case "place-pick": {
@@ -1515,7 +1435,6 @@ document.addEventListener("submit", async (ev) => {
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
-  if (t.id === "photoFiles" && t.files.length) uploadPhotos(Array.from(t.files));
   if (t.id === "attFile" && t.files[0]) { const trip = tripCache[parts()[2]]; if (trip) uploadAttachment(trip, t.files[0]); }
   if (t.name === "musicVolume") { const out = qs(t.closest("form"), ".volOut"); if (out) out.textContent = t.value + " %"; }
   if (t.name === "preset" && cfg) onPresetChange(t.closest("form"));
@@ -1528,14 +1447,13 @@ document.addEventListener("input", (ev) => {
 $("sheetBg").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && sheetOpts) closeSheet(); });
 $("backBtn").addEventListener("click", () => { location.hash = $("backBtn").dataset.to || "#mas"; });
-$("reloadBtn").addEventListener("click", () => { clearCal(); photos = null; trips = null; tripCache = {}; rssCache = null; refresh(); });
+$("reloadBtn").addEventListener("click", () => { clearCal(); trips = null; tripCache = {}; rssCache = null; refresh(); });
 $("fab").addEventListener("click", () => {
   const p = parts();
   if (p[0] === "listas") quickAdd(listSeg() === "Compras" ? "shop" : "task");
   else if (p[0] === "notas") noteEditor(null);
   else if (p[0] === "agenda" && p[1] === "cal") eventEditor(null, calSel || todayIso());
   else if (p[0] === "agenda") reminderEditor(null);
-  else if (p[0] === "mas" && p[1] === "fotos") $("photoFiles").click();
   else if (p[0] === "mas" && p[1] === "viajes" && p[2]) { const t = tripCache[p[2]]; if (t) tripItemEditor(t, t.days[0] ? t.days[0].date : t.start, null); }
   else if (p[0] === "mas" && p[1] === "viajes") tripEditor(null);
   else quickAdd("reminder");

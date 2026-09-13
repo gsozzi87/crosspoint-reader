@@ -33,7 +33,7 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "HubStore.h"
-#include "activities/home/PhotosActivity.h"
+#include "activities/home/SleepScreen.h"
 #include "activities/home/ReminderAlertActivity.h"
 #include "activities/home/TimerActivity.h"
 #include "activities/home/VoiceActivity.h"
@@ -632,20 +632,19 @@ static void checkMotionGestures() {
   }
 }
 
-// ws397: fondo de pantalla. La foto que se eligió en Ajustes → Fondo de pantalla
-// se pinta acá, encima de la pantalla de sueño y con la SD todavía montada (más
-// adelante `Storage.prepareForDeepSleep()` la desmonta y `display.deepSleep()`
-// apaga el panel, así que este es el último momento posible). Sin foto elegida,
-// o si el archivo no está o no se puede leer, queda la pantalla de sueño de
-// siempre: nunca se cuelga el sueño por esto.
-static void paintWallpaperForSleep() {
-  if (HUB_STORE.wallpaperPath.empty()) return;
-  if (!Storage.exists(HUB_STORE.wallpaperPath.c_str())) {
-    LOG_ERR("MAIN", "fondo de pantalla: no está %s", HUB_STORE.wallpaperPath.c_str());
-    return;
-  }
-  if (!PhotosActivity::drawFullScreenPhoto(renderer, HUB_STORE.wallpaperPath)) {
-    LOG_ERR("MAIN", "fondo de pantalla: no se pudo pintar %s", HUB_STORE.wallpaperPath.c_str());
+// ws397: el fondo de pantalla es la pantalla de información, y es lo ÚLTIMO
+// que se pinta antes de que el sistema se muera. Va con la tarjeta todavía
+// montada (más adelante `Storage.prepareForDeepSleep()` la desmonta y
+// `display.deepSleep()` apaga el panel, así que este es el último momento
+// posible) y los titulares se leen ACÁ, antes de que la SD se vaya.
+//
+// Reemplaza a las dos pinturas que se pagaban antes: la pantalla de sueño del
+// SDK y, encima, la foto elegida en Ajustes → Fondo de pantalla. Las fotos
+// salieron del producto.
+static void paintWallpaperForSleep(const sleepscreen::State state = sleepscreen::State::Suspended) {
+  const std::vector<std::string> news = sleepscreen::readHeadlines();
+  if (!sleepscreen::paint(renderer, state, news)) {
+    LOG_ERR("MAIN", "fondo de pantalla: no se pudo pintar");
   }
 }
 
@@ -658,7 +657,7 @@ static void powerOffNow() {
   HUB_STORE.saveToFile();
   APP_STATE.showBootScreen = false;
   APP_STATE.saveToFile();
-  paintWallpaperForSleep();
+  paintWallpaperForSleep(sleepscreen::State::PoweredOff);
   // NO se corta con el boton todavia apretado. El fondo tarda ~2 s en pintarse
   // y el usuario sigue con el dedo puesto; si el PMIC corta los rieles con
   // PWRON abajo, lo vuelve a encender enseguida (PressOn), el firmware arranca
@@ -701,7 +700,11 @@ void enterDeepSleep(bool fromTimeout = false) {
   // Commit to sleeping before goToSleep() runs the outgoing activity's onExit():
   // a WiFi activity would otherwise silentRestart() here and reboot instead.
   deepSleepInProgress = true;
-  activityManager.goToSleep(fromTimeout);
+  // En la ws397 no se pinta la pantalla de sueño del SDK: el fondo informativo
+  // la tapa entera unas líneas más abajo, así que pintarla es pagar un refresco
+  // de pantalla completa para nada. De paso, el cuadro que guarda Quick Resume
+  // queda siendo la pantalla anterior, que es lo que corresponde.
+  activityManager.goToSleep(fromTimeout, !BoardConfig::isWS397());
 
   if (isQuickResumeSleep) {
     saveSleepFrameBuffer();

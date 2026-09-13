@@ -21,7 +21,6 @@
 //   POST /api/board/note     {id?, text}
 //   POST /api/board/memory   {id?, text}
 //   POST /api/board/feed     {name, url} crea · {id, name} renombra
-//   POST /api/board/photo?name=      (la foto tal como sale del teléfono; convierte el servidor)
 //   POST /api/board/attachment?trip=&name=   (multipart o cuerpo crudo: PDF del vuelo, del hotel...)
 //   GET  /api/board/extra    -> {feeds, memories, settings, lists} (lo usa el firmware viejo; queda)
 //   POST /api/board/settings {lang, speak, uiSound, musicVolume, translatorLang}
@@ -33,7 +32,6 @@ import { load, mutate, nextId, resolveList, addListItem, upsertReminder, refresh
 import { logMeta } from "./devicelog";
 import { LIMITS, quotasOn, usageOf } from "./usage";
 import { multiUser } from "./db";
-import { savePhoto, toDeviceBmp, MAX_UPLOAD_BYTES } from "./photos";
 import { hubDiagnostics } from "./hub";
 import { config, saveConfig, publicConfig, MODEL_PRICES, STT_PRICES, SEARCH_PRICE_ANTHROPIC, QUERY_SHAPE, deepSeekPeak, queryCost, type Config } from "./config";
 import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSearchKind } from "./llm";
@@ -172,35 +170,6 @@ boardApi.post("/feed/test", async (c) => {
   if (!feed) return c.json({ ok: false, error: "no está" }, 404);
   const r = await checkFeed(feed.url);
   return c.json({ ok: true, name: feed.name, ...r });
-});
-
-// La foto se sube tal como salió del teléfono (JPEG, PNG, lo que sea) y la
-// convierte el servidor: rota por EXIF, escala a 480x800, pasa a 4 grises con
-// difuminado y arma el BMP de 2 bpp. Antes lo hacía el navegador con un canvas y
-// salía apaisado y sin control. Un BMP ya convertido se acepta igual.
-boardApi.post("/photo", async (c) => {
-  const name = (c.req.query("name") ?? "foto").toString().slice(0, 80);
-  const bytes = new Uint8Array(await c.req.arrayBuffer());
-  if (bytes.byteLength < 100 || bytes.byteLength > MAX_UPLOAD_BYTES) return c.json({ ok: false, error: "bad size" }, 400);
-  const isBmp = bytes[0] === 0x42 && bytes[1] === 0x4d;
-  let out: Uint8Array<ArrayBufferLike> = bytes;
-  if (!isBmp) {
-    try {
-      const t0 = Date.now();
-      out = await toDeviceBmp(bytes);
-      console.log(`photo: ${name} ${bytes.byteLength} B -> ${out.byteLength} B en ${Date.now() - t0} ms`);
-    } catch (err) {
-      console.error("photo convert:", err);
-      return c.json({ ok: false, error: `no se pudo convertir (${String(err).slice(0, 120)})` }, 400);
-    }
-  }
-  try {
-    const id = await savePhoto(accountOf(c), name, out);
-    return c.json({ ok: true, id });
-  } catch (err) {
-    console.error("photo save:", err);
-    return c.json({ ok: false, error: `no se pudo guardar (${String(err).slice(0, 120)})` }, 500);
-  }
 });
 
 // Adjuntos de los viajes (attachments.ts): el PDF entra tal como salió del mail

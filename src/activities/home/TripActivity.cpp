@@ -15,7 +15,7 @@
 
 #include "CalendarActivity.h"
 #include "MappedInputManager.h"
-#include "PhotosActivity.h"
+#include "../../util/FullScreenBmp.h"
 #include "SilentRestart.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -1007,7 +1007,7 @@ void TripActivity::renderAttachmentText() {
 }
 
 // La imagen de la página con el pipeline de grises del SDK: el mismo que usa
-// PhotosActivity, no hay un segundo dibujante de BMP en el aparato.
+// fullscreenbmp, no hay un segundo dibujante de BMP en el aparato.
 void TripActivity::drawImagePage() {
   const int pageWidth = renderer.getScreenWidth();
   char page[40];
@@ -1020,7 +1020,7 @@ void TripActivity::drawImagePage() {
     }
   };
   GUI.drawPopup(renderer, tr(STR_LOADING));
-  if (PhotosActivity::drawFullScreenPhoto(renderer, pagePath(attId, attPage), overlay)) return;
+  if (fullscreenbmp::draw(renderer, pagePath(attId, attPage), overlay)) return;
   renderer.clearScreen();
   renderer.drawCenteredText(UI_10_FONT_ID, renderer.getScreenHeight() / 2, tr(STR_FILE_OPEN_FAILED));
   overlay();

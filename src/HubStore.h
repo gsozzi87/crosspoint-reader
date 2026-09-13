@@ -79,9 +79,6 @@ class HubStore : public PersistableStore<HubStore> {
   // mano CADA vez, aunque hubiera una sola: el reproductor abria siempre la
   // lista de carpetas y no se acordaba de nada.
   std::string musicFolder;
-  // Fondo de pantalla: la foto que se pinta al suspenderse (Ajustes → Fondo de
-  // pantalla, `PhotosActivity`). Vacío = pantalla de sueño de siempre.
-  std::string wallpaperPath;  // "/Photos/<id>.bmp" en la SD
   std::string wallpaperName;  // nombre para mostrar en la lista
   // Temporizador / pomodoro / cronómetro: sobreviven al sueño (el aparato se
   // despierta para el temporizador) y se ven en el hub. Salir con Atrás NO los

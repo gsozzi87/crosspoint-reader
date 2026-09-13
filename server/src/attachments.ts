@@ -29,7 +29,7 @@ import bwipjs from "bwip-js/node";
 import { readBarcodes, prepareZXingModule } from "zxing-wasm/reader";
 import { attachmentsDir, mutateDoc, readDoc, writeBytesAtomic } from "./fsjson";
 import { accountOf, type AppEnv } from "./tenant";
-import { bmpToPng, toDeviceBmp } from "./photos";
+import { bmpToPng, toDeviceBmp } from "./deviceBmp";
 import { readBody } from "./net";
 
 // Los bitmaps son archivos: cada cuenta tiene su directorio (la 1, la que ya

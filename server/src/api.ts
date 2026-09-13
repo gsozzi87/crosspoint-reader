@@ -21,7 +21,6 @@ import { translate } from "./translate";
 import { boardApi } from "./board";
 import { bibleApi } from "./bible";
 import { rss } from "./rss";
-import { photos } from "./photos";
 import { deviceLog } from "./devicelog";
 import { assets } from "./assets";
 import { tripApi, tripsApi } from "./trips";
@@ -125,7 +124,6 @@ api.route("/board", boardApi);        // POST /api/board/{reminder,item,note} �
 api.route("/notes", notes);          // POST /api/notes → nota rápida, sin pasar por el clasificador
 api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find}; POST /api/bible/ask → Biblia y preguntas sobre el capítulo
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
-api.route("/photos", photos);
 api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete, /dictate → calendario local
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
 api.route("/trips", tripsApi);       // GET  /api/trips?lang= → lista de viajes
@@ -133,4 +131,3 @@ api.route("/trip", tripApi);         // GET  /api/trip?id= y los POST de días, 
 api.route("/suggest", suggest);        // GET /api/suggest/day, /trip → sugerencias del día y del viaje (cacheadas, con tope diario)
 api.route("/attachment", attachmentApi);  // GET /api/attachment?id=&page= → el bitmap listo para pintar; /info → texto extraído
 api.route("/account", accountApi);  // POST /api/account/pair, /device/rename, /device/delete, /password (desde la web)
-api.route("/log", deviceLog);         // POST /api/log → el aparato sube su log; se lee en /board/log         // GET  /api/photos, /api/photos/file?id= → álbum (BMP 2 bpp ya convertido)

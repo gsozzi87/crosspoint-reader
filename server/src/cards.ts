@@ -12,7 +12,7 @@
 // CC BY); igual quedan acreditados en server/README.md.
 //
 // La pantalla del aparato pinta **4 grises**, no blanco y negro: los dibujos se
-// convierten con el mismo pipeline que las fotos (`toDeviceBmp` de photos.ts) y
+// convierten con el mismo pipeline que las fotos (`toDeviceBmp` de deviceBmp.ts) y
 // salen como BMP de 2 bpp. Por eso ahora sí se puede usar un dibujo con
 // volumen en vez de una silueta.
 //

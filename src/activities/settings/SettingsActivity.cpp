@@ -30,7 +30,6 @@
 #include "HubStore.h"
 #include "voice/UiSound.h"
 #include "activities/home/HubLocationActivity.h"
-#include "activities/home/PhotosActivity.h"
 #include "activities/home/HubSyncActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
@@ -221,7 +220,6 @@ void SettingsActivity::rebuildSettingsLists() {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_SETTING_MEMORY, SettingAction::Memory));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_HUB_LOCATION, SettingAction::HubLocation));
     // Fondo de pantalla: elegir qué foto queda pintada cuando el aparato se suspende.
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_WALLPAPER, SettingAction::Wallpaper));
     systemSettings.push_back(SettingInfo::DynamicEnum(
         StrId::STR_SPEAK_MODE, {StrId::STR_SPEAK_NEVER, StrId::STR_SPEAK_SHORT, StrId::STR_SPEAK_ALWAYS},
         [] { return HUB_STORE.speakMode; },
@@ -529,9 +527,6 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::HubLocation:
         startActivityForResult(std::make_unique<HubLocationActivity>(renderer, mappedInput), resultHandler);
-        break;
-      case SettingAction::Wallpaper:
-        startActivityForResult(std::make_unique<PhotosActivity>(renderer, mappedInput), resultHandler);
         break;
       case SettingAction::CheckForUpdates:
         startActivityForResult(std::make_unique<OtaUpdateActivity>(renderer, mappedInput), resultHandler);

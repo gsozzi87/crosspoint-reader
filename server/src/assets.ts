@@ -60,7 +60,7 @@ const NOTO_URL = (file: string) => `https://cdn.jsdelivr.net/gh/googlefonts/noto
 export const CARD_PX = 320;
 // Margen: el emoji ocupa el 94 % del cuadro y el resto queda de aire.
 const CARD_INSET = 0.94;
-// Los cuatro grises del panel (los mismos que usa toDeviceBmp en photos.ts).
+// Los cuatro grises del panel (los mismos que usa toDeviceBmp en deviceBmp.ts).
 const LEVELS = [0, 85, 170, 255];
 // Hasta dónde se aclara la figura. Un emoji amarillo (la luna, la estrella, la
 // banana) en gris queda casi blanco y DESAPARECE contra el fondo, así que el
@@ -147,7 +147,7 @@ async function writeAsset(file: string, data: Uint8Array): Promise<void> {
 // ── Dibujos de las tarjetas ─────────────────────────────────────────────────
 //
 // BMP de 2 bits por píxel con paleta de cuatro grises: el MISMO formato que ya
-// usan las fotos y los adjuntos (`toDeviceBmp` en photos.ts), o sea el que el
+// usan las fotos y los adjuntos (`toDeviceBmp` en deviceBmp.ts), o sea el que el
 // lector de BMP del firmware (`lib/GfxRenderer/Bitmap`) ya sabe leer. Filas de
 // abajo hacia arriba (BMP clásico) y padding a 4 bytes; con 320 px de ancho la
 // fila mide 80 bytes y ya está alineada.

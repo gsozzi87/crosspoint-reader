@@ -322,12 +322,20 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   El hub quedó en 14 mosaicos (1.5.48): fila ancha "Mi día" + Conversor, y debajo 4x3 con Leer, Hablar, Traductor,
   Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos, Ajustes. **Ya no hay "Próximamente"**: los
   catorce abren de verdad.
-- Fotos (`PhotosActivity`, mosaico Fotos): `GET /api/photos` y `/api/photos/file?id=` (`server/src/photos.ts`). La
-  foto se sube **tal como sale del teléfono** y la convierte el servidor con `sharp` (`toDeviceBmp`: rota por EXIF,
-  escala a 480x800, 4 grises con Floyd-Steinberg y BMP de 2 bpp, ~150 ms); el navegador ya no arma nada. El aparato
-  pide la lista al servidor cada vez que se entra, baja a `/Photos` de la SD y dibuja con el **pipeline de grises**
-  del SDK (base BW + pasada LSB + pasada MSB + `displayGrayBuffer`): una sola pasada en modo BW pintaba de negro todo
-  lo que no fuera blanco puro y la foto salía como una mancha.
+- **Las fotos salieron del producto (1.5.74).** El fondo de pantalla ya no es una imagen elegida a mano: es la
+  **pantalla de información** que queda en el vidrio cuando el aparato se muere (`src/activities/home/SleepScreen`).
+  Dice **SUSPENDIDO** o **APAGADO**, y con eso **cómo se vuelve**, que no es lo mismo: suspendido despierta **OK**
+  (GPIO5, el único botón que es RTC GPIO en el S3) y apagado enciende **PWR mantenido 1 s** (PressOn del AXP2101,
+  lo único que funciona sin ESP). La hora va como **sello**, no como reloj — nadie la va a actualizar —, y lo que
+  va en dígitos de segmentos es la **próxima alarma**, que es el dato que sigue siendo cierto durmiendo. Debajo:
+  clima, libro abierto y los **titulares** que entren (de la caché de Noticias, leída ANTES de que
+  `prepareForDeepSleep()` desmonte la tarjeta). Se pinta **una sola vez** y con FULL: antes se pagaban DOS pantallas
+  completas (la de sueño del SDK y encima la foto), y ahora `goToSleep()` acepta `render=false` para no pintar la
+  primera. De paso el cuadro de Quick Resume queda siendo la pantalla anterior, que es lo que corresponde.
+  El dibujante de BMP a pantalla completa NO era de las fotos (lo usan los adjuntos de los viajes): vive en
+  `src/util/FullScreenBmp`. En el servidor pasó lo mismo con `toDeviceBmp`/`bmpToPng`, que están en
+  `server/src/deviceBmp.ts`; `sharp` **no** se puede sacar del Docker porque lo usan los adjuntos y el paquete de
+  contenido.
 - Conversor de unidades (`UnitsActivity`, mosaico Conversor, 1.5.48): **la cuenta es toda del aparato**; lo único
   que necesita servidor es pasar la voz a texto. Siete familias — longitud, peso, temperatura, volumen, superficie,
   velocidad y **cocina** (con ingrediente, para pasar tazas a gramos) — con la cantidad en dígitos de 7 segmentos,
