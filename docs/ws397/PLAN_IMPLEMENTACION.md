@@ -170,7 +170,7 @@ Depende de la Ola 2 (el camino de sueño se toca en las dos). Maqueta:
 
 ---
 
-## Ola 4 — 1.5.75 · Noticias masticadas ✅ (falta la sincronización única)
+## Ola 4 — 1.5.75 / 1.5.76 · Noticias masticadas y sincronización única ✅ HECHA
 
 Las dos cosas van juntas porque el paquete de noticias viaja en la sincronización.
 

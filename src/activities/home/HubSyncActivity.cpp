@@ -20,6 +20,7 @@
 #include "WifiCredentialStore.h"
 #include "activities/home/AssetSyncActivity.h"
 #include "news/NewsPack.h"
+#include "sync/Sync.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -495,6 +496,8 @@ void HubSyncActivity::runSync() {
     // masticó, acá sólo se baja lo que falte. Con tope, porque esto corre con
     // la pantalla esperando; el resto entra en la próxima pasada.
     newspack::sync(/*budget=*/6);
+    // La sincronización oportunista del loop no tiene por qué repetir esto.
+    devicesync::markFresh();
     uploadLog();
     WiFi.setSleep(true);
   }

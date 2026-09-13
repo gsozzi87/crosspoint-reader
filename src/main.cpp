@@ -58,6 +58,7 @@
 #include "util/PowerKey.h"
 #include "util/Shtc3.h"
 #include "util/BatteryLog.h"
+#include "sync/Sync.h"
 #include "util/TempSweep.h"
 #include "util/IdleSleep.h"
 #include "util/RtcAlarm.h"
@@ -1378,6 +1379,16 @@ void loop() {
   // silence a reminder. The music player lives outside the Activity; this is
   // what chains the next track when one ends, wherever the user is.
   MUSIC.pump();
+
+  // Si la red quedó arriba por cualquier motivo (Hablar, Noticias, la Biblia,
+  // el Clima, un viaje…) y la pantalla de turno ya terminó lo suyo, se
+  // aprovecha para subir lo pendiente y bajar lo que cambió. La guardia de
+  // "desocupada" es la que hace que esto no se meta en el medio de nada: casi
+  // toda Activity de red pide preventAutoSleep() MIENTRAS trabaja.
+  if (BoardConfig::isWS397() && !activityManager.preventAutoSleep() && !activityManager.isReaderActivity() &&
+      !busyRecording() && !MUSIC.isSounding()) {
+    devicesync::ifDue(millis() - lastActivityTime);
+  }
   static unsigned long lastAlarmCheck = 0;
   if (millis() - lastAlarmCheck >= 5000) {
     lastAlarmCheck = millis();

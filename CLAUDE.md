@@ -320,6 +320,22 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `src/music/Mp3Source` decodifica con Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una
   `AudioManager::WavSource` con cabecera WAV sintética; tags ID3v2/v1; volumen en `HubStore::musicVolume`.
   Pausa = volumen 0.
+- **Sincronización oportunista (1.5.76, `src/sync/Sync`)**: si la red ya está arriba por CUALQUIER motivo, el loop
+  aprovecha para subir lo pendiente y bajar lo que cambió. Antes la única sincronización de verdad era
+  `HubSyncActivity` y sólo se abría desde el hub; trece o catorce Activities levantan WiFi (Hablar, Noticias, la
+  Biblia, el Clima, los Viajes, el Traductor, Preguntarle al libro, Vincular) y ninguna bajaba nada de paso.
+  Tres guardias, y las tres hacen falta:
+  1. **La pantalla tiene que estar desocupada** (`!preventAutoSleep()`): casi toda Activity de red lo pide MIENTRAS
+     trabaja, así que la guardia espera sola a que termine y usa la ventana en la que la red sigue arriba y ya no
+     hay nada en curso.
+  2. **Tres segundos de quietud** (`QUIET_MS`): esto es SÍNCRONO y bloquea el loop unos segundos; hacerlo encima de
+     una pulsación se siente como que el aparato se colgó.
+  3. **El hub sólo se baja si la pantalla de turno no guarda índices dentro de `HubStore`.** `AgendaActivity` cachea
+     `sectionIndex`/`itemIndex` sobre `lists` y `reminders`, y `NotesActivity` lo mismo: reemplazar esos vectores
+     por debajo no deja una pantalla fea, deja una lectura fuera de rango. Con Agenda, Notas, Hub, Tiempo o el
+     alerta de recordatorio en frente se sube y se bajan **las noticias** —que son archivos y no los referencia
+     nadie— y el hub espera. No se pierde nada: en esas pantallas el hub ya sincronizó al entrar.
+  Como mucho una vez cada `MIN_GAP_MIN` (30 min), y `HubSyncActivity` llama a `markFresh()` para que no se repita.
 - **Noticias: el servidor mastica, el aparato sólo lee (1.5.75).** El usuario carga los feeds en `/board`; el
   servidor (`server/src/news.ts`) los recorre **solo, cada hora**, se mete en cada noticia, la limpia y las diez más
   nuevas además pasan por el modelo, que las reescribe para leerlas en una pantalla chica. Eso arma un **paquete**
