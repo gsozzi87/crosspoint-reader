@@ -1,4 +1,7 @@
 #include "UITheme.h"
+#include <BoardConfig.h>
+
+#include "components/themes/diario/DiarioTheme.h"
 
 #include <FsHelpers.h>
 #include <GfxRenderer.h>
@@ -18,15 +21,20 @@
 
 UITheme UITheme::instance;
 
-UITheme::UITheme() {
-  auto themeType = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  setTheme(themeType);
+UITheme::UITheme() { setTheme(wantedTheme()); }
+
+// En la ws397 el tema sale de SU propio ajuste, que ofrece sólo los dos que
+// tiene el producto (Diario y Lyra). No se puede hacer con el enum de siempre:
+// lo que se persiste ahí es el NÚMERO y `SettingInfo::Enum` mapea índice a
+// valor uno a uno, así que una lista de dos entradas dejaría fuera de rango
+// justamente a Diario. Renumerar el enum tampoco: le cambiaría el tema a quien
+// ya eligió en las otras placas.
+CrossPointSettings::UI_THEME UITheme::wantedTheme() {
+  if (!BoardConfig::isWS397()) return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
+  return SETTINGS.uiThemeWs397 == 1 ? CrossPointSettings::UI_THEME::LYRA : CrossPointSettings::UI_THEME::DIARIO;
 }
 
-void UITheme::reload() {
-  auto themeType = static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  setTheme(themeType);
-}
+void UITheme::reload() { setTheme(wantedTheme()); }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
   switch (type) {
@@ -44,6 +52,11 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using RoundedRaff theme");
       currentTheme = std::make_unique<RoundedRaffTheme>();
       currentMetrics = &RoundedRaffMetrics::values;
+      break;
+    case CrossPointSettings::UI_THEME::DIARIO:
+      LOG_DBG("UI", "Using Diario theme");
+      currentTheme = std::make_unique<DiarioTheme>();
+      currentMetrics = &DiarioMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");

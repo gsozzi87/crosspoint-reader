@@ -36,6 +36,26 @@
 // una cara.
 namespace listui {
 
+// Las caras salen del TEMA, con el default de siempre si el tema no opina.
+// Son funciones y no constantes porque el tema se elige en caliente
+// (Ajustes → Pantalla → Interfaz recarga y repinta sin reiniciar).
+inline int titleFont() {
+  const int f = UITheme::getInstance().getMetrics().listTitleFont;
+  return f != 0 ? f : UI_12_FONT_ID;
+}
+inline int detailFont() {
+  const int f = UITheme::getInstance().getMetrics().listDetailFont;
+  return f != 0 ? f : UI_10_FONT_ID;
+}
+inline int sectionFont() {
+  const int f = UITheme::getInstance().getMetrics().sectionTitleFont;
+  return f != 0 ? f : UI_14_FONT_ID;
+}
+inline int datumFont() {
+  const int f = UITheme::getInstance().getMetrics().sectionDatumFont;
+  return f != 0 ? f : SMALL_FONT_ID;
+}
+
 constexpr int SIDE = 24;      // ÚNICO margen lateral de la pantalla
 constexpr int PAD = 24;       // borde de la fila -> texto (deja libre la franja del resalte)
 constexpr int ROW1_H = 48;    // fila de un renglón
@@ -98,14 +118,14 @@ inline int sectionHeader(const GfxRenderer& renderer, const int x, const int y, 
   // medirlo sin recortarlo se come el rótulo y se sale de la pantalla por la
   // izquierda. Media caja para el dato como mucho, y el origen nunca a la
   // izquierda del margen.
-  const std::string datumText = datum && *datum ? renderer.truncatedText(SMALL_FONT_ID, datum, w / 2) : std::string();
-  const int datumW = datumText.empty() ? 0 : renderer.getTextWidth(SMALL_FONT_ID, datumText.c_str());
+  const std::string datumText = datum && *datum ? renderer.truncatedText(datumFont(), datum, w / 2) : std::string();
+  const int datumW = datumText.empty() ? 0 : renderer.getTextWidth(datumFont(), datumText.c_str());
   const int titleW = w - (datumW > 0 ? datumW + META_GAP : 0);
   const int titleY = y + 3;
-  renderer.drawText(UI_14_FONT_ID, x, titleY, renderer.truncatedText(UI_14_FONT_ID, title, titleW).c_str());
+  renderer.drawText(sectionFont(), x, titleY, renderer.truncatedText(sectionFont(), title, titleW).c_str());
   if (datumW > 0) {
-    const int baseY = titleY + renderer.getFontAscenderSize(UI_14_FONT_ID) - renderer.getFontAscenderSize(SMALL_FONT_ID);
-    renderer.drawText(SMALL_FONT_ID, std::max(x, x + w - datumW), baseY, datumText.c_str());
+    const int baseY = titleY + renderer.getFontAscenderSize(sectionFont()) - renderer.getFontAscenderSize(datumFont());
+    renderer.drawText(datumFont(), std::max(x, x + w - datumW), baseY, datumText.c_str());
   }
   rule(renderer, x, y + SECTION_H - 1, w);
   return y + SECTION_H;
@@ -148,15 +168,15 @@ inline void row(const GfxRenderer& renderer, const int x, const int y, const int
 
   const EpdFontFamily::Style titleStyle = spec.bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
   const char* title = spec.title ? spec.title : "";
-  const int lineTitle = renderer.getLineHeight(UI_12_FONT_ID);
-  const int lineDetail = renderer.getLineHeight(UI_10_FONT_ID);
+  const int lineTitle = renderer.getLineHeight(titleFont());
+  const int lineDetail = renderer.getLineHeight(detailFont());
   const bool twoLines = spec.detail && *spec.detail;
   const int block = twoLines ? lineTitle + lineDetail : lineTitle;
   // Si la pantalla le dio menos alto del que piden los dos renglones, el bloque
   // arranca arriba de todo en vez de salirse por arriba de la fila.
   const int titleY = y + std::max(0, (h - block) / 2);
-  const int ascTitle = renderer.getFontAscenderSize(UI_12_FONT_ID);
-  const int ascMeta = renderer.getFontAscenderSize(UI_10_FONT_ID);
+  const int ascTitle = renderer.getFontAscenderSize(titleFont());
+  const int ascMeta = renderer.getFontAscenderSize(detailFont());
 
   int textX = x + PAD;
   if (spec.icon) {
@@ -175,17 +195,17 @@ inline void row(const GfxRenderer& renderer, const int x, const int y, const int
   if (spec.meta && *spec.meta) {
     // El metadato se queda con tres quintos de la fila como mucho: lo que se
     // corta es el valor largo, nunca el título, que es lo que identifica la fila.
-    const std::string text = renderer.truncatedText(UI_10_FONT_ID, spec.meta, (w - 2 * PAD) * 3 / 5);
-    const int textW = renderer.getTextWidth(UI_10_FONT_ID, text.c_str());
+    const std::string text = renderer.truncatedText(detailFont(), spec.meta, (w - 2 * PAD) * 3 / 5);
+    const int textW = renderer.getTextWidth(detailFont(), text.c_str());
     const int metaY = titleY + ascTitle - ascMeta;
     if (spec.metaBox) {
       const int boxW = std::max(28, textW + 16);
-      const int boxH = renderer.getLineHeight(UI_10_FONT_ID) + 4;
+      const int boxH = renderer.getLineHeight(detailFont()) + 4;
       renderer.drawRect(right - boxW, metaY - 2, boxW, boxH, 1, true);
-      renderer.drawText(UI_10_FONT_ID, right - boxW + (boxW - textW) / 2, metaY, text.c_str(), SELECTION_INK);
+      renderer.drawText(detailFont(), right - boxW + (boxW - textW) / 2, metaY, text.c_str(), SELECTION_INK);
       metaW = boxW;
     } else {
-      renderer.drawText(UI_10_FONT_ID, right - textW, metaY, text.c_str(), SELECTION_INK);
+      renderer.drawText(detailFont(), right - textW, metaY, text.c_str(), SELECTION_INK);
       metaW = textW;
     }
     metaW += META_GAP;
@@ -193,16 +213,16 @@ inline void row(const GfxRenderer& renderer, const int x, const int y, const int
 
   const int titleW = right - metaW - textX;
   if (titleW > 0) {
-    renderer.drawText(UI_12_FONT_ID, textX, titleY,
-                      renderer.truncatedText(UI_12_FONT_ID, title, titleW, titleStyle).c_str(), SELECTION_INK,
+    renderer.drawText(titleFont(), textX, titleY,
+                      renderer.truncatedText(titleFont(), title, titleW, titleStyle).c_str(), SELECTION_INK,
                       titleStyle);
   }
   // El segundo renglón usa todo el ancho salvo cuando el metadato va en un
   // marco: ahí la caja baja hasta la línea del detalle y se le deja el lugar.
   const int detailW = right - textX - (spec.metaBox ? metaW : 0);
   if (twoLines && detailW > 0) {
-    renderer.drawText(UI_10_FONT_ID, textX, titleY + lineTitle,
-                      renderer.truncatedText(UI_10_FONT_ID, spec.detail, detailW).c_str(), SELECTION_INK);
+    renderer.drawText(detailFont(), textX, titleY + lineTitle,
+                      renderer.truncatedText(detailFont(), spec.detail, detailW).c_str(), SELECTION_INK);
   }
 }
 
@@ -211,7 +231,7 @@ inline void row(const GfxRenderer& renderer, const int x, const int y, const int
 inline void hint(const GfxRenderer& renderer, const int y, const char* text) {
   if (!text || !*text) return;
   const int w = contentWidth(renderer);
-  renderer.drawCenteredText(UI_10_FONT_ID, y, renderer.truncatedText(UI_10_FONT_ID, text, w).c_str());
+  renderer.drawCenteredText(detailFont(), y, renderer.truncatedText(detailFont(), text, w).c_str());
 }
 
 // El paginador. "2 / 5" en una esquina no lo entiende nadie: va la frase entera
@@ -228,12 +248,12 @@ inline void pager(const GfxRenderer& renderer, const int x, const int y, const i
   const int page = std::min(std::max(rawPage, 1), pages);
   char text[48];
   snprintf(text, sizeof(text), fmt && *fmt ? fmt : tr(STR_PAGE_FORMAT), page, pages);
-  const int textW = renderer.getTextWidth(UI_10_FONT_ID, text);
-  renderer.drawText(UI_10_FONT_ID, x, y, text);
+  const int textW = renderer.getTextWidth(detailFont(), text);
+  renderer.drawText(detailFont(), x, y, text);
   const int barX = x + textW + META_GAP;
   const int barW = w - textW - META_GAP;
   if (barW < 40) return;
-  const int barY = y + renderer.getFontAscenderSize(UI_10_FONT_ID) / 2;
+  const int barY = y + renderer.getFontAscenderSize(detailFont()) / 2;
   renderer.fillRect(barX, barY, barW, 1, true);
   const int done = std::max(1, barW * page / pages);
   renderer.fillRect(barX, barY - 1, done, 3, true);

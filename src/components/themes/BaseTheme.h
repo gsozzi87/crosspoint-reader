@@ -32,6 +32,16 @@ struct ThemeMetrics {
   int previewPadding;
   int previewHeightPercent;
 
+  // Las caras con las que se dibujan NUESTRAS listas (namespace `listui`).
+  // Estaban fijas en `ListStyle.h`, y por eso cambiar de tema cambiaba el
+  // lector y dejaba el hub, la agenda, las notas y las noticias exactamente
+  // igual: el tema no mandaba donde el usuario pasa el tiempo. Ahora sí.
+  // 0 = el default de siempre (UI_12 / UI_10 / UI_14 / SMALL).
+  int listTitleFont = 0;     // título de la fila
+  int listDetailFont = 0;    // segundo renglón y metadato
+  int sectionTitleFont = 0;  // encabezado de sección
+  int sectionDatumFont = 0;  // el dato de la derecha del encabezado
+
   int contentSidePadding;
   int listRowHeight;
   int listWithSubtitleRowHeight;

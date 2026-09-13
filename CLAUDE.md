@@ -403,6 +403,25 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **Los mensajes se sacaron del sistema en 1.5.44** ("me parece algo irrelevante"): no están más ni en el aparato,
   ni en `GET /api/hub`, ni en la Pizarra, ni como intención de voz (lo que el modelo clasifique como mensaje se
   guarda como nota).
+- **El tema manda en NUESTRAS pantallas desde 1.5.77, y antes no.** Existía `UITheme` con cuatro temas (Clásico,
+  Lyra, Lyra Extendido, RoundedRaff) y el default era Lyra — de ahí el `[UI] Using Lyra theme` del log —, pero el
+  hub, la agenda, las notas, las noticias, la Biblia y los viajes dibujan con `src/activities/ListStyle.h`, que
+  tenía las caras **fijas**. O sea que cambiar de tema cambiaba el lector y dejaba igual justo donde el usuario
+  pasa el tiempo. Ahora `listui` pide las cuatro caras al tema (`listTitleFont`, `listDetailFont`,
+  `sectionTitleFont`, `sectionDatumFont`; 0 = el default de siempre) y son **funciones**, no constantes, porque el
+  tema se cambia en caliente.
+  La geometría (margen de 24 px, grilla de 8) NO se movió al tema a propósito: es del sistema visual, no del tema.
+- **Diario** (`src/components/themes/diario/DiarioTheme.h`) es el tema de fábrica de la ws397: serif para lo que se
+  lee, la sans chica para etiquetas y datos, filete de 3 px al pie del cabezal. Hereda de Lyra y sólo pisa lo que
+  hace al carácter.
+- **El selector de la ws397 es OTRO campo** (`uiThemeWs397`: 0 = Diario, 1 = Lyra) y ofrece sólo esos dos. No se
+  puede hacer con el enum de siempre: lo que se persiste es el NÚMERO y `SettingInfo::Enum` mapea índice a valor
+  uno a uno, así que una lista de dos entradas dejaría a Diario (4) fuera de rango y el clamp lo mandaría al
+  default. Renumerar el enum tampoco: le cambiaría el tema a quien ya eligió en las otras placas, donde el
+  selector de cuatro sigue igual. `UITheme::wantedTheme()` traduce, y `applyUiSettingChange` mira **los dos**
+  campos o el cambio recién se vería en el arranque siguiente.
+  Ojo: **Riel, Bento y Estación son maquetas, no código** (`docs/ws397/maquetas/`). Si alguna vez entran, entran
+  como un `ThemeMetrics` más.
 - **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
   jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
   `drawSelectionRow()`) es pestaña negra de 5 px a la izquierda + marco + franjas tramadas SOLO en los márgenes, con

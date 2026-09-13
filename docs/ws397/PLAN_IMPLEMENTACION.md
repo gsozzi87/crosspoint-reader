@@ -207,7 +207,7 @@ Las dos cosas van juntas porque el paquete de noticias viaja en la sincronizaci�
 
 ---
 
-## Ola 5 — 1.5.75 · Diario v2 de verdad
+## Ola 5 — 1.5.77 · Diario v2 de verdad ✅ HECHA
 
 Depende de nada técnico, pero va después porque es la más larga y la que más se nota si se hace a
 medias.
