@@ -132,7 +132,7 @@ están arreglados en la misma versión:
 8. ⬜ **Medir.** Las cuatro pruebas de `PLAN_VENTA.md` (A4), que son las que dan el número de la
    caja. Requieren hardware.
 
-## Ola 3 — 1.5.73 · Fondo de pantalla con información, y las fotos afuera
+## Ola 3 — 1.5.74 · Fondo de pantalla con información, y las fotos afuera ✅ HECHA
 
 Depende de la Ola 2 (el camino de sueño se toca en las dos). Maqueta:
 `docs/ws397/maquetas/fondo.png`, generador `tools/maquetas/fondo.py`.
@@ -341,3 +341,12 @@ agregar gestos, es que los que hay no molesten. Propuestas, todas **sin desperta
   queda para completar.
 - **Próximo paso concreto:** Ola 1, paso 1 (la barrita del PWR) y paso 2 (el viaje fantasma), que no
   dependen de nada y ya tienen la causa localizada con archivo y línea.
+
+
+## Lo que falta probar en el aparato de la Ola 3
+
+- Suspender y mirar la pantalla: tiene que decir **SUSPENDIDO**, la hora del sello, la próxima alarma en dígitos
+  grandes, el clima, el libro y los titulares que entren. Abajo, "OK para volver".
+- Apagar (PWR 3 s) y mirar: **APAGADO** y "PWR 1 s para encender". Antes acá quedaba congelada la barrita del PWR.
+- Que ya **no** aparezca la pantalla de sueño del SDK antes del fondo: es una sola pintura, no dos.
+- Sin haber entrado nunca a Noticias no hay titulares y la pantalla tiene que quedar igual de bien.
