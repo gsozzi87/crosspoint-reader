@@ -90,49 +90,41 @@ Sin dependencias. Es lo primero porque son todas molestias visibles.
 
 ---
 
-## Ola 2 — 1.5.72 · Energía: el reposo que hoy no reposa
+## Ola 2 — 1.5.72 · Energía: el reposo que no reposaba ✅ HECHA
 
-Depende de nada. Es la ola que decide si el producto se puede vender.
+5. ✅ **Fuera el despertar por movimiento.** Con eso desaparece el ciclo de 2 s y el light sleep pasa
+   a ser indefinido. Además **el acelerómetro se apaga al entrar al reposo**: no se lee mientras se
+   reposa, así que dejarlo a 250 Hz toda la noche era gastar por nada (es el consumidor más grande
+   de la lista). `MotionInput::poll()` lo vuelve a encender solo cuando el loop corre.
+6. ✅ **La escalera, fijada**: 30 s → light sleep, 10 min → deep sleep. La fila
+   `STR_TIME_TO_SLEEP` se esconde en la ws397 y `getSleepTimeoutMs()` devuelve el valor fijo.
+7. ✅ **Todos los caminos de sueño apagan el IMU y el amplificador**, porque eso se movió de
+   `enterDeepSleep()` a `sleepNow()`, por el que sí pasan los tres re-sleep del `setup()`.
 
-5. **Fuera el despertar por movimiento.** El usuario decidió que siempre se aprieta un botón. Sacar
-   `motionMoved()`, `WAKE_DELTA_G`, `haveSample_`, `lastX_/Y_/N_` y `Woke::Motion` de
-   `src/util/IdleSleep.{h,cpp}`, y el manejo de `Woke::Motion` en `main.cpp`.
-   Efecto inmediato: **desaparece el ciclo de 2 s**. El light sleep pasa a ser *indefinido* —
-   sin timer— y despierta por los cuatro botones, la IRQ del PMIC (GPIO38) y el INT del RTC (GPIO45),
-   que en light sleep **sí sirven** aunque no sean RTC GPIO. Es el reposo más profundo que se puede
-   tener, y de paso se muere el bucle `despertó por movimiento tras 2000 ms` del log.
-   *Listo cuando:* el log muestra `a reposar` y la línea siguiente es de cuando se apretó un botón,
-   minutos u horas después.
-6. **La escalera de energía, fijada.** Sin selector. Los números los fijo así:
-   - **30 s** quieto → light sleep indefinido (antes 45 s; se puede bajar porque ya no cuesta nada
-     entrar y salir: vuelve en menos de 10 ms y la pantalla no se toca).
-   - **10 min** quieto → deep sleep. Diez y no cinco a propósito: del light sleep se vuelve
-     instantáneo y del deep sleep se vuelve con un arranque entero, así que conviene ser perezoso
-     para bajar. El ahorro marginal entre light y deep es chico; la molestia de arrancar, no.
-   - Se esconde la fila `STR_TIME_TO_SLEEP` en la ws397 y el número queda fijo en 10 minutos.
-     En las demás placas no se toca nada.
-7. **Deep sleep al mínimo.** Nada de esto se está haciendo hoy (verificado: no hay un solo
-   `esp_sleep_pd_config()` en todo el árbol):
-   - **El IMU.** Los tres `sleepNow()` del `setup()` (líneas 1057, 1082, 1131) duermen con el QMI8658
-     muestreando a **250 Hz**. Mandarlo a suspend en todos los caminos de sueño. Es el ahorro más
-     grande de la lista.
-   - **El códec.** `AudioManager::powerDown()` existe y **no lo llama nadie**. ES8311 a standby y el
-     enable del amplificador (GPIO39) a nivel bajo antes de dormir — hoy queda flotando.
-   - **Dominios de energía**: `esp_sleep_pd_config(ESP_PD_DOMAIN_VDDSDIO, OFF)` (el PSRAM no hace
-     falta retenerlo) y probar `RTC_PERIPH` en OFF. *Ojo:* ext1 puede necesitar RTC_PERIPH; si al
-     apagarlo OK deja de despertar, se deja prendido y se anota el costo.
-   - **Pines sin aislar**: `esp_sleep_config_gpio_isolate()` del SDK sólo toca 0..21, así que
-     38, 39, 41, 42, 45, 47 y 48 quedan sueltos. Dejarlos en un estado definido antes de dormir.
-   - **Rieles del PMIC**: apagar los que no hagan falta. Esto **contradice la regla de CLAUDE.md**
-     de no tocar rieles, así que va con cuidado, sólo para el sueño y con vuelta atrás al arrancar:
-     apagar el riel equivocado deja el aparato muerto hasta un PWR largo. Va último y se mide antes
-     y después.
-   *Listo cuando:* se mide el antes y el después y el número está escrito en `docs/ws397/`.
-8. **Medir.** Con `BatteryLog` ya hecho, correr las cuatro pruebas: reposo puro 48 h, lectura
-   continua, uso normal 3 días, y **suspendido una semana** (que nunca se midió). Son los números
-   que van en la caja.
+**Seis defectos que encontró la revisión adversarial** (cuatro lentes sobre el mismo diff) y que
+están arreglados en la misma versión:
 
----
+- **El deep sleep quedaba inalcanzable.** El contador de ocio sólo crece mientras el loop corre, y
+  reposando no corre: con el reposo indefinido el aparato nunca bajaba al sueño profundo. Lo tapaba
+  el ciclo de 2 s. Ahora el tope del reposo es el mínimo entre la próxima alarma y **lo que falta
+  para el deep sleep**.
+- **Una alarma a más de una hora podía no sonar nunca.** `msUntilNextAlarm()` devolvía 0 (sin timer)
+  confiando en el INT del RTC; si ese INT no estaba usable, no quedaba ninguna fuente de despertar.
+  Ahora se pregunta si el RTC de verdad puede despertarnos y, si no, el timer se corta a la hora.
+- **`RTC_ALARM.begin()` iba después de `IDLE_SLEEP.begin()`**, así que una alarma vencida durante el
+  sueño dejaba la bandera AF puesta, GPIO45 en bajo y el INT del RTC marcado inusable para toda la
+  sesión — justo la única fuente de despertar de los reposos largos. Invertido.
+- **Un rechazo del kernel se trataba como actividad.** Con un pin trabado en bajo el aparato no
+  reposaba **y** tampoco llegaba nunca al deep sleep: 40 mA hasta agotar la batería. Ahora hay un
+  `Woke::Rejected` que no toca el contador de ocio.
+- **Con una alarma vencida que la pantalla no atiende** (el lector, a propósito) el tope salía 1 ms
+  y el aparato entraba y salía del light sleep sin parar. Ahora no se reposa por menos de 500 ms.
+- **`ReminderAlertActivity` pedía `preventAutoSleep()` para siempre**, y eso reinicia el contador de
+  ocio: una alarma a las 3 AM que nadie atendía dejaba el aparato despierto hasta la mañana. Ahora
+  lo pide sólo mientras suena, como el temporizador.
+
+8. ⬜ **Medir.** Las cuatro pruebas de `PLAN_VENTA.md` (A4), que son las que dan el número de la
+   caja. Requieren hardware.
 
 ## Ola 3 — 1.5.73 · Fondo de pantalla con información, y las fotos afuera
 

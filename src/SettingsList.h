@@ -505,7 +505,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   // vez de ofrecer algo que no hace nada.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
     v.erase(std::remove_if(v.begin(), v.end(),
-                           [](const SettingInfo& s) { return s.nameId == StrId::STR_LONG_PRESS_MENU; }),
+                           [](const SettingInfo& s) {
+                             // "Tiempo para dormir" tampoco: en esta placa el reposo y el
+                             // deep sleep los fija el firmware (getSleepTimeoutMs()), así que
+                             // la fila cambiaría un número que ya no manda nada.
+                             return s.nameId == StrId::STR_LONG_PRESS_MENU ||
+                                    s.nameId == StrId::STR_TIME_TO_SLEEP;
+                           }),
             v.end());
   }
   if (BoardConfig::hasTouch()) {

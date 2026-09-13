@@ -1,4 +1,5 @@
 #include "CrossPointSettings.h"
+#include <BoardConfig.h>
 
 #include <I18n.h>
 #include <Logging.h>
@@ -322,6 +323,14 @@ float CrossPointSettings::getReaderLineCompression() const {
 }
 
 unsigned long CrossPointSettings::getSleepTimeoutMs() const {
+  // ws397: fijo, y por eso la fila no se muestra (getSettingsList la saca).
+  // OJO: toJson/fromJson recorren esa MISMA lista, así que sacar la fila también
+  // saca la clave del settings.json: en esta placa el campo deja de guardarse y
+  // de leerse, y vuelve al default del struct. No importa porque acá el valor
+  // no se usa, pero no es cierto que "queda guardado por si acaso".
+  if (BoardConfig::isWS397()) {
+    return static_cast<unsigned long>(WS397_SLEEP_TIMEOUT_MINUTES) * 60UL * 1000UL;
+  }
   if (sleepTimeoutMinutes >= SLEEP_TIMEOUT_NEVER_MINUTES) return 0UL;
   const uint8_t minutes =
       std::clamp(sleepTimeoutMinutes, MIN_SLEEP_TIMEOUT_MINUTES, static_cast<uint8_t>(SLEEP_TIMEOUT_NEVER_MINUTES - 1));

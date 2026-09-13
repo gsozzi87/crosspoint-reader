@@ -30,8 +30,16 @@
 //   - los cuatro botones (arriba 4, OK 5, abajo 6, BOOT 0), por nivel bajo
 //   - la IRQ del PMIC (GPIO38): el botón PWR entra por ahí
 //   - el INT del RTC (GPIO45) si la placa lo deja usable, para la alarma
-//   - el timer, para mirar el acelerómetro cada REST_POLL_MS y para no pasarse
-//     del próximo recordatorio
+//   - el timer, y SOLO para no pasarse del próximo recordatorio o del fin del
+//     temporizador. Si no hay nada armado no hay timer y el reposo dura lo que
+//     dure: es el sueño más profundo que se puede tener sin perder el estado.
+//
+// Lo que NO despierta: el movimiento. Hasta 1.5.71 el ciclo duraba 2 s y cada
+// vez miraba el acelerómetro para encenderse solo al levantarlo; con el umbral
+// que fuera, el aparato entraba y salía del reposo cada dos segundos para
+// siempre (el log estaba lleno de "despertó por movimiento tras 2000 ms") y el
+// reposo no existía en la práctica. Se sacó por decisión del usuario: "no
+// pretendo despertarlo con el IMU, SIEMPRE APRETARE UN BOTON".
 //
 // A diferencia del deep sleep, acá NO hace falta que el pin sea RTC GPIO: el
 // light sleep del ESP32-S3 despierta con cualquier GPIO. Eso es justamente lo
@@ -41,22 +49,23 @@ class IdleSleep {
  public:
   // Cuánto se queda quieto antes de reposar. No es un ajuste del usuario a
   // propósito: es corto porque volver no cuesta nada, y si se nota es un error.
-  static constexpr unsigned long REST_AFTER_MS = 45000;
-  // Cada cuánto se despierta a mirar el acelerómetro mientras reposa. A 2 s el
-  // ciclo despierto dura ~3 ms (una lectura I2C), o sea menos del 0,2 % del
-  // tiempo: no mueve la aguja del consumo y hace que levantar el aparato lo
-  // encienda solo.
-  static constexpr unsigned long REST_POLL_MS = 2000;
-  // Cuánto tiene que moverse para contar como "lo levantaron", en g sumando los
-  // tres ejes contra la muestra anterior. Más fino que esto y lo despierta el
-  // ruido del propio sensor (el piso del QMI8658 son ~5 mg por eje).
-  static constexpr float WAKE_DELTA_G = 0.06f;
+  // Bajó de 45 a 30 s en 1.5.71: sin el sondeo del acelerómetro, entrar al
+  // reposo dejó de costar nada, así que conviene entrar antes.
+  static constexpr unsigned long REST_AFTER_MS = 30000;
+  // Por debajo de esto no vale la pena reposar: entrar y salir cuesta más que
+  // lo que se ahorra, y con una alarma vencida que la pantalla de turno no
+  // atiende (el lector, a propósito) el tope sale 1 ms y el aparato giraba
+  // entrando y saliendo del light sleep sin parar.
+  static constexpr unsigned long MIN_REST_MS = 500;
 
   enum class Woke : uint8_t {
     NotSlept,  // no se durmió (bloqueado, apagado, o todavía no toca)
     Button,    // un botón, el PWR o el RTC: hay que atender
-    Motion,    // lo movieron
-    Timer,     // vencimiento del ciclo: se sigue reposando
+    Rejected,  // el kernel no dejó dormir (un pin ya estaba en el nivel de
+               // despertar). NO es actividad de nadie: si el llamador lo trata
+               // como tal, un pin trabado en bajo reinicia el contador de ocio
+               // en cada pasada y el deep sleep no llega nunca.
+    Timer,     // venció el tope del ciclo: se sigue reposando
   };
 
   // Después de que los botones y el IMU estén arriba. Prueba los pines de
@@ -82,7 +91,6 @@ class IdleSleep {
 
  private:
   bool armWakeSources(unsigned long budgetMs);
-  bool motionMoved();
   void probeRtcInt();
 
   bool available_ = false;
@@ -93,9 +101,7 @@ class IdleSleep {
   unsigned long capMs_ = 0;
   uint32_t cycles_ = 0;
   unsigned long restedMs_ = 0;
-  // Última muestra del acelerómetro, para ver si se movió entre ciclos.
-  float lastX_ = 0, lastY_ = 0, lastN_ = 0;
-  bool haveSample_ = false;
+  uint16_t rejects_ = 0;  // rechazos seguidos de esp_light_sleep_start()
 };
 
 extern IdleSleep IDLE_SLEEP;

@@ -328,6 +328,12 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // Quick Resume: keep current content visible with moon icon instead of showing a static sleep screen.
   uint8_t quickResumeSleepScreen = QUICK_RESUME_NEVER;
 
+  // ws397: el usuario no elige modo de energía (decisión de producto, ver
+  // docs/ws397/PLAN_IMPLEMENTACION.md, Ola 2). Diez minutos fijos y la fila
+  // escondida de Ajustes. Diez y no cinco a propósito: del reposo se vuelve
+  // instantáneo y del deep sleep se vuelve con un arranque entero, así que el
+  // ahorro de bajar antes es chico y la molestia no.
+  static constexpr uint8_t WS397_SLEEP_TIMEOUT_MINUTES = 10;
   static constexpr uint8_t MIN_SLEEP_TIMEOUT_MINUTES = 1;
   static constexpr uint8_t SLEEP_TIMEOUT_NEVER_MINUTES = 31;
   static constexpr uint8_t MAX_SLEEP_TIMEOUT_MINUTES = SLEEP_TIMEOUT_NEVER_MINUTES;

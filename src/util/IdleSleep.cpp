@@ -1,14 +1,11 @@
 #include "IdleSleep.h"
 
 #include <BoardConfig.h>
+#include <HalTiltSensor.h>
 #include <Logging.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
 
-#include <cmath>
-
-#include "../HubStore.h"
-#include "../input/MotionInput.h"
 
 IdleSleep IDLE_SLEEP;
 
@@ -78,50 +75,32 @@ bool IdleSleep::armWakeSources(const unsigned long budgetMs) {
   return true;
 }
 
-bool IdleSleep::motionMoved() {
-  MOTION.poll();
-  // Un golpe dura 10 ms: entre dos muestras separadas 2 s no se ve como
-  // diferencia de aceleración, pero el motor del propio chip lo dejó latcheado
-  // y poll() lo acaba de levantar. Un gesto pendiente ES movimiento.
-  if (MOTION.pending() != MotionInput::Event::None) return true;
-  const MotionInput::Reading& r = MOTION.reading();
-  if (!r.valid) return false;
-  if (!haveSample_) {
-    haveSample_ = true;
-    lastX_ = r.x;
-    lastY_ = r.y;
-    lastN_ = r.n;
-    return false;
-  }
-  const float delta = fabsf(r.x - lastX_) + fabsf(r.y - lastY_) + fabsf(r.n - lastN_);
-  lastX_ = r.x;
-  lastY_ = r.y;
-  lastN_ = r.n;
-  return delta >= WAKE_DELTA_G;
-}
-
 IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) {
   if (!available_ || blocked || idleMs < REST_AFTER_MS) {
     if (resting_) {
       LOG_DBG(TAG, "fin del reposo tras %lu ms en %u ciclos", restedMs_, (unsigned)cycles_);
       resting_ = false;
     }
-    haveSample_ = false;
     return Woke::NotSlept;
   }
 
-  // Cuánto puede durar este ciclo: el sondeo del acelerómetro manda, salvo que
-  // haya algo que suene antes (capNextRest lo pone desde el loop).
-  const bool watchMotion = HUB_STORE.motionGestures && MOTION.available();
-  unsigned long budget = watchMotion ? REST_POLL_MS : 0;
-  if (capMs_ > 0 && (budget == 0 || capMs_ < budget)) budget = capMs_;
-  // Sin sondeo y sin tope no habría timer: se dormiría hasta que alguien toque
-  // un botón, que es exactamente lo que se quiere.
+  // Cuánto puede durar este ciclo: SOLO lo que falte para la próxima alarma
+  // (capNextRest lo pone desde el loop). Sin nada armado no hay timer y el
+  // reposo dura hasta que alguien apriete un botón, que es exactamente lo que
+  // se quiere y es el sueño más profundo que se puede tener sin perder estado.
+  const unsigned long budget = capMs_;
+  // Un tope diminuto significa que hay algo a punto de vencer (o ya vencido):
+  // no se reposa, se deja que el loop siga y lo atienda.
+  if (budget > 0 && budget < MIN_REST_MS) {
+    if (resting_) resting_ = false;
+    capMs_ = 0;
+    return Woke::NotSlept;
+  }
 
   if (!resting_) {
     resting_ = true;
-    haveSample_ = false;
-    LOG_INF(TAG, "a reposar tras %lu ms quieto (ciclo %lu ms)", idleMs, budget);
+    LOG_INF(TAG, "a reposar tras %lu ms quieto (%s)", idleMs,
+            budget > 0 ? "hasta la próxima alarma" : "hasta que toquen un botón");
   }
 
   if (!armWakeSources(budget)) {
@@ -130,6 +109,12 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
     LOG_ERR(TAG, "no se pudo armar el despertador: reposo apagado");
     return Woke::NotSlept;
   }
+
+  // El acelerómetro no se lee mientras se reposa (desde 1.5.72 el movimiento no
+  // despierta), así que dejarlo muestreando a 250 Hz toda la noche es gastar
+  // por nada: es el consumidor más grande de la lista. MotionInput::poll() lo
+  // vuelve a encender solo en cuanto el loop corra de nuevo.
+  halTiltSensor.deepSleep();
 
   const unsigned long before = millis();
   const esp_err_t err = esp_light_sleep_start();
@@ -141,11 +126,19 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
   capMs_ = 0;
 
   if (err != ESP_OK) {
-    // Rechazado: algún pin ya estaba en bajo (un botón apretado, la IRQ del
-    // PMIC pendiente). Eso ES actividad, así que se sale del reposo.
+    // Rechazado: algún pin ya estaba en el nivel de despertar (un botón
+    // apretado, la IRQ del PMIC trabada en bajo, el INT del RTC con la bandera
+    // AF puesta). NO es actividad: si se devolviera Button, el llamador
+    // reiniciaría el contador de ocio en cada pasada y con un pin trabado el
+    // aparato se quedaría despierto a 40 mA para siempre, sin reposar y sin
+    // llegar nunca al deep sleep. Se avisa una vez cada tanto y se sigue.
     resting_ = false;
-    return Woke::Button;
+    if (++rejects_ == 1 || rejects_ % 64 == 0) {
+      LOG_ERR(TAG, "el kernel rechazó el reposo (%d seguidos): algún pin ya está en bajo", (int)rejects_);
+    }
+    return Woke::Rejected;
   }
+  rejects_ = 0;
 
   ++cycles_;
   restedMs_ += slept;
@@ -154,11 +147,6 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
     resting_ = false;
     LOG_INF(TAG, "despertó por pin tras %lu ms", slept);
     return Woke::Button;
-  }
-  if (watchMotion && motionMoved()) {
-    resting_ = false;
-    LOG_INF(TAG, "despertó por movimiento tras %lu ms", slept);
-    return Woke::Motion;
   }
   return Woke::Timer;
 }

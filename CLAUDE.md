@@ -385,14 +385,34 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 
 - Hasta 1.5.47 había dos estados y nada en el medio: despierto (~40 mA, el loop cada 10 ms) o deep sleep, que es
   un reset al volver. `src/util/IdleSleep` (singleton `IDLE_SLEEP`, `tick()` desde el loop) agrega la etapa del
-  medio: a los **45 s** de quietud entra en `esp_light_sleep_start()` por **ciclos de 2 s**. La pantalla queda
-  como estaba (el panel es biestable: retener no cuesta nada), el estado sigue vivo y vuelve en menos de 10 ms.
+  medio: a los **30 s** de quietud entra en `esp_light_sleep_start()`. La pantalla queda como estaba (el panel es
+  biestable: retener no cuesta nada), el estado sigue vivo y vuelve en menos de 10 ms.
 - Despiertan: los cuatro botones (arriba 4, OK 5, abajo 6, BOOT 0) por nivel bajo, la IRQ del PMIC (GPIO38, por
   ahí entra PWR), el INT del RTC (GPIO45) y el timer. **En light sleep no hace falta que el pin sea RTC GPIO**:
   eso es lo que destraba GPIO38 y GPIO45, que para el deep sleep no sirven.
-- Cada ciclo mira el acelerómetro: si se movió más de 60 mg entre muestras, o si el chip dejó un gesto latcheado
-  (un doble golpe dura 10 ms y entre dos muestras de 2 s no se ve como diferencia), despierta. Levantar el
-  aparato lo enciende.
+- **El movimiento NO despierta** (1.5.72). Hasta 1.5.71 el ciclo duraba 2 s y cada vez miraba el acelerómetro para
+  encenderse solo al levantarlo; con el umbral que fuera, el aparato entraba y salía del reposo cada dos segundos
+  para siempre (el log estaba lleno de `despertó por movimiento tras 2000 ms`) y el reposo no existía en la
+  práctica. Se sacó por decisión del usuario: "SIEMPRE APRETARE UN BOTON para despertarlo". Ahora el ciclo dura lo
+  que diga `capNextRest()` y **el acelerómetro se apaga al entrar al reposo** (`halTiltSensor.deepSleep()` desde
+  `tick()`); `MotionInput::poll()` lo vuelve a encender solo en cuanto el loop corra.
+- **El tope del ciclo son dos cosas, y las dos hacen falta**: lo que falte para la próxima alarma
+  (`msUntilNextAlarm()`) y **lo que falte para el deep sleep**. Sin lo segundo el aparato se queda en light sleep
+  para siempre y nunca baja al sueño profundo, porque el contador de ocio sólo crece mientras el loop corre y
+  reposando no corre. Con el ciclo de 2 s eso quedaba tapado; al sacarlo quedó a la vista.
+- Más de una hora hasta la alarma: si el INT del RTC está usable no se arma timer y el reposo dura toda la noche;
+  si **no** lo está, el timer se corta a la hora y se vuelve a recontar. Nunca se deja el reposo sin ninguna fuente
+  de despertar teniendo algo pendiente. Por eso también `RTC_ALARM.begin()` va **antes** de `IDLE_SLEEP.begin()`:
+  limpia la bandera AF, que si no deja GPIO45 en bajo y `probeRtcInt()` lo marcaría inusable toda la sesión.
+- **Un rechazo del kernel no es actividad** (`Woke::Rejected`): si un pin ya está en el nivel de despertar
+  (un botón pegado, la IRQ del PMIC trabada), `esp_light_sleep_start()` rechaza. Tratarlo como si alguien hubiera
+  tocado el aparato reiniciaba el contador de ocio en cada pasada, así que no reposaba **y** tampoco llegaba nunca
+  al deep sleep: 40 mA hasta agotar la batería. Ahora se cuenta, se loguea y el ocio sigue corriendo.
+- Tampoco se reposa por menos de `MIN_REST_MS` (500 ms): con una alarma vencida que la pantalla de turno no atiende
+  (el lector, a propósito) el tope salía 1 ms y el aparato giraba entrando y saliendo del light sleep sin parar.
+- `preventAutoSleep()` **reinicia el contador de ocio**, así que una Activity que lo pida para siempre mantiene el
+  aparato despierto para siempre. `ReminderAlertActivity` lo hacía: una alarma a las 3 AM que nadie atendía se
+  comía la batería hasta la mañana. Ahora lo pide sólo mientras suena, como el temporizador.
 - **No reposa** con música, grabación, red arriba, USB enchufado, la tarjeta prestada (modo memoria USB), el menú
   de pantalla abierto o una Activity que pida `preventAutoSleep()`. El deep sleep tiene precedencia: el reposo se
   decide DESPUÉS, así nunca puede impedirlo.
@@ -406,8 +426,11 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `sleepTimeoutMs == 0`, o sea con 31 puesto). Si no, una red que quedó arriba se come la batería en una noche.
   **Decidido para la venta** (`docs/ws397/PLAN_IMPLEMENTACION.md`, Ola 2): en la ws397 la fila se esconde y los
   tiempos quedan fijos; el usuario no elige modo de energía.
-- **Con los gestos apagados no hay sondeo**: sin acelerómetro que mirar, el ciclo de reposo no arma timer y duerme
-  hasta que alguien toque un botón o venza la alarma del RTC. Es el reposo más profundo que se puede tener.
+- **Todos los caminos de sueño pasan por `sleepNow()`**, y ahí se apagan el IMU (`halTiltSensor.deepSleep()`) y el
+  enable del amplificador (`AudioManager::silenceAmp()`). Antes eso vivía en `enterDeepSleep()`, por el que **no**
+  pasan los tres re-sleep del `setup()`: el aparato se dormía con el QMI8658 muestreando a 250 Hz. El único camino
+  que sigue sin pasar por `sleepNow()` es el reintento a 60 s de "timer wake sin reloj", que hace las dos llamadas
+  a mano.
 - **El reloj se congela reposando**: la hora en pantalla queda en el minuto en que entró. Es a propósito —
   despertar cada minuto a repintar sería un parcial por minuto, o sea un completo cada cuarto de hora para
   siempre, que es exactamente lo que la regla del panel prohíbe. Se corrige sola en cuanto alguien lo toca.

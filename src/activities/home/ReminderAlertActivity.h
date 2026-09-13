@@ -23,10 +23,15 @@ class ReminderAlertActivity final : public Activity {
   void onExit() override;
   void loop() override;
   void render(RenderLock&&) override;
-  bool preventAutoSleep() override { return true; }
+  // Sólo mientras suena, como el temporizador. Con `true` fijo el aparato
+  // quedaba despierto toda la noche: `preventAutoSleep()` reinicia el contador
+  // de ocio en el loop, así que una alarma a las 3 AM que nadie atiende nunca
+  // llegaba al deep sleep y se comía la batería hasta la mañana.
+  bool preventAutoSleep() override { return millis() - openedAt < BEEP_MS; }
 
  private:
   static constexpr unsigned long BEEP_MS = 60000;
+  unsigned long openedAt = millis();
   static constexpr time_t SNOOZE_S = 10 * 60;
 
   int reminderId;

@@ -406,6 +406,14 @@ static void sleepNow() {
   // La música no sobrevive al deep sleep: cortarla acá deja el códec y el I2S
   // en un estado conocido antes de apagar.
   MUSIC.stop();
+  // Lo que quedaba comiendo corriente dormido (1.5.72). Va ACÁ y no en
+  // enterDeepSleep() porque este es el único punto por el que pasan TODOS los
+  // caminos de sueño: los tres re-sleep del setup() (wake por timer sin nada
+  // vencido, wake espurio del botón) no pasan por enterDeepSleep() y se estaban
+  // durmiendo con el IMU muestreando a 250 Hz, que es el consumidor más grande
+  // de la lista.
+  halTiltSensor.deepSleep();       // QMI8658 a dormir; idempotente
+  AudioManager::silenceAmp();      // el enable del amplificador (GPIO39) a un nivel definido
   armReminderWake(/*quiet=*/true);
   // ws397: the wake key is OK (GPIO5, RTC-capable, EXT1 low). PWR cannot wake:
   // the PMIC IRQ is on GPIO38, which is not an RTC GPIO. A PWR press while
@@ -540,15 +548,24 @@ static unsigned long msUntilNextAlarm() {
   // sleep se corta a la hora (más allá de eso no vale la pena estar
   // recontando), pero el PCF85063 despierta por GPIO45 en el segundo exacto
   // aunque el aparato lleve ocho horas reposando.
+  bool rtcDespierta = false;
   if (due > now) {
-    RTC_ALARM.armAt(due, now);
+    // Que la alarma esté ARMADA no alcanza: para que despierte, el INT del chip
+    // (GPIO45) tiene que estar usable. Si no lo está y devolvemos 0, el reposo
+    // queda sin timer y sin fuente de despertar, y el recordatorio no suena
+    // nunca. Las dos condiciones se preguntan juntas.
+    rtcDespierta = RTC_ALARM.armAt(due, now) && IDLE_SLEEP.rtcIntUsable();
   } else if (RTC_ALARM.armedAt() != 0) {
     RTC_ALARM.disarm();
   }
   if (due == 0) return 0;
   if (due <= now) return 1;
   const time_t seconds = due - now;
-  if (seconds > 3600) return 0;
+  // Más de una hora: si el chip del RTC puede despertarnos, no hace falta timer
+  // y el reposo puede durar toda la noche. Si NO puede, el timer del ESP se
+  // corta a la hora y se vuelve a recontar: cuesta un despertar por hora, que
+  // es infinitamente menos que perder el recordatorio.
+  if (seconds > 3600) return rtcDespierta ? 0UL : 3600UL * 1000UL;
   return static_cast<unsigned long>(seconds) * 1000UL;
 }
 
@@ -709,7 +726,7 @@ void enterDeepSleep(bool fromTimeout = false) {
   // que de verdad dice cuánto dura.
   batterylog::sampleNow("antes de dormir");
 
-  halTiltSensor.deepSleep();
+  halTiltSensor.deepSleep();  // idempotente: sleepNow() lo repite para los caminos que no pasan por acá
   display.deepSleep();
   // Armar y loguear con la SD todavía montada: después de prepareForDeepSleep()
   // el log se escribe sobre un filesystem desmontado y se pierde.
@@ -990,8 +1007,13 @@ void setup() {
   MOTION.begin();
   halClock.begin();
   // Después de los botones y del IMU: prueba los pines que despiertan del reposo.
-  IDLE_SLEEP.begin();
+  // RTC_ALARM ANTES que IDLE_SLEEP, y no al revés: begin() del RtcAlarm hace
+  // disarm(), que limpia la bandera AF. Con AF puesta (una alarma que venció
+  // mientras el aparato dormía) el INT del PCF85063 se queda en bajo, y
+  // IdleSleep::probeRtcInt() lo leería como "no usable" para toda la sesión —
+  // justo la única fuente de despertar de los reposos largos.
   RTC_ALARM.begin();
+  IDLE_SLEEP.begin();
   // El loop de Arduino es la tarea que más cerca está del límite (por acá pasan
   // el TLS, el parseo de EPUB y todo lo que no tiene tarea propia): se anota
   // para poder medirle el stack desde Ajustes -> Sistema -> Memoria.
@@ -1134,6 +1156,11 @@ void setup() {
       // vez de dormir sin nada armado (quedaría mudo para siempre).
       LOG_ERR("MAIN", "timer wake without a clock: retrying in 60 s");
       esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+      // Se apagan a mano los mismos consumidores que apaga sleepNow(): este
+      // camino NO pasa por ahí, y si el RTC sigue mudo el aparato se queda en
+      // un ciclo de arranque-dormir cada 60 s con el QMI8658 a 250 Hz.
+      halTiltSensor.deepSleep();
+      AudioManager::silenceAmp();
       devlog::close();
       Storage.prepareForDeepSleep();
       powerManager.startDeepSleep(gpio);
@@ -1443,6 +1470,13 @@ void loop() {
     // se termina en una noche sin que nadie se entere. A la media hora de ocio
     // sin haber podido reposar ni una vez, se duerme igual y queda dicho en el
     // log por qué. Enchufado no aplica: ahí la batería no es el problema.
+    // OJO: desde 1.5.72 la ws397 tiene el tiempo FORZADO a 10 minutos, así que
+    // acá `sleepTimeoutMs` nunca es 0 y esta rama no se alcanza. Se deja por si
+    // el valor forzado vuelve a ser configurable. Y ojo con el otro lado: el
+    // auto-sleep de más arriba tampoco es una garantía absoluta, porque
+    // `preventAutoSleep()` reinicia el contador de ocio unas líneas más arriba;
+    // por eso una Activity que lo pida para siempre mantiene el aparato
+    // despierto, y por eso ReminderAlertActivity dejó de pedirlo para siempre.
     static unsigned long restBlockedSince = 0;
     if (restBlocked && !cablePuesto && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
       if (restBlockedSince == 0) restBlockedSince = millis();
@@ -1457,15 +1491,30 @@ void loop() {
       restBlockedSince = 0;
     }
 
-    IDLE_SLEEP.capNextRest(msUntilNextAlarm());
+    // El reposo NO puede durar más que lo que falta para el deep sleep. Sin
+    // esto el aparato se queda en light sleep para siempre y nunca baja al
+    // sueño profundo: el ocio sólo crece mientras el loop corre, y reposando no
+    // corre. Hasta 1.5.71 el ciclo de 2 s del acelerómetro devolvía el control
+    // todo el tiempo y lo tapaba; al sacar ese sondeo quedó a la vista.
+    unsigned long cap = msUntilNextAlarm();
+    if (sleepTimeoutMs > 0) {
+      const unsigned long ocio = millis() - lastActivityTime;
+      const unsigned long faltaParaDormir = sleepTimeoutMs > ocio ? sleepTimeoutMs - ocio : 1;
+      if (cap == 0 || faltaParaDormir < cap) cap = faltaParaDormir;
+    }
+    IDLE_SLEEP.capNextRest(cap);
     switch (IDLE_SLEEP.tick(millis() - lastActivityTime, restBlocked)) {
       case IdleSleep::Woke::Button:
-      case IdleSleep::Woke::Motion:
         // El botón que despertó se lee en la pasada siguiente (la entrada de
         // ESTA pasada se leyó antes de dormir): salir ya y empezar de nuevo.
         lastActivityTime = millis();
         powerManager.setPowerSaving(false);
         return;
+      case IdleSleep::Woke::Rejected:
+        // Un pin ya estaba en bajo. NO se toca lastActivityTime: si esto se
+        // tratara como actividad, un pin trabado dejaría al aparato despierto
+        // para siempre, sin reposar y sin llegar nunca al deep sleep.
+        break;
       case IdleSleep::Woke::Timer:
         // Sigue reposando: nada que pintar, y el deep sleep se decide arriba en
         // la pasada siguiente con el ocio ya más grande.
