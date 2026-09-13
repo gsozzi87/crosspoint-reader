@@ -19,6 +19,7 @@
 #include "SilentRestart.h"
 #include "WifiCredentialStore.h"
 #include "activities/home/AssetSyncActivity.h"
+#include "news/NewsPack.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
@@ -490,6 +491,10 @@ void HubSyncActivity::runSync() {
   if (ok) {
     WiFi.setSleep(false);
     cacheSpokenNotices();
+    // El paquete de noticias viaja con la sincronización: el servidor ya lo
+    // masticó, acá sólo se baja lo que falte. Con tope, porque esto corre con
+    // la pantalla esperando; el resto entra en la próxima pasada.
+    newspack::sync(/*budget=*/6);
     uploadLog();
     WiFi.setSleep(true);
   }

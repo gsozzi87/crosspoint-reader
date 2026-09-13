@@ -231,7 +231,9 @@ function httpReason(status: number): Reason {
 // `budgetMs` es el tiempo TOTAL: el aparato corta a los 20 s (ServerClient) y
 // antes acá se podían encadenar dos intentos de 12 s, así que una nota lenta
 // terminaba en un error genérico en pantalla en vez de en una respuesta.
-async function download(url: string, accept: string, budgetMs = 24_000): Promise<Downloaded> {
+// Exportada para el masticador de noticias (news.ts), que baja los artículos
+// por su cuenta en la pasada de cada hora.
+export async function download(url: string, accept: string, budgetMs = 24_000): Promise<Downloaded> {
   const deadline = Date.now() + budgetMs;
   const left = () => Math.max(1_000, deadline - Date.now());
   let got: Awaited<ReturnType<typeof safeFetchAt>>;

@@ -81,6 +81,7 @@ class NewsActivity final : public Activity {
   unsigned long speakStartedAt = 0;
   std::string notice;  // por qué no se puede leer (sin WiFi, sin voz)
 
+  bool loadPack();
   bool loadCache();
   bool fetchFeeds();
   std::string articlePath(int feed, int item) const;

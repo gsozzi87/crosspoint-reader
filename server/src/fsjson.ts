@@ -82,7 +82,8 @@ export type DocName =
   | "suggest"
   | "hub-settings"
   | "hub-data"
-  | "attachments";
+  | "attachments"
+  | "news";
 
 const ATTACHMENTS_DIR = process.env.ATTACHMENTS_DIR ?? "/data/attachments";
 
@@ -94,6 +95,7 @@ const LEGACY_FILE: Record<DocName, string> = {
   "hub-settings": process.env.HUB_SETTINGS_FILE ?? "/data/hub-settings.json",
   "hub-data": process.env.HUB_DATA_FILE ?? "/data/hub-data.json",
   attachments: `${ATTACHMENTS_DIR}/index.json`,
+  news: process.env.NEWS_FILE ?? "/data/news.json",
 };
 
 export const DOC_NAMES = Object.keys(LEGACY_FILE) as DocName[];

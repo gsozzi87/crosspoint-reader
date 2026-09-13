@@ -1,0 +1,98 @@
+From 514158517a21a97b3629b5cb402ae94886fb1598 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 13 Sep 2026 16:15:23 +0000
+Subject: [PATCH] ws397: readFile deja de truncar en silencio y de leer de a un
+ byte
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Dos cosas estaban mal en SDCardManager::readFile, y las dos duelen en un
+aparato cuyas cachés son JSON.
+
+El tope era 50 KB fijos y la truncación era SILENCIOSA: una caché del hub o un
+paquete de noticias que pasara de ahí volvía cortado a la mitad, el parseo de
+JSON fallaba y desde afuera la caché simplemente "dejaba de funcionar" sin una
+sola pista de por qué. Ahora el tope se calcula contra el heap que de verdad
+está libre (un cuarto del bloque contiguo mayor, con piso de 16 KB y techo de
+192 KB, porque el llamador va a parsear esto a un JsonDocument y el contenido
+vive dos veces por un momento) y cuando muerde lo dice en el log.
+
+Y la lectura era de a un carácter, concatenando a un String que crecía de a
+uno. El String de Arduino realoca al crecer, así que era cuadrático: 50 KB
+eran miles de realocaciones con su copia. Ahora el tamaño se sabe de entrada
+(lo dice el archivo), se reserva una vez y se lee en bloques de 512.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../SDCardManager/src/SDCardManager.cpp       | 46 ++++++++++++++++---
+ 1 file changed, 40 insertions(+), 6 deletions(-)
+
+diff --git a/libs/hardware/SDCardManager/src/SDCardManager.cpp b/libs/hardware/SDCardManager/src/SDCardManager.cpp
+index e4e814a..9363d5c 100644
+--- a/libs/hardware/SDCardManager/src/SDCardManager.cpp
++++ b/libs/hardware/SDCardManager/src/SDCardManager.cpp
+@@ -1,5 +1,7 @@
+ #include "SDCardManager.h"
+ 
++#include <algorithm>
++
+ #include <BoardConfig.h>
+ #include <driver/gpio.h>
+ #include <SPI.h>
+@@ -256,13 +258,45 @@ String SDCardManager::readFile(const char* path) {
+     return {""};
+   }
+ 
+-  String content = "";
+-  constexpr size_t maxSize = 50000;  // Limit to 50KB
++  // Two things were wrong here and both hurt on a device whose caches are JSON.
++  //
++  // 1) The cap was a flat 50 KB and the truncation was SILENT: a hub cache or a
++  //    news pack that grew past it came back cut in half, the JSON parse failed,
++  //    and from the outside the cache simply "stopped working" with no clue why.
++  //    The cap now scales with the heap that is actually free and says so in the
++  //    log when it bites.
++  // 2) The read was one char at a time into a String that grew by one. Arduino's
++  //    String reallocates as it grows, so this was quadratic: 50 KB meant
++  //    thousands of reallocations and copies. Now the size is known up front
++  //    (the file says it), reserved once, and read in blocks.
++  const size_t fileSize = static_cast<size_t>(f.size());
++  // Never take more than a quarter of what is free: the caller is going to parse
++  // this into a JsonDocument, so the content lives twice for a moment.
++  const size_t headroom = ESP.getMaxAllocHeap() / 4;
++  const size_t maxSize = std::min<size_t>(std::max<size_t>(headroom, 16 * 1024), 192 * 1024);
++  const size_t want = std::min(fileSize, maxSize);
++  if (fileSize > want) {
++    if (Serial) {
++      Serial.printf("[%lu] [SD] %s is %u B and only %u B fit: the content IS truncated\n", millis(), path,
++                    static_cast<unsigned>(fileSize), static_cast<unsigned>(want));
++    }
++  }
++
++  String content;
++  if (!content.reserve(want + 1)) {
++    f.close();
++    if (Serial) Serial.printf("[%lu] [SD] no heap for %u B of %s\n", millis(), static_cast<unsigned>(want), path);
++    return {""};
++  }
++  char chunk[512];
+   size_t readSize = 0;
+-  while (f.available() && readSize < maxSize) {
+-    const char c = static_cast<char>(f.read());
+-    content += c;
+-    readSize++;
++  while (readSize < want) {
++    const size_t n = std::min(sizeof(chunk) - 1, want - readSize);
++    const int got = f.read(chunk, n);
++    if (got <= 0) break;
++    chunk[got] = 0;
++    content += chunk;
++    readSize += static_cast<size_t>(got);
+   }
+   f.close();
+   return content;
+-- 
+2.43.0
+

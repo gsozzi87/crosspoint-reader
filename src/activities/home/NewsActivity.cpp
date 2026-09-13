@@ -1,4 +1,5 @@
 #include "NewsActivity.h"
+#include "news/NewsPack.h"
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
@@ -45,7 +46,7 @@ constexpr unsigned long SPEAK_GRACE_MS = 600;
 void NewsActivity::onEnter() {
   Activity::onEnter();
   Storage.ensureDirectoryExists(DIR);
-  if (loadCache()) {
+  if (loadPack() || loadCache()) {
     state = FEEDS;
     requestUpdate();
   } else {
@@ -91,6 +92,35 @@ bool NewsActivity::loadCache() {
     for (JsonVariantConst iv : fv["items"].as<JsonArrayConst>()) feed.items.push_back({iv["id"] | 0, iv["title"] | "", iv["when"] | ""});
     feeds.push_back(std::move(feed));
   }
+  return !feeds.empty();
+}
+
+// El paquete que masticó el servidor, si ya está bajado. Es lo que hace que
+// Noticias funcione SIN RED: los titulares y los cuerpos están en la tarjeta
+// desde la última sincronización, y sincronizar pasa cada vez que el aparato
+// levanta WiFi por cualquier motivo.
+bool NewsActivity::loadPack() {
+  const std::vector<newspack::Item> items = newspack::cached();
+  if (items.empty()) return false;
+  feeds.clear();
+  for (const newspack::Item& it : items) {
+    // El id del paquete es "<feed>-<item>", que es de donde salen los dos
+    // números con los que ya trabaja esta pantalla.
+    const size_t dash = it.id.find('-');
+    if (dash == std::string::npos) continue;
+    const int feedId = atoi(it.id.substr(0, dash).c_str());
+    const int itemId = atoi(it.id.substr(dash + 1).c_str());
+    auto found = std::find_if(feeds.begin(), feeds.end(), [feedId](const Feed& f) { return f.id == feedId; });
+    if (found == feeds.end()) {
+      Feed f;
+      f.id = feedId;
+      f.name = it.feed;
+      feeds.push_back(std::move(f));
+      found = feeds.end() - 1;
+    }
+    found->items.push_back({itemId, it.title, it.when});
+  }
+  LOG_INF(TAG, "paquete: %u medios, %u notas", (unsigned)feeds.size(), (unsigned)items.size());
   return !feeds.empty();
 }
 
@@ -161,6 +191,12 @@ void NewsActivity::openArticle() {
   if (feed.items.empty()) return;
   const Item& item = feed.items[itemIndex];
   std::string title, text;
+  // Primero el paquete: ya está masticado y no necesita red.
+  const std::string packed = newspack::body(std::to_string(feed.id) + "-" + std::to_string(item.id));
+  if (!packed.empty()) {
+    showArticle(item.title, packed);
+    return;
+  }
   if (readArticle(articlePath(feed.id, item.id), title, text)) {
     // Rescate de lo que quedó envenenado antes del arreglo de fetchArticle: en
     // la tarjeta puede haber, guardado como si fuera la nota, el mensaje de

@@ -67,6 +67,9 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `/data`; rutas, variables y despliegue en `server/README.md`). Todo cambio de servidor va ahí, no en archivos
   sueltos. `bun install && bunx tsc --noEmit` en `server/` como chequeo.
 - Compile checks rápidos sin toolchain: `g++ -std=c++17 -fsyntax-only` con stubs de Arduino/Wire (ver historial).
+- **En este sandbox el proxy no deja salir a los feeds ni a los diarios**, así que la parte de red de las noticias
+  sólo se puede probar en Railway. Lo que sí se prueba acá es la lógica pura (`./test/news_pack/run.sh`) y que el
+  servidor levante y conteste (`bun run src/index.ts` con `STORE_FILE`/`NEWS_FILE` apuntando a un temporal).
 
 ## Decisiones de hardware (freeink-sdk/libs/hardware/BoardConfig/include/BoardConfig.h, perfil `WS397`)
 
@@ -317,8 +320,25 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `src/music/Mp3Source` decodifica con Helix (`lib/HelixMp3`, C puro, RPSL) dentro del `read()` de una
   `AudioManager::WavSource` con cabecera WAV sintética; tags ID3v2/v1; volumen en `HubStore::musicVolume`.
   Pausa = volumen 0.
-- Noticias (`NewsActivity`, mosaico Noticias): `GET /api/rss` y `/api/rss/article` (`server/src/rss.ts`, feeds que se
-  cargan en `/board`, artículo limpiado a texto sin LLM); titulares y artículos leídos cacheados en `/.crosspoint/rss/`.
+- **Noticias: el servidor mastica, el aparato sólo lee (1.5.75).** El usuario carga los feeds en `/board`; el
+  servidor (`server/src/news.ts`) los recorre **solo, cada hora**, se mete en cada noticia, la limpia y las diez más
+  nuevas además pasan por el modelo, que las reescribe para leerlas en una pantalla chica. Eso arma un **paquete**
+  por cuenta, guardado en el volumen (`news.json`), que sobrevive al redeploy.
+  El aparato se lo baja **cuando se conecta por cualquier motivo** (`newspack::sync()` desde `HubSyncActivity`), y
+  va en dos pasos a propósito: primero el **manifiesto** (`GET /api/news/pack`, ~4 KB, con un sha por nota) y
+  después **una nota por vez** (`GET /api/news/item?id=`) a su propio archivo en `/.crosspoint/news/`. Nada de un
+  JSON grande: `ServerClient` no tiene streaming y copia el cuerpo DOS veces, así que 100 KB serían 200 KB de heap
+  interno sobre los ~230 KB que hay. Lo que ya está y no cambió de sha no se vuelve a bajar, y lo que salió del
+  manifiesto se borra de la tarjeta.
+  **Con eso Noticias funciona sin red**: `NewsActivity::loadPack()` arma la lista desde el manifiesto y el cuerpo
+  sale de la tarjeta. El camino viejo (`/api/rss` + `/api/rss/article`, limpiado sin modelo y bajo demanda) sigue
+  ahí como respaldo para la cuenta que todavía no tiene paquete.
+  El masticado gasta modelo **sin que nadie lo pida**, así que respeta el mismo tope mensual (`overQuota`): pasado
+  el tope el paquete se arma igual, con el texto limpiado a mano. Topes por variable de entorno:
+  `NEWS_PACK_ITEMS` (18), `NEWS_DIGEST_PER_RUN` (10), `NEWS_REFRESH_MS` (1 h).
+  El reparto de titulares entre medios (uno de cada feed y después la segunda vuelta, para que un diario que
+  publica cada diez minutos no se coma el paquete) es una función pura y se prueba sin red:
+  **`./test/news_pack/run.sh`**.
   El hub quedó en 14 mosaicos (1.5.48): fila ancha "Mi día" + Conversor, y debajo 4x3 con Leer, Hablar, Traductor,
   Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos, Ajustes. **Ya no hay "Próximamente"**: los
   catorce abren de verdad.

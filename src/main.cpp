@@ -58,6 +58,7 @@
 #include "util/PowerKey.h"
 #include "util/Shtc3.h"
 #include "util/BatteryLog.h"
+#include "util/TempSweep.h"
 #include "util/IdleSleep.h"
 #include "util/RtcAlarm.h"
 #include "input/MotionInput.h"
@@ -1055,6 +1056,12 @@ void setup() {
   if (gpio.hasTouch()) {
     SETTINGS.readerMenuStyle = CrossPointSettings::READER_MENU_TOOLBAR;
   }
+  // ANTES de cargar nada: un `.tmp` de una escritura cortada es el archivo bueno
+  // o es basura, y en los dos casos hay que resolverlo antes de que alguien lea
+  // el destino. El rescate de `readFile()` es perezoso y sólo cubre a quien
+  // pase por ahí; las cachés que se leen con `openFileForRead()` directo (hub,
+  // viajes, noticias) quedaban afuera.
+  tempsweep::run();
   SETTINGS.loadFromFile();
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));

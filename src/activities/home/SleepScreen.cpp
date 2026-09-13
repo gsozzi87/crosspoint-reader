@@ -19,6 +19,7 @@
 #include "../../CrossPointSettings.h"
 #include "../../components/UITheme.h"
 #include "../../util/Shtc3.h"
+#include "../../news/NewsPack.h"
 #include "../ListStyle.h"
 
 extern GfxRenderer renderer;
@@ -226,7 +227,12 @@ void foot(const sleepscreen::State state) {
 }  // namespace
 
 std::vector<std::string> sleepscreen::readHeadlines(const int max) {
-  std::vector<std::string> out;
+  // Del paquete que masticó el servidor. Si todavía no hay ninguno (nunca se
+  // sincronizó), se cae a la caché vieja de Noticias, que tiene los titulares
+  // crudos de la última vez que alguien entró a esa pantalla.
+  std::vector<std::string> out = newspack::headlines(max);
+  if (!out.empty()) return out;
+
   if (!Storage.exists(RSS_CACHE)) return out;
   HalFile f;
   if (!Storage.openFileForRead(TAG, RSS_CACHE, f)) return out;

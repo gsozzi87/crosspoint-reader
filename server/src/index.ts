@@ -1,5 +1,6 @@
 // Punto de entrada. Railway: Root Directory = server, start = bun run src/index.ts.
 import { Hono } from "hono";
+import { startRefresher } from "./news";
 import { api } from "./api";
 import { firmware } from "./firmware";
 import { board } from "./board";
@@ -45,6 +46,10 @@ warmUp(hubLang);       // Piper carga el modelo una vez
 warmAssets(hubLang);   // genera el paquete de contenido si falta (una sola vez, queda en /data)
 
 const port = Number(process.env.PORT ?? 3000);
+// El masticador de noticias corre solo, cada hora: el aparato se baja el
+// paquete ya armado en vez de esperar a que se limpie cada artículo.
+startRefresher();
+
 console.log(`ws397 server on :${port} (${multiUser ? "multiusuario, Postgres" : "un solo usuario, archivos en /data"})`);
 
 export default { port, fetch: app.fetch };

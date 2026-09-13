@@ -20,6 +20,7 @@ import { tts } from "./tts";
 import { translate } from "./translate";
 import { boardApi } from "./board";
 import { bibleApi } from "./bible";
+import { news } from "./news";
 import { rss } from "./rss";
 import { deviceLog } from "./devicelog";
 import { assets } from "./assets";
@@ -123,6 +124,7 @@ api.route("/translate", translate);   // POST /api/translate?from=&to= → tradu
 api.route("/board", boardApi);        // POST /api/board/{reminder,item,note} → lo que se carga desde la página web
 api.route("/notes", notes);          // POST /api/notes → nota rápida, sin pasar por el clasificador
 api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find}; POST /api/bible/ask → Biblia y preguntas sobre el capítulo
+api.route("/news", news);             // GET  /api/news/pack, /api/news/item → el paquete masticado (news.ts)
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
 api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete, /dictate → calendario local
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
