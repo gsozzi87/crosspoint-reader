@@ -820,6 +820,42 @@ O sea que la página lenta de 2,5 a 4,8 s no se arregla con una LUT propia — e
 falta medir es el RENDER (`bw_render`, las dos pasadas de gris, `cleanup`), que es justamente lo que dice la
 línea `Page render:` del log… que no llegaba porque `/api/log` estaba caído. Primero el log, después el número.
 
+## La velocidad de lectura, medida de verdad (1.5.83)
+
+Con el log arreglado llegaron las líneas `Page render:`, y la historia era otra. Una página **de texto** cuesta
+**1230 ms**, no 2,5 a 4,8 s:
+
+    prewarm=35  bw_render=53  display=583  gray_lsb=79  gray_msb=81  gray_display=366  cleanup=27  total=1230
+
+Las de 3149 y 4793 ms del log son **páginas con imagen la primera vez**: ahí `bw_render` salta a 1985 y 2399 ms
+porque se saca el JPEG del ZIP, se decodifica y se escribe el `.pxc`. La segunda visita a esa página ya no paga
+eso. Y la de 2744 ms es una que le tocó el **FULL** de la cadencia (`display=2194`). O sea que el "2,5 a 4,8 s por
+página" nunca fue el caso normal.
+
+De los 1230 ms, **949 son dos ondas del panel**: la base (`display`, 583) y la pasada de gris
+(`gray_display`, 366). El resto —CPU— son 281 ms.
+
+**Lo que se arregló**: los dos planos de gris (48 KB cada uno) se pedían con `new[]` y el permiso se miraba
+contra `ESP.getFreeHeap()`. Con un libro abierto ese heap está bajo, así que `planeBufFits()` daba false y el
+camino **asíncrono** —el que pinta los planos MIENTRAS corre la onda de la base— no se tomaba casi nunca: por eso
+el log decía `Page render (tiled)` y nunca `(tiled async)`. Ahora los planos salen de **PSRAM** por
+`heap_caps_malloc` y el hueco se mide contra la PSRAM, que es donde de verdad iban a caer. Son 160 ms que pasan a
+ser gratis, y de paso 96 KB que dejan de amenazar al heap interno, que es el escaso (234 KB contra 8 MB) y el que
+necesitan el TLS y el parseo del EPUB. Cuando aun así no alcance, ahora **lo dice el log** en vez de que la
+página lenta parezca cosa del panel.
+
+**Lo que queda para bajar de 1 s** son las dos ondas, y las dos salidas cuestan algo:
+- **apagar el antialiasing** saca `gray_lsb + gray_msb + gray_display + cleanup` = 553 ms (página ≈ 680 ms), a
+  cambio de texto sin suavizar;
+- **combinar la base con la pasada de gris en una sola onda** (lo que `combinesGrayscaleBase()` ya hace en el
+  Paper Mono) ahorraría los 583 ms de la base, pero en este panel **no está probado** y si sale mal la página
+  queda con los grises sin base debajo.
+Es una decisión del usuario, no técnica: hay que preguntarle antes de tocarla.
+
+Además: `DictionaryRegistry::discover()` corre en CADA reconstrucción del menú de Ajustes, y en un aparato sin
+diccionarios su `No /.dictionaries directory` solo llenaba el log de 24 KB que se sube al servidor. Ahora avisa
+una vez por arranque y por raíz.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

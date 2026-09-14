@@ -11,6 +11,7 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 
 #include <algorithm>
@@ -49,6 +50,24 @@
 #include "util/ScreenshotUtil.h"
 
 namespace {
+// Un bloque de PSRAM que se libera solo. `heap_caps_malloc` no se lleva con
+// `delete[]`, así que un `unique_ptr<uint8_t[]>` pelado liberaría mal.
+struct PsramBuf {
+  uint8_t* p = nullptr;
+  explicit PsramBuf(uint8_t* ptr) : p(ptr) {}
+  ~PsramBuf() {
+    if (p) heap_caps_free(p);
+  }
+  PsramBuf(const PsramBuf&) = delete;
+  PsramBuf& operator=(const PsramBuf&) = delete;
+  explicit operator bool() const { return p != nullptr; }
+  uint8_t* get() const { return p; }
+};
+
+// Margen que se le deja a la PSRAM antes de pedirle los dos planos de gris. Es
+// holgado a propósito: hay 8 MB y el que se cuida es el heap interno.
+constexpr size_t PLANE_BUF_PSRAM_HEADROOM = 256 * 1024;
+
 // The X4 Pro and X4 Classic carry the X4's panel but sit outside isXteinkDevice()
 // (that helper also gates power management). Overlay refresh choices are per-panel:
 // this family runs the grayscale anti-aliasing pass, so chrome painted over a
@@ -1656,14 +1675,28 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       }
     };
 
-    constexpr size_t PLANE_BUF_HEADROOM = 60000;
-    constexpr size_t PLANE_BUF_MAX_ALLOC_RESERVE = 16 * 1024;
+    // Los dos planos de gris (48 KB cada uno en esta placa) van a PSRAM y no al
+    // heap interno, y el hueco se mide contra la PSRAM. Antes se pedían con
+    // `new[]` y el permiso se miraba contra el heap chico: con un libro abierto
+    // ese heap está bajo, así que el camino asíncrono —el que solapa el pintado
+    // de los planos con la onda de la base— NO se tomaba casi nunca y cada
+    // página pagaba los dos tiempos en fila. El heap interno además es el
+    // escaso (234 KB contra 8 MB) y es el que necesitan el TLS y el parseo del
+    // EPUB: meterle 96 KB de planos es justo lo que no hay que hacer.
     const auto planeBufFits = [planeBytes] {
-      return ESP.getFreeHeap() >= planeBytes + PLANE_BUF_HEADROOM &&
-             ESP.getMaxAllocHeap() >= planeBytes + PLANE_BUF_MAX_ALLOC_RESERVE;
+      return heap_caps_get_free_size(MALLOC_CAP_SPIRAM) >= planeBytes + PLANE_BUF_PSRAM_HEADROOM;
     };
-    auto lsbPlaneBuf = (overlapRefresh && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
-    auto msbPlaneBuf = (lsbPlaneBuf && planeBufFits()) ? makeUniqueNoThrow<uint8_t[]>(planeBytes) : nullptr;
+    const auto takePlane = [planeBytes]() -> uint8_t* {
+      return static_cast<uint8_t*>(heap_caps_malloc(planeBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    };
+    PsramBuf lsbPlaneBuf((overlapRefresh && planeBufFits()) ? takePlane() : nullptr);
+    PsramBuf msbPlaneBuf((lsbPlaneBuf && planeBufFits()) ? takePlane() : nullptr);
+    if (overlapRefresh && !lsbPlaneBuf) {
+      // Sin esta línea, que el camino rápido no se tome es invisible en el log y
+      // la página lenta parece cosa del panel.
+      LOG_DBG("ERS", "sin PSRAM para los planos de gris (%u B libres): página sin solape",
+              (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    }
 
     if (lsbPlaneBuf) {
       renderPlaneToBuffer(true, lsbPlaneBuf.get());

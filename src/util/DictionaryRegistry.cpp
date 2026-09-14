@@ -66,7 +66,15 @@ void discover(std::vector<DictionaryEntry>& out) {
   for (const char* dictRoot : DICT_ROOTS) {
     auto rootDir = Storage.open(dictRoot);
     if (!rootDir || !rootDir.isDirectory()) {
-      LOG_DBG("DREG", "No %s directory on SD card", dictRoot);
+      // Una vez por arranque y no una por visita a Ajustes: `discover()` corre
+      // en CADA reconstrucción del menú, y en un aparato sin diccionarios esa
+      // línea sola llenaba el log de 24 KB que se sube al servidor.
+      static bool avisado[2] = {false, false};
+      const size_t i = dictRoot == DICT_ROOTS[0] ? 0 : 1;
+      if (!avisado[i]) {
+        avisado[i] = true;
+        LOG_DBG("DREG", "No %s directory on SD card", dictRoot);
+      }
       continue;
     }
 
