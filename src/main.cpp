@@ -35,6 +35,7 @@
 #include "HubStore.h"
 #include "activities/home/SleepScreen.h"
 #include "activities/home/ReminderAlertActivity.h"
+#include "activities/home/SetupActivity.h"
 #include "activities/home/TimerActivity.h"
 #include "activities/home/VoiceActivity.h"
 #include "util/DeviceLog.h"
@@ -59,6 +60,7 @@
 #include "util/Shtc3.h"
 #include "util/BatteryLog.h"
 #include "sync/Sync.h"
+#include "util/CardLayout.h"
 #include "util/TempSweep.h"
 #include "util/IdleSleep.h"
 #include "util/RtcAlarm.h"
@@ -1068,6 +1070,10 @@ void setup() {
   // pase por ahí; las cachés que se leen con `openFileForRead()` directo (hub,
   // viajes, noticias) quedaban afuera.
   tempsweep::run();
+  // Las carpetas que el aparato espera encontrar (libros, música, apps,
+  // tipografías, diccionarios) se crean si faltan, en vez de loguear que no
+  // están y dejar la función muda.
+  cardlayout::ensure();
   SETTINGS.loadFromFile();
   RECENT_BOOKS.loadFromFile();
   I18N.setLanguage(static_cast<Language>(SETTINGS.language));
@@ -1248,6 +1254,10 @@ void setup() {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
         std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+  } else if (SetupActivity::pending()) {
+    // Aparato recién salido de la caja: los primeros pasos antes que nada.
+    // Se retoma solo si un paso de red lo reinicia en silencio.
+    activityManager.replaceActivity(std::make_unique<SetupActivity>(renderer, mappedInputManager));
   } else if (rebootedFromPanic) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();

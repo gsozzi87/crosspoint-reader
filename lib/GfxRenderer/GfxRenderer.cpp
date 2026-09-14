@@ -1723,8 +1723,10 @@ HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refre
     refresh_.commitSkip(refreshMode, hint);
     return p.mode;
   }
+  const unsigned long tPanel = millis();
   display.displayBuffer(p.mode, fadingFix);
-  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false);
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false,
+                  static_cast<uint32_t>(millis() - tPanel));
   return p.mode;
 }
 
@@ -1740,8 +1742,10 @@ HalDisplay::RefreshMode GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode 
   if (fadingFix) {
     const PanelRefreshCoordinator::Plan p =
         refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/false, /*allowSkip=*/false);
+    const unsigned long tPanel = millis();
     display.displayBuffer(p.mode, fadingFix);
-    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false);
+    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false,
+                    static_cast<uint32_t>(millis() - tPanel));
     return p.mode;
   }
   const PanelRefreshCoordinator::Plan p = refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/true);
@@ -2263,8 +2267,10 @@ HalDisplay::RefreshMode GfxRenderer::displayGrayscaleBase(const HalDisplay::Refr
   const bool inverted = display.isInverted();
   const PanelRefreshCoordinator::Plan p =
       refresh_.plan(frameBuffer, fallback, hint, inverted, /*async=*/false, /*allowSkip=*/false);
+  const unsigned long tPanel = millis();
   display.displayGrayscaleBase(p.mode, fadingFix);
-  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false);
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false,
+                  static_cast<uint32_t>(millis() - tPanel));
   return p.mode;
 }
 

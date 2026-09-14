@@ -245,6 +245,37 @@ void TaskStatsActivity::render(RenderLock&&) {
     y = rowAt(y, listui::ROW1_H, {.title = detail, .rule = false});
   }
 
+  y += listui::GAP;
+
+  // --- Panel ---------------------------------------------------------------
+  // Cuánto tarda cada forma de refresco EN ESTA PLACA. Sin esto no hay manera
+  // de saber si una vuelta de página lenta es la onda parcial del panel o una
+  // limpieza que se coló: el coordinador decide bien, pero la onda la pone el
+  // vidrio. Sólo cuenta los refrescos bloqueantes (el asíncrono lo espera el
+  // lector, no el que refresca).
+  {
+    const PanelRefreshCoordinator& coord = renderer.refreshCoordinator();
+    y = header(y, tr(STR_MEMORY_PANEL), nullptr);
+    const HalDisplay::RefreshMode modos[] = {HalDisplay::FAST_REFRESH, HalDisplay::HALF_REFRESH,
+                                             HalDisplay::FULL_REFRESH};
+    bool alguno = false;
+    for (const HalDisplay::RefreshMode modo : modos) {
+      const PanelRefreshCoordinator::ModeStat& st = coord.stat(modo);
+      if (st.n == 0) continue;
+      alguno = true;
+      char title[64];
+      char meta[48];
+      snprintf(title, sizeof(title), "%s  ·  %lu ms", PanelRefreshCoordinator::modeName(modo),
+               static_cast<unsigned long>(st.avgMs()));
+      snprintf(meta, sizeof(meta), "%lu / max %lu ms", static_cast<unsigned long>(st.n),
+               static_cast<unsigned long>(st.maxMs));
+      y = rowAt(y, listui::ROW1_H, {.title = title, .meta = meta, .rule = true});
+    }
+    if (!alguno) {
+      y = rowAt(y, listui::ROW1_H, {.title = tr(STR_MEMORY_PANEL_NONE), .rule = false});
+    }
+  }
+
   // El alto total es lo que permite no pasarse del final al desplazar.
   contentH = y - listui::contentTop();
 

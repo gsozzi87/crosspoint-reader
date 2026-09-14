@@ -111,8 +111,42 @@ Sin estos cuatro números no hay nada que poner en la caja.
 
 ### 10. Velocidad de lectura (Ola 8, paso 29)
 
-Hoy 2,5 a 4,8 s por página con `display=2227ms` adentro. Hay que ver qué forma de refresco elige el coordinador al
-pasar de página. Objetivo: menos de 1 s.
+Hoy 2,5 a 4,8 s por página con `display=2227ms` adentro. **Esto ahora se mide sin cable**: el coordinador
+cronometra cada refresco y `Ajustes → Sistema → Memoria` tiene una sección **Panel** con el promedio, la cantidad
+y el máximo de cada forma (FAST, HALF, FULL). La línea del log también lleva los milisegundos
+(`refresh FAST hint=page 612ms …`).
+
+- [ ] Abrir un libro y pasar **20 páginas seguidas** sin tocar nada más.
+- [ ] Ir a `Ajustes → Sistema → Memoria` y anotar los tres renglones de **Panel**.
+
+Lo que dicen esos números:
+
+| Lo que se ve | Qué significa | Qué se hace |
+|---|---|---|
+| FAST ≈ 2 s, n grande | La onda parcial del panel ES así de lenta | Hay que cargar una **LUT propia** (registro 0x32), que es trabajo con hardware delante |
+| FAST ≈ 0,5 s pero hay muchos HALF/FULL | Se están colando limpiezas donde alcanzaba un parcial | Es política: se arregla en `PanelRefreshCoordinator` y en `refreshFrequency` |
+| FAST rápido y pocos HALF | El panel no es el problema | Lo que sobra está en el render (AA, prewarm), y ahí sí se puede recortar |
+
+Objetivo: menos de 1 s.
+
+### 11. Las carpetas de la tarjeta (Ola 8, paso 27)
+
+- [ ] Con una tarjeta vacía (o después de borrar `/fonts`), arrancar y mirar `/board/log`: tiene que decir
+      `[CARD] Carpeta creada: …` por cada una y **no** volver a decir `Fonts directory not found`.
+- [ ] Entrar por **modo memoria USB** y ver `/Books`, `/Music`, `/Apps`, `/fonts` y `/dictionaries`.
+
+### 12. El asistente de primer arranque (Ola 8, paso 28)
+
+Sólo sale en un aparato que se ve **nuevo**: sin `setupDone`, sin redes WiFi cargadas y sin haber sincronizado
+nunca. En el aparato del usuario **no va a salir** al actualizar, que es lo correcto.
+
+- [ ] Para probarlo a propósito: borrar `/.crosspoint/hub.json` y `/.crosspoint/wifi.json` desde el modo memoria
+      USB y arrancar.
+- [ ] Los cinco pasos: idioma → WiFi por el teléfono → vincular → lugar del clima → los tres gestos.
+- [ ] Saltar los tres del medio con ABAJO y llegar igual a la pantalla de gestos.
+- [ ] **El reinicio silencioso**: si al salir de Vincular o del Clima el aparato se reinicia solo, tiene que
+      **volver al asistente en el paso siguiente**, no al hub y no al principio (eso es lo que guarda
+      `setupStep` en `hub.json`).
 
 ---
 

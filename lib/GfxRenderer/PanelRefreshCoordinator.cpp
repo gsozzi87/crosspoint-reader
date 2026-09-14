@@ -30,6 +30,9 @@ void PanelRefreshCoordinator::begin(const uint32_t bufferSize, const bool enable
   shadowValid_ = false;
   grayOnGlass_ = false;
   firstPaint_ = true;
+  // Las estadísticas del panel NO se reinician acá: begin() vuelve a correr en
+  // cada re-init de la pantalla (salir del sueño, por ejemplo) y perder la
+  // cuenta cada vez dejaría la pantalla de Memoria siempre en cero.
   fastSinceClean_ = 0;
   cleansSinceFull_ = 0;
   if (!enabled_) {
@@ -124,8 +127,32 @@ PanelRefreshCoordinator::Plan PanelRefreshCoordinator::plan(const uint8_t* fb, c
   return p;
 }
 
+PanelRefreshCoordinator::ModeStat& PanelRefreshCoordinator::statFor(const HalDisplay::RefreshMode mode) {
+  switch (mode) {
+    case HalDisplay::HALF_REFRESH:
+      return statHalf_;
+    case HalDisplay::FULL_REFRESH:
+      return statFull_;
+    case HalDisplay::FAST_REFRESH:
+    default:
+      return statFast_;
+  }
+}
+
+const PanelRefreshCoordinator::ModeStat& PanelRefreshCoordinator::stat(const HalDisplay::RefreshMode mode) const {
+  switch (mode) {
+    case HalDisplay::HALF_REFRESH:
+      return statHalf_;
+    case HalDisplay::FULL_REFRESH:
+      return statFull_;
+    case HalDisplay::FAST_REFRESH:
+    default:
+      return statFast_;
+  }
+}
+
 void PanelRefreshCoordinator::commit(const uint8_t* fb, const HalDisplay::RefreshMode effective, const Hint hint,
-                                     const bool inverted, const bool async) {
+                                     const bool inverted, const bool async, const uint32_t ms) {
   if (!enabled_) return;
   firstPaint_ = false;
   ++commits_;
@@ -153,9 +180,18 @@ void PanelRefreshCoordinator::commit(const uint8_t* fb, const HalDisplay::Refres
     shadowValid_ = true;
     shadowInverted_ = inverted;
   }
-  LOG_DBG(TAG, "refresh %s hint=%s%s fast=%d cleans=%d gray=%d skipped=%lu n=%lu", modeName(effective),
-          hintName(hint), async ? " async" : "", fastSinceClean_, cleansSinceFull_, grayOnGlass_ ? 1 : 0,
-          static_cast<unsigned long>(skipped_), static_cast<unsigned long>(commits_));
+  // Sólo los bloqueantes: en el asíncrono esta llamada vuelve enseguida y lo
+  // que tarda de verdad es el waitRefreshComplete() del lector.
+  if (!async && ms > 0) {
+    ModeStat& st = statFor(effective);
+    ++st.n;
+    st.totalMs += ms;
+    st.lastMs = ms;
+    if (ms > st.maxMs) st.maxMs = ms;
+  }
+  LOG_DBG(TAG, "refresh %s hint=%s%s %lums fast=%d cleans=%d gray=%d skipped=%lu n=%lu", modeName(effective),
+          hintName(hint), async ? " async" : "", static_cast<unsigned long>(ms), fastSinceClean_, cleansSinceFull_,
+          grayOnGlass_ ? 1 : 0, static_cast<unsigned long>(skipped_), static_cast<unsigned long>(commits_));
 }
 
 void PanelRefreshCoordinator::commitSkip(const HalDisplay::RefreshMode requested, const Hint hint) {

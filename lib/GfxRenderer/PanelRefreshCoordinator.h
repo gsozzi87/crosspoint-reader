@@ -66,7 +66,11 @@ class PanelRefreshCoordinator {
             bool allowSkip = true);
 
   // Record a refresh that actually reached the panel with `effective` mode.
-  void commit(const uint8_t* fb, HalDisplay::RefreshMode effective, Hint hint, bool inverted, bool async);
+  // `ms` es lo que tardó la escritura + la onda, medido por GfxRenderer. Vale
+  // 0 en el camino asíncrono (ahí lo que tarda es el waitRefreshComplete() que
+  // hace el lector, no esta llamada) y esas no entran en las estadísticas.
+  void commit(const uint8_t* fb, HalDisplay::RefreshMode effective, Hint hint, bool inverted, bool async,
+              uint32_t ms = 0);
 
   // Record a refresh skipped because the frame was identical to the shadow.
   void commitSkip(HalDisplay::RefreshMode requested, Hint hint);
@@ -89,6 +93,20 @@ class PanelRefreshCoordinator {
 
   // Forget what the panel shows (display re-init, anything that bypassed us).
   void invalidate();
+
+  // Cuánto tarda de verdad cada forma de refresco en ESTA placa. Es la única
+  // manera de saber si una vuelta de página lenta es la onda parcial del panel
+  // (y entonces hace falta una LUT propia) o una limpieza que se coló (y
+  // entonces es política, que se arregla acá). Se mira en Ajustes → Sistema →
+  // Memoria; sólo cuenta los refrescos bloqueantes.
+  struct ModeStat {
+    uint32_t n = 0;
+    uint32_t totalMs = 0;
+    uint32_t lastMs = 0;
+    uint32_t maxMs = 0;
+    uint32_t avgMs() const { return n > 0 ? totalMs / n : 0; }
+  };
+  const ModeStat& stat(HalDisplay::RefreshMode mode) const;
 
   bool enabled() const { return enabled_; }
   uint32_t skippedIdenticalFrames() const { return skipped_; }
@@ -116,6 +134,7 @@ class PanelRefreshCoordinator {
 
  private:
   bool shadowMatches(const uint8_t* fb, bool inverted) const;
+  ModeStat& statFor(HalDisplay::RefreshMode mode);
 
   bool enabled_ = false;
   uint8_t* shadow_ = nullptr;
@@ -125,6 +144,9 @@ class PanelRefreshCoordinator {
   bool grayOnGlass_ = false;
   bool cleanHold_ = false;
   bool firstPaint_ = true;
+  ModeStat statFast_;
+  ModeStat statHalf_;
+  ModeStat statFull_;
   int fastSinceClean_ = 0;
   int cleansSinceFull_ = 0;
   uint32_t skipped_ = 0;

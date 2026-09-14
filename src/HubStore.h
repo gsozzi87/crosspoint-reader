@@ -149,6 +149,15 @@ class HubStore : public PersistableStore<HubStore> {
   // tildaba o borraba lo que le tocara el mismo numero en la nueva, y la cache
   // seguia mostrando recordatorios y notas de la otra persona.
   std::string account;
+  // El asistente de primer arranque ya pasó. Se guarda para que no vuelva a
+  // salir, y para que un aparato que ya se venía usando (que además tiene redes
+  // WiFi cargadas o ya sincronizó) nunca lo vea al actualizarse.
+  bool setupDone = false;
+  // En qué paso quedó el asistente. Hace falta porque tres de los pasos son
+  // pantallas de red que al salir hacen un reinicio silencioso: sin esto, el
+  // asistente volvía a empezar (o no volvía nunca, porque a esa altura ya hay
+  // red cargada y el aparato deja de parecer nuevo).
+  uint8_t setupStep = 0;
   std::string uiLang;          // idioma pedido desde la web ("es", "en", ...); lo aplica HubSyncActivity
   std::string ttsVoice;        // voz de Piper del servidor: entra en el nombre de los clips cacheados
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }

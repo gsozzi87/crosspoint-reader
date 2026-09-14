@@ -743,6 +743,31 @@ cable. No se toca sin poder probar en hardware.
   deletreada sin red NO se puede**: en el S3 no hay reconocedor de voz en español que quepa (ESP-SR MultiNet es
   inglés y chino y pide varios MB de flash; estamos en 87 %), y con red no hace falta porque ya está conectado.
 
+## Primer arranque, la tarjeta y el cronómetro del panel (1.5.80)
+
+- **Las carpetas se crean solas** (`src/util/CardLayout`, `cardlayout::ensure()` desde el arranque, sólo ws397):
+  `/Books`, `/Music`, `/Apps`, `/fonts` y `/dictionaries`. Antes el log decía `Fonts directory not found` y
+  `No /dictionaries directory` y no pasaba nada más; ahora las carpetas existen, y desde el modo memoria USB se ve
+  **dónde va cada cosa**, que es el problema real del que acaba de abrir la caja. Sólo carpetas vacías: el contenido
+  (la tipografía, el diccionario español, el libro de muestra) va en la imagen de fábrica de la tarjeta.
+- **Asistente de primer arranque** (`src/activities/home/SetupActivity`): idioma → WiFi por el teléfono → vincular →
+  lugar del clima → **los tres gestos que no se adivinan** (dos toques de Atrás = hablar, Atrás mantenido =
+  sincronizar, PWR mantenido = suspender). Los tres del medio son las pantallas que ya existen en Ajustes y se
+  pueden saltar con ABAJO.
+  Sale **una sola vez y sólo en un aparato que se ve nuevo**: sin `setupDone`, sin redes WiFi cargadas y sin haber
+  sincronizado nunca. El que ya lo venía usando no lo ve al actualizar por OTA.
+  **Por qué se guarda también el paso** (`HubStore::setupStep`): Vincular y el Clima hacen un **reinicio silencioso**
+  al soltar la red, y después de ese reinicio el aparato ya no parece nuevo (tiene WiFi cargado), así que sin el
+  paso guardado el asistente no volvía nunca. Con él, `pending()` pregunta primero si ya había empezado.
+- **El panel se cronometra** (`PanelRefreshCoordinator::stat()`): `GfxRenderer` mide la escritura + la onda de cada
+  refresco bloqueante y el coordinador acumula promedio, cantidad y máximo por forma. Se ve en
+  **Ajustes → Sistema → Memoria → Panel** y va en la línea del log (`refresh FAST hint=page 612ms …`).
+  Es lo que decide entre las dos explicaciones posibles de una página lenta, que piden arreglos opuestos: si el
+  FAST tarda ~2 s, la onda parcial del panel ES así y hace falta una **LUT propia** (registro 0x32, trabajo con
+  hardware delante); si el FAST es rápido pero hay muchos HALF/FULL, se están colando limpiezas y eso es política
+  del coordinador. **No se toca ninguna onda a ciegas**: equivocarse deja el vidrio peor y no hay forma de verlo
+  desde la nube. El asíncrono no entra en la cuenta: ahí lo que tarda es el `waitRefreshComplete()` del lector.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

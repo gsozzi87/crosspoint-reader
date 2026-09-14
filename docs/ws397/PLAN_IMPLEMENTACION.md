@@ -263,7 +263,7 @@ Es lo que no se ve y sin lo cual no se puede vender. Está detallado en `PLAN_VE
 
 ---
 
-## Ola 8 — 1.5.78 · Primer arranque y la tarjeta de fábrica
+## Ola 8 — 1.5.80 · Primer arranque y la tarjeta de fábrica
 
 27. **La tarjeta sale armada**: `/fonts`, `/dictionaries` (español), `/Apps`, `/Music`, `/Books` y un
     libro de muestra. Hoy el log dice `Fonts directory not found` y `No /dictionaries directory`.
@@ -273,6 +273,12 @@ Es lo que no se ve y sin lo cual no se puede vender. Está detallado en `PLAN_VE
     adivinan**: doble Atrás = hablar, Atrás mantenido = sincronizar, PWR mantenido = suspender.
 29. **Velocidad de lectura**: hoy 2,5 a 4,8 s por página con `display=2227ms` adentro. Medir qué
     forma de refresco elige el coordinador al pasar de página y por qué. Objetivo: menos de 1 s.
+    **Hecho lo que se puede hacer sin hardware**: el coordinador cronometra cada refresco, la línea
+    del log lleva los milisegundos y `Ajustes → Sistema → Memoria` tiene una sección **Panel** con el
+    promedio, la cantidad y el máximo de FAST, HALF y FULL. Sin ese número no se puede decidir entre
+    las dos causas posibles (la onda parcial del panel, que pide una LUT propia, o limpiezas que se
+    cuelan, que es política) y cualquier cambio a ciegas sobre las ondas deja el vidrio peor. La
+    tabla de qué significa cada resultado está en `PENDIENTE_VERIFICAR.md`, punto 10.
 
 ---
 
