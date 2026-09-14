@@ -1,215 +1,454 @@
-#include "UITheme.h"
-#include <BoardConfig.h>
+#include "LuaApp.h"
 
-#include "components/themes/diario/DiarioTheme.h"
-
-#include <FsHelpers.h>
 #include <GfxRenderer.h>
-#include <HalGPIO.h>
+#include <HalClock.h>
+#include <HalStorage.h>
 #include <Logging.h>
+#include <esp_heap_caps.h>
 
 #include <algorithm>
-#include <string>
+#include <cstring>
 
-#include "MappedInputManager.h"
-#include "RecentBooksStore.h"
-#include "components/themes/BaseTheme.h"
-#include "components/themes/lyra/Lyra3CoversTheme.h"
-#include "components/themes/lyra/LyraTheme.h"
-#include "components/themes/roundedraff/RoundedRaffTheme.h"
+#include "../HubStore.h"
+#include "../TaskConfig.h"
+#include "../activities/home/CalendarActivity.h"
+#include "../input/MotionInput.h"
+#include "../voice/UiSound.h"
+#include "LuaSandbox.h"
+#include "components/Selection.h"
+#include "fontIds.h"
 
-UITheme UITheme::instance;
-
-UITheme::UITheme() { setTheme(wantedTheme()); }
-
-// El resto de las placas sigue con el selector de cuatro de siempre sobre
-// `uiTheme`; acá no se toca nada de eso.
-CrossPointSettings::UI_THEME UITheme::wantedTheme() {
-  // La ws397 tiene UN tema y no se elige: Diario. Es fijo acá y no en el valor
-  // guardado a propósito, para que el aparato que venía con Bento o con Lyra
-  // puestos en la tarjeta también pase a Diario sin migrar nada.
-  if (BoardConfig::isWS397()) return CrossPointSettings::UI_THEME::DIARIO;
-  return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
+extern "C" {
+#include "lauxlib.h"
+#include "lua.h"
+#include "lualib.h"
 }
 
-void UITheme::reload() { setTheme(wantedTheme()); }
+namespace {
+constexpr const char* TAG = "LUA";
+constexpr const char* APPS_DIR = "/Apps";
+constexpr const char* STATE_DIR = "/Apps/.state";
+constexpr const char* EXT = ".lua";
 
-void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
-  static const BaseTheme classic;
-  static const LyraTheme lyra;
-  static const RoundedRaffTheme roundedRaff;
-  static const DiarioTheme diario;
-  static const Lyra3CoversTheme lyra3Covers;
-  switch (type) {
-    case CrossPointSettings::UI_THEME::CLASSIC:
-      LOG_DBG("UI", "Using Classic theme");
-      currentTheme = &classic;
-      currentMetrics = &BaseMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::LYRA:
-      LOG_DBG("UI", "Using Lyra theme");
-      currentTheme = &lyra;
-      currentMetrics = &LyraMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::ROUNDEDRAFF:
-      LOG_DBG("UI", "Using RoundedRaff theme");
-      currentTheme = &roundedRaff;
-      currentMetrics = &RoundedRaffMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::DIARIO:
-      LOG_DBG("UI", "Using Diario theme");
-      currentTheme = &diario;
-      currentMetrics = &DiarioMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
-      LOG_DBG("UI", "Using Lyra 3 Covers theme");
-      currentTheme = &lyra3Covers;
-      currentMetrics = &Lyra3CoversMetrics::values;
-      break;
-  }
-  metricsValid = false;
+// Una app por vez: el renderer y el contador de instrucciones son de la que
+// esté corriendo. Es lo que permite que las funciones de `cp` sean C plano sin
+// arrastrar un puntero por cada llamada.
+GfxRenderer* g_renderer = nullptr;
+bool g_quit = false;
+std::string g_appStem;
+
+// --- La tabla cp ---------------------------------------------------------
+
+int clampCoord(const lua_Integer v, const int extent) {
+  if (v < -extent) return -extent;
+  if (v > extent * 2) return extent * 2;
+  return static_cast<int>(v);
 }
 
-const ThemeMetrics& UITheme::getMetrics() const {
-  // hasTouch() can flip once touch init completes after static construction, so the
-  // cached copy is refreshed when the flag differs instead of copying the struct per call.
-  const bool touch = gpio.hasTouch();
-  if (!metricsValid || touch != metricsForTouch) {
-    adjustedMetrics = *currentMetrics;
-    if (touch) {
-      adjustedMetrics.buttonHintsHeight = 0;
-    }
-    metricsForTouch = touch;
-    metricsValid = true;
-  }
-  return adjustedMetrics;
+int clampSize(const lua_Integer v, const int extent) {
+  if (v <= 0) return 0;
+  return static_cast<int>(std::min<lua_Integer>(v, extent));
 }
 
-// Screen area excluding the button hints
-Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints, bool hasSideButtonHints) {
-  auto orientation = renderer.getOrientation();
-  const int screenWidth = renderer.getScreenWidth();
-  const int screenHeight = renderer.getScreenHeight();
-  Rect safeArea = Rect{0, 0, screenWidth, screenHeight};
-  const ThemeMetrics metrics = getMetrics();
-  switch (orientation) {
-    case GfxRenderer::Orientation::Portrait:
-      if (hasFrontButtonHints) {
-        safeArea.height -= metrics.buttonHintsHeight;
-      }
-      break;
-    case GfxRenderer::Orientation::LandscapeClockwise:
-      if (hasFrontButtonHints) {
-        safeArea.x += metrics.buttonHintsHeight;
-        safeArea.width -= metrics.buttonHintsHeight;
-      }
-      break;
-    case GfxRenderer::Orientation::PortraitInverted:
-      if (hasFrontButtonHints) {
-        safeArea.y += metrics.buttonHintsHeight;
-        safeArea.height -= metrics.buttonHintsHeight;
-      }
-      break;
-    case GfxRenderer::Orientation::LandscapeCounterClockwise:
-      if (hasFrontButtonHints) {
-        safeArea.width -= metrics.buttonHintsHeight;
-      }
-      break;
-  }
-  return safeArea;
+int clampStroke(const lua_Integer v) { return static_cast<int>(std::max<lua_Integer>(1, std::min<lua_Integer>(v, 8))); }
+
+int fontFor(const lua_Integer size) {
+  if (size >= 14) return UI_14_FONT_ID;
+  if (size <= 10) return UI_10_FONT_ID;
+  return UI_12_FONT_ID;
 }
 
-std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int coverHeight) {
-  size_t pos = coverBmpPath.find("[HEIGHT]", 0);
-  if (pos != std::string::npos) {
-    coverBmpPath.replace(pos, 8, std::to_string(coverHeight));
-  }
-  return coverBmpPath;
+int cpClear(lua_State*) {
+  if (g_renderer) g_renderer->clearScreen();
+  return 0;
 }
 
-UIIcon UITheme::getFileIcon(const std::string& filename) {
-  if (filename.back() == '/') {
-    return Folder;
+int cpText(lua_State* L) {
+  const int x = clampCoord(luaL_checkinteger(L, 1), g_renderer ? g_renderer->getScreenWidth() : 800);
+  const int y = clampCoord(luaL_checkinteger(L, 2), g_renderer ? g_renderer->getScreenHeight() : 800);
+  const char* text = luaL_checkstring(L, 3);
+  const int font = fontFor(luaL_optinteger(L, 4, 12));
+  const bool bold = lua_toboolean(L, 5) != 0;
+  if (g_renderer) {
+    g_renderer->drawText(font, x, y, text, true, bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
   }
-  if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename)) {
-    return Book;
-  }
-  if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
-    return Text;
-  }
-  if (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)) {
-    return Image;
-  }
-  return File;
+  return 0;
 }
 
-int UITheme::getStatusBarHeight() {
-  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
-  const auto sb = SETTINGS.statusBarSpec();
-
-  // Layout reservation is hardware-agnostic: pass clockAvailable=true so the
-  // reserved height does not depend on whether an RTC is present.
-  return (sb.textLaneVisible(true) ? (metrics.statusBarVerticalMargin) : 0) +
-         (sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0);
+int cpTextWidth(lua_State* L) {
+  const char* text = luaL_checkstring(L, 1);
+  const int font = fontFor(luaL_optinteger(L, 2, 12));
+  lua_pushinteger(L, g_renderer ? g_renderer->getTextWidth(font, text) : 0);
+  return 1;
 }
 
-int UITheme::getProgressBarHeight() {
-  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
-  const auto sb = SETTINGS.statusBarSpec();
-  return sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0;
+int cpTextHeight(lua_State* L) {
+  const int font = fontFor(luaL_optinteger(L, 1, 12));
+  lua_pushinteger(L, g_renderer ? g_renderer->getTextHeight(font) : 0);
+  return 1;
 }
 
-// Centered text implementation that takes the safe area into account.
-// El texto se recorta contra el ancho real antes de centrarlo: si es más ancho
-// que el área, `(width - textW) / 2` da una x negativa y el renderer termina
-// dibujando fuera de la pantalla (ráfagas de "[GFX] !! Outside range" en el log
-// del aparato, un renglón por pixel). Este es el único lugar por donde pasan
-// todos los que centran contra el área segura, así que se arregla acá.
-void UITheme::drawCenteredText(const GfxRenderer& renderer, Rect screen, int fontId, int y, const char* text,
-                               bool black, EpdFontFamily::Style style) {
-  if (text == nullptr || *text == '\0' || screen.width <= 0) return;
-  int textWidth = renderer.getTextWidth(fontId, text, style);
-  if (textWidth <= screen.width) {
-    renderer.drawText(fontId, screen.x + (screen.width - textWidth) / 2, y, text, black, style);
-    return;
+int cpRect(lua_State* L) {
+  const int screenW = g_renderer ? g_renderer->getScreenWidth() : 800;
+  const int screenH = g_renderer ? g_renderer->getScreenHeight() : 800;
+  const int x = clampCoord(luaL_checkinteger(L, 1), screenW);
+  const int y = clampCoord(luaL_checkinteger(L, 2), screenH);
+  const int w = clampSize(luaL_checkinteger(L, 3), screenW);
+  const int h = clampSize(luaL_checkinteger(L, 4), screenH);
+  const bool filled = lua_toboolean(L, 5) != 0;
+  if (!g_renderer) return 0;
+  if (filled) {
+    g_renderer->fillRect(x, y, w, h, true);
+  } else {
+    g_renderer->drawRect(x, y, w, h, clampStroke(luaL_optinteger(L, 6, 1)), true);
   }
-  const std::string fitted = renderer.truncatedText(fontId, text, screen.width, style);
-  textWidth = renderer.getTextWidth(fontId, fitted.c_str(), style);
-  renderer.drawText(fontId, screen.x + std::max(0, (screen.width - textWidth) / 2), y, fitted.c_str(), black, style);
+  return 0;
 }
 
-void UITheme::drawCenteredWrappedText(const GfxRenderer& renderer, Rect bounds, int fontId, const char* text,
-                                      int maxLines, bool black, EpdFontFamily::Style style,
-                                      TextVerticalAlignment verticalAlignment) {
-  if (!text || *text == '\0' || bounds.width <= 0 || bounds.height <= 0 || maxLines <= 0) return;
+int cpLine(lua_State* L) {
+  if (!g_renderer) return 0;
+  const int screenW = g_renderer->getScreenWidth();
+  const int screenH = g_renderer->getScreenHeight();
+  g_renderer->drawLine(clampCoord(luaL_checkinteger(L, 1), screenW), clampCoord(luaL_checkinteger(L, 2), screenH),
+                       clampCoord(luaL_checkinteger(L, 3), screenW), clampCoord(luaL_checkinteger(L, 4), screenH),
+                       clampStroke(luaL_optinteger(L, 5, 1)), true);
+  return 0;
+}
 
-  const int lineHeight = renderer.getLineHeight(fontId);
-  if (lineHeight <= 0) return;
+// El resalte del sistema visual (docs/ws397/DISENO.md): pestaña, marco y
+// franjas SÓLO en los márgenes. Se expone para que una app con una lista se vea
+// como el resto del aparato en vez de inventar su propio negro macizo.
+int cpSelection(lua_State* L) {
+  if (!g_renderer) return 0;
+  const int screenW = g_renderer->getScreenWidth();
+  const int screenH = g_renderer->getScreenHeight();
+  drawSelectionRow(*g_renderer, clampCoord(luaL_checkinteger(L, 1), screenW),
+                   clampCoord(luaL_checkinteger(L, 2), screenH), clampSize(luaL_checkinteger(L, 3), screenW),
+                   clampSize(luaL_checkinteger(L, 4), screenH), 0);
+  return 0;
+}
 
-  const int lineLimit = std::min(maxLines, bounds.height / lineHeight);
-  if (lineLimit <= 0) return;
+int cpWidth(lua_State* L) {
+  lua_pushinteger(L, g_renderer ? g_renderer->getScreenWidth() : 0);
+  return 1;
+}
 
-  const auto alignedTop = [&](const int textHeight) {
-    switch (verticalAlignment) {
-      case TextVerticalAlignment::CENTER:
-        return bounds.y + (bounds.height - textHeight) / 2;
-      case TextVerticalAlignment::BOTTOM:
-        return bounds.y + bounds.height - textHeight;
-      case TextVerticalAlignment::TOP:
-      default:
-        return bounds.y;
-    }
+int cpHeight(lua_State* L) {
+  lua_pushinteger(L, g_renderer ? g_renderer->getScreenHeight() : 0);
+  return 1;
+}
+
+int cpMotion(lua_State* L) {
+  const MotionInput::Event e = MOTION.takeAny();
+  if (e == MotionInput::Event::None) {
+    lua_pushnil(L);
+  } else {
+    lua_pushstring(L, MotionInput::name(e));
+  }
+  return 1;
+}
+
+int cpMs(lua_State* L) {
+  lua_pushinteger(L, static_cast<lua_Integer>(millis()));
+  return 1;
+}
+
+int cpBeep(lua_State* L) {
+  const char* which = luaL_optstring(L, 1, "nav");
+  uisound::Sound s = uisound::Sound::Nav;
+  if (strcmp(which, "ok") == 0)
+    s = uisound::Sound::Select;
+  else if (strcmp(which, "back") == 0)
+    s = uisound::Sound::Back;
+  else if (strcmp(which, "error") == 0)
+    s = uisound::Sound::Error;
+  UI_SOUND.play(s);
+  return 0;
+}
+
+int cpLog(lua_State* L) {
+  const int n = lua_gettop(L);
+  std::string line;
+  for (int i = 1; i <= n; ++i) {
+    if (i > 1) line += ' ';
+    size_t len = 0;
+    const char* s = luaL_tolstring(L, i, &len);
+    line.append(s, len);
+    lua_pop(L, 1);
+  }
+  LOG_INF(TAG, "%s: %s", g_appStem.c_str(), line.c_str());
+  return 0;
+}
+
+int cpQuit(lua_State*) {
+  g_quit = true;
+  return 0;
+}
+
+// La hora. Es la ÚNICA forma que tiene una app de saberla: `os` no está en el
+// cajón (`os.execute` y `os.remove` vienen en la misma biblioteca), así que sin
+// esto una agenda, un reloj o un juego por turnos no se podían escribir.
+// Devuelve nil cuando el aparato todavía no está en hora, que es un estado real
+// y frecuente: sin WiFi y sin haber sincronizado nunca, el RTC no sabe nada.
+int cpTime(lua_State* L) {
+  time_t epoch = 0;
+  if (!halClock.getEpochUtc(epoch) || epoch <= 0) {
+    lua_pushnil(L);
+    return 1;
+  }
+  int year = 0, month = 0, day = 0, hour = 0, minute = 0;
+  CalendarActivity::localFromEpoch(epoch, year, month, day, hour, minute);
+  lua_createtable(L, 0, 8);
+  const auto campo = [L](const char* nombre, const lua_Integer valor) {
+    lua_pushinteger(L, valor);
+    lua_setfield(L, -2, nombre);
   };
+  campo("year", year);
+  campo("month", month);
+  campo("day", day);
+  campo("hour", hour);
+  campo("min", minute);
+  // El segundo no sale de localFromEpoch: se saca del epoch, que es el mismo
+  // instante.
+  campo("sec", static_cast<lua_Integer>(epoch % 60));
+  // 1 = lunes, 7 = domingo. weekdayOfCivil devuelve 0 = lunes.
+  campo("wday", CalendarActivity::weekdayOfCivil(year, month, day) + 1);
+  // El epoch va en UTC, que es lo que guarda el RTC: sirve para medir
+  // diferencias entre dos llamadas sin pelearse con el huso.
+  campo("epoch", static_cast<lua_Integer>(epoch));
+  return 1;
+}
 
-  if (renderer.getTextWidth(fontId, text, style) <= bounds.width) {
-    drawCenteredText(renderer, bounds, fontId, alignedTop(lineHeight), text, black, style);
+// Lo único que una app puede escribir en la tarjeta: un archivo suyo, con su
+// nombre, en /Apps/.state. No recibe rutas: no puede elegir dónde escribir.
+int cpSave(lua_State* L) {
+  size_t len = 0;
+  const char* data = luaL_checklstring(L, 1, &len);
+  if (len > LuaApp::SAVE_CAP) len = LuaApp::SAVE_CAP;
+  // Es TEXTO, no binario: se corta en el primer cero para que lo que se guarda
+  // sea exactamente lo que se lee después (writeFile toma una String, que
+  // termina en cero igual). Cortarlo acá lo deja dicho en vez de que sorprenda.
+  const size_t nul = std::string(data, len).find('\0');
+  if (nul != std::string::npos) len = nul;
+  Storage.ensureDirectoryExists(STATE_DIR);
+  const std::string path = std::string(STATE_DIR) + "/" + g_appStem + ".txt";
+  String out;
+  out.concat(data, len);
+  lua_pushboolean(L, Storage.writeFile(path.c_str(), out) ? 1 : 0);
+  return 1;
+}
+
+int cpLoad(lua_State* L) {
+  const std::string path = std::string(STATE_DIR) + "/" + g_appStem + ".txt";
+  if (!Storage.exists(path.c_str())) {
+    lua_pushnil(L);
+    return 1;
+  }
+  const String content = Storage.readFile(path.c_str());
+  lua_pushlstring(L, content.c_str(), content.length());
+  return 1;
+}
+
+const luaL_Reg CP_API[] = {
+    {"clear", cpClear},
+    {"text", cpText},
+    {"textw", cpTextWidth},
+    {"texth", cpTextHeight},
+    {"rect", cpRect},
+    {"line", cpLine},
+    {"selection", cpSelection},
+    {"width", cpWidth},
+    {"height", cpHeight},
+    {"motion", cpMotion},
+    {"ms", cpMs},
+    {"beep", cpBeep},
+    {"log", cpLog},
+    {"quit", cpQuit},
+    {"save", cpSave},
+    {"load", cpLoad},
+    {"time", cpTime},
+    {nullptr, nullptr},
+};
+
+// --- Trabajo dentro del worker ------------------------------------------
+
+struct LoadJob {
+  lua_State* L = nullptr;
+  const char* source = nullptr;
+  size_t sourceSize = 0;
+  std::string chunkName;
+  bool ok = false;
+  std::string error;
+};
+
+void loadEntry(void* p) {
+  auto* job = static_cast<LoadJob*>(p);
+  lua_State* L = job->L;
+  if (luaL_loadbuffer(L, job->source, job->sourceSize, job->chunkName.c_str()) != LUA_OK) {
+    job->error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "no compila";
+    lua_pop(L, 1);
     return;
   }
-
-  const auto lines = renderer.wrappedText(fontId, text, bounds.width, lineLimit, style);
-  int y = alignedTop(static_cast<int>(lines.size()) * lineHeight);
-  for (const auto& line : lines) {
-    drawCenteredText(renderer, bounds, fontId, y, line.c_str(), black, style);
-    y += lineHeight;
+  luasandbox::armStepLimit(L, LuaApp::STEP_LIMIT);
+  if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    job->error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "falló al arrancar";
+    lua_pop(L, 1);
+    luasandbox::clearStepLimit(L);
+    return;
   }
+  luasandbox::clearStepLimit(L);
+  job->ok = true;
 }
+
+struct CallJob {
+  lua_State* L = nullptr;
+  const char* fn = nullptr;
+  const char* arg = nullptr;
+  bool repaint = false;
+  bool missing = false;
+  std::string error;
+};
+
+void callEntry(void* p) {
+  auto* job = static_cast<CallJob*>(p);
+  lua_State* L = job->L;
+  if (lua_getglobal(L, job->fn) != LUA_TFUNCTION) {
+    lua_pop(L, 1);
+    job->missing = true;
+    return;
+  }
+  int argc = 0;
+  if (job->arg) {
+    lua_pushstring(L, job->arg);
+    argc = 1;
+  }
+  luasandbox::armStepLimit(L, LuaApp::STEP_LIMIT);
+  const int rc = lua_pcall(L, argc, 1, 0);
+  luasandbox::clearStepLimit(L);
+  if (rc != LUA_OK) {
+    job->error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "error";
+    lua_pop(L, 1);
+    return;
+  }
+  job->repaint = lua_toboolean(L, -1) != 0;
+  lua_pop(L, 1);
+}
+}  // namespace
+
+// --- Catálogo ------------------------------------------------------------
+
+const char* LuaApp::dir() { return APPS_DIR; }
+
+std::vector<LuaApp::Entry> LuaApp::installed() {
+  std::vector<Entry> out;
+  if (!Storage.exists(APPS_DIR)) return out;
+  for (const String& entry : Storage.listFiles(APPS_DIR, 60)) {
+    const std::string name = entry.c_str();
+    if (name.size() <= strlen(EXT)) continue;
+    if (name.compare(name.size() - strlen(EXT), strlen(EXT), EXT) != 0) continue;
+    Entry e;
+    e.path = std::string(APPS_DIR) + "/" + name;
+    e.name = name.substr(0, name.size() - strlen(EXT));
+    out.push_back(e);
+  }
+  return out;
+}
+
+// --- Ciclo de vida -------------------------------------------------------
+
+LuaApp::~LuaApp() { close(); }
+
+bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
+  close();
+  path_ = path;
+  const size_t slash = path.find_last_of('/');
+  name_ = slash == std::string::npos ? path : path.substr(slash + 1);
+  if (name_.size() > strlen(EXT)) name_ = name_.substr(0, name_.size() - strlen(EXT));
+  g_appStem = name_;
+  g_renderer = &renderer;
+  g_quit = false;
+  quit_ = false;
+
+  HalFile script = Storage.open(path.c_str());
+  if (!script || script.isDirectory() || script.size() > SCRIPT_CAP) {
+    error_ = "la app supera el tamaño permitido";
+    return false;
+  }
+  script.close();
+  const String source = Storage.readFile(path.c_str());
+  if (source.length() == 0) {
+    error_ = "el archivo está vacío o no se pudo leer";
+    return false;
+  }
+
+  state_ = luasandbox::create(MEM_CAP);
+  if (!state_) {
+    error_ = "no hay memoria para el intérprete";
+    return false;
+  }
+
+  luaL_newlib(state_, CP_API);
+  lua_setglobal(state_, "cp");
+  // print va al log del aparato, que es lo que se lee en /board/log.
+  lua_getglobal(state_, "cp");
+  lua_getfield(state_, -1, "log");
+  lua_setglobal(state_, "print");
+  lua_pop(state_, 1);
+
+  LoadJob job;
+  job.L = state_;
+  job.source = source.c_str();
+  job.sourceSize = source.length();
+  job.chunkName = "@" + name_;
+  uint32_t used = 0;
+  if (!tasks::runBounded("lua-loader", STACK, loadEntry, &job, &used)) {
+    error_ = "no hay memoria para el worker";
+    close();
+    return false;
+  }
+  if (!job.ok) {
+    error_ = job.error;
+    close();
+    return false;
+  }
+  LOG_INF(TAG, "%s abierta (%u B de script, %u B de stack)", name_.c_str(), (unsigned)source.length(), (unsigned)used);
+
+  callback("on_open", nullptr);
+  // on_tick cuesta un worker cada TICK_MS: si la app no lo define, no se llama.
+  lua_getglobal(state_, "on_tick");
+  hasTick_ = lua_isfunction(state_, -1);
+  lua_pop(state_, 1);
+  return error_.empty();
+}
+
+void LuaApp::close() {
+  luasandbox::destroy(state_);
+  state_ = nullptr;
+  g_renderer = nullptr;
+  hasTick_ = false;
+}
+
+bool LuaApp::callback(const char* fn, const char* arg) {
+  if (!state_ || !error_.empty()) return false;
+  CallJob job;
+  job.L = state_;
+  job.fn = fn;
+  job.arg = arg;
+  if (!tasks::runBounded("lua-app", STACK, callEntry, &job)) {
+    error_ = "no hay memoria para el worker";
+    return false;
+  }
+  if (!job.error.empty()) {
+    error_ = job.error;
+    LOG_ERR(TAG, "%s: %s", name_.c_str(), error_.c_str());
+    return false;
+  }
+  if (g_quit) quit_ = true;
+  return job.repaint;
+}
+
+bool LuaApp::onKey(const char* key) { return callback("on_key", key); }
+
+bool LuaApp::onTick() { return hasTick_ ? callback("on_tick", nullptr) : false; }
+
+void LuaApp::onDraw() { callback("on_draw", nullptr); }
