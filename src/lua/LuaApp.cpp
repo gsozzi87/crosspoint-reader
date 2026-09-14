@@ -1,6 +1,7 @@
 #include "LuaApp.h"
 
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <esp_heap_caps.h>
@@ -9,6 +10,7 @@
 
 #include "../HubStore.h"
 #include "../TaskConfig.h"
+#include "../activities/home/CalendarActivity.h"
 #include "../input/MotionInput.h"
 #include "../voice/UiSound.h"
 #include "LuaSandbox.h"
@@ -165,6 +167,40 @@ int cpQuit(lua_State*) {
   return 0;
 }
 
+// La hora. Es la ÚNICA forma que tiene una app de saberla: `os` no está en el
+// cajón (`os.execute` y `os.remove` vienen en la misma biblioteca), así que sin
+// esto una agenda, un reloj o un juego por turnos no se podían escribir.
+// Devuelve nil cuando el aparato todavía no está en hora, que es un estado real
+// y frecuente: sin WiFi y sin haber sincronizado nunca, el RTC no sabe nada.
+int cpTime(lua_State* L) {
+  time_t epoch = 0;
+  if (!halClock.getEpochUtc(epoch) || epoch <= 0) {
+    lua_pushnil(L);
+    return 1;
+  }
+  int year = 0, month = 0, day = 0, hour = 0, minute = 0;
+  CalendarActivity::localFromEpoch(epoch, year, month, day, hour, minute);
+  lua_createtable(L, 0, 8);
+  const auto campo = [L](const char* nombre, const lua_Integer valor) {
+    lua_pushinteger(L, valor);
+    lua_setfield(L, -2, nombre);
+  };
+  campo("year", year);
+  campo("month", month);
+  campo("day", day);
+  campo("hour", hour);
+  campo("min", minute);
+  // El segundo no sale de localFromEpoch: se saca del epoch, que es el mismo
+  // instante.
+  campo("sec", static_cast<lua_Integer>(epoch % 60));
+  // 1 = lunes, 7 = domingo. weekdayOfCivil devuelve 0 = lunes.
+  campo("wday", CalendarActivity::weekdayOfCivil(year, month, day) + 1);
+  // El epoch va en UTC, que es lo que guarda el RTC: sirve para medir
+  // diferencias entre dos llamadas sin pelearse con el huso.
+  campo("epoch", static_cast<lua_Integer>(epoch));
+  return 1;
+}
+
 // Lo único que una app puede escribir en la tarjeta: un archivo suyo, con su
 // nombre, en /Apps/.state. No recibe rutas: no puede elegir dónde escribir.
 int cpSave(lua_State* L) {
@@ -200,7 +236,7 @@ const luaL_Reg CP_API[] = {
     {"rect", cpRect},          {"line", cpLine},      {"selection", cpSelection},
     {"width", cpWidth},        {"height", cpHeight},  {"motion", cpMotion},   {"ms", cpMs},
     {"beep", cpBeep},          {"log", cpLog},        {"quit", cpQuit},       {"save", cpSave},
-    {"load", cpLoad},          {nullptr, nullptr},
+    {"load", cpLoad},          {"time", cpTime},      {nullptr, nullptr},
 };
 
 // --- Trabajo dentro del worker ------------------------------------------

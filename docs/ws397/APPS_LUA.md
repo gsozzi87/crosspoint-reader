@@ -65,6 +65,22 @@ regla número uno del sistema visual es que **nunca hay letras sobre trama**.
 | `cp.save(texto)` | Guarda hasta 4 KB en `/Apps/.state/<app>.txt` |
 | `cp.load()` | Lee eso, o `nil` la primera vez |
 | `cp.quit()` | Cierra la app y vuelve al catálogo |
+| `cp.time()` | La hora local, o `nil` si el aparato no está en hora |
+
+`cp.time()` es la **única** forma que tiene una app de saber la hora: `os` no
+está en el cajón (`os.execute` y `os.remove` vienen en la misma biblioteca).
+Devuelve una tabla con `year`, `month`, `day`, `hour`, `min`, `sec`, `wday`
+(1 = lunes, 7 = domingo) y `epoch` (UTC, para medir diferencias sin pelearse con
+el huso). **Devuelve `nil` cuando el aparato todavía no está en hora**, que es un
+estado real y frecuente: sin WiFi y sin haber sincronizado nunca, el RTC no sabe
+nada. Una app que no contemple ese caso se rompe justo cuando alguien la abre
+recién sacada de la caja.
+
+Y una advertencia que no es de la API sino del vidrio: si lo que mostrás cambia
+con el tiempo, repintá **cuando cambia el dato**, no en cada `on_tick`. Devolver
+`true` diez veces por segundo es un refresco parcial cada 120 ms, o sea un
+refresco completo cada segundo y medio, para siempre. `reloj.lua` lo hace bien:
+mira el minuto y repinta sólo cuando cambió.
 
 Los gestos que devuelve `cp.motion()` son los mismos de todo el aparato:
 `TiltLeft`, `TiltRight`, `TiltForward`, `TiltBack`, `Shake`, `Rotate`, `Level`,

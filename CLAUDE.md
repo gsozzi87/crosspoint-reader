@@ -571,6 +571,17 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - Está separado de `LuaApp` justamente para poder probarlo sin placa: **`./test/lua_sandbox/run.sh`** verifica de
   escritorio que lo que tiene que estar está, que lo que no, no, que la guardia corta un bucle infinito sin tocar
   uno normal, que el techo de memoria aguanta y que las apps de ejemplo corren sus callbacks sin error.
+- **`cp.time()` y tres apps de fábrica (1.5.81)**: `cp.time()` es la única forma que tiene una app de saber la hora
+  (`os` no está en el cajón, y `os.execute` y `os.remove` vienen en la misma biblioteca). Devuelve `year`, `month`,
+  `day`, `hour`, `min`, `sec`, `wday` (1 = lunes) y `epoch` en UTC, y **`nil` cuando el aparato no está en hora**,
+  que es un estado real y frecuente. En la tarjeta de fábrica van `reloj.lua`, `ahorcado.lua` y `tresenraya.lua`
+  (`examples/Apps/`); `contador.lua` y `dados.lua` quedan como ejemplos para leer.
+  `reloj.lua` existe también para dejar escrito **cuándo** repinta una app en tinta: mira el minuto y devuelve
+  `true` sólo cuando cambió. Devolver `true` en cada `on_tick` sería un parcial cada 120 ms, o sea un completo
+  cada segundo y medio, para siempre.
+  `./test/lua_sandbox/run.sh` corre las cinco con el reloj puesto y sin el reloj puesto, y juega **partidas
+  enteras** de ahorcado y de tres en raya: ahí es donde aparecen el índice fuera de rango y el cursor que se
+  cuelga con el tablero lleno, que un toque a cada callback no encuentra.
 - Lua 5.4.7 con `LUA_32BITS` (el S3 tiene FPU de simple precisión) cuesta **108 KB** de flash. La configuración va
   editada en `lib/Lua/src/luaconf.h` y no con un `-D`: ese archivo define `LUA_32BITS` sin protección, un `-D`
   quedaría pisado, y además lo incluyen tanto el intérprete como nuestro código.

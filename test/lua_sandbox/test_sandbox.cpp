@@ -66,13 +66,39 @@ int stubTextH(lua_State* L) { lua_pushinteger(L, 18); return 1; }
 int stubMs(lua_State* L) { lua_pushinteger(L, 12345); return 1; }
 int stubTrue(lua_State* L) { lua_pushboolean(L, 1); return 1; }
 
+// Con el reloj puesto y sin el reloj puesto: el aparato de verdad devuelve nil
+// mientras no esté en hora, y una app que no lo contemple se rompe justo cuando
+// alguien la abre recién sacada de la caja.
+bool g_relojEnHora = true;
+
+int stubTime(lua_State* L) {
+  if (!g_relojEnHora) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_createtable(L, 0, 8);
+  const auto campo = [L](const char* nombre, const lua_Integer valor) {
+    lua_pushinteger(L, valor);
+    lua_setfield(L, -2, nombre);
+  };
+  campo("year", 2026);
+  campo("month", 9);
+  campo("day", 14);
+  campo("hour", 21);
+  campo("min", 7);
+  campo("sec", 42);
+  campo("wday", 1);
+  campo("epoch", 1789500462);
+  return 1;
+}
+
 void installStubCp(lua_State* L) {
   static const luaL_Reg CP[] = {
       {"clear", stubNone},   {"text", stubNone},      {"textw", stubTextW}, {"texth", stubTextH},
       {"rect", stubNone},    {"line", stubNone},      {"selection", stubNone},
       {"width", stubWidth},  {"height", stubHeight},  {"motion", stubNil},  {"ms", stubMs},
       {"beep", stubNone},    {"log", stubNone},       {"quit", stubNone},   {"save", stubTrue},
-      {"load", stubNil},     {nullptr, nullptr},
+      {"load", stubNil},     {"time", stubTime},      {nullptr, nullptr},
   };
   luaL_newlib(L, CP);
   lua_setglobal(L, "cp");
@@ -128,6 +154,50 @@ std::string runApp(const char* path) {
   luasandbox::destroy(L);
   return err;
 }
+
+// Una partida entera, no un toque a cada callback. Es lo que encuentra los
+// errores de verdad: un índice fuera de rango cuando el tablero se llena, un
+// bucle que no sale cuando no queda casilla libre, un estado final que nadie
+// contempló. Se dibuja después de cada tecla, como hace el aparato.
+std::string playApp(const char* path, const char* const* teclas, const int cuantas, const int vueltas) {
+  const std::string source = slurp(path);
+  if (source.empty()) return "no se pudo leer el archivo";
+  lua_State* L = luasandbox::create(1024 * 1024);
+  if (!L) return "sin memoria";
+  installStubCp(L);
+  std::string err;
+  const auto llamar = [&](const char* fn, const char* arg) {
+    if (!err.empty()) return;
+    if (lua_getglobal(L, fn) != LUA_TFUNCTION) {
+      lua_pop(L, 1);
+      return;
+    }
+    int argc = 0;
+    if (arg) { lua_pushstring(L, arg); argc = 1; }
+    luasandbox::armStepLimit(L, 400000);
+    const int rc = lua_pcall(L, argc, 1, 0);
+    luasandbox::clearStepLimit(L);
+    if (rc != LUA_OK) {
+      err = std::string(fn) + ": " + (lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
+    }
+    lua_pop(L, 1);
+  };
+  if (luaL_loadbuffer(L, source.data(), source.size(), path) != LUA_OK ||
+      lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "no carga";
+  } else {
+    llamar("on_open", nullptr);
+    for (int v = 0; v < vueltas && err.empty(); ++v) {
+      for (int i = 0; i < cuantas && err.empty(); ++i) {
+        llamar("on_key", teclas[i]);
+        llamar("on_draw", nullptr);
+      }
+      llamar("on_tick", nullptr);
+    }
+  }
+  luasandbox::destroy(L);
+  return err;
+}
 }  // namespace
 
 int main() {
@@ -171,10 +241,45 @@ int main() {
   check(fat.find("memory") != std::string::npos, "y el error lo dice");
   check(luasandbox::memUsed() == 0, "al cerrar no queda nada pedido");
 
-  printf("\n-- las apps de ejemplo --\n");
-  for (const char* file : {"examples/Apps/contador.lua", "examples/Apps/dados.lua"}) {
+  printf("\n-- las apps de ejemplo y las de fábrica --\n");
+  const char* APPS[] = {"examples/Apps/contador.lua", "examples/Apps/dados.lua",
+                        "examples/Apps/reloj.lua", "examples/Apps/ahorcado.lua",
+                        "examples/Apps/tresenraya.lua"};
+  for (const char* file : APPS) {
     const std::string err = runApp(file);
     check(err.empty(), (std::string(file) + (err.empty() ? "" : ": " + err)).c_str());
+  }
+
+  printf("\n-- las mismas apps con el aparato SIN hora --\n");
+  g_relojEnHora = false;
+  for (const char* file : APPS) {
+    const std::string err = runApp(file);
+    check(err.empty(), (std::string(file) + " sin reloj" + (err.empty() ? "" : ": " + err)).c_str());
+  }
+  g_relojEnHora = true;
+
+  printf("\n-- partidas enteras --\n");
+  {
+    // Ahorcado: recorrer el abecedario y probar cada letra. Con 26 letras se
+    // termina la palabra o se pierde muchas veces; la app tiene que aguantar
+    // las dos cosas y empezar de nuevo con OK.
+    const char* teclas[] = {"down", "ok"};
+    const std::string err = playApp("examples/Apps/ahorcado.lua", teclas, 2, 60);
+    check(err.empty(), (std::string("ahorcado: 60 jugadas") + (err.empty() ? "" : ": " + err)).c_str());
+  }
+  {
+    // Tres en raya: mover y poner hasta llenar el tablero varias veces. Acá es
+    // donde un cursor que no sabe qué hacer sin casillas libres se cuelga.
+    const char* teclas[] = {"down", "ok", "up", "ok"};
+    const std::string err = playApp("examples/Apps/tresenraya.lua", teclas, 4, 40);
+    check(err.empty(), (std::string("tres en raya: 40 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
+  }
+  {
+    // El reloj no tiene partida, pero sí el caso que importa: muchos ticks
+    // seguidos sin que el minuto cambie no tienen que hacer nada raro.
+    const char* teclas[] = {"ok"};
+    const std::string err = playApp("examples/Apps/reloj.lua", teclas, 1, 50);
+    check(err.empty(), (std::string("reloj: 50 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
   }
 
   printf("\n%s (%d fallas)\n", failures == 0 ? "TODO BIEN" : "HAY FALLAS", failures);

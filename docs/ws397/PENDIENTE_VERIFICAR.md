@@ -3,7 +3,7 @@
 Todo lo que se publicó sin poder probarlo en hardware, con **qué mirar exactamente** y **dónde**. Se va
 tachando a medida que se confirma. Lo que falle vuelve como corrección puntual.
 
-Versión más nueva publicada: **1.5.80**. Sin probar desde **1.5.71**.
+Versión más nueva publicada: **1.5.81**. Sin probar desde **1.5.71**.
 
 ---
 
@@ -147,6 +147,18 @@ nunca. En el aparato del usuario **no va a salir** al actualizar, que es lo corr
 - [ ] **El reinicio silencioso**: si al salir de Vincular o del Clima el aparato se reinicia solo, tiene que
       **volver al asistente en el paso siguiente**, no al hub y no al principio (eso es lo que guarda
       `setupStep` en `hub.json`).
+
+### 13. Las apps de Lua de fábrica (Ola 9, paso 30)
+
+Las tres están probadas de escritorio (`./test/lua_sandbox/run.sh`, partidas enteras incluidas), pero el dibujo
+nunca se vio en el vidrio: las medidas están escritas contra 480 × 800 y nadie las miró.
+
+- [ ] Copiar `reloj.lua`, `ahorcado.lua` y `tresenraya.lua` a `/Apps` por el modo memoria USB.
+- [ ] **Reloj**: la hora grande entra y no se sale de ancho; la fecha de abajo tampoco. Y sobre todo:
+      **repinta al cambiar el minuto y no más seguido** (si parpadea cada pocos segundos, algo quedó mal).
+- [ ] **Ahorcado**: las dos filas del abecedario entran a lo ancho y el resalte se lee (nunca letras sobre trama).
+- [ ] **Tres en raya**: las tres columnas entran centradas y el cursor salta las casillas ocupadas.
+- [ ] Las tres tienen que aguantar salir y volver a entrar con el marcador guardado.
 
 ---
 

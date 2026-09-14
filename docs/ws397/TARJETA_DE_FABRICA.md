@@ -8,7 +8,7 @@ solo** (`src/util/CardLayout`), así que lo de acá es el **contenido**: lo que 
 ```
 /Books/            un libro de muestra en EPUB
 /Music/            vacía (el usuario copia sus MP3 por el modo memoria USB)
-/Apps/             las apps de Lua de fábrica (Ola 9)
+/Apps/             las tres apps de Lua de fábrica
 /fonts/            las tipografías extra para el lector
 /dictionaries/     un diccionario StarDict en español
 ```
@@ -39,7 +39,19 @@ no van en la tarjeta.
 
 ### `/Apps` — las apps de Lua
 
-Ola 9. El contrato está en `APPS_LUA.md` y los ejemplos en `examples/Apps/`.
+Las tres de fábrica, copiadas de `examples/Apps/`:
+
+```
+/Apps/reloj.lua
+/Apps/ahorcado.lua
+/Apps/tresenraya.lua
+```
+
+Se abren en **Juegos**. No hace falta nada más: cada app es un archivo suelto y
+el estado que guarde va a `/Apps/.state/<app>.txt`, que se crea solo.
+
+`contador.lua` y `dados.lua` NO van en la tarjeta del aparato que se vende: son
+ejemplos para leer, no apps terminadas. El contrato está en `APPS_LUA.md`.
 
 ## Lo que NO va
 

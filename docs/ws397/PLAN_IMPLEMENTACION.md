@@ -286,7 +286,9 @@ Es lo que no se ve y sin lo cual no se puede vender. Está detallado en `PLAN_VE
 
 30. **Apps de Lua** (el usuario las puso explícitamente al final): `cp.time()` para que una app sepa
     la hora, tres o cuatro apps de fábrica en `/Apps`, y la pantalla de Juegos abriendo directo a la
-    lista.
+    lista. **Hecho (1.5.81)**: `cp.time()` con `nil` cuando el aparato no está en hora, y `reloj.lua`,
+    `ahorcado.lua` y `tresenraya.lua` en `examples/Apps/`, probadas de escritorio con partidas
+    enteras. La pantalla de Juegos ya abría directo desde 1.5.63.
 31. **Las cuatro mediciones de batería** escritas, y el checklist de hardware de `PLAN_VENTA.md`
     completo.
 
