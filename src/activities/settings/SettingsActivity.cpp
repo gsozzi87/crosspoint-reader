@@ -1,5 +1,4 @@
 #include "SettingsActivity.h"
-#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <BoardConfig.h>
 #include <FreeInkUIIcon.h>  // bitmapFromIcon: la pestaña del resalte va como marcador de la lista
@@ -7,6 +6,7 @@
 #include <HalDisplay.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <algorithm>
 #include <cstdio>
@@ -17,23 +17,22 @@
 #include "ClearCacheActivity.h"
 #include "CrossPointSettings.h"
 #include "FontDownloadActivity.h"
+#include "HubStore.h"
 #include "KOReaderSettingsActivity.h"
 #include "KeyboardLayoutsActivity.h"
 #include "LanguageSelectActivity.h"
 #include "MappedInputManager.h"
 #include "OpdsServerListActivity.h"
 #include "OtaUpdateActivity.h"
-#include "activities/home/AssetSyncActivity.h"
 #include "SdCardFontSystem.h"
 #include "SdFirmwareUpdateActivity.h"
 #include "ServerTestActivity.h"
-#include "HubStore.h"
-#include "voice/UiSound.h"
-#include "activities/home/HubLocationActivity.h"
-#include "activities/home/HubSyncActivity.h"
 #include "SettingsList.h"
 #include "StatusBarSettingsActivity.h"
 #include "TextSettingsActivity.h"
+#include "activities/home/AssetSyncActivity.h"
+#include "activities/home/HubLocationActivity.h"
+#include "activities/home/HubSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/IntervalSelectionActivity.h"
 #include "components/UITheme.h"
@@ -41,14 +40,15 @@
 #include "components/UiAppHelpers.h"
 #include "fontIds.h"
 #include "music/MusicPlayer.h"
+#include "voice/UiSound.h"
 #if FREEINK_CAP_USB_MSC
 #include "activities/network/UsbDriveActivity.h"
 #endif
-#include "DevicePairActivity.h"
 #include <HalTiltSensor.h>
 
-#include "TaskStatsActivity.h"
+#include "DevicePairActivity.h"
 #include "MotionActivity.h"
+#include "TaskStatsActivity.h"
 
 namespace fui = freeink::ui;
 
@@ -695,8 +695,8 @@ void SettingsActivity::buildScreen(UiScreen& screen) {
   for (size_t i = 0; i < settings.size(); i++) {
     if (rowItems_[i].toggle) {
       rowItems_[i].toggleChecked = settings[i].valuePtr != nullptr ? SETTINGS.*(settings[i].valuePtr) != 0
-                                   : settings[i].valueGetter    ? settings[i].valueGetter() != 0
-                                                                : false;
+                                   : settings[i].valueGetter       ? settings[i].valueGetter() != 0
+                                                                   : false;
       rowValues_[i].clear();
       rowItems_[i].value = nullptr;
       continue;

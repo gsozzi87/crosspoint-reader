@@ -9,9 +9,9 @@
 #include <freertos/task.h>
 
 #include "HubStore.h"
-#include "util/WavHeader.h"
-#include "music/MusicPlayer.h"
 #include "TaskConfig.h"
+#include "music/MusicPlayer.h"
+#include "util/WavHeader.h"
 
 namespace {
 
