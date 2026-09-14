@@ -1,4 +1,5 @@
 #include "HalClock.h"
+#include <sys/time.h>
 
 #include <Logging.h>
 #include <WiFi.h>
@@ -155,4 +156,26 @@ bool HalClock::syncFromNTP() {
 
   LOG_ERR("CLK", "NTP sync timed out");
   return false;
+}
+
+// Año 2024 en epoch. Cualquier cosa por debajo es "el reloj no está puesto":
+// el ESP arranca en 1970 y el RTC sin batería o recién soldado da valores
+// igual de absurdos.
+static constexpr time_t CREIBLE_DESDE = 1704067200;  // 2024-01-01
+
+bool HalClock::systemClockLooksSet() { return time(nullptr) >= CREIBLE_DESDE; }
+
+bool HalClock::applyToSystemClock() const {
+  time_t epoch = 0;
+  if (!getEpochUtc(epoch) || epoch < CREIBLE_DESDE) {
+    LOG_ERR("CLK", "el RTC no tiene una hora creíble: el reloj del sistema queda en 1970");
+    return false;
+  }
+  const struct timeval tv = {.tv_sec = epoch, .tv_usec = 0};
+  if (settimeofday(&tv, nullptr) != 0) {
+    LOG_ERR("CLK", "settimeofday falló");
+    return false;
+  }
+  LOG_INF("CLK", "reloj del sistema en hora desde el RTC (epoch %lld)", (long long)epoch);
+  return true;
 }

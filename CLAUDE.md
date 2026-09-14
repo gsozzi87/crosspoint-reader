@@ -617,15 +617,35 @@ vigentes; uno ya estaba arreglado). Lo que salió de ahí:
 - **F12** / **F13** — `store.ts` y `attachments.ts` eran los dos documentos que seguían con leer-modificar-escribir
   sin candado. `store.mutate()` y `mutateDoc` lo hacen todo adentro del candado; las llamadas al modelo quedan
   afuera a propósito.
+- **Permisos (1.5.79)**: `POST /auth/register` daba admin a quien se registrara con el correo de `ADMIN_EMAIL`,
+  además de a la primera cuenta. `seedFromFiles()` crea esa cuenta **sólo cuando la base está vacía**, así que en
+  un servidor donde `ADMIN_EMAIL` se configuró DESPUÉS —lo más normal— ese correo nunca llegó a la base y
+  cualquiera podía registrarse con él y quedar de administrador. Un correo es público: no es una credencial.
+  Ahora admin **sólo** si la base está vacía, y se loguea. Además `REGISTER_CLOSED=1` cierra el alta de cuentas
+  nuevas (abierta por omisión, que es como venía). Se prueba sin base de datos: `./test/register_admin/run.sh`.
+- **Reconstruibilidad (1.5.79)**: el repo padre apuntaba a un commit del submódulo que **nunca se había subido**
+  (cuatro commits sin pushear), así que un `git clone --recursive` desde GitHub no podía traer el SDK: el firmware
+  que se vende se compilaba únicamente en la máquina donde ese commit existía. Subidos. Y queda
+  **`./tools/verificar-reconstruible.sh`**, que le pregunta al remoto si tiene el commit anotado, si el submódulo
+  está limpio y si hay un `.patch` por cada commit ws397 del SDK.
 - **F14** — el tope mensual medía cuatro rutas y tres más llamaban al modelo por afuera (`/api/bible/ask`,
   `/api/calendar/dictate`, `/api/suggest`). `METERED` es ahora una tabla con `llm` y `audio` por ruta.
 
-**Queda sin hacer, a propósito: F15** (`setInsecure()`). El aparato cifra pero NO autentica al servidor: no
+**F15, primera mitad hecha (1.5.79): el reloj.** Eran dos relojes y se mantenía uno solo. El RTC guardaba bien la
+hora, pero el del SISTEMA arrancaba en 1970 en cada arranque porque **nadie llamaba a `settimeofday`**. Eso no se
+notaba en ningún lado salvo en el único que importa: la validez de un certificado se comprueba contra el reloj del
+sistema, y en 1970 todo certificado del mundo parece "todavía no válido". Ahora `HalClock::applyToSystemClock()`
+corre en el arranque, y `ServerClient::ensureClockForTls()` cubre el caso que el RTC no puede cubrir (aparato
+recién armado o que estuvo sin batería): una vez por sesión de red, si el reloj no es creíble —anterior a 2024—
+pide la hora por NTP antes de abrir el primer TLS.
+
+**Queda sin hacer, a propósito: la otra mitad de F15** (`setInsecure()`). El aparato cifra pero NO autentica al servidor: no
 verifica el certificado ni el nombre del host, así que un intermediario puede hacerse pasar por el servidor,
 quedarse con el token o cambiar la descarga OTA. Arreglarlo no es sacar el `setInsecure`: hay que embeber las
-raíces, chequear el nombre del host en `SecureClient` (hoy no se llama a `wolfSSL_check_domain_name` en ningún
-lado) y, sobre todo, **poner el reloj en hora ANTES del primer TLS** — hoy nadie llama a `settimeofday` y un
-certificado se valida contra la fecha. Sin eso el arreglo deja al aparato sin red. Es una ola aparte.
+raíces y chequear el nombre del host en `SecureClient` (hoy no se llama a `wolfSSL_check_domain_name` en ningún
+lado). El tercer requisito —el reloj— **ya está**, así que lo que queda es el certificado propiamente dicho.
+Va aparte a propósito: si la verificación queda mal, **el aparato se queda sin red** y hay que flashearlo por
+cable. No se toca sin poder probar en hardware.
 
 ## Lo que se rompió y por qué (1.5.54 / 1.5.55)
 

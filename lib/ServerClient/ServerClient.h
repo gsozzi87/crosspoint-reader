@@ -74,6 +74,7 @@ class ServerClient {
   // llama sola desde la primera petición de cada sesión de red; queda pública
   // por si alguna pantalla quiere forzarla.
   void flushOnConnect();
+  void ensureClockForTls();
   // Replays queued POSTs in order while the network holds. Returns how many
   // were delivered (or rejected by the server and dropped); stops at the first
   // transport failure so ordering is preserved. -1 when there is no network,
@@ -85,7 +86,8 @@ class ServerClient {
 
  private:
   bool inFlush_ = false;            // flushQueue() usa request(): no reentrar
-  bool flushedThisSession_ = false;  // ya se vació en esta sesión de red
+  bool flushedThisSession_ = false;
+  bool clockCheckedThisSession_ = false;  // el reloj ya se miró en esta sesión de red
   ServerClient() = default;
   struct Body {
     const char* contentType = nullptr;

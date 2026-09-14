@@ -1011,6 +1011,11 @@ void setup() {
 
   MOTION.begin();
   halClock.begin();
+  // El reloj del sistema arranca en 1970 y nadie se lo ponía en hora: se
+  // mantenía sólo el RTC. No se notaba en ningún lado salvo en el único que
+  // importa — la fecha de un certificado TLS se valida contra el reloj del
+  // SISTEMA, y en 1970 todo certificado parece "todavía no válido".
+  halClock.applyToSystemClock();
   // Después de los botones y del IMU: prueba los pines que despiertan del reposo.
   // RTC_ALARM ANTES que IDLE_SLEEP, y no al revés: begin() del RtcAlarm hace
   // disarm(), que limpia la bandera AF. Con AF puesta (una alarma que venció

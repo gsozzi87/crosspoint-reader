@@ -22,6 +22,9 @@ import { DEFAULT_ACCOUNT, db, multiUser, num, sha256Hex } from "./db";
 import { endSession, sessionAccount, startSession, type AppEnv, accountOf, viaOf } from "./tenant";
 
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL ?? "").trim().toLowerCase();
+// Cierra el alta de cuentas nuevas. Por omisión queda abierta, que es como
+// funcionaba: cerrarla por defecto dejaría afuera a quien todavía no creó la suya.
+const REGISTER_CLOSED = ["1", "true", "si", "yes"].includes((process.env.REGISTER_CLOSED ?? "").trim().toLowerCase());
 const MIN_PASSWORD = 8;
 const PAIR_TTL_S = 600;          // 10 minutos
 const PAIR_COOLDOWN_MS = 30_000; // un pedido cada 30 s por aparato
@@ -205,9 +208,24 @@ auth.post("/register", async (c) => {
   if (password.length < MIN_PASSWORD) {
     return c.json({ ok: false, error: `la contraseña necesita al menos ${MIN_PASSWORD} caracteres`, code: "weak_password" }, 400);
   }
+  // Registro cerrado: para una instancia que ya tiene a su gente adentro y no
+  // quiere que se sume nadie más. Abierto por omisión, que es como venía.
+  if (REGISTER_CLOSED) {
+    return c.json({ ok: false, error: "este servidor no acepta cuentas nuevas", code: "register_closed" }, 403);
+  }
+
   const count = (await db()`SELECT count(*)::int AS n FROM accounts`) as { n: number }[];
-  const first = num(count[0]?.n) === 0;
-  const isAdmin = first || (!!ADMIN_EMAIL && email === ADMIN_EMAIL);
+  // Admin SÓLO si la base está vacía, o sea creando la instancia. Antes también
+  // se daba admin a quien se registrara con el correo de `ADMIN_EMAIL`, y eso
+  // era un agujero de verdad: `seedFromFiles()` crea esa cuenta únicamente
+  // cuando NO hay ninguna, así que en un servidor donde `ADMIN_EMAIL` se
+  // configuró DESPUÉS —lo más normal— ese correo no existía en la base y
+  // cualquiera podía registrarse con él y quedar de administrador. Un correo
+  // no es una credencial: es público y se adivina.
+  const isAdmin = num(count[0]?.n) === 0;
+  if (isAdmin) {
+    console.log(`register: la base estaba vacía, ${email} queda de administrador`);
+  }
   const hash = await Bun.password.hash(password, "argon2id");
   let id = 0;
   try {

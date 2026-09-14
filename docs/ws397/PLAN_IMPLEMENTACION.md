@@ -249,7 +249,7 @@ medias.
 
 ---
 
-## Ola 7 — 1.5.77 · Seguridad y reconstruibilidad
+## Ola 7 — 1.5.79 · Seguridad y reconstruibilidad · reloj, permisos y submódulo ✅ / TLS ⬜
 
 Es lo que no se ve y sin lo cual no se puede vender. Está detallado en `PLAN_VENTA.md` (A1, A2, A6).
 

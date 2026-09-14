@@ -1,4 +1,5 @@
 #include "ServerClient.h"
+#include <HalClock.h>
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <Arduino.h>
@@ -109,10 +110,31 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
 // de cada sesión de red vacía la cola antes de lo suyo: son unos pocos POST de
 // un par de cientos de bytes y el orden queda bien (primero lo que el aparato
 // hizo, después lo que se va a pedir).
+// El reloj en hora ANTES del primer TLS, una vez por sesión de red.
+//
+// Hace falta para poder verificar el certificado del servidor: la validez se
+// comprueba contra el reloj del SISTEMA, y en 1970 todo certificado del mundo
+// parece "todavía no válido". El RTC ya lo cubre en el arranque
+// (`HalClock::applyToSystemClock`), así que esto es sólo para el caso que el
+// RTC no puede cubrir: un aparato recién armado, o uno que estuvo sin batería,
+// donde el RTC tampoco sabe qué hora es. Ahí la única fuente es la red.
+void ServerClient::ensureClockForTls() {
+  if (clockCheckedThisSession_) return;
+  clockCheckedThisSession_ = true;
+  if (HalClock::systemClockLooksSet()) return;
+  LOG_ERR(TAG, "el reloj no está en hora y hay que abrir TLS: se pide por NTP");
+  if (halClock.syncFromNTP()) {
+    halClock.applyToSystemClock();
+  } else {
+    LOG_ERR(TAG, "NTP tampoco contestó: el reloj sigue sin hora");
+  }
+}
+
 void ServerClient::flushOnConnect() {
   if (inFlush_) return;
   if (!networkUp()) {
     flushedThisSession_ = false;  // la próxima vez que haya red se vuelve a intentar
+    clockCheckedThisSession_ = false;
     return;
   }
   if (flushedThisSession_) return;
@@ -128,8 +150,10 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
                                            bool auth, Response& out, uint32_t timeoutMs) {
   if (!networkUp()) {
     flushedThisSession_ = false;
+    clockCheckedThisSession_ = false;
     return Result::NoNetwork;
   }
+  ensureClockForTls();
   flushOnConnect();
   const std::string base = SERVER_STORE.getBaseUrl();
   if (base.empty()) return Result::NoServer;

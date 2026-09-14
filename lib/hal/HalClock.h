@@ -46,4 +46,18 @@ class HalClock {
   bool getEpochUtc(time_t& out) const;
   // Sets the RTC from a UTC epoch (e.g. the server's clock when NTP is not reachable).
   bool setFromEpochUtc(time_t epoch);
+
+  // Le pasa la hora del RTC al RELOJ DEL SISTEMA (`settimeofday`).
+  //
+  // Son dos relojes distintos y hasta 1.5.79 sólo se mantenía uno. El RTC
+  // guardaba la hora bien, pero `time(nullptr)` arrancaba en 1970 en cada
+  // arranque porque nadie se la pasaba. Eso no se notaba en ningún lado... y
+  // es exactamente contra lo que se valida la fecha de un certificado TLS: sin
+  // esto, verificar el certificado del servidor es imposible, porque todo
+  // certificado del mundo parece "todavía no válido" en 1970.
+  // Devuelve false si el RTC no contesta o si lo que tiene no es creíble.
+  bool applyToSystemClock() const;
+
+  // ¿El reloj del sistema está en una fecha creíble? (después de 2024).
+  static bool systemClockLooksSet();
 };
