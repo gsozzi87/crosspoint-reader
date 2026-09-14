@@ -123,10 +123,12 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   // Otro tiene el puerto (Piper hablando, música, el pitido del temporizador):
   // el clic se saltea y listo. Nunca corta lo que está sonando ni espera a que
   // termine — un clic que llega tarde es peor que un clic que no suena.
+#if FREEINK_CAP_AUDIO
   if (!hot_ && AudioManager::portBusy()) {
     LOG_DBG("UISOUND", "sin sonido: el I2S lo está usando otro");
     return false;
   }
+#endif
 
   if (wav_ == nullptr) {
     wav_ = static_cast<uint8_t*>(heap_caps_malloc(WAV_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));

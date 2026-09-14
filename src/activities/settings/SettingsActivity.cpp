@@ -43,12 +43,12 @@
 #include "music/MusicPlayer.h"
 #if FREEINK_CAP_USB_MSC
 #include "activities/network/UsbDriveActivity.h"
+#endif
 #include "DevicePairActivity.h"
 #include <HalTiltSensor.h>
 
 #include "TaskStatsActivity.h"
 #include "MotionActivity.h"
-#endif
 
 namespace fui = freeink::ui;
 
