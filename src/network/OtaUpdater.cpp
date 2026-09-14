@@ -1,6 +1,8 @@
 #include "OtaUpdater.h"
 
+#ifdef FREEINK_DEVICE_WS397
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
+#endif
 
 // clang-format off
 // HttpDownloader.h pulls Arduino/SdFat, whose macros collide with lwip's
