@@ -54,9 +54,11 @@ const SCHEMA = [
      id         bigserial PRIMARY KEY,
      email      text UNIQUE NOT NULL,
      pass_hash  text NOT NULL,
-     created_at timestamptz DEFAULT now(),
-     is_admin   boolean DEFAULT false
+     created_at      timestamptz DEFAULT now(),
+     is_admin        boolean DEFAULT false,
+     session_version integer NOT NULL DEFAULT 1
    )`,
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS session_version integer NOT NULL DEFAULT 1`,
   `CREATE TABLE IF NOT EXISTS devices (
      id         bigserial PRIMARY KEY,
      account_id bigint REFERENCES accounts(id) ON DELETE CASCADE,

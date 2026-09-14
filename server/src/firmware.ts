@@ -1,27 +1,30 @@
-// OTA del firmware. El aparato consulta /firmware/latest (misma forma que un
-// release de GitHub, que es lo que entiende el OtaUpdater de CrossPoint) y baja
-// el asset firmware-ws397.bin. release.sh / release.ps1 suben el binario con
-// PUT /firmware (Bearer OTA_TOKEN, header X-Version). Todo vive en el volumen.
+// OTA del firmware. El manifiesto es el punto de commit: cada versión se
+// guarda en su propio archivo y version.json pasa a señalarla solo cuando
+// ambos están completos.
+import { randomUUID } from "node:crypto";
+import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { Hono } from "hono";
 import { limitBody } from "./net";
-import { mkdir, rename, stat, writeFile } from "node:fs/promises";
-import { readJsonSafe, writeJsonAtomic } from "./fsjson";
+import { readJsonSafe, serialize, writeAtomicNow } from "./fsjson";
 
 const TOKEN = process.env.OTA_TOKEN ?? "";
 const DIR = process.env.FIRMWARE_DIR ?? "/data/firmware";
 const ASSET = "firmware-ws397.bin";
-const BIN = `${DIR}/${ASSET}`;
+const LEGACY_BIN = `${DIR}/${ASSET}`;
 const META = `${DIR}/version.json`;
-// De dónde baja el aparato el .bin. Fijo por configuración: /firmware/latest es
-// público y armar la URL con el Host del cliente deja que cualquiera le sirva
-// al aparato un binario desde otro lado.
 const PUBLIC_BASE = (process.env.PUBLIC_BASE_URL ?? "").trim().replace(/\/+$/, "");
 
-type Meta = { version: string; size: number; uploadedAt: string };
+type Meta = { version: string; size: number; uploadedAt: string; file?: string };
 
 async function meta(): Promise<Meta | null> {
   const m = await readJsonSafe<Partial<Meta> | null>(META, null);
-  return m && typeof m.version === "string" ? { version: m.version, size: Number(m.size) || 0, uploadedAt: String(m.uploadedAt ?? "") } : null;
+  if (!m || typeof m.version !== "string") return null;
+  const file = typeof m.file === "string" && /^firmware-ws397\.bin\.\d+\.\d+\.\d+$/.test(m.file) ? m.file : undefined;
+  return { version: m.version, size: Number(m.size) || 0, uploadedAt: String(m.uploadedAt ?? ""), file };
+}
+
+function binaryPath(m: Meta): string {
+  return m.file ? `${DIR}/${m.file}` : LEGACY_BIN;
 }
 
 function origin(c: { req: { header: (n: string) => string | undefined; url: string } }): string {
@@ -46,9 +49,11 @@ firmware.get("/latest", async (c) => {
 
 firmware.get(`/${ASSET}`, async (c) => {
   try {
-    const s = await stat(BIN);
-    const file = Bun.file(BIN);
-    return new Response(file, {
+    const m = await meta();
+    if (!m) return c.json({ error: "no firmware" }, 404);
+    const path = binaryPath(m);
+    const s = await stat(path);
+    return new Response(Bun.file(path), {
       headers: { "Content-Type": "application/octet-stream", "Content-Length": String(s.size) },
     });
   } catch {
@@ -64,11 +69,26 @@ firmware.put("/", limitBody(32 * 1024 * 1024), async (c) => {
   if (!/^\d+\.\d+\.\d+$/.test(version)) return c.json({ ok: false, error: "X-Version must be major.minor.patch" }, 400);
   const body = new Uint8Array(await c.req.arrayBuffer());
   if (body.byteLength < 100_000) return c.json({ ok: false, error: "binary too small" }, 400);
-  await mkdir(DIR, { recursive: true });
-  await writeFile(`${BIN}.tmp`, body);
-  await rename(`${BIN}.tmp`, BIN);
-  const m: Meta = { version, size: body.byteLength, uploadedAt: new Date().toISOString() };
-  await writeJsonAtomic(META, m);  // el .bin ya iba con .tmp+rename; el version.json quedaba a medias
+
+  const m: Meta = {
+    version,
+    size: body.byteLength,
+    uploadedAt: new Date().toISOString(),
+    file: `${ASSET}.${version}`,
+  };
+
+  await serialize(META, async () => {
+    await mkdir(DIR, { recursive: true });
+    const tmp = `${DIR}/.${ASSET}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmp, body);
+      await rename(tmp, binaryPath(m));
+      await writeAtomicNow(META, JSON.stringify(m, null, 2));
+    } finally {
+      await rm(tmp, { force: true }).catch(() => {});
+    }
+  });
+
   console.log(`firmware ${version} uploaded (${m.size} bytes)`);
   return c.json({ ok: true, version, size: m.size });
 });

@@ -108,7 +108,7 @@ export async function applyAdminPasswordFromEnv(): Promise<void> {
     return;
   }
   const hash = await Bun.password.hash(wanted, "argon2id");
-  const rows = (await db()`UPDATE accounts SET pass_hash = ${hash} WHERE email = ${email} RETURNING id`) as any[];
+  const rows = (await db()`UPDATE accounts SET pass_hash = ${hash}, session_version = session_version + 1 WHERE email = ${email} RETURNING id`) as any[];
   if (!rows.length) {
     console.error(`db: ADMIN_PASSWORD: no hay ninguna cuenta con el correo ${email}`);
     return;
@@ -479,7 +479,12 @@ accountApi.post("/password", async (c) => {
   if (!rows.length) return c.json({ ok: false, error: "no existe", code: "not_found" }, 404);
   const ok = await Bun.password.verify(current, String(rows[0].pass_hash)).catch(() => false);
   if (!ok) return c.json({ ok: false, error: "la contraseña actual no es esa", code: "bad_login" }, 401);
-  await db()`UPDATE accounts SET pass_hash = ${await Bun.password.hash(next, "argon2id")} WHERE id = ${id}`;
+  await db()`
+    UPDATE accounts
+    SET pass_hash = ${await Bun.password.hash(next, "argon2id")},
+        session_version = session_version + 1
+    WHERE id = ${id}`;
+  await startSession(c, id);
   return c.json({ ok: true });
 });
 

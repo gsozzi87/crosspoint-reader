@@ -3,8 +3,6 @@
 #include <EpdFontFamily.h>
 
 #include <functional>
-#include <memory>
-
 #include "CrossPointSettings.h"
 #include "components/themes/BaseTheme.h"
 
@@ -41,7 +39,7 @@ class UITheme {
 
  private:
   const ThemeMetrics* currentMetrics;
-  std::unique_ptr<BaseTheme> currentTheme;
+  const BaseTheme* currentTheme = nullptr;
   mutable ThemeMetrics adjustedMetrics;
   mutable bool metricsValid = false;
   mutable bool metricsForTouch = false;

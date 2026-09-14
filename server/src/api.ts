@@ -49,7 +49,7 @@ api.post("/pair/start", async (c) => {
   const b = await readBody(c);
   const r = await startPairing(b.deviceId, b.token);
   if (!r.ok) return c.json({ ok: false, error: r.error, code: r.code }, r.status);
-  console.log(`pair: código ${r.code} para el aparato ${String(b.deviceId).slice(0, 32)}`);
+  console.log(`pair: código emitido para el aparato ${String(b.deviceId).slice(0, 32)}`);
   return c.json({ ok: true, code: r.code, expiresIn: r.expiresIn });
 });
 
@@ -102,9 +102,10 @@ api.use("*", async (c, next) => {
     const lang = normalizeLang(c.req.query("lang"));
     return c.json({ ok: false, error: QUOTA_MSG[lang], code: QUOTA_CODE }, 429);
   }
-  const bytes = m.audio ? Number(c.req.header("content-length") ?? 0) || 0 : 0;
+  const declaredBytes = Number(c.req.header("content-length") ?? 0) || 0;
   const type = c.req.header("content-type");
   await next();
+  const bytes = m.audio ? c.get("bodyBytes") ?? declaredBytes : 0;
   // Solo se cobra lo que salió bien: un 502 del proveedor no se le carga a nadie.
   if (c.res.status < 400) {
     void addUsage(acc, { llm: m.llm, sttSeconds: m.audio ? audioSeconds(bytes, type) : 0 });

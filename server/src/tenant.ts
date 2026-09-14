@@ -29,6 +29,8 @@ export type AppEnv = {
     isAdmin: boolean;
     /** El aparato que hizo el pedido (device_id), si vino con Bearer de un aparato vinculado. */
     deviceId: string | null;
+    /** Bytes realmente leídos del cuerpo para la cuota de audio. */
+    bodyBytes?: number;
     /** Cómo se identificó: importa para las rutas que solo acepta la web. */
     via: "device" | "session" | "legacy" | "single";
   };
@@ -136,14 +138,15 @@ async function sign(payload: string): Promise<string> {
   return createHmac("sha256", await sessionSecret()).update(payload).digest("base64url");
 }
 
-/** Cookie de sesión: `<accountId>.<vence>` firmado. No guarda nada del lado del servidor. */
-export async function makeSessionValue(accountId: number): Promise<string> {
+type SessionPayload = { accountId: number; sessionVersion: number };
+
+export async function makeSessionValue(accountId: number, sessionVersion = 0): Promise<string> {
   const exp = Math.floor(Date.now() / 1000) + SESSION_DAYS * 86_400;
-  const payload = b64url(`${accountId}.${exp}`);
+  const payload = b64url(`${accountId}.${exp}.${sessionVersion}`);
   return `${payload}.${await sign(payload)}`;
 }
 
-export async function readSessionValue(value: string): Promise<number | null> {
+async function readSessionPayload(value: string): Promise<SessionPayload | null> {
   const dot = value.lastIndexOf(".");
   if (dot < 1) return null;
   const payload = value.slice(0, dot);
@@ -158,12 +161,18 @@ export async function readSessionValue(value: string): Promise<number | null> {
   } catch {
     return null;
   }
-  const [idRaw, expRaw] = decoded.split(".");
+  const [idRaw, expRaw, versionRaw] = decoded.split(".");
   const id = Number(idRaw);
   const exp = Number(expRaw);
+  const sessionVersion = Number(versionRaw);
   if (!Number.isInteger(id) || id <= 0 || !Number.isFinite(exp)) return null;
+  if (!Number.isInteger(sessionVersion) || sessionVersion < 0) return null;
   if (exp * 1000 < Date.now()) return null;
-  return id;
+  return { accountId: id, sessionVersion };
+}
+
+export async function readSessionValue(value: string): Promise<number | null> {
+  return (await readSessionPayload(value))?.accountId ?? null;
 }
 
 function secureCookie(c: Context<AppEnv>): boolean {
@@ -177,7 +186,11 @@ function secureCookie(c: Context<AppEnv>): boolean {
 }
 
 export async function startSession(c: Context<AppEnv>, accountId: number): Promise<void> {
-  setCookie(c, COOKIE, await makeSessionValue(accountId), {
+  const rows = multiUser
+    ? ((await db()`SELECT session_version FROM accounts WHERE id = ${accountId}`) as { session_version: unknown }[])
+    : [];
+  const sessionVersion = rows.length ? num(rows[0].session_version) : 0;
+  setCookie(c, COOKIE, await makeSessionValue(accountId, sessionVersion), {
     httpOnly: true,
     secure: secureCookie(c),
     sameSite: "Lax",
@@ -195,9 +208,11 @@ export async function sessionAccount(c: Context<AppEnv>): Promise<number | null>
   if (!multiUser) return null;
   const raw = getCookie(c, COOKIE);
   if (!raw) return null;
-  const id = await readSessionValue(raw);
-  if (!id) return null;
-  const rows = (await db()`SELECT id FROM accounts WHERE id = ${id}`) as { id: unknown }[];
+  const session = await readSessionPayload(raw);
+  if (!session) return null;
+  const rows = (await db()`
+    SELECT id FROM accounts
+    WHERE id = ${session.accountId} AND session_version = ${session.sessionVersion}`) as { id: unknown }[];
   return rows.length ? num(rows[0].id) : null;
 }
 

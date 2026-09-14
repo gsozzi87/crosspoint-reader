@@ -3,6 +3,7 @@
 #include <FsHelpers.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Memory.h>
 
 #include "util/BookCacheUtils.h"
 #include "util/TaskWatchdog.h"
@@ -14,6 +15,45 @@ constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
 // ESP32 doesn't have real-time clock set by default, so we use a fixed epoch date
 // as a fallback. The date is not critical for WebDAV Class 1 operations.
 const char* FIXED_DATE = "Thu, 01 Jan 2024 00:00:00 GMT";
+constexpr size_t COPY_BUFFER_SIZE = 512;
+
+bool removeReplaceablePath(const String& path) {
+  if (!Storage.exists(path.c_str())) return true;
+  HalFile file = Storage.open(path.c_str());
+  if (!file) return false;
+  if (file.isDirectory()) {
+    HalFile child = file.openNextFile();
+    if (child) {
+      child.close();
+      file.close();
+      return false;
+    }
+    file.close();
+    return Storage.rmdir(path.c_str());
+  }
+  file.close();
+  return Storage.remove(path.c_str());
+}
+
+bool renamePath(const String& from, const String& to) {
+  HalFile file = Storage.open(from.c_str());
+  if (!file) return false;
+  const bool ok = file.rename(to.c_str());
+  file.close();
+  return ok;
+}
+
+bool promoteTemp(const String& tempPath, const String& destination, const bool destinationExists) {
+  if (!destinationExists) return renamePath(tempPath, destination);
+  const String backupPath = destination + ".davbak";
+  if (!removeReplaceablePath(backupPath) || !renamePath(destination, backupPath)) return false;
+  if (renamePath(tempPath, destination)) {
+    removeReplaceablePath(backupPath);
+    return true;
+  }
+  renamePath(backupPath, destination);
+  return false;
+}
 }  // namespace
 
 // ── RequestHandler interface ─────────────────────────────────────────────────
@@ -95,15 +135,8 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
     if (_putFile) _putFile.close();
     if (_putOk) {
       String tempPath = _putPath + ".davtmp";
-      if (_putExisted) Storage.remove(_putPath.c_str());
-      HalFile tmp = Storage.open(tempPath.c_str());
-      if (tmp) {
-        _putOk = tmp.rename(_putPath.c_str());
-        tmp.close();
-      } else {
-        _putOk = false;
-      }
-      if (!_putOk) Storage.remove(tempPath.c_str());
+      _putOk = promoteTemp(tempPath, _putPath, _putExisted);
+      if (!_putOk) removeReplaceablePath(tempPath);
     }
     LOG_DBG("DAV", "PUT END: %u bytes, ok=%d", raw.totalSize, _putOk);
 
@@ -545,24 +578,26 @@ void WebDAVHandler::handleMove(WebServer& s) {
     return;
   }
 
+  const String backupPath = dstPath + ".davbak";
+  bool backupMade = false;
   if (dstExists) {
-    Storage.remove(dstPath.c_str());
+    if (!removeReplaceablePath(backupPath) || !renamePath(dstPath, backupPath)) {
+      s.send(409, "text/plain", "Destination cannot be replaced safely");
+      return;
+    }
+    backupMade = true;
   }
 
-  HalFile file = Storage.open(srcPath.c_str());
-  if (!file) {
-    s.send(500, "text/plain", "Failed to open source");
-    return;
-  }
-
-  clearBookCache(srcPath.c_str());
-  bool success = file.rename(dstPath.c_str());
-  file.close();
+  const bool success = renamePath(srcPath, dstPath);
+  if (!success && backupMade) renamePath(backupPath, dstPath);
+  if (success && backupMade) removeReplaceablePath(backupPath);
 
   if (success) {
+    clearBookCache(srcPath.c_str());
+    clearBookCache(dstPath.c_str());
     s.send(dstExists ? 204 : 201);
   } else {
-    s.send(500, "text/plain", "Move failed");
+    s.send(500, "text/plain", "Move failed; destination restored");
   }
 }
 
@@ -625,39 +660,58 @@ void WebDAVHandler::handleCopy(WebServer& s) {
     return;
   }
 
-  if (dstExists) {
-    Storage.remove(dstPath.c_str());
-  }
-
-  HalFile dstFile;
-  if (!Storage.openFileForWrite("DAV", dstPath, dstFile)) {
+  const String tempPath = dstPath + ".davtmp";
+  if (!removeReplaceablePath(tempPath)) {
     srcFile.close();
-    s.send(500, "text/plain", "Failed to create destination");
+    s.send(409, "text/plain", "Temporary destination is not replaceable");
     return;
   }
 
-  // Streaming copy with 4KB buffer on stack
-  uint8_t buf[4096];
+  HalFile dstFile;
+  if (!Storage.openFileForWrite("DAV", tempPath, dstFile)) {
+    srcFile.close();
+    s.send(500, "text/plain", "Failed to create temporary destination");
+    return;
+  }
+
+  auto buffer = makeUniqueNoThrow<uint8_t[]>(COPY_BUFFER_SIZE);
+  if (!buffer) {
+    srcFile.close();
+    dstFile.close();
+    removeReplaceablePath(tempPath);
+    LOG_ERR("DAV", "COPY OOM: %u bytes", static_cast<unsigned>(COPY_BUFFER_SIZE));
+    s.send(507, "text/plain", "Insufficient memory");
+    return;
+  }
+
+  const size_t expected = srcFile.size();
+  size_t copied = 0;
   bool copyOk = true;
   while (srcFile.available()) {
     resetTaskWatchdogIfSubscribed();
-    int bytesRead = srcFile.read(buf, sizeof(buf));
-    if (bytesRead <= 0) break;
-    size_t written = dstFile.write(buf, bytesRead);
-    if (written != (size_t)bytesRead) {
+    const int bytesRead = srcFile.read(buffer.get(), COPY_BUFFER_SIZE);
+    if (bytesRead <= 0) {
       copyOk = false;
       break;
     }
+    const size_t written = dstFile.write(buffer.get(), static_cast<size_t>(bytesRead));
+    if (written != static_cast<size_t>(bytesRead)) {
+      copyOk = false;
+      break;
+    }
+    copied += written;
   }
+  if (copied != expected) copyOk = false;
 
   srcFile.close();
   dstFile.close();
 
-  if (copyOk) {
+  if (copyOk && promoteTemp(tempPath, dstPath, dstExists)) {
+    clearBookCache(dstPath.c_str());
     s.send(dstExists ? 204 : 201);
   } else {
-    Storage.remove(dstPath.c_str());
-    s.send(500, "text/plain", "Copy failed - disk full?");
+    removeReplaceablePath(tempPath);
+    s.send(500, "text/plain", "Copy failed; destination preserved");
   }
 }
 

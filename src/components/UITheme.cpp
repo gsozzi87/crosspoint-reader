@@ -9,7 +9,6 @@
 #include <Logging.h>
 
 #include <algorithm>
-#include <memory>
 #include <string>
 
 #include "MappedInputManager.h"
@@ -36,30 +35,35 @@ CrossPointSettings::UI_THEME UITheme::wantedTheme() {
 void UITheme::reload() { setTheme(wantedTheme()); }
 
 void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
+  static const BaseTheme classic;
+  static const LyraTheme lyra;
+  static const RoundedRaffTheme roundedRaff;
+  static const DiarioTheme diario;
+  static const Lyra3CoversTheme lyra3Covers;
   switch (type) {
     case CrossPointSettings::UI_THEME::CLASSIC:
       LOG_DBG("UI", "Using Classic theme");
-      currentTheme = std::make_unique<BaseTheme>();
+      currentTheme = &classic;
       currentMetrics = &BaseMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA:
       LOG_DBG("UI", "Using Lyra theme");
-      currentTheme = std::make_unique<LyraTheme>();
+      currentTheme = &lyra;
       currentMetrics = &LyraMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::ROUNDEDRAFF:
       LOG_DBG("UI", "Using RoundedRaff theme");
-      currentTheme = std::make_unique<RoundedRaffTheme>();
+      currentTheme = &roundedRaff;
       currentMetrics = &RoundedRaffMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::DIARIO:
       LOG_DBG("UI", "Using Diario theme");
-      currentTheme = std::make_unique<DiarioTheme>();
+      currentTheme = &diario;
       currentMetrics = &DiarioMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");
-      currentTheme = std::make_unique<Lyra3CoversTheme>();
+      currentTheme = &lyra3Covers;
       currentMetrics = &Lyra3CoversMetrics::values;
       break;
   }

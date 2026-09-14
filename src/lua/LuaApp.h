@@ -43,6 +43,7 @@ class LuaApp {
   // Techo de memoria del intérprete. Sale de PSRAM (sobra) pero con tope, o una
   // tabla que crece sin parar se lleva puesto todo lo demás.
   static constexpr size_t MEM_CAP = 192 * 1024;
+  static constexpr size_t SCRIPT_CAP = 64 * 1024;
   // Instrucciones antes de cortar una llamada. Un `while true do end` tiene que
   // terminar en un error de la app, no en un aparato colgado.
   static constexpr int STEP_LIMIT = 400000;

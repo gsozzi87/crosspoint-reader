@@ -1,5 +1,6 @@
 #pragma once
 
+#include "components/themes/BaseTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 #include "fontIds.h"
 
@@ -10,9 +11,8 @@ class GfxRenderer;
 //
 // La idea es un diario impreso: serif para lo que se lee, antetítulos en
 // versalita espaciada, reglas de 1 px en vez de marcos y cero pastillas negras.
-// Se apoya en Lyra para todo lo que no cambia (la geometría es la misma: el
-// margen de 24 px y la grilla de 8 son del sistema visual, no del tema) y sólo
-// pisa lo que hace al carácter.
+// Conserva las métricas probadas de Lyra como base geométrica, pero usa los
+// componentes rectos de BaseTheme: Diario no hereda pastillas ni tarjetas.
 //
 // El cambio grande no está acá sino en `ListStyle.h`: hasta 1.5.76 las caras de
 // NUESTRAS listas estaban fijas, así que cambiar de tema cambiaba el lector y
@@ -34,8 +34,19 @@ constexpr ThemeMetrics values = [] {
   // Esquinas vivas: el lenguaje es impreso. Lyra trae 6 y acá no corresponde.
   v.listRowRadius = 0;
   v.listRowGap = 0;
+  v.listInset = 0;
+  v.listSidePadding = 24;
+  v.listSelectionStyle = 2;
+  v.buttonHintsBoxRadius = -1;
+  v.popupCornerRadius = 0;
+  v.controlRadius = 0;
+  v.sheetRadius = 0;
+  v.capsuleRadius = 0;
   return v;
 }();
 }  // namespace DiarioMetrics
 
-class DiarioTheme : public LyraTheme {};
+class DiarioTheme : public BaseTheme {
+ public:
+  bool showsFileIcons() const override { return true; }
+};
