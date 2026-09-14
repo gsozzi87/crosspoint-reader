@@ -1,214 +1,243 @@
-#include "UITheme.h"
+#include "OtaUpdater.h"
 
-#include <BoardConfig.h>
-#include <FsHelpers.h>
-#include <GfxRenderer.h>
-#include <HalGPIO.h>
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
+
+// clang-format off
+// HttpDownloader.h pulls Arduino/SdFat, whose macros collide with lwip's
+// ip4_addr.h unless seen first. Pin this order; clang-format would otherwise sort
+// the local header last and break the build.
+#include "HttpDownloader.h"
 #include <Logging.h>
+#include <ReleaseJsonParser.h>
+#include <esp_ota_ops.h>
+#include <esp_wifi.h>
+// clang-format on
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 
-#include "MappedInputManager.h"
-#include "RecentBooksStore.h"
-#include "components/themes/BaseTheme.h"
-#include "components/themes/diario/DiarioTheme.h"
-#include "components/themes/lyra/Lyra3CoversTheme.h"
-#include "components/themes/lyra/LyraTheme.h"
-#include "components/themes/roundedraff/RoundedRaffTheme.h"
+#include "FirmwareBoardTag.h"
+#include "FirmwareFlasher.h"
 
-UITheme UITheme::instance;
+namespace {
+// Where "Check for updates" looks. Defaults to the upstream GitHub release; a
+// board env can point it at its own server with -DCROSSPOINT_OTA_RELEASE_URL.
+// The endpoint must answer with the GitHub release JSON shape:
+//   {"tag_name":"1.5.7","assets":[{"name":"firmware-<board>.bin",
+//     "browser_download_url":"https://.../firmware-<board>.bin","size":N}]}
+#ifndef CROSSPOINT_OTA_RELEASE_URL
+#define CROSSPOINT_OTA_RELEASE_URL "https://api.github.com/repos/crosspoint-reader/crosspoint-reader/releases/latest"
+#endif
+constexpr char latestReleaseUrl[] = CROSSPOINT_OTA_RELEASE_URL;
+}  // namespace
 
-UITheme::UITheme() { setTheme(wantedTheme()); }
+OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
+  LOG_DBG("OTA", "Checking for update (current: %s)", CROSSPOINT_VERSION);
 
-// El resto de las placas sigue con el selector de cuatro de siempre sobre
-// `uiTheme`; acá no se toca nada de eso.
-CrossPointSettings::UI_THEME UITheme::wantedTheme() {
-  // La ws397 tiene UN tema y no se elige: Diario. Es fijo acá y no en el valor
-  // guardado a propósito, para que el aparato que venía con Bento o con Lyra
-  // puestos en la tarjeta también pase a Diario sin migrar nada.
-  if (BoardConfig::isWS397()) return CrossPointSettings::UI_THEME::DIARIO;
-  return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-}
-
-void UITheme::reload() { setTheme(wantedTheme()); }
-
-void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
-  static const BaseTheme classic;
-  static const LyraTheme lyra;
-  static const RoundedRaffTheme roundedRaff;
-  static const DiarioTheme diario;
-  static const Lyra3CoversTheme lyra3Covers;
-  switch (type) {
-    case CrossPointSettings::UI_THEME::CLASSIC:
-      LOG_DBG("UI", "Using Classic theme");
-      currentTheme = &classic;
-      currentMetrics = &BaseMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::LYRA:
-      LOG_DBG("UI", "Using Lyra theme");
-      currentTheme = &lyra;
-      currentMetrics = &LyraMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::ROUNDEDRAFF:
-      LOG_DBG("UI", "Using RoundedRaff theme");
-      currentTheme = &roundedRaff;
-      currentMetrics = &RoundedRaffMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::DIARIO:
-      LOG_DBG("UI", "Using Diario theme");
-      currentTheme = &diario;
-      currentMetrics = &DiarioMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
-      LOG_DBG("UI", "Using Lyra 3 Covers theme");
-      currentTheme = &lyra3Covers;
-      currentMetrics = &Lyra3CoversMetrics::values;
-      break;
+  // Stream the ~32KB release JSON straight into the parser as it arrives.
+  // Buffering the whole body in a std::string would add a growing allocation
+  // on top of the TLS session's heap during the fetch; with -fno-exceptions an
+  // OOM there aborts. fetchUrl handles the verified-https GET, redirects, and
+  // User-Agent (see HttpDownloader).
+  ReleaseJsonParser releaseParser;
+  // Each board updates from its own release asset: plain firmware.bin for the
+  // C3 X4/X3 binary (pre-existing releases), firmware-<board>.bin otherwise.
+  const bool isX4 = board_tag::boardNameLen() == 2 && memcmp(board_tag::boardName(), "x4", 2) == 0;
+  char assetName[48] = "firmware.bin";
+  if (!isX4) {
+    snprintf(assetName, sizeof(assetName), "firmware-%.*s.bin", static_cast<int>(board_tag::boardNameLen()),
+             board_tag::boardName());
   }
-  metricsValid = false;
+  releaseParser.setFirmwareAssetName(assetName);
+  const bool ok = HttpDownloader::fetchUrl(latestReleaseUrl, [&releaseParser](const uint8_t* data, size_t len) {
+    releaseParser.feed(reinterpret_cast<const char*>(data), len);
+    return true;
+  });
+  if (!ok) {
+    LOG_ERR("OTA", "Release check fetch failed");
+    return HTTP_ERROR;
+  }
+
+  LOG_DBG("OTA", "Parser results: tag=%s firmware=%s", releaseParser.foundTag() ? "yes" : "no",
+          releaseParser.foundFirmware() ? "yes" : "no");
+
+  if (!releaseParser.foundTag()) {
+    LOG_ERR("OTA", "No tag_name in release JSON");
+    return JSON_PARSE_ERROR;
+  }
+
+  if (!releaseParser.foundFirmware()) {
+    LOG_INF("OTA", "No %s asset in latest release", assetName);
+    return NO_UPDATE;
+  }
+
+  latestVersion = releaseParser.getTagName();
+  otaUrl = releaseParser.getFirmwareUrl();
+  otaSize = releaseParser.getFirmwareSize();
+  totalSize = otaSize;
+  updateAvailable = true;
+
+  LOG_DBG("OTA", "Found update: tag=%s size=%zu", latestVersion.c_str(), otaSize);
+  LOG_DBG("OTA", "Firmware URL: %s", otaUrl.c_str());
+  return OK;
 }
 
-const ThemeMetrics& UITheme::getMetrics() const {
-  // hasTouch() can flip once touch init completes after static construction, so the
-  // cached copy is refreshed when the flag differs instead of copying the struct per call.
-  const bool touch = gpio.hasTouch();
-  if (!metricsValid || touch != metricsForTouch) {
-    adjustedMetrics = *currentMetrics;
-    if (touch) {
-      adjustedMetrics.buttonHintsHeight = 0;
+bool OtaUpdater::isUpdateNewer() const {
+  if (!updateAvailable || latestVersion.empty() || latestVersion == CROSSPOINT_VERSION) {
+    return false;
+  }
+
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
+
+  const auto currentVersion = CROSSPOINT_VERSION;
+
+  if (sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch) != 3 ||
+      sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch) != 3) {
+    LOG_ERR("OTA", "Invalid version: current=%s latest=%s", currentVersion, latestVersion.c_str());
+    return false;
+  }
+
+  /*
+   * Compare major versions.
+   * If they differ, return true if latest major version greater than current major version
+   * otherwise return false.
+   */
+  if (latestMajor != currentMajor) return latestMajor > currentMajor;
+
+  /*
+   * Compare minor versions.
+   * If they differ, return true if latest minor version greater than current minor version
+   * otherwise return false.
+   */
+  if (latestMinor != currentMinor) return latestMinor > currentMinor;
+
+  /*
+   * Check patch versions.
+   */
+  if (latestPatch != currentPatch) return latestPatch > currentPatch;
+
+  // If we reach here, it means all segments are equal.
+  // One final check, if we're on an RC build (contains "-rc"), we should consider the latest version as newer even if
+  // the segments are equal, since RC builds are pre-release versions.
+  if (strstr(currentVersion, "-rc") != nullptr) {
+    return true;
+  }
+
+  return false;
+}
+
+const std::string& OtaUpdater::getLatestVersion() const { return latestVersion; }
+
+OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgress, void* ctx) {
+  if (!isUpdateNewer()) {
+    return UPDATE_OLDER_ERROR;
+  }
+
+  // esp_https_ota is hardwired to esp-tls/mbedTLS, whose precompiled build on this
+  // package can't negotiate TLS 1.3 (see SecureClient.h). Drive the OTA partition
+  // ourselves and stream the firmware through HttpDownloader, which runs over
+  // wolfSSL when FREEINK_NET_WOLFSSL is set, reusing its redirect handling for the
+  // GitHub -> CDN hop.
+  const esp_partition_t* updatePartition = esp_ota_get_next_update_partition(nullptr);
+  if (!updatePartition) {
+    LOG_ERR("OTA", "No OTA partition available");
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  esp_ota_handle_t otaHandle = 0;
+  esp_err_t esp_err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &otaHandle);
+  if (esp_err != ESP_OK) {
+    LOG_ERR("OTA", "esp_ota_begin failed: %s", esp_err_to_name(esp_err));
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  /* For better timing and connectivity, we disable power saving for WiFi */
+  esp_wifi_set_ps(WIFI_PS_NONE);
+
+  processedSize = 0;
+  int lastReportedPct = -1;
+  bool flashOk = true;
+  // The image streams in chunks; only the first bytes carry the header. Buffer
+  // the first 14 bytes so we can read chip_id (esp_image_header_t offset 12)
+  // and reject a wrong-MCU image before it overwrites the OTA partition.
+  uint8_t hdr[14];
+  size_t hdrLen = 0;
+  bool wrongChip = false;
+  // All S3 boards share a chip_id, so also scan the stream for the embedded
+  // board tag (FirmwareBoardTag.h). An untagged image passes; a tag naming a
+  // different board aborts the download. The wrong image may partially land in
+  // the inactive OTA slot, but esp_ota_abort() below means it never becomes
+  // the boot target.
+  board_tag::Scanner tagScanner;
+  const bool fetchOk = HttpDownloader::fetchUrl(otaUrl, [&](const uint8_t* data, size_t len) {
+    if (hdrLen < sizeof(hdr)) {
+      const size_t take = std::min(len, sizeof(hdr) - hdrLen);
+      std::memcpy(hdr + hdrLen, data, take);
+      hdrLen += take;
+      if (hdrLen == sizeof(hdr)) {
+        uint16_t imageChip;
+        std::memcpy(&imageChip, hdr + 12, sizeof(imageChip));
+        const uint16_t deviceChip = firmware_flash::runningPartitionChipId();
+        if (deviceChip != 0xFFFF && imageChip != deviceChip) {
+          LOG_ERR("OTA", "wrong chip: image=0x%04X device=0x%04X", imageChip, deviceChip);
+          wrongChip = true;
+          return false;  // abort the transfer
+        }
+      }
     }
-    metricsForTouch = touch;
-    metricsValid = true;
-  }
-  return adjustedMetrics;
-}
-
-// Screen area excluding the button hints
-Rect UITheme::getScreenSafeArea(const GfxRenderer& renderer, bool hasFrontButtonHints, bool hasSideButtonHints) {
-  auto orientation = renderer.getOrientation();
-  const int screenWidth = renderer.getScreenWidth();
-  const int screenHeight = renderer.getScreenHeight();
-  Rect safeArea = Rect{0, 0, screenWidth, screenHeight};
-  const ThemeMetrics metrics = getMetrics();
-  switch (orientation) {
-    case GfxRenderer::Orientation::Portrait:
-      if (hasFrontButtonHints) {
-        safeArea.height -= metrics.buttonHintsHeight;
-      }
-      break;
-    case GfxRenderer::Orientation::LandscapeClockwise:
-      if (hasFrontButtonHints) {
-        safeArea.x += metrics.buttonHintsHeight;
-        safeArea.width -= metrics.buttonHintsHeight;
-      }
-      break;
-    case GfxRenderer::Orientation::PortraitInverted:
-      if (hasFrontButtonHints) {
-        safeArea.y += metrics.buttonHintsHeight;
-        safeArea.height -= metrics.buttonHintsHeight;
-      }
-      break;
-    case GfxRenderer::Orientation::LandscapeCounterClockwise:
-      if (hasFrontButtonHints) {
-        safeArea.width -= metrics.buttonHintsHeight;
-      }
-      break;
-  }
-  return safeArea;
-}
-
-std::string UITheme::getCoverThumbPath(std::string coverBmpPath, int coverHeight) {
-  size_t pos = coverBmpPath.find("[HEIGHT]", 0);
-  if (pos != std::string::npos) {
-    coverBmpPath.replace(pos, 8, std::to_string(coverHeight));
-  }
-  return coverBmpPath;
-}
-
-UIIcon UITheme::getFileIcon(const std::string& filename) {
-  if (filename.back() == '/') {
-    return Folder;
-  }
-  if (FsHelpers::hasEpubExtension(filename) || FsHelpers::hasXtcExtension(filename)) {
-    return Book;
-  }
-  if (FsHelpers::hasTxtExtension(filename) || FsHelpers::hasMarkdownExtension(filename)) {
-    return Text;
-  }
-  if (FsHelpers::hasBmpExtension(filename) || FsHelpers::hasPngExtension(filename)) {
-    return Image;
-  }
-  return File;
-}
-
-int UITheme::getStatusBarHeight() {
-  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
-  const auto sb = SETTINGS.statusBarSpec();
-
-  // Layout reservation is hardware-agnostic: pass clockAvailable=true so the
-  // reserved height does not depend on whether an RTC is present.
-  return (sb.textLaneVisible(true) ? (metrics.statusBarVerticalMargin) : 0) +
-         (sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0);
-}
-
-int UITheme::getProgressBarHeight() {
-  const ThemeMetrics metrics = UITheme::getInstance().getMetrics();
-  const auto sb = SETTINGS.statusBarSpec();
-  return sb.showsProgressBar() ? (sb.progressBarHeightPx + metrics.progressBarMarginTop) : 0;
-}
-
-// Centered text implementation that takes the safe area into account.
-// El texto se recorta contra el ancho real antes de centrarlo: si es más ancho
-// que el área, `(width - textW) / 2` da una x negativa y el renderer termina
-// dibujando fuera de la pantalla (ráfagas de "[GFX] !! Outside range" en el log
-// del aparato, un renglón por pixel). Este es el único lugar por donde pasan
-// todos los que centran contra el área segura, así que se arregla acá.
-void UITheme::drawCenteredText(const GfxRenderer& renderer, Rect screen, int fontId, int y, const char* text,
-                               bool black, EpdFontFamily::Style style) {
-  if (text == nullptr || *text == '\0' || screen.width <= 0) return;
-  int textWidth = renderer.getTextWidth(fontId, text, style);
-  if (textWidth <= screen.width) {
-    renderer.drawText(fontId, screen.x + (screen.width - textWidth) / 2, y, text, black, style);
-    return;
-  }
-  const std::string fitted = renderer.truncatedText(fontId, text, screen.width, style);
-  textWidth = renderer.getTextWidth(fontId, fitted.c_str(), style);
-  renderer.drawText(fontId, screen.x + std::max(0, (screen.width - textWidth) / 2), y, fitted.c_str(), black, style);
-}
-
-void UITheme::drawCenteredWrappedText(const GfxRenderer& renderer, Rect bounds, int fontId, const char* text,
-                                      int maxLines, bool black, EpdFontFamily::Style style,
-                                      TextVerticalAlignment verticalAlignment) {
-  if (!text || *text == '\0' || bounds.width <= 0 || bounds.height <= 0 || maxLines <= 0) return;
-
-  const int lineHeight = renderer.getLineHeight(fontId);
-  if (lineHeight <= 0) return;
-
-  const int lineLimit = std::min(maxLines, bounds.height / lineHeight);
-  if (lineLimit <= 0) return;
-
-  const auto alignedTop = [&](const int textHeight) {
-    switch (verticalAlignment) {
-      case TextVerticalAlignment::CENTER:
-        return bounds.y + (bounds.height - textHeight) / 2;
-      case TextVerticalAlignment::BOTTOM:
-        return bounds.y + bounds.height - textHeight;
-      case TextVerticalAlignment::TOP:
-      default:
-        return bounds.y;
+    tagScanner.feed(data, len);
+    if (tagScanner.mismatch()) {
+      LOG_ERR("OTA", "wrong board: image=%s device=%.*s", tagScanner.foundName(),
+              static_cast<int>(board_tag::boardNameLen()), board_tag::boardName());
+      return false;  // abort the transfer
     }
-  };
+    if (esp_ota_write(otaHandle, data, len) != ESP_OK) {
+      flashOk = false;
+      return false;  // abort the transfer
+    }
+    processedSize += len;
+    // Fire the callback only on whole-percent change. Per-chunk updates wake the
+    // render task, whose framebuffer work contends with TLS on the internal arena,
+    // and e-ink can't repaint faster than a percent tick anyway.
+    if (onProgress && totalSize > 0) {
+      const int pct = static_cast<int>(static_cast<uint64_t>(processedSize) * 100 / totalSize);
+      if (pct != lastReportedPct) {
+        lastReportedPct = pct;
+        onProgress(ctx);
+      }
+    }
+    return true;
+  });
 
-  if (renderer.getTextWidth(fontId, text, style) <= bounds.width) {
-    drawCenteredText(renderer, bounds, fontId, alignedTop(lineHeight), text, black, style);
-    return;
+  /* Return back to default power saving for WiFi in case of failing */
+  esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+
+  if (wrongChip || tagScanner.mismatch()) {
+    LOG_ERR("OTA", "Firmware install aborted: wrong device");
+    esp_ota_abort(otaHandle);
+    return WRONG_DEVICE_ERROR;
   }
 
-  const auto lines = renderer.wrappedText(fontId, text, bounds.width, lineLimit, style);
-  int y = alignedTop(static_cast<int>(lines.size()) * lineHeight);
-  for (const auto& line : lines) {
-    drawCenteredText(renderer, bounds, fontId, y, line.c_str(), black, style);
-    y += lineHeight;
+  if (!fetchOk || !flashOk) {
+    LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
+    esp_ota_abort(otaHandle);
+    return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;
   }
+
+  esp_err = esp_ota_end(otaHandle);  // verifies the written image
+  if (esp_err != ESP_OK) {
+    LOG_ERR("OTA", "esp_ota_end failed: %s", esp_err_to_name(esp_err));
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  esp_err = esp_ota_set_boot_partition(updatePartition);
+  if (esp_err != ESP_OK) {
+    LOG_ERR("OTA", "esp_ota_set_boot_partition failed: %s", esp_err_to_name(esp_err));
+    return INTERNAL_UPDATE_ERROR;
+  }
+
+  LOG_INF("OTA", "Update completed");
+  return OK;
 }
