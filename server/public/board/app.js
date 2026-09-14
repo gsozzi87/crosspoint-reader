@@ -592,13 +592,13 @@ function hoyView() {
       '<div class="right muted" style="font-size:13px">' + esc(S.place.label || S.place.name) + "<br>" + fmtDayLong(t) + "</div></div>";
     if (w.error) html += '<p class="hint bad" style="margin-top:8px">' + esc(w.error) + "</p>";
   } else {
-    html += '<h2>Clima</h2><p class="hint">Falta el lugar. <a href="#mas/ajustes">Cárgalo en Ajustes</a> y el aparato lo muestra en el hub.</p>';
+    html += '<h2>Clima</h2><p class="hint">Falta el lugar. <a href="#ajustes">Cárgalo en Ajustes</a> y el aparato lo muestra en el hub.</p>';
   }
   html += "</div>";
 
   // Aparato
   const sync = dev.lastFetch ? ago(dev.lastFetch) : (dev.logAt ? "log subido " + ago(new Date(dev.logAt).getTime()) : "sin datos todavía");
-  html += '<div class="card"><h2><span class="grow">Aparato</span><a class="muted" href="#mas/log" style="font-size:14px;font-weight:500">Log ›</a></h2><div class="status">' +
+  html += '<div class="card"><h2><span class="grow">Aparato</span><a class="muted" href="#ajustes/log" style="font-size:14px;font-weight:500">Log ›</a></h2><div class="status">' +
     '<div><div class="k">Última sincronización</div><div class="v">' + esc(sync) + "</div></div>" +
     '<div><div class="k">Firmware</div><div class="v">' + esc(dev.firmware || "—") + "</div></div>" +
     '<div><div class="k">Último arranque</div><div class="v">' + esc(dev.wake || "—") + "</div></div>" +
@@ -628,7 +628,7 @@ function hoyView() {
     '<a class="tile" href="#listas" data-act="seg-go" data-key="Compras"><div class="n">' + shop.items.filter((i) => !i.done).length + '</div><div class="t">compras pendientes</div></a>' +
     '<a class="tile" href="#listas" data-act="seg-go" data-key="Tareas"><div class="n">' + tasks.items.filter((i) => !i.done).length + '</div><div class="t">tareas pendientes</div></a>' +
     '<a class="tile" href="#notas"><div class="n">' + S.notes.length + '</div><div class="t">notas</div></a>' +
-    '<a class="tile" href="#mas/memoria"><div class="n">' + S.memories.length + '</div><div class="t">cosas que recuerda de ti</div></a>' +
+    '<a class="tile" href="#ajustes/memoria"><div class="n">' + S.memories.length + '</div><div class="t">cosas que recuerda de ti</div></a>' +
     "</div>";
 
   if (S.usage && S.usage.quotasOn) {
@@ -641,19 +641,21 @@ function hoyView() {
 }
 
 // ── Más ─────────────────────────────────────────────────────────────────────
-function masView() {
+// Ajustes es una PANTALLA DE SECCIONES, no un cajón de filas iguales. Lo que se
+// usa seguido (el aparato, la voz, el clima) está acá mismo; lo que se toca una
+// vez al año cuelga de Avanzado.
+function ajustesIndexView() {
   const item = (href, ic, label, sub) => '<li><a href="' + href + '"><span class="ic">' + ic + '</span><span class="lbl">' + esc(label) + (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="chev">›</span></a></li>';
-  let html = '<ul class="menu">' +
-    item("#mas/noticias", "📰", "Noticias", S.feeds.length ? S.feeds.length + " feed" + (S.feeds.length === 1 ? "" : "s") : "Ningún feed cargado") +
-    item("#mas/viajes", "✈️", "Viajes", "Días, horarios y papeles") +
-    item("#mas/memoria", "🧠", "Memoria del asistente", S.memories.length + " datos") +
-    "</ul><ul class=\"menu\">" +
-    item("#mas/ajustes", "⚙️", "Ajustes del aparato", "Idioma, voz, sonidos, volumen, clima") +
-    (multi() ? item("#mas/aparatos", "📟", "Aparatos", (me.devices || []).length + " vinculado" + ((me.devices || []).length === 1 ? "" : "s")) : "") +
-    (isAdmin() ? item("#mas/ia", "🤖", "Inteligencia artificial", "Proveedor, claves, costos") : "") +
-    (isAdmin() ? item("#mas/contenido", "📦", "Paquete de contenido", "Lo que el aparato se baja a la tarjeta") : "") +
-    item("#mas/log", "🧾", "Log del aparato", S.device.logAt ? "subido " + ago(new Date(S.device.logAt).getTime()) : "todavía no subió ninguno") +
+  let html = ajustesAparatoView();
+  html += '<ul class="menu">' +
+    item("#ajustes/noticias", "📰", "Noticias", S.feeds.length ? S.feeds.length + " feed" + (S.feeds.length === 1 ? "" : "s") : "Ningún feed cargado") +
+    item("#ajustes/memoria", "🧠", "Memoria del asistente", S.memories.length + " datos") +
+    (multi() ? item("#ajustes/aparatos", "📟", "Aparatos", (me.devices || []).length + " vinculado" + ((me.devices || []).length === 1 ? "" : "s")) : "") +
     "</ul>";
+  const avanzado = (isAdmin() ? item("#ajustes/ia", "🤖", "Inteligencia artificial", "Proveedor, claves, costos") : "") +
+    (isAdmin() ? item("#ajustes/contenido", "📦", "Paquete de contenido", "Lo que el aparato se baja a la tarjeta") : "") +
+    item("#ajustes/log", "🧾", "Log del aparato", S.device.logAt ? "subido " + ago(new Date(S.device.logAt).getTime()) : "todavía no subió ninguno");
+  if (avanzado) html += '<h2 class="sect">Avanzado</h2><ul class="menu">' + avanzado + "</ul>";
   html += '<div class="card plain"><p class="muted">' + (multi() ? "Sesión: " + esc(me.email) : "Entraste con el token del aparato") + "</p>" +
     '<div class="btnrow">' + (multi() ? '<button class="ghost" data-act="logout">Cerrar sesión</button>' : '<button class="ghost" data-act="token-change">Cambiar el token</button>') + "</div></div>";
   return html;
@@ -734,7 +736,7 @@ function memorySheet(m) {
 const LANGS = [["es", "Español"], ["en", "English"], ["fr", "Français"], ["de", "Deutsch"], ["pt", "Português"], ["ru", "Русский"]];
 let placeResults = null;
 
-function ajustesView() {
+function ajustesAparatoView() {
   const s = S.settings;
   let html = '<div class="card"><h2>Aparato</h2><p class="hint">Lo toma en la próxima sincronización (al abrir el hub, o manteniendo Atrás en el hub). Lo que cambies en el propio aparato no se pisa.</p>' +
     '<form data-form="settings">' +
@@ -957,7 +959,7 @@ function tripEditor(t) {
         try {
           const r = await api("/api/trip", body);
           forgetTrips();
-          location.hash = "#mas/viajes/" + r.id;
+          location.hash = "#viajes/" + r.id;
           toast("Guardado");
           return true;
         } catch (e) { sheetStatus(e.message, "bad"); return false; } finally { busy(false); }
@@ -966,7 +968,7 @@ function tripEditor(t) {
         if (!sure("¿Borrar el viaje «" + t.name + "» con sus días y sus papeles?")) return false;
         await api("/api/trip/delete", { id: t.id });
         forgetTrips();
-        location.hash = "#mas/viajes";
+        location.hash = "#viajes";
         toast("Borrado");
         return true;
       },
@@ -983,7 +985,7 @@ function attRow(a, ctx) {
 
 function tripView(id) {
   const t = tripCache[id];
-  if (!t) { loadTrip(id).then(render).catch((e) => { toast(e.message); location.hash = "#mas/viajes"; }); return '<p class="loading">Cargando…</p>'; }
+  if (!t) { loadTrip(id).then(render).catch((e) => { toast(e.message); location.hash = "#viajes"; }); return '<p class="loading">Cargando…</p>'; }
   let html = '<div class="card"><h2><span class="grow">' + esc(t.name) + '</span><button class="ghost small" data-act="trip-edit">Editar</button></h2><p class="muted">' + esc([t.when, t.place].filter(Boolean).join(" · ")) + "</p></div>";
   for (const d of t.days) {
     html += '<div class="card"><h2><span class="grow">' + esc(d.label) + '</span><button class="ghost small" data-act="titem-new" data-date="' + d.date + '">+</button></h2>';
@@ -1154,7 +1156,7 @@ function quickAdd(kind) {
 function parts() { return (location.hash.replace(/^#/, "") || "hoy").split("/"); }
 function screenId() { return parts()[0]; }
 
-const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", mas: "Más", noticias: "Noticias", viajes: "Viajes", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
+const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", noticias: "Noticias", viajes: "Viajes", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
 
 function render() {
   if (!entered || !S) return;
@@ -1173,24 +1175,34 @@ function render() {
     }
     else if (p[0] === "listas") html = listsView();
     else if (p[0] === "notas") html = notesView();
-    else if (p[0] === "mas") {
-      if (!p[1]) { html = masView(); fab = false; }
+    else if (p[0] === "viajes") {
+      if (p[1]) { back = "#viajes"; title = (tripCache[p[1]] && tripCache[p[1]].name) || "Viaje"; html = tripView(p[1]); }
+      else html = viajesView();
+    }
+    else if (p[0] === "ajustes") {
+      if (!p[1]) { html = ajustesIndexView(); fab = false; }
       else {
-        back = "#mas";
+        back = "#ajustes";
         title = TITLES[p[1]] || title;
-        if (p[1] === "noticias") { html = noticiasView(); fab = false; }
-        else if (p[1] === "viajes") {
-          if (p[2]) { back = "#mas/viajes"; title = (tripCache[p[2]] && tripCache[p[2]].name) || "Viaje"; html = tripView(p[2]); }
-          else html = viajesView();
-        }
-        else if (p[1] === "memoria") { html = memoriaView(); fab = false; }
-        else if (p[1] === "ajustes") { html = ajustesView(); fab = false; }
-        else if (p[1] === "aparatos") { html = multi() ? aparatosView() : '<p class="loading">Este servidor no tiene cuentas.</p>'; fab = false; }
-        else if (p[1] === "ia") { html = isAdmin() ? iaView() : '<p class="loading">Solo el administrador.</p>'; fab = false; }
-        else if (p[1] === "contenido") { html = contenidoView(); fab = false; }
-        else if (p[1] === "log") { html = logView(); fab = false; }
+        fab = false;
+        if (p[1] === "noticias") html = noticiasView();
+        else if (p[1] === "memoria") html = memoriaView();
+        else if (p[1] === "aparatos") html = multi() ? aparatosView() : '<p class="loading">Este servidor no tiene cuentas.</p>';
+        else if (p[1] === "ia") html = isAdmin() ? iaView() : '<p class="loading">Solo el administrador.</p>';
+        else if (p[1] === "contenido") html = contenidoView();
+        else if (p[1] === "log") html = logView();
         else html = '<p class="loading">No existe esa pantalla.</p>';
       }
+    }
+    // Las direcciones viejas (#mas/...) siguen andando: alguien puede tener una
+    // guardada en la pantalla de inicio del teléfono.
+    else if (p[0] === "mas") {
+      const dest = p[1] === "viajes" ? "#viajes" + (p[2] ? "/" + p[2] : "")
+                 : p[1] === "ajustes" ? "#ajustes"
+                 : p[1] ? "#ajustes/" + p[1]
+                 : "#ajustes";
+      location.hash = dest;
+      return;
     }
     else { location.hash = "#hoy"; return; }
   } catch (e) {
@@ -1205,7 +1217,7 @@ function render() {
   qsa(document, ".nav a").forEach((a) => a.classList.toggle("on", a.dataset.nav === p[0]));
   // Las imágenes que ya se bajaron
   qsa(main, "img[data-blob]").forEach((img) => { const b = blobCache[img.dataset.blob]; if (b && b !== "loading") img.src = b; });
-  if (p[0] === "mas" && p[1] === "log" && logText && logText !== "loading") { const box = $("logBox"); if (box) box.scrollTop = box.scrollHeight; }
+  if (p[0] === "ajustes" && p[1] === "log" && logText && logText !== "loading") { const box = $("logBox"); if (box) box.scrollTop = box.scrollHeight; }
 }
 
 // ── Eventos (delegación) ────────────────────────────────────────────────────
@@ -1214,7 +1226,7 @@ document.addEventListener("click", async (ev) => {
   if (!b) return;
   const act = b.dataset.act;
   const d = b.dataset;
-  const tripId = parts()[0] === "mas" && parts()[1] === "viajes" ? parts()[2] : "";
+  const tripId = parts()[0] === "viajes" ? parts()[1] : "";
   const trip = tripId ? tripCache[tripId] : null;
   try {
     switch (act) {
@@ -1260,7 +1272,7 @@ document.addEventListener("click", async (ev) => {
         if (o) eventEditor(o);
         break;
       }
-      case "trip-go": location.hash = "#mas/viajes/" + d.trip; break;
+      case "trip-go": location.hash = "#viajes/" + d.trip; break;
 
       // Listas
       case "list-seg": localStorage.setItem("listSeg", d.key); render(); break;
@@ -1446,7 +1458,7 @@ document.addEventListener("input", (ev) => {
 
 $("sheetBg").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && sheetOpts) closeSheet(); });
-$("backBtn").addEventListener("click", () => { location.hash = $("backBtn").dataset.to || "#mas"; });
+$("backBtn").addEventListener("click", () => { location.hash = $("backBtn").dataset.to || "#ajustes"; });
 $("reloadBtn").addEventListener("click", () => { clearCal(); trips = null; tripCache = {}; rssCache = null; refresh(); });
 $("fab").addEventListener("click", () => {
   const p = parts();
@@ -1454,8 +1466,8 @@ $("fab").addEventListener("click", () => {
   else if (p[0] === "notas") noteEditor(null);
   else if (p[0] === "agenda" && p[1] === "cal") eventEditor(null, calSel || todayIso());
   else if (p[0] === "agenda") reminderEditor(null);
-  else if (p[0] === "mas" && p[1] === "viajes" && p[2]) { const t = tripCache[p[2]]; if (t) tripItemEditor(t, t.days[0] ? t.days[0].date : t.start, null); }
-  else if (p[0] === "mas" && p[1] === "viajes") tripEditor(null);
+  else if (p[0] === "viajes" && p[1]) { const t = tripCache[p[1]]; if (t) tripItemEditor(t, t.days[0] ? t.days[0].date : t.start, null); }
+  else if (p[0] === "viajes") tripEditor(null);
   else quickAdd("reminder");
 });
 window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });

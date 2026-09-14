@@ -169,7 +169,7 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
   // OJO: lo que se persiste es el NÚMERO. Nunca renumerar los que quedan: el
 // clamp de carga manda al default cualquier valor fuera de rango, así que
 // BORRAR del final es seguro y RENUMERAR le cambia el tema a quien ya eligió.
-enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, DIARIO = 4 };
+enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, DIARIO = 4, BENTO = 5 };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };
@@ -282,7 +282,7 @@ enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, DIARI
   // UI Theme
   uint8_t uiTheme = LYRA;
   // ws397: su propia elección, con las dos opciones del producto.
-  // 0 = Diario (el de fábrica), 1 = Lyra.
+  // 0 = Diario (el de fábrica), 1 = Bento, 2 = Lyra.
   uint8_t uiThemeWs397 = 0;
   // Sunlight fading compensation
   uint8_t fadingFix = 0;

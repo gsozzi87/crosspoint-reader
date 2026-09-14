@@ -231,7 +231,7 @@ medias.
 
 ---
 
-## Ola 6 — 1.5.76 · La web sin el cajón "Más"
+## Ola 6 — 1.5.78 · La web sin el cajón "Más" ✅ HECHA
 
 20. **Seis pestañas**: Hoy · Agenda · Listas · Notas · Viajes · Ajustes. Viajes sube al primer nivel
     porque es lo único con contenido propio que se usa seguido; Fotos ya no existe.

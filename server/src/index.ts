@@ -37,6 +37,10 @@ await applyAdminPasswordFromEnv().catch((err) => console.error("db: ADMIN_PASSWO
 app.get("/", (c) => c.text("ws397 server ok"));
 app.route("/auth", auth);   // registro, login, logout y quién soy (solo con base de datos)
 app.route("/firmware", firmware);
+// `/board/` con barra final daba 404, y es como termina escribiendo la
+// dirección cualquiera que la teclea a mano. Va ACÁ y no adentro del sub-app:
+// montado en "/board", Hono no le pasa la barra final a `board.get("")`.
+app.get("/board/", (c) => c.redirect("/board"));
 app.route("/board", board);
 app.route("/board/log", logPage);  // log del aparato, texto plano  // página web para el teléfono (pide el token del aparato)
 app.route("/api", api);

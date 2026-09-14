@@ -268,9 +268,17 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **La web se hizo de nuevo (servidor, después de 1.5.68)** ("super chafa… la web tiene que hacerse prácticamente de nuevo"). Vive en
   `server/public/board/` (`index.html`, `app.js`, `style.css`) como archivos estáticos que sirve `board.ts`; ya NO es
   un template literal adentro del `.ts` (el Dockerfile copia `public/`). Es una app de teléfono: barra de abajo con
-  **Hoy · Agenda · Listas · Notas · Más**, un `+` flotante para agregar rápido, y todo se edita en una hoja que sube
-  desde abajo al tocar la fila (todos los campos + Borrar). Bajo Más: Fotos, Noticias, Viajes, Memoria, Ajustes,
-  Aparatos (multiusuario), IA y Contenido (admin), Log y la cuenta. Modo oscuro por `prefers-color-scheme`.
+  **Hoy · Agenda · Listas · Notas · Viajes · Ajustes** (seis desde 1.5.78; antes eran cinco y la quinta, "Más", era
+  un cajón con diez filas iguales adentro), un `+` flotante para agregar rápido, y todo se edita en una hoja que
+  sube desde abajo al tocar la fila (todos los campos + Borrar). Modo oscuro por `prefers-color-scheme`.
+  **Viajes subió al primer nivel** porque es lo único con contenido propio que se usa seguido, y **Ajustes dejó de
+  ser un cajón**: arriba lo del aparato (idioma, voz, sonidos, volumen, clima) que es lo que se toca, después
+  Noticias, Memoria y Aparatos, y abajo un bloque **Avanzado** con IA, Contenido y Log. Las direcciones viejas
+  (`#mas/...`) **siguen andando**: redirigen, porque alguien puede tener una guardada en la pantalla de inicio del
+  teléfono. Y `/board/` con barra final daba **404** — que es justo como la escribe a mano el que la teclea —, así
+  que ahora redirige a `/board`.
+  Se probó con Chromium a 360 px de ancho recorriendo las trece pantallas (incluidas las tres direcciones viejas) y
+  comprobando que las seis pestañas midan todas lo mismo y que nada se vaya de ancho.
   **Regla de datos**: hay UN estado (`GET /api/board/state`, todo junto) y después de cada cambio se vuelve a pedir
   entero y se repinta (`change()` en `app.js`); así no queda una parte vieja y otra nueva en la misma pantalla, que
   era la queja ("al sincronizar cualquier cosa le faltan otras"). Lo que se agregó en el servidor para que TODO se
@@ -420,8 +428,10 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   default. Renumerar el enum tampoco: le cambiaría el tema a quien ya eligió en las otras placas, donde el
   selector de cuatro sigue igual. `UITheme::wantedTheme()` traduce, y `applyUiSettingChange` mira **los dos**
   campos o el cambio recién se vería en el arranque siguiente.
-  Ojo: **Riel, Bento y Estación son maquetas, no código** (`docs/ws397/maquetas/`). Si alguna vez entran, entran
-  como un `ThemeMetrics` más.
+- **Bento** (`src/components/themes/bento/BentoTheme.h`, 1.5.78) es el tercero: donde Diario es un diario impreso,
+  Bento es una caja de compartimentos — todo en la sans con el título de fila en negrita, tarjetas de esquinas
+  redondeadas, sin filete al pie del cabezal. El selector de la ws397 tiene entonces **Diario, Bento y Lyra**.
+  Ojo: **Riel y Estación siguen siendo maquetas, no código** (`docs/ws397/maquetas/`).
 - **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
   jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
   `drawSelectionRow()`) es pestaña negra de 5 px a la izquierda + marco + franjas tramadas SOLO en los márgenes, con

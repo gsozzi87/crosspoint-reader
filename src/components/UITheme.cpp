@@ -1,6 +1,7 @@
 #include "UITheme.h"
 #include <BoardConfig.h>
 
+#include "components/themes/bento/BentoTheme.h"
 #include "components/themes/diario/DiarioTheme.h"
 
 #include <FsHelpers.h>
@@ -31,7 +32,14 @@ UITheme::UITheme() { setTheme(wantedTheme()); }
 // ya eligió en las otras placas.
 CrossPointSettings::UI_THEME UITheme::wantedTheme() {
   if (!BoardConfig::isWS397()) return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  return SETTINGS.uiThemeWs397 == 1 ? CrossPointSettings::UI_THEME::LYRA : CrossPointSettings::UI_THEME::DIARIO;
+  switch (SETTINGS.uiThemeWs397) {
+    case 1:
+      return CrossPointSettings::UI_THEME::BENTO;
+    case 2:
+      return CrossPointSettings::UI_THEME::LYRA;
+    default:
+      return CrossPointSettings::UI_THEME::DIARIO;
+  }
 }
 
 void UITheme::reload() { setTheme(wantedTheme()); }
@@ -57,6 +65,11 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using Diario theme");
       currentTheme = std::make_unique<DiarioTheme>();
       currentMetrics = &DiarioMetrics::values;
+      break;
+    case CrossPointSettings::UI_THEME::BENTO:
+      LOG_DBG("UI", "Using Bento theme");
+      currentTheme = std::make_unique<BentoTheme>();
+      currentMetrics = &BentoMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");

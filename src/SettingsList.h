@@ -504,12 +504,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
   // esta placa tampoco tiene Home key para la ruta alternativa. Se esconde el ajuste en
   // vez de ofrecer algo que no hace nada.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
-    // El selector de interfaz es otro acá: sólo Diario y Lyra, que son los dos
+    // El selector de interfaz es otro acá: Diario, Bento y Lyra, que son los tres
     // temas del producto. Clásico, Lyra Extendido y RoundedRaff no se ofrecen.
     auto theme = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_UI_THEME; });
     if (theme != v.end()) {
       *theme = SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiThemeWs397,
-                                 {StrId::STR_THEME_DIARIO, StrId::STR_THEME_LYRA}, "uiThemeWs397",
+                                 {StrId::STR_THEME_DIARIO, StrId::STR_THEME_BENTO, StrId::STR_THEME_LYRA}, "uiThemeWs397",
                                  StrId::STR_CAT_DISPLAY);
     }
     v.erase(std::remove_if(v.begin(), v.end(),
