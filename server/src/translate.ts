@@ -10,6 +10,7 @@
 // Transcribe en `from`, traduce con el proveedor elegido en /board -> Ajustes
 // (el mismo que usa todo lo demás) y sintetiza en `to`.
 import { Hono } from "hono";
+import type { AppEnv } from "./tenant";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
 import { synthesize } from "./tts";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
@@ -17,7 +18,7 @@ import { chatText, LlmError } from "./llm";
 import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
-export const translate = new Hono();
+export const translate = new Hono<AppEnv>();
 
 function framed(json: object, audio: Uint8Array | null): Response {
   const head = Buffer.from(JSON.stringify(json), "utf8");

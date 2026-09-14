@@ -23,6 +23,7 @@
 // hay dos filtros: la energía del audio ANTES de gastar la llamada al STT
 // (hasSpeech) y la lista de frases inventadas DESPUÉS (isHallucination).
 import { Hono } from "hono";
+import type { AppEnv } from "./tenant";
 import { normalizeLang, type Lang } from "./lang";
 import { decodeAdpcm, TARGET_RATE } from "./tts";
 import { config } from "./config";
@@ -35,7 +36,7 @@ import { checkUrl, limitBody, readBodyBytes, redactSecrets } from "./net";
 // large" antes de llegar al STT. Con 4 MB entran ~2 minutos de ADPCM y ~2 de WAV.
 const MAX_BYTES = 4_000_000;
 
-export const transcribe = new Hono();
+export const transcribe = new Hono<AppEnv>();
 
 // Reutilizable desde voice.ts: WAV -> texto. Lanza Error con el detalle si falla.
 // El aparato sube ADPCM (una cuarta parte de un WAV, que es lo que más tarda
