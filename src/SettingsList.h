@@ -517,8 +517,28 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                              // "Tiempo para dormir" tampoco: en esta placa el reposo y el
                              // deep sleep los fija el firmware (getSleepTimeoutMs()), así que
                              // la fila cambiaría un número que ya no manda nada.
+                             //
+                             // Las cuatro del fondo de pantalla se fueron con las fotos en
+                             // 1.5.74: acá `goToSleep()` va con `render=false` y la pantalla
+                             // de sueño del SDK NO se pinta nunca — la pinta `SleepScreen`,
+                             // que dice SUSPENDIDO o APAGADO y no tiene portadas ni filtros.
+                             // O sea que las cuatro filas cambian un número que ya no lee
+                             // nadie en esta placa.
+                             //
+                             // Y el arreglo de desvanecido al sol sobra por otro motivo: es
+                             // el `turnOff` del refresco, y las tres secuencias de este panel
+                             // (0xFF, 0xD7, 0xF7) ya traen los bits de apagado, así que el
+                             // driver lo ignora (`sequencePowersOff`). Lo único que hace
+                             // encendido es apagar el camino asíncrono
+                             // (`supportsAsyncRefresh()` es `!fadingFix && …`) y sumarle
+                             // ~160 ms a CADA página. Costo sin beneficio: se esconde.
                              return s.nameId == StrId::STR_LONG_PRESS_MENU ||
-                                    s.nameId == StrId::STR_TIME_TO_SLEEP;
+                                    s.nameId == StrId::STR_TIME_TO_SLEEP ||
+                                    s.nameId == StrId::STR_SLEEP_SCREEN ||
+                                    s.nameId == StrId::STR_SLEEP_COVER_MODE ||
+                                    s.nameId == StrId::STR_SLEEP_COVER_FILTER ||
+                                    s.nameId == StrId::STR_QUICK_RESUME_TIMEOUT ||
+                                    s.nameId == StrId::STR_SUNLIGHT_FADING_FIX;
                            }),
             v.end());
   }

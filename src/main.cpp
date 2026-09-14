@@ -1084,7 +1084,15 @@ void setup() {
   // ws397: the short-press binding is meaningless here (PWR short = clean
   // screen, and OK is plain Confirm), and SLEEP would make a 10 ms wake tap
   // count as verified. Force it whatever the file (or the web) says.
-  if (BoardConfig::isWS397()) SETTINGS.shortPwrBtn = CrossPointSettings::SHORT_PWRBTN::IGNORE;
+  if (BoardConfig::isWS397()) {
+    SETTINGS.shortPwrBtn = CrossPointSettings::SHORT_PWRBTN::IGNORE;
+    // El arreglo de desvanecido al sol se esconde de Ajustes en esta placa
+    // (las tres secuencias del panel ya se apagan solas, así que no hace nada,
+    // y encendido apaga el camino asíncrono y le suma ~160 ms a cada página).
+    // Esconder la fila sin forzar el valor dejaría a quien lo tuviera encendido
+    // pagando ese costo para siempre y sin puerta para apagarlo.
+    SETTINGS.fadingFix = 0;
+  }
   SERVER_STORE.loadFromFile();
   // El aparato tiene identidad propia desde el primer arranque: si no hay token
   // guardado se genera uno al azar y se persiste. Después se vincula a una

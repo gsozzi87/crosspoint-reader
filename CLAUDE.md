@@ -856,6 +856,32 @@ Además: `DictionaryRegistry::discover()` corre en CADA reconstrucción del men�
 diccionarios su `No /.dictionaries directory` solo llenaba el log de 24 KB que se sube al servidor. Ahora avisa
 una vez por arranque y por raíz.
 
+## Ajustes → Pantalla: lo que sobraba (1.5.84)
+
+El selector de Interfaz ya anda, pero la sección tenía **cinco filas que no hacían nada en esta placa** y una de
+ellas además costaba plata:
+
+- **Fondo de pantalla, Modo de portada, Filtro de portada y Quick Resume**: se fueron con las fotos en 1.5.74.
+  Acá `goToSleep()` va con `render=false` y **la pantalla de sueño del SDK no se pinta nunca** — la pinta
+  `SleepScreen`, que dice SUSPENDIDO o APAGADO y no tiene portadas ni filtros. Las cuatro filas cambiaban un
+  número que en la ws397 ya no lee nadie.
+- **Arreglo de desvanecido al sol**: es el `turnOff` del refresco, y las tres secuencias de este panel (0xFF,
+  0xD7, 0xF7) **ya traen los bits de apagado**, así que el driver lo ignora (`sequencePowersOff` en
+  `Ssd1677Driver::refresh`). Lo único que hacía encendido era apagar el camino asíncrono
+  (`supportsAsyncRefresh()` es `!fadingFix && …`) y sumarle **~160 ms a cada página**. Costo sin beneficio.
+  Y como esconder la fila sin más dejaría a quien lo tuviera encendido pagando eso para siempre y sin puerta
+  para apagarlo, `main.cpp` además lo **fuerza a 0** en el arranque, igual que `shortPwrBtn`.
+
+Quedan cuatro filas y las cuatro mandan de verdad: Ocultar batería, Frecuencia de refresco, Interfaz y Modo
+noche.
+
+**Modo noche no se toca pero hay que saber lo que cuesta**: prende `display.setInverted(true)`
+(`ActivityManager`, una vez por render), y tanto `supportsStripGrayscale()` como `supportsAsyncRefresh()` son
+`!_inverted && …`. O sea que con el modo noche encendido la página pierde **las dos** cosas: el gris por tiras y
+el solape, y cae al camino viejo (`storeBwBuffer`, dos renders enteros de página, `restoreBwBuffer`). En el log
+se distingue solo: la línea pasa a ser `Page render:` con `bw_store` y `bw_restore` en vez de
+`Page render (tiled async):`.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
