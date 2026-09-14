@@ -104,6 +104,20 @@ async function loadIndex(lang: Lang): Promise<Index> {
   if (have) return have;
   const idx = await readJsonSafe<Index>(indexFile(lang), { art: ART_REV, entries: {} });
   idx.entries ??= {};
+  // Las tarjetas se sacaron del producto en 1.5.65, pero poner `CARDS_IN_PACK`
+  // en false sólo apagó la GENERACIÓN: el manifiesto se sirve desde este índice
+  // persistido, así que un servidor que ya las había armado siguió
+  // anunciándolas para siempre. En el aparato del usuario eso eran 787 archivos
+  // en el manifiesto —240 BMP y 480 audios de tarjetas, más la Biblia— que se
+  // bajan, ocupan la tarjeta y no los abre nadie, porque `CardsActivity` ya no
+  // existe. Se podan acá, que es por donde pasan el manifiesto, el estado y la
+  // versión.
+  if (!CARDS_IN_PACK) {
+    const antes = Object.keys(idx.entries).length;
+    idx.entries = Object.fromEntries(Object.entries(idx.entries).filter(([, e]) => e.kind !== "cards"));
+    const sacadas = antes - Object.keys(idx.entries).length;
+    if (sacadas > 0) console.log(`assets: ${sacadas} entradas de tarjetas podadas del índice (${lang})`);
+  }
   // Cambió el formato del dibujo (o de dónde salen): las tarjetas viejas no
   // sirven más. La Biblia y los audios no se tocan.
   if (idx.art !== ART_REV) {

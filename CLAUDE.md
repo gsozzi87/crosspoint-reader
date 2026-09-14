@@ -363,9 +363,10 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   El reparto de titulares entre medios (uno de cada feed y después la segunda vuelta, para que un diario que
   publica cada diez minutos no se coma el paquete) es una función pura y se prueba sin red:
   **`./test/news_pack/run.sh`**.
-  El hub quedó en 14 mosaicos (1.5.48): fila ancha "Mi día" + Conversor, y debajo 4x3 con Leer, Hablar, Traductor,
-  Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Fotos, Juegos, Ajustes. **Ya no hay "Próximamente"**: los
-  catorce abren de verdad.
+  El hub tiene **13 mosaicos** (`TILE_COUNT` en `HubActivity.h`): fila ancha "Mi día" y debajo Leer, Hablar,
+  Traductor, Recordatorios, Tiempo, Notas, Biblia, Música, Noticias, Juegos (= apps en Lua), Clima y Ajustes.
+  **Ya no hay "Próximamente"**: los trece abren de verdad. (Esta línea decía 14 con Conversor y Fotos hasta
+  1.5.86; los dos salieron del hub y nadie corrigió el texto.)
 - **Las fotos salieron del producto (1.5.74).** El fondo de pantalla ya no es una imagen elegida a mano: es la
   **pantalla de información** que queda en el vidrio cuando el aparato se muere (`src/activities/home/SleepScreen`).
   Dice **SUSPENDIDO** o **APAGADO**, y con eso **cómo se vuelve**, que no es lo mismo: suspendido despierta **OK**
@@ -380,7 +381,8 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `src/util/FullScreenBmp`. En el servidor pasó lo mismo con `toDeviceBmp`/`bmpToPng`, que están en
   `server/src/deviceBmp.ts`; `sharp` **no** se puede sacar del Docker porque lo usan los adjuntos y el paquete de
   contenido.
-- Conversor de unidades (`UnitsActivity`, mosaico Conversor, 1.5.48): **la cuenta es toda del aparato**; lo único
+- Conversor de unidades — **salió del hub**; lo que sigue describe cómo estaba hecho, por si vuelve.
+  (`UnitsActivity`, 1.5.48): **la cuenta es toda del aparato**; lo único
   que necesita servidor es pasar la voz a texto. Siete familias — longitud, peso, temperatura, volumen, superficie,
   velocidad y **cocina** (con ingrediente, para pasar tazas a gramos) — con la cantidad en dígitos de 7 segmentos,
   la equivalencia grande y el resto de la familia en una lista debajo. La palanca cambia el dígito o el campo y OK
@@ -422,15 +424,18 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **Diario** (`src/components/themes/diario/DiarioTheme.h`) es el tema de fábrica de la ws397: serif para lo que se
   lee, la sans chica para etiquetas y datos, filete de 3 px al pie del cabezal. Hereda de Lyra y sólo pisa lo que
   hace al carácter.
-- **El selector de la ws397 es OTRO campo** (`uiThemeWs397`: 0 = Diario, 1 = Lyra) y ofrece sólo esos dos. No se
-  puede hacer con el enum de siempre: lo que se persiste es el NÚMERO y `SettingInfo::Enum` mapea índice a valor
-  uno a uno, así que una lista de dos entradas dejaría a Diario (4) fuera de rango y el clamp lo mandaría al
-  default. Renumerar el enum tampoco: le cambiaría el tema a quien ya eligió en las otras placas, donde el
-  selector de cuatro sigue igual. `UITheme::wantedTheme()` traduce, y `applyUiSettingChange` mira **los dos**
-  campos o el cambio recién se vería en el arranque siguiente.
-- **Bento** (`src/components/themes/bento/BentoTheme.h`, 1.5.78) es el tercero: donde Diario es un diario impreso,
-  Bento es una caja de compartimentos — todo en la sans con el título de fila en negrita, tarjetas de esquinas
-  redondeadas, sin filete al pie del cabezal. El selector de la ws397 tiene entonces **Diario, Bento y Lyra**.
+- **La ws397 tiene UN tema y no se elige: Diario (1.5.86).** Hubo un selector propio con Diario, Bento y Lyra
+  sobre un campo aparte (`uiThemeWs397`), y elegir no servía de nada: hasta 1.5.82 `listui` sólo miraba las cuatro
+  CARAS del tema, así que entre Bento y Lyra la única diferencia era el renglón de detalle. Eso se arregló —ahora
+  también manda la forma— pero la conclusión del usuario fue la correcta igual ("el cambio de interfaz es una
+  verga… dejamos DIARIO"): tres temas son tres cosas que mantener y probar para que el aparato se vea de tres
+  maneras parecidas.
+  `UITheme::wantedTheme()` devuelve Diario **fijo** en esta placa —y no el valor guardado— para que el aparato que
+  venía con Bento o Lyra puestos también pase a Diario sin migrar nada. La fila salió de Ajustes, el campo
+  `uiThemeWs397` se borró y `BentoTheme` también. `BENTO` se sacó del enum `UI_THEME` porque era el ÚLTIMO valor:
+  mover cualquier otro renumeraría y le cambiaría el tema a quien ya eligió en las otras placas, donde el selector
+  de cuatro sigue igual.
+  **Lyra NO se puede borrar**: `DiarioTheme` hereda de `LyraTheme` y `DiarioMetrics` parte de `LyraMetrics`.
   Ojo: **Riel y Estación siguen siendo maquetas, no código** (`docs/ws397/maquetas/`).
 - **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
   jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
@@ -881,6 +886,49 @@ noche.
 el solape, y cae al camino viejo (`storeBwBuffer`, dos renders enteros de página, `restoreBwBuffer`). En el log
 se distingue solo: la línea pasa a ser `Page render:` con `bw_store` y `bw_restore` en vez de
 `Page render (tiled async):`.
+
+## Auditoría externa y caza de huérfanos (1.5.86)
+
+El usuario mandó a auditar el repo por afuera y pidió, textual, "verifiques que no te hayas mandado otro pedo
+cuando sacaste cosas, porque cada vez que revisas me salta un pedo nuevo". Las dieciséis observaciones se
+verificaron **una por una contra el árbol**: **8 reales, 7 exageradas o dadas vuelta, 1 falsa**. Lo que salió:
+
+- **El token del aparato se podía BAJAR, y eso la auditoría sólo lo vio a medias.** Marcó que PROPFIND de WebDAV
+  no chequea `isProtectedPath` —cierto, pero PROPFIND devuelve propiedades, no cuerpo—. Lo grave estaba al lado:
+  `handleDownload` miraba **sólo el último segmento** de la ruta, así que `/download?path=/.crosspoint/server.json`
+  daba `server.json`, que no empieza con punto, y contestaba 200 con el token en claro. Igual `wifi.json` y
+  `device.log`. Y en la ws397 ese servidor se levanta sobre el punto de acceso **abierto** de "clave por el
+  teléfono": alcanzaba con estar cerca. Arreglado en 1.5.85 con `isProtectedItemPath()` (todos los segmentos) y la
+  comprobación de WebDAV movida al despacho.
+- **CI estaba muerto, no incompleto**: el disparador era `push` a `master` y **`master` no existe en el remoto**.
+  Nunca corrió. Ahora corre en `ws397`, compila las seis placas, y suma las cuatro pruebas de escritorio que
+  existían hace versiones sin que las corriera nadie, más el `tsc` del servidor.
+- Vinculación con `crypto.randomInt` y freno de intentos; registro con freno **antes** del Argon2; SSRF
+  (`::ffff:127.0.0.1` pasaba derecho) con prueba propia en `./test/ssrf/run.sh`; y tope de cuerpo por ruta.
+
+Y la caza de huérfanos —la parte que el usuario pidió— encontró **dos cosas mías, del mismo tipo que el
+`/api/log`**:
+
+- **`blobCache` y `loadBlob` los borró el commit de las fotos (1.5.74) creyendo que eran de las fotos**, y los
+  compartía la vista previa de los adjuntos de **Viajes**. Desde entonces tocar un papel de un viaje en `/board`
+  tiraba `ReferenceError` y **no mostraba nada ni avisaba**: la excepción cae adentro de una promesa sin await, o
+  sea fuera del `try` del handler, así que ni siquiera se veía como error. `node --check` pasaba igual. Restaurados.
+- **Las tarjetas se seguían mandando.** `CARDS_IN_PACK = false` (1.5.65) apagó la GENERACIÓN, pero el manifiesto
+  se sirve desde el índice **persistido**, así que un servidor que ya las había armado las anunciaba para siempre:
+  en el aparato del usuario eso eran **787 archivos** en el manifiesto. Ahora `loadIndex()` poda las entradas de
+  tipo `cards`.
+- **"Menú de pulsación larga" estaba escondido con una premisa que había dejado de ser cierta.** Se escondió en
+  1.5.38 porque con OK = confirm + power la rama no se disparaba nunca; en 1.5.47 el encendido pasó al PMIC y en
+  1.5.49 se sacó el `if (WS397) return 0;`. O sea que desde 1.5.49 la rama funciona **pero el ajuste que la
+  enciende estaba escondido**, y esconder una fila acá no es sólo sacarla del menú: `toJson`/`fromJson` y el
+  `/api/settings` del aparato recorren la MISMA `getSettingsList()`, así que el campo queda clavado en su default
+  para siempre. El marcador por OK mantenido era inalcanzable y CLAUDE.md decía que "ahora manda el ajuste de
+  siempre". Decía mal. Vuelve a estar.
+
+**Regla que sale de esto**: esconder una fila de `getSettingsList()` en una placa **también** le saca la clave al
+archivo de ajustes y al `/api/settings`. El campo queda en el default del struct y no hay puerta para moverlo. Por
+eso cada entrada de esa lista tiene que decir por qué el default es el valor correcto — y hay que volver a mirarla
+cuando cambia el motivo.
 
 ## Roadmap acordado
 

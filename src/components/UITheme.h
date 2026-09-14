@@ -30,7 +30,7 @@ class UITheme {
                                       EpdFontFamily::Style style = EpdFontFamily::REGULAR,
                                       TextVerticalAlignment verticalAlignment = TextVerticalAlignment::CENTER);
   void reload();
-  // Qué tema corresponde: en la ws397 sale de `uiThemeWs397`, en el resto del
+  // Qué tema corresponde: en la ws397 es Diario fijo, en el resto del
   // `uiTheme` de siempre.
   static CrossPointSettings::UI_THEME wantedTheme();
   void setTheme(CrossPointSettings::UI_THEME type);

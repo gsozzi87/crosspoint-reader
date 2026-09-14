@@ -1,7 +1,6 @@
 #include "UITheme.h"
 #include <BoardConfig.h>
 
-#include "components/themes/bento/BentoTheme.h"
 #include "components/themes/diario/DiarioTheme.h"
 
 #include <FsHelpers.h>
@@ -24,22 +23,14 @@ UITheme UITheme::instance;
 
 UITheme::UITheme() { setTheme(wantedTheme()); }
 
-// En la ws397 el tema sale de SU propio ajuste, que ofrece sólo los dos que
-// tiene el producto (Diario y Lyra). No se puede hacer con el enum de siempre:
-// lo que se persiste ahí es el NÚMERO y `SettingInfo::Enum` mapea índice a
-// valor uno a uno, así que una lista de dos entradas dejaría fuera de rango
-// justamente a Diario. Renumerar el enum tampoco: le cambiaría el tema a quien
-// ya eligió en las otras placas.
+// El resto de las placas sigue con el selector de cuatro de siempre sobre
+// `uiTheme`; acá no se toca nada de eso.
 CrossPointSettings::UI_THEME UITheme::wantedTheme() {
-  if (!BoardConfig::isWS397()) return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
-  switch (SETTINGS.uiThemeWs397) {
-    case 1:
-      return CrossPointSettings::UI_THEME::BENTO;
-    case 2:
-      return CrossPointSettings::UI_THEME::LYRA;
-    default:
-      return CrossPointSettings::UI_THEME::DIARIO;
-  }
+  // La ws397 tiene UN tema y no se elige: Diario. Es fijo acá y no en el valor
+  // guardado a propósito, para que el aparato que venía con Bento o con Lyra
+  // puestos en la tarjeta también pase a Diario sin migrar nada.
+  if (BoardConfig::isWS397()) return CrossPointSettings::UI_THEME::DIARIO;
+  return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
 }
 
 void UITheme::reload() { setTheme(wantedTheme()); }
@@ -65,11 +56,6 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using Diario theme");
       currentTheme = std::make_unique<DiarioTheme>();
       currentMetrics = &DiarioMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::BENTO:
-      LOG_DBG("UI", "Using Bento theme");
-      currentTheme = std::make_unique<BentoTheme>();
-      currentMetrics = &BentoMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");

@@ -1100,6 +1100,28 @@ async function attachmentSheet(t, id, ctx) {
   });
 }
 
+// Las imágenes se bajan con fetch + Authorization y se muestran como blob: el
+// token nunca va en una URL.
+//
+// Esto NO era de las fotos. El commit que las sacó (1.5.74) se llevó puestos
+// `blobCache` y `loadBlob` creyendo que sí, y desde entonces la vista previa de
+// los papeles de un viaje tiraba `ReferenceError: blobCache is not defined`. No
+// se veía como un error: la excepción cae adentro de una promesa sin await, o
+// sea fuera del try del handler, así que tocar un adjunto simplemente no hacía
+// nada. Es el mismo descuido que borró la ruta /api/log en ese mismo commit.
+const blobCache = {};
+
+async function loadBlob(url, key) {
+  if (blobCache[key] === "loading") return;
+  blobCache[key] = "loading";
+  try {
+    const r = await fetch(url, { headers: authHeaders(), credentials: "same-origin" });
+    if (!r.ok) throw new Error("http " + r.status);
+    blobCache[key] = URL.createObjectURL(await r.blob());
+    qsa(document, "img[data-blob='" + key + "']").forEach((img) => { img.src = blobCache[key]; });
+  } catch (e) { delete blobCache[key]; }
+}
+
 function attSrc(id, page, key) {
   if (blobCache[key] && blobCache[key] !== "loading") return blobCache[key];
   loadBlob("/api/attachment/preview?id=" + encodeURIComponent(id) + "&page=" + page, key);

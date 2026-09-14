@@ -499,19 +499,14 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                            [](const SettingInfo& s) { return s.nameId == StrId::STR_SHOW_READER_MENU; }),
             v.end());
   }
-  // En la ws397 OK es confirm + power compartidos: mantenerlo apaga el aparato, así que
-  // la acción de "OK largo" no se dispara nunca (EpubReaderActivity la deja apagada) y
-  // esta placa tampoco tiene Home key para la ruta alternativa. Se esconde el ajuste en
-  // vez de ofrecer algo que no hace nada.
+  // Filas que en la ws397 no tienen nada que ofrecer. OJO con esta lista: esconder
+  // una fila acá no es sólo sacarla del menú. `CrossPointSettings::toJson`/`fromJson`
+  // y el `/api/settings` del servidor web del aparato recorren ESTA MISMA función,
+  // así que la clave tampoco se guarda, no se lee del archivo y no se puede tocar
+  // desde ningún lado: el campo queda clavado en el default del struct para siempre.
+  // Por eso cada entrada de abajo tiene que decir POR QUÉ el default es el valor
+  // correcto, y por eso hay que revisarla cuando cambia el motivo.
   if (BoardConfig::ACTIVE.board == BoardConfig::Board::WS397) {
-    // El selector de interfaz es otro acá: Diario, Bento y Lyra, que son los tres
-    // temas del producto. Clásico, Lyra Extendido y RoundedRaff no se ofrecen.
-    auto theme = std::find_if(v.begin(), v.end(), [](const SettingInfo& s) { return s.nameId == StrId::STR_UI_THEME; });
-    if (theme != v.end()) {
-      *theme = SettingInfo::Enum(StrId::STR_UI_THEME, &CrossPointSettings::uiThemeWs397,
-                                 {StrId::STR_THEME_DIARIO, StrId::STR_THEME_BENTO, StrId::STR_THEME_LYRA}, "uiThemeWs397",
-                                 StrId::STR_CAT_DISPLAY);
-    }
     v.erase(std::remove_if(v.begin(), v.end(),
                            [](const SettingInfo& s) {
                              // "Tiempo para dormir" tampoco: en esta placa el reposo y el
@@ -532,13 +527,35 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                              // encendido es apagar el camino asíncrono
                              // (`supportsAsyncRefresh()` es `!fadingFix && …`) y sumarle
                              // ~160 ms a CADA página. Costo sin beneficio: se esconde.
-                             return s.nameId == StrId::STR_LONG_PRESS_MENU ||
-                                    s.nameId == StrId::STR_TIME_TO_SLEEP ||
+                             // "Menú de pulsación larga" ESTUVO acá desde 1.5.38 y se sacó
+                             // de la lista en 1.5.86, porque su motivo había dejado de ser
+                             // cierto: se escondió cuando OK era confirm + power compartidos
+                             // y el SDK no levantaba el bit de Confirm mientras la tecla
+                             // estaba abajo, así que la rama no se disparaba nunca. En 1.5.47
+                             // el encendido pasó al PMIC y la placa cambió a
+                             // `InputStyle::DigitalButtons`, y en 1.5.49 se sacó el
+                             // `if (WS397) return 0;` de `confirmLongPressThreshold()`. O sea
+                             // que desde 1.5.49 la rama funciona pero el ajuste que la
+                             // enciende estaba escondido y clavado en LP_MENU_DISABLED: el
+                             // marcador por OK mantenido era inalcanzable, y CLAUDE.md decía
+                             // que "ahora manda el ajuste de siempre". Decía mal.
+                             return s.nameId == StrId::STR_TIME_TO_SLEEP ||
                                     s.nameId == StrId::STR_SLEEP_SCREEN ||
                                     s.nameId == StrId::STR_SLEEP_COVER_MODE ||
                                     s.nameId == StrId::STR_SLEEP_COVER_FILTER ||
                                     s.nameId == StrId::STR_QUICK_RESUME_TIMEOUT ||
-                                    s.nameId == StrId::STR_SUNLIGHT_FADING_FIX;
+                                    s.nameId == StrId::STR_SUNLIGHT_FADING_FIX ||
+                                    // Y el selector de interfaz: la ws397 tiene UN tema, Diario.
+                                    // Hubo tres (Diario, Bento, Lyra) y elegir no servía de nada:
+                                    // `listui` sólo miraba las cuatro CARAS del tema, así que entre
+                                    // Bento y Lyra la única diferencia era el renglón de detalle.
+                                    // Eso se arregló en 1.5.82 —ahora también manda la forma— pero
+                                    // la conclusión del usuario fue la correcta igual: tres temas
+                                    // son tres cosas que mantener y probar para que el aparato se
+                                    // vea de tres maneras parecidas. `UITheme::wantedTheme()`
+                                    // devuelve Diario fijo en esta placa, así que la fila no tenía
+                                    // nada que ofrecer.
+                                    s.nameId == StrId::STR_UI_THEME;
                            }),
             v.end());
   }

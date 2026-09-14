@@ -360,11 +360,9 @@ void SettingsActivity::onExit() {
 void SettingsActivity::applyUiSettingChange(uint8_t CrossPointSettings::* valuePtr) {
   // Theme changes take effect immediately, on this screen — reload the theme
   // and re-derive the app's tokens so the very next repaint is in the new look.
-  // En la ws397 el selector es otro campo (`uiThemeWs397`, con las dos
-  // opciones del producto). Sin esta segunda comparación el tema cambiaba
-  // igual, pero recién en el arranque siguiente: desde Ajustes no pasaba nada
-  // y parecía que el ajuste no hacía nada.
-  if (valuePtr != &CrossPointSettings::uiTheme && valuePtr != &CrossPointSettings::uiThemeWs397) {
+  // La ws397 ya no tiene selector de tema (Diario fijo), así que acá queda el
+  // de siempre, que es el de las otras placas.
+  if (valuePtr != &CrossPointSettings::uiTheme) {
     return;
   }
   UITheme::getInstance().reload();
