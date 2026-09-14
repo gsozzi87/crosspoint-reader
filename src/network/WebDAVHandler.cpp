@@ -117,6 +117,18 @@ void WebDAVHandler::raw(WebServer& server, const String& uri, HTTPRaw& raw) {
 
 bool WebDAVHandler::handle(WebServer& server, HTTPMethod method, const String& uri) {
   (void)uri;
+  // La comprobación va UNA vez, acá, y no repartida por método: PROPFIND, LOCK
+  // y UNLOCK no la tenían, así que un PROPFIND a /.crosspoint listaba el token,
+  // las credenciales WiFi y el log con sus tamaños. Puesta en el despacho, el
+  // método que se agregue mañana nace tapado.
+  // OPTIONS se exceptúa porque no mira la ruta y sin él no monta ningún cliente.
+  if (method != HTTP_OPTIONS) {
+    if (isProtectedPath(getRequestPath(server)) ||
+        ((method == HTTP_MOVE || method == HTTP_COPY) && isProtectedPath(getDestinationPath(server)))) {
+      server.send(403, "text/plain", "Forbidden");
+      return true;
+    }
+  }
   switch (method) {
     case HTTP_OPTIONS:
       handleOptions(server);

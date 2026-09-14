@@ -30,7 +30,7 @@ import { readBarcodes, prepareZXingModule } from "zxing-wasm/reader";
 import { attachmentsDir, mutateDoc, readDoc, writeBytesAtomic } from "./fsjson";
 import { accountOf, type AppEnv } from "./tenant";
 import { bmpToPng, toDeviceBmp } from "./deviceBmp";
-import { readBody } from "./net";
+import { limitBody, readBody } from "./net";
 
 // Los bitmaps son archivos: cada cuenta tiene su directorio (la 1, la que ya
 // estaba andando, se queda en /data/attachments). El índice es un documento.
@@ -835,7 +835,7 @@ attachmentApi.post("/delete", async (c) => {
 // vea en el teléfono antes de salir de casa.
 export const boardAttachment = new Hono<AppEnv>();
 
-boardAttachment.post("/", async (c) => {
+boardAttachment.post("/", limitBody(MAX_UPLOAD_BYTES), async (c) => {
   let name = (c.req.query("name") ?? "").toString().slice(0, 120);
   const tripId = (c.req.query("trip") ?? "").toString().replace(/[^a-z0-9]/gi, "").slice(0, 24) || undefined;
   let mime = c.req.header("content-type") ?? "";

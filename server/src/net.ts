@@ -7,25 +7,69 @@
 // el Bearer puesto o llega a los vecinos del proyecto, así que toda URL pasa
 // por el mismo control y todo cuerpo remoto se limpia antes de mostrarse.
 import type { Context } from "hono";
+import { bodyLimit } from "hono/body-limit";
+
+// Tope de cuerpo POR RUTA, puesto ANTES del handler.
+//
+// Antes cada ruta hacía `await c.req.arrayBuffer()` y recién después miraba el
+// tamaño: o sea que para decir "es muy grande" ya se había reservado todo. Con
+// `Content-Length` —que es lo que manda siempre el aparato— esto rechaza sin
+// leer un solo byte; sin él (chunked) lee por bloques y corta apenas se pasa.
+// El contenedor de Railway tiene 512 MB y ahí adentro también viven Piper y el
+// masticado de noticias: un solo pedido grande se lleva puesto todo.
+export function limitBody(bytes: number) {
+  return bodyLimit({
+    maxSize: bytes,
+    onError: (c) =>
+      c.json({ ok: false, error: "el archivo es demasiado grande", code: "too_large" }, 413),
+  });
+}
 
 export type UrlCheck = { ok: true; url: URL } | { ok: false; error: string };
 
 // Hosts que no se pueden pedir desde afuera: si el usuario los pone, o es un
 // error o es alguien buscando la red interna.
+// IPv4 escondido adentro de una dirección IPv6. `new URL()` normaliza
+// `::ffff:127.0.0.1` a la forma hexa `::ffff:7f00:1`, así que hay que
+// desarmar las dos: sin esto, `http://[::ffff:127.0.0.1]/` entraba derecho
+// porque no matcheaba NINGUNA de las reglas de abajo (ni el regex de IPv4,
+// que exige cuatro grupos decimales, ni los de IPv6 privadas).
+function unwrapMappedV4(h: string): string | null {
+  const dotted = /^(?:0*:)*:?ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(h);
+  if (dotted) return dotted[1]!;
+  const hex = /^(?:0*:)*:?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h);
+  if (!hex) return null;
+  const hi = parseInt(hex[1]!, 16);
+  const lo = parseInt(hex[2]!, 16);
+  return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+}
+
 function isPrivateHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  let h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   if (h === "localhost" || h.endsWith(".localhost")) return true;
   if (h.endsWith(".internal") || h.endsWith(".local")) return true;
   if (h === "::1" || h === "::") return true;
   if (/^f[cd][0-9a-f]{2}:/.test(h)) return true;                    // IPv6 privadas (ULA)
   if (/^fe80:/.test(h)) return true;                                // IPv6 link-local
+  if (/^64:ff9b:/.test(h)) return true;                             // NAT64
+  const mapped = unwrapMappedV4(h);
+  if (mapped) h = mapped;
   const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (!m) return false;
+  if (!m) {
+    // Cualquier OTRA cosa con dos puntos es una IPv6 literal que no supimos
+    // clasificar. Se cierra por omisión: una IPv6 que no reconocemos no tiene
+    // por qué ser pública, y ningún feed de verdad se pide por IPv6 literal.
+    return h.includes(":");
+  }
   const a = Number(m[1]), b = Number(m[2]);
   if (a === 0 || a === 127 || a === 10) return true;
   if (a === 192 && b === 168) return true;
+  if (a === 192 && b === 0) return true;                            // 192.0.0.0/24, protocolos
   if (a === 169 && b === 254) return true;                          // metadatos de la nube
   if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true;                // CGNAT, la red interna de Railway
+  if (a === 198 && (b === 18 || b === 19)) return true;             // pruebas de red
+  if (a >= 224) return true;                                        // multicast (224/4) y reservado (240/4)
   return false;
 }
 

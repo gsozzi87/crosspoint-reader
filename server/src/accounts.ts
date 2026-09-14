@@ -16,6 +16,7 @@
 //   POST /api/account/pair  (con sesión)  { code, name }       -> { deviceId }
 //   GET  /api/pair/status   (Bearer del aparato)               -> { paired, account }
 import { Hono } from "hono";
+import { randomInt } from "node:crypto";
 import { readBody } from "./net";
 import { readJsonSafe, legacyFile, DOC_NAMES } from "./fsjson";
 import { DEFAULT_ACCOUNT, db, multiUser, num, sha256Hex } from "./db";
@@ -162,6 +163,12 @@ export async function seedFromFiles(): Promise<void> {
 const WINDOW_MS = 15 * 60_000;
 const MAX_PER_EMAIL = 10;
 const MAX_PER_IP = 40;
+// Altas de cuenta por IP. Bajo a propósito: registrarse es algo que se hace una
+// vez, y cada intento paga un Argon2 entero (un núcleo clavado por pedido).
+const MAX_REGISTER_PER_IP = 5;
+// Canjes de código de vinculación. Seis dígitos son un millón de combinaciones y
+// el código vive diez minutos: sin freno, alguien que empuja fuerte llega.
+const MAX_PAIR_PER_IP = 20;
 const attempts = new Map<string, { n: number; until: number }>();
 
 function hit(key: string, max: number): boolean {
@@ -212,6 +219,12 @@ auth.post("/register", async (c) => {
   // quiere que se sume nadie más. Abierto por omisión, que es como venía.
   if (REGISTER_CLOSED) {
     return c.json({ ok: false, error: "este servidor no acepta cuentas nuevas", code: "register_closed" }, 403);
+  }
+  // ANTES del hash: el costo de Argon2 es justamente el arma. Cubeta propia
+  // (`rg:`) y no la del login, porque `forget(\`ip:…\`)` la limpia en cada
+  // entrada correcta y eso le devolvería los intentos a quien registra.
+  if (!hit(`rg:${ipOf(c)}`, MAX_REGISTER_PER_IP)) {
+    return c.json({ ok: false, error: "demasiados intentos, espera unos minutos", code: "rate_limited" }, 429);
   }
 
   const count = (await db()`SELECT count(*)::int AS n FROM accounts`) as { n: number }[];
@@ -288,8 +301,11 @@ auth.get("/me", async (c) => {
 
 // ─────────────────────────────────────────────────────── vinculación
 
+// CSPRNG y no Math.random(): el código es la única credencial que hay entre un
+// aparato sin dueño y una cuenta. `randomInt` tiene el máximo exclusivo, así que
+// el rango es el mismo de antes (100000-999999) y sin sesgo modular.
 function sixDigits(): string {
-  return String(100_000 + Math.floor(Math.random() * 900_000));
+  return randomInt(100_000, 1_000_000).toString();
 }
 
 async function dropExpired(): Promise<void> {
@@ -396,6 +412,9 @@ accountApi.post("/pair", async (c) => {
   const code = (b.code ?? "").toString().replace(/\D/g, "").slice(0, 6);
   const name = cleanName(b.name);
   if (code.length !== 6) return c.json({ ok: false, error: "el código son 6 dígitos", code: "bad_code" }, 400);
+  if (!hit(`pr:${ipOf(c)}`, MAX_PAIR_PER_IP)) {
+    return c.json({ ok: false, error: "demasiados intentos, espera unos minutos", code: "rate_limited" }, 429);
+  }
   await dropExpired();
   const rows = (await db()`SELECT device_id, token_hash FROM pairings WHERE code = ${code}`) as any[];
   if (!rows.length) return c.json({ ok: false, error: "ese código no existe o venció", code: "not_found" }, 404);

@@ -27,7 +27,7 @@ import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from 
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
 import { sourcesLine } from "./websearch";
-import { redactSecrets } from "./net";
+import { limitBody, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { accountOf, type AppEnv } from "./tenant";
 
@@ -353,7 +353,7 @@ async function execute(acc: number, parsed: Parsed, spoken: string, lang: Lang) 
   return saved;
 }
 
-voice.post("/", async (c) => {
+voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
   const speak = c.req.query("speak") ?? "short";  // none | short | all (ajuste del aparato)

@@ -14,7 +14,7 @@ import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from ".
 import { synthesize } from "./tts";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 import { chatText, LlmError } from "./llm";
-import { redactSecrets } from "./net";
+import { limitBody, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 export const translate = new Hono();
@@ -27,7 +27,7 @@ function framed(json: object, audio: Uint8Array | null): Response {
   return new Response(body, { headers: { "Content-Type": "application/x-ws397-voice", "Content-Length": String(body.length) } });
 }
 
-translate.post("/", async (c) => {
+translate.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const from = normalizeLang(c.req.query("from"));
   const to = normalizeLang(c.req.query("to"));
   let text: string;

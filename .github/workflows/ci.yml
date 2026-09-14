@@ -2,7 +2,9 @@ name: CI (build)
 
 on:
   push:
-    branches: [master]
+    # `ws397` es la rama por defecto de este fork y la que se publica por OTA:
+    # sin ella acá, CI no miraba NADA de lo que se sube al aparato.
+    branches: [master, ws397]
   pull_request:
 
 permissions:
@@ -89,6 +91,12 @@ jobs:
             asset: firmware-x4pro.bin
           - env: papermono
             asset: firmware-papermono.bin
+          # La placa de este fork. Es la única que se prueba en hardware, así que
+          # es justo la que no puede quedar sin compilar en CI.
+          - env: ws397
+            asset: firmware-ws397.bin
+          - env: x4c
+            asset: firmware-x4c.bin
     steps:
       - uses: actions/checkout@v6
         with:
@@ -123,6 +131,12 @@ jobs:
           restore-keys: pio-${{ runner.os }}-
 
       - name: Build ${{ matrix.env }} firmware
+        # El env ws397 pide ${sysenv.WS397_OTA_URL}. Sin la variable, PlatformIO
+        # la sustituye por vacío y el .bin compila igual pero queda sin OTA: sirve
+        # para saber si compila, no para flashearlo. Con la variable puesta en el
+        # repositorio, el artefacto de CI es el bueno.
+        env:
+          WS397_OTA_URL: ${{ vars.WS397_OTA_URL }}
         run: |
           set -euo pipefail
           pio run -e ${{ matrix.env }} | tee pio.log
@@ -174,6 +188,62 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build/test --output-on-failure -j
 
+  # Las pruebas de escritorio de la ws397: lógica pura que corre sin aparato y
+  # sin red (el cajón de Lua, la cuenta del diario de batería, el reparto de
+  # titulares y quién queda de administrador al registrarse). Existían desde
+  # hace versiones y NUNCA las corría nadie más que a mano.
+  ws397-tests:
+    name: ws397 desktop tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install server deps
+        working-directory: server
+        run: bun install --frozen-lockfile
+
+      - name: Cajón de Lua
+        run: ./test/lua_sandbox/run.sh
+
+      - name: Diario de batería
+        run: ./test/battery_drain/run.sh
+
+      - name: Paquete de noticias
+        run: ./test/news_pack/run.sh
+
+      - name: Quién queda de administrador
+        run: ./test/register_admin/run.sh
+
+      - name: Filtro de URLs (SSRF)
+        run: ./test/ssrf/run.sh
+
+  # El servidor: que compile de tipos y que el lockfile esté al día. Con
+  # --frozen-lockfile, un package.json tocado sin actualizar el lock falla acá
+  # y no en el deploy de Railway.
+  server:
+    name: Server typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        working-directory: server
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: server
+        run: bunx tsc --noEmit
+
   # This job is used as the PR required actions check, allows for changes to other steps in the future without breaking
   # PR requirements.
   test-status:
@@ -183,6 +253,8 @@ jobs:
       - clang-format
       - cppcheck
       - unit-tests
+      - ws397-tests
+      - server
     if: always()
     runs-on: ubuntu-latest
     steps:

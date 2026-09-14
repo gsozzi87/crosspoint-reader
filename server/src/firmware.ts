@@ -3,6 +3,7 @@
 // el asset firmware-ws397.bin. release.sh / release.ps1 suben el binario con
 // PUT /firmware (Bearer OTA_TOKEN, header X-Version). Todo vive en el volumen.
 import { Hono } from "hono";
+import { limitBody } from "./net";
 import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 
@@ -55,7 +56,7 @@ firmware.get(`/${ASSET}`, async (c) => {
   }
 });
 
-firmware.put("/", async (c) => {
+firmware.put("/", limitBody(32 * 1024 * 1024), async (c) => {
   const auth = c.req.header("authorization") ?? "";
   const token = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   if (!TOKEN || token !== TOKEN) return c.json({ ok: false, error: "unauthorized" }, 401);

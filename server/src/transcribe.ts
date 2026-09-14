@@ -26,7 +26,7 @@ import { Hono } from "hono";
 import { normalizeLang, type Lang } from "./lang";
 import { decodeAdpcm, TARGET_RATE } from "./tts";
 import { config } from "./config";
-import { checkUrl, redactSecrets } from "./net";
+import { checkUrl, limitBody, redactSecrets } from "./net";
 
 // El servicio de transcripción se elige desde /board -> Ajustes (Groq es gratis
 // y el más rápido); las variables de entorno quedan como valor por defecto.
@@ -308,7 +308,7 @@ export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Prom
   return text;
 }
 
-transcribe.post("/", async (c) => {
+transcribe.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   try {
     const body = toWav(await c.req.arrayBuffer(), c.req.header("content-type"));

@@ -82,6 +82,34 @@ bool isProtectedItemName(const String& name) {
   }
   return false;
 }
+
+// Lo mismo pero sobre la RUTA ENTERA, segmento por segmento.
+//
+// Mirar sólo el último nombre era un agujero de verdad, no un detalle:
+// `/download?path=/.crosspoint/server.json` daba `server.json`, que no empieza
+// con punto y no está en HIDDEN_ITEMS, así que el servidor entregaba el TOKEN
+// del aparato en claro. Al lado hay `wifi.json` (claves ofuscadas, reversibles
+// con el código de este repo) y `device.log`, que lleva los nombres de las redes
+// y todo lo que se dictó por voz.
+// Y no es una red de confianza: en la ws397 este mismo servidor se levanta sobre
+// un punto de acceso ABIERTO cuando se carga la clave del WiFi desde el teléfono
+// (`WifiSelectionActivity`, `softAP(..., nullptr, ...)`), así que alcanzaba con
+// estar cerca. `WebDAVHandler::isProtectedPath` ya recorría todos los segmentos;
+// esto es la misma regla para el servidor web.
+bool isProtectedItemPath(const String& path) {
+  int start = 0;
+  while (start < static_cast<int>(path.length())) {
+    if (path.charAt(start) == '/') {
+      ++start;
+      continue;
+    }
+    int end = path.indexOf('/', start);
+    if (end == -1) end = path.length();
+    if (isProtectedItemName(path.substring(start, end))) return true;
+    start = end + 1;
+  }
+  return false;
+}
 }  // namespace
 
 // File listing page template - now using generated headers:
@@ -508,6 +536,14 @@ void CrossPointWebServer::handleFileListData() const {
     }
   }
 
+  // El listado filtra los hijos ocultos, pero no miraba la carpeta PEDIDA: un
+  // `/api/files?path=/.crosspoint` listaba adentro igual. Se contesta 403 y no
+  // una lista vacía, para que la página pueda decir algo en vez de mentir.
+  if (isProtectedItemPath(currentPath)) {
+    server->send(403, "application/json", "[]");
+    return;
+  }
+
   server->setContentLength(CONTENT_LENGTH_UNKNOWN);
   server->send(200, "application/json", "");
   server->sendContent("[");
@@ -558,16 +594,9 @@ void CrossPointWebServer::handleDownload() const {
     itemPath = "/" + itemPath;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (itemName.startsWith(".")) {
+  if (isProtectedItemPath(itemPath)) {
     server->send(403, "text/plain", "Cannot access system files");
     return;
-  }
-  for (const auto* item : HIDDEN_ITEMS) {
-    if (itemName.equals(item)) {
-      server->send(403, "text/plain", "Cannot access protected items");
-      return;
-    }
   }
 
   if (!Storage.exists(itemPath.c_str())) {
@@ -882,11 +911,11 @@ void CrossPointWebServer::handleRename() const {
     return;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  if (isProtectedItemPath(itemPath)) {
     server->send(403, "text/plain", "Cannot rename protected item");
     return;
   }
+  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
   if (newName == itemName) {
     server->send(200, "text/plain", "Name unchanged");
     return;
@@ -955,17 +984,14 @@ void CrossPointWebServer::handleMove() const {
     return;
   }
 
-  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (isProtectedItemName(itemName)) {
+  if (isProtectedItemPath(itemPath)) {
     server->send(403, "text/plain", "Cannot move protected item");
     return;
   }
-  if (destPath != "/") {
-    const String destName = destPath.substring(destPath.lastIndexOf('/') + 1);
-    if (isProtectedItemName(destName)) {
-      server->send(403, "text/plain", "Cannot move into protected folder");
-      return;
-    }
+  const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
+  if (destPath != "/" && isProtectedItemPath(destPath)) {
+    server->send(403, "text/plain", "Cannot move into protected folder");
+    return;
   }
 
   if (!Storage.exists(itemPath.c_str())) {
@@ -1086,26 +1112,10 @@ void CrossPointWebServer::handleDelete() const {
       itemPath = "/" + itemPath;
     }
 
-    // Security check: prevent deletion of protected items
-    const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-
-    // Hidden/system files are protected
-    if (itemName.startsWith(".")) {
+    // Security check: prevent deletion of protected items. Por ruta entera: con
+    // el último nombre solo, `/.crosspoint/server.json` pasaba el filtro.
+    if (isProtectedItemPath(itemPath)) {
       failedItems += itemPath + " (hidden/system file); ";
-      allSuccess = false;
-      continue;
-    }
-
-    // Check against explicitly protected items
-    bool isProtected = false;
-    for (const auto* item : HIDDEN_ITEMS) {
-      if (itemName.equals(item)) {
-        isProtected = true;
-        break;
-      }
-    }
-    if (isProtected) {
-      failedItems += itemPath + " (protected file); ";
       allSuccess = false;
       continue;
     }
