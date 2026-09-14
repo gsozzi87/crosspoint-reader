@@ -42,6 +42,13 @@ void formatDuration(char* out, const size_t outSize, const unsigned long ms) {
 }
 
 uint32_t absDiff(const uint32_t a, const uint32_t b) { return a > b ? a - b : b - a; }
+
+// El cabezal de esta pantalla se dibuja a mano (título UI_14 + regla), así que
+// su pie NO es `listui::contentTop()`, que sale del tema. Las dos cuentas que
+// dependen de él —el recorte al pintar y el tope del desplazamiento— tienen
+// que salir de la misma función o la última fila queda inalcanzable.
+int tituloBaseY(const GfxRenderer& r) { return listui::SIDE + r.getTextHeight(UI_14_FONT_ID) + listui::GAP; }
+int viewTopY(const GfxRenderer& r) { return tituloBaseY(r) + 1 + listui::GAP; }
 }  // namespace
 
 TaskStatsActivity::Snapshot TaskStatsActivity::take() {
@@ -103,7 +110,7 @@ void TaskStatsActivity::loop() {
 
   // La palanca corre la pantalla. Se hace antes del repintado automático para
   // que un movimiento se vea al toque y no después de los dos segundos.
-  const int maxScroll = std::max(0, contentH - (listui::contentBottom(renderer) - listui::contentTop()));
+  const int maxScroll = std::max(0, contentH - (listui::contentBottom(renderer) - viewTopY(renderer)));
   if (mappedInput.wasPressed(MappedInputManager::Button::Down) && scroll < maxScroll) {
     scroll = std::min(maxScroll, scroll + SCROLL_STEP);
     requestUpdate();
@@ -131,7 +138,11 @@ void TaskStatsActivity::render(RenderLock&&) {
   // botones no se dibuja (si se dibujara igual, GfxRenderer lo contaría como
   // píxeles fuera de pantalla y además taparía los botones, que es justo el
   // bug que esto arregla).
-  const int viewTop = listui::contentTop();
+  // El tope del área útil es el pie REAL del cabezal de esta pantalla (que se
+  // dibuja a mano, no con el del tema), no `listui::contentTop()`: si los dos
+  // no coinciden, la primera fila visible se dibuja por encima del título.
+  const int tituloBase = tituloBaseY(renderer);
+  const int viewTop = viewTopY(renderer);
   const int viewBottom = listui::contentBottom(renderer);
   const auto visible = [&](const int docY, const int height) {
     const int screenY = docY - scroll;
@@ -155,10 +166,11 @@ void TaskStatsActivity::render(RenderLock&&) {
 
   renderer.clearScreen();
 
-  const int hUi14 = renderer.getTextHeight(UI_14_FONT_ID);
-  renderer.drawText(UI_14_FONT_ID, x, listui::SIDE, tr(STR_MEMORY_TITLE), true, EpdFontFamily::BOLD);
-  renderer.fillRect(x, listui::SIDE + hUi14 + listui::GAP, w, 1, true);
-  int y = listui::SIDE + hUi14 + listui::GAP + 1 + listui::GAP;
+  // El cabezal se dibuja DESPUÉS del contenido (abajo del todo). `visible()`
+  // deja pasar la fila que cruza el borde —tiene que hacerlo, o la lista
+  // parpadearía de a saltos—, así que esa fila sobresale por arriba; pintar el
+  // cabezal encima al final es lo que la corta limpio.
+  int y = viewTop;
 
   // --- Heap ---------------------------------------------------------------
   // La memoria interna es la que se acaba primero (el TLS y los buffers de I2S
@@ -276,8 +288,17 @@ void TaskStatsActivity::render(RenderLock&&) {
     }
   }
 
+  // Las dos bandas que el contenido desplazado no puede invadir: el cabezal
+  // arriba y la barra de botones abajo. Se tapan con blanco y recién ahí se
+  // dibuja lo que va en ellas.
+  const int anchoPantalla = renderer.getScreenWidth();
+  renderer.fillRect(0, 0, anchoPantalla, viewTop, false);
+  renderer.fillRect(0, viewBottom, anchoPantalla, renderer.getScreenHeight() - viewBottom, false);
+  renderer.drawText(UI_14_FONT_ID, x, listui::SIDE, tr(STR_MEMORY_TITLE), true, EpdFontFamily::BOLD);
+  renderer.fillRect(x, tituloBase, w, 1, true);
+
   // El alto total es lo que permite no pasarse del final al desplazar.
-  contentH = y - listui::contentTop();
+  contentH = y - viewTop;
 
   const bool hayMas = contentH > (viewBottom - viewTop);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", hayMas ? tr(STR_DIR_UP) : "",

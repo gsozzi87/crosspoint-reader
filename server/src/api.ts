@@ -133,3 +133,4 @@ api.route("/trip", tripApi);         // GET  /api/trip?id= y los POST de días, 
 api.route("/suggest", suggest);        // GET /api/suggest/day, /trip → sugerencias del día y del viaje (cacheadas, con tope diario)
 api.route("/attachment", attachmentApi);  // GET /api/attachment?id=&page= → el bitmap listo para pintar; /info → texto extraído
 api.route("/account", accountApi);  // POST /api/account/pair, /device/rename, /device/delete, /password (desde la web)
+api.route("/log", deviceLog);         // GET/POST/DELETE /api/log → el aparato sube su log; se lee en /board/log

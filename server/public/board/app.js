@@ -84,7 +84,12 @@ async function api(path, body, method) {
 async function apiText(path, method) {
   const r = await fetch(path, { method: method || "GET", headers: authHeaders(), credentials: "same-origin" });
   if (r.status === 401) throw new Error("no autorizado");
-  return r.text();
+  const t = await r.text();
+  // Sin esto, un 404 o un 500 se mostraban TAL CUAL en la caja del log: el
+  // cuerpo del error es JSON y terminaba pegado ahí como si fuera el log del
+  // aparato. Pasó de verdad, y por eso este chequeo no se saca.
+  if (!r.ok) throw new Error("el servidor contestó " + r.status);
+  return t;
 }
 
 async function loadState() {

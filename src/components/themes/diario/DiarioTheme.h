@@ -31,6 +31,9 @@ constexpr ThemeMetrics values = [] {
   v.headerUnderlineSize = 3;
   v.headerTitleAlign = 0;  // a la izquierda, siempre
   v.listTitleBold = false;
+  // Esquinas vivas: el lenguaje es impreso. Lyra trae 6 y acá no corresponde.
+  v.listRowRadius = 0;
+  v.listRowGap = 0;
   return v;
 }();
 }  // namespace DiarioMetrics

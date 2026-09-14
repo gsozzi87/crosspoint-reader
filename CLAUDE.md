@@ -779,6 +779,47 @@ cable. No se toca sin poder probar en hardware.
   del coordinador. **No se toca ninguna onda a ciegas**: equivocarse deja el vidrio peor y no hay forma de verlo
   desde la nube. El asíncrono no entra en la cuenta: ahí lo que tarda es el `waitRefreshComplete()` del lector.
 
+## Lo que el aparato encontró en 1.5.80 (arreglado en 1.5.82)
+
+- **`/api/log` no existía en el servidor desde 1.5.74, y por eso no había diagnóstico.** El commit que sacó las
+  fotos borró la línea `api.route("/log", deviceLog)` **entera**: el comentario de `/api/photos` había quedado
+  pegado al final de ESA línea, así que al sacar el comentario se fue la ruta con él. `deviceLog` seguía
+  importado y nadie lo montaba. Desde entonces `POST /api/log` daba 404 — un 4xx, o sea definitivo, o sea que
+  `ServerClient` lo **descartaba** en vez de encolarlo — y `GET /api/log` devolvía el JSON de `app.notFound()`,
+  que es lo que se veía en `/board/log` en lugar del log. La fecha calza exacto: la última subida buena es del
+  12 de septiembre con 1.5.69, el día anterior al commit. Moraleja: **un comentario al final de una línea de
+  ruta es una trampa**; van arriba.
+  De paso `apiText()` en `app.js` no miraba el estado: ahora un 404 o un 500 tira error en vez de pegar el
+  cuerpo del error adentro de la caja del log.
+- **El tema seguía sin mandar del todo: faltaba la FORMA.** En 1.5.77 se conectaron las cuatro CARAS a `listui`,
+  pero Bento ya declaraba además tarjetas redondeadas (`listRowRadius`), aire entre filas (`listRowGap`), título
+  en negrita (`listTitleBold`) y cabezal sin filete (`headerUnderlineSize = 0`) — y eso lo leía **sólo** la UI de
+  upstream (`freeink::ui`). O sea que en nuestras pantallas Bento quedaba en UI_12/UI_14/SMALL y Lyra en
+  UI_12/UI_14/UI_10: **la única diferencia entre los dos era el renglón de detalle**, invisible. Era el mismo
+  agujero de 1.5.77 una capa más abajo. Ahora `listui` lee los cuatro.
+  El aire se come **de adentro** del alto que da la pantalla, no del paso: así ninguna de las veinte pantallas
+  que llaman a `row()` tiene que cambiar su cuenta de posiciones.
+  `headerUnderlineSize` se usa como SÍ o NO y no como grosor: allá arriba es el filete del cabezal de pantalla, y
+  traerlo tal cual dejaría cada división de sección con una barra de 3 px, que a esta escala es una mancha.
+  Y Diario pasó a `listRowRadius = 0`: hereda de Lyra, que trae 6, y el lenguaje impreso va con esquinas vivas.
+- **Ajustes → Sistema → Memoria pintaba las filas encima del título.** `visible()` deja pasar la fila que cruza
+  el borde de arriba —tiene que hacerlo, o la lista saltaría de a bloques enteros—, así que esa fila sobresalía
+  sobre el cabezal. Ahora el cabezal se dibuja **al final**, sobre una banda tapada en blanco, y lo mismo abajo
+  con la barra de botones. Además el tope del área útil sale del pie REAL de ese cabezal (que esta pantalla
+  dibuja a mano) y no de `listui::contentTop()`, que sale del tema: los dos no coincidían, y el recorte y el
+  tope del desplazamiento tienen que salir de la misma cuenta o la última fila queda inalcanzable.
+
+### Lo que dijeron los números del panel (medidos en el aparato, 1.5.80)
+
+    FAST · 581 ms   (94 refrescos, máx 619)
+    HALF · 1788 ms  (5,  máx 1793)
+    FULL · 2190 ms  (5,  máx 2194)
+
+**La onda parcial NO es el problema**: 581 ms. El `display=2227ms` del log viejo era un **FULL**, no un parcial.
+O sea que la página lenta de 2,5 a 4,8 s no se arregla con una LUT propia — eso queda descartado — y lo que
+falta medir es el RENDER (`bw_render`, las dos pasadas de gris, `cleanup`), que es justamente lo que dice la
+línea `Page render:` del log… que no llegaba porque `/api/log` estaba caído. Primero el log, después el número.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

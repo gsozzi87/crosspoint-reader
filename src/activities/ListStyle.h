@@ -56,6 +56,25 @@ inline int datumFont() {
   return f != 0 ? f : SMALL_FONT_ID;
 }
 
+// Y la FORMA, no sólo las letras. Sin esto, Bento y Lyra se veían iguales en
+// nuestras pantallas: Bento ya declaraba tarjetas redondeadas, aire entre filas,
+// título en negrita y cabezal sin filete, pero eso lo leía solamente la UI de
+// upstream (`freeink::ui`), y `listui` —que es con lo que dibujan el hub, la
+// agenda, las notas, las noticias, la Biblia, los viajes y Memoria— miraba nada
+// más que las cuatro caras. Era el mismo agujero de 1.5.77, una capa más abajo.
+inline bool titleBold() { return UITheme::getInstance().getMetrics().listTitleBold; }
+// Aire entre filas. Con 0 las filas se tocan y la regla al pie es la que separa
+// (Diario, Lyra); con aire, cada fila es una tarjeta suelta (Bento).
+inline int rowGap() { return UITheme::getInstance().getMetrics().listRowGap; }
+inline int rowRadius() { return UITheme::getInstance().getMetrics().listRowRadius; }
+// ¿Este tema separa con reglas o con cajas? Se lee del `headerUnderlineSize`
+// del tema pero se usa como SÍ o NO, no como grosor: allá arriba ese número es
+// el filete del cabezal de pantalla, y traerlo tal cual dejaría cada división
+// de sección con una barra de 3 px, que a esta escala es una mancha. Acá la
+// regla sigue siendo de 1 px; lo que decide el tema es si la hay (Diario, Lyra)
+// o si no la hay porque las filas ya vienen en tarjetas (Bento).
+inline bool sectionUsesRule() { return UITheme::getInstance().getMetrics().headerUnderlineSize > 0; }
+
 constexpr int SIDE = 24;      // ÚNICO margen lateral de la pantalla
 constexpr int PAD = 24;       // borde de la fila -> texto (deja libre la franja del resalte)
 constexpr int ROW1_H = 48;    // fila de un renglón
@@ -127,7 +146,7 @@ inline int sectionHeader(const GfxRenderer& renderer, const int x, const int y, 
     const int baseY = titleY + renderer.getFontAscenderSize(sectionFont()) - renderer.getFontAscenderSize(datumFont());
     renderer.drawText(datumFont(), std::max(x, x + w - datumW), baseY, datumText.c_str());
   }
-  rule(renderer, x, y + SECTION_H - 1, w);
+  if (sectionUsesRule()) rule(renderer, x, y + SECTION_H - 1, w);
   return y + SECTION_H;
 }
 
@@ -158,15 +177,25 @@ struct RowSpec {
 // La fila entera. `h` es ROW1_H o ROW2_H (o lo que la pantalla pueda darle: los
 // renglones se centran solos en el alto que venga).
 inline void row(const GfxRenderer& renderer, const int x, const int y, const int w, const int h, const RowSpec& spec) {
+  // El aire entre filas lo pone el TEMA y se come de adentro del alto que dio
+  // la pantalla, no del paso: así ninguna de las veinte pantallas que llaman a
+  // `row()` tiene que cambiar su cuenta de posiciones, y con aire cada fila se
+  // lee como una tarjeta suelta (Bento) en vez de un renglón de una tabla.
+  const int aire = rowGap();
+  const int cajaY = y + aire / 2;
+  const int cajaH = h - aire;
+  const int radio = rowRadius();
   if (spec.selected) {
-    // radio 0: el lenguaje es impreso, esquinas vivas. El resalte deja el
-    // centro en blanco, así que el texto de abajo se lee igual que el resto.
-    drawSelectionRow(renderer, x, y, w, h, 0);
+    drawSelectionRow(renderer, x, cajaY, w, cajaH, radio);
+  } else if (aire > 0) {
+    // Con aire, lo que separa una fila de la otra es su propio marco: la regla
+    // al pie quedaría flotando en el medio del hueco.
+    renderer.drawRoundedRect(x, cajaY, w, cajaH, 1, radio, true);
   } else if (spec.rule) {
     listui::rule(renderer, x, y + h - 1, w);
   }
 
-  const EpdFontFamily::Style titleStyle = spec.bold ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
+  const EpdFontFamily::Style titleStyle = (spec.bold || titleBold()) ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR;
   const char* title = spec.title ? spec.title : "";
   const int lineTitle = renderer.getLineHeight(titleFont());
   const int lineDetail = renderer.getLineHeight(detailFont());
