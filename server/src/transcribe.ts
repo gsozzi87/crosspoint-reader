@@ -23,10 +23,11 @@
 // hay dos filtros: la energía del audio ANTES de gastar la llamada al STT
 // (hasSpeech) y la lista de frases inventadas DESPUÉS (isHallucination).
 import { Hono } from "hono";
+import type { AppEnv } from "./tenant";
 import { normalizeLang, type Lang } from "./lang";
 import { decodeAdpcm, TARGET_RATE } from "./tts";
 import { config } from "./config";
-import { checkUrl, limitBody, redactSecrets } from "./net";
+import { checkUrl, limitBody, readBodyBytes, redactSecrets } from "./net";
 
 // El servicio de transcripción se elige desde /board -> Ajustes (Groq es gratis
 // y el más rápido); las variables de entorno quedan como valor por defecto.
@@ -35,7 +36,7 @@ import { checkUrl, limitBody, redactSecrets } from "./net";
 // large" antes de llegar al STT. Con 4 MB entran ~2 minutos de ADPCM y ~2 de WAV.
 const MAX_BYTES = 4_000_000;
 
-export const transcribe = new Hono();
+export const transcribe = new Hono<AppEnv>();
 
 // Reutilizable desde voice.ts: WAV -> texto. Lanza Error con el detalle si falla.
 // El aparato sube ADPCM (una cuarta parte de un WAV, que es lo que más tarda
@@ -311,7 +312,7 @@ export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Prom
 transcribe.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   try {
-    const body = toWav(await c.req.arrayBuffer(), c.req.header("content-type"));
+    const body = toWav(await readBodyBytes(c), c.req.header("content-type"));
     const text = await transcribeWav(body, lang);
     return c.json({ ok: true, text });
   } catch (err) {

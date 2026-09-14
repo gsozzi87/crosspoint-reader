@@ -1,5 +1,8 @@
 #include "OtaUpdater.h"
+
+#ifdef FREEINK_DEVICE_WS397
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
+#endif
 
 // clang-format off
 // HttpDownloader.h pulls Arduino/SdFat, whose macros collide with lwip's
@@ -87,14 +90,16 @@ bool OtaUpdater::isUpdateNewer() const {
     return false;
   }
 
-  int currentMajor, currentMinor, currentPatch;
-  int latestMajor, latestMinor, latestPatch;
+  int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+  int latestMajor = 0, latestMinor = 0, latestPatch = 0;
 
   const auto currentVersion = CROSSPOINT_VERSION;
 
-  // semantic version check (only match on 3 segments)
-  sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch);
-  sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch);
+  if (sscanf(latestVersion.c_str(), "%d.%d.%d", &latestMajor, &latestMinor, &latestPatch) != 3 ||
+      sscanf(currentVersion, "%d.%d.%d", &currentMajor, &currentMinor, &currentPatch) != 3) {
+    LOG_ERR("OTA", "Invalid version: current=%s latest=%s", currentVersion, latestVersion.c_str());
+    return false;
+  }
 
   /*
    * Compare major versions.

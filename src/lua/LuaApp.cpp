@@ -6,6 +6,7 @@
 #include <Logging.h>
 #include <esp_heap_caps.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "../HubStore.h"
@@ -38,11 +39,18 @@ std::string g_appStem;
 
 // --- La tabla cp ---------------------------------------------------------
 
-int clampCoord(const lua_Integer v) {
-  if (v < -32768) return -32768;
-  if (v > 32767) return 32767;
+int clampCoord(const lua_Integer v, const int extent) {
+  if (v < -extent) return -extent;
+  if (v > extent * 2) return extent * 2;
   return static_cast<int>(v);
 }
+
+int clampSize(const lua_Integer v, const int extent) {
+  if (v <= 0) return 0;
+  return static_cast<int>(std::min<lua_Integer>(v, extent));
+}
+
+int clampStroke(const lua_Integer v) { return static_cast<int>(std::max<lua_Integer>(1, std::min<lua_Integer>(v, 8))); }
 
 int fontFor(const lua_Integer size) {
   if (size >= 14) return UI_14_FONT_ID;
@@ -56,8 +64,8 @@ int cpClear(lua_State*) {
 }
 
 int cpText(lua_State* L) {
-  const int x = clampCoord(luaL_checkinteger(L, 1));
-  const int y = clampCoord(luaL_checkinteger(L, 2));
+  const int x = clampCoord(luaL_checkinteger(L, 1), g_renderer ? g_renderer->getScreenWidth() : 800);
+  const int y = clampCoord(luaL_checkinteger(L, 2), g_renderer ? g_renderer->getScreenHeight() : 800);
   const char* text = luaL_checkstring(L, 3);
   const int font = fontFor(luaL_optinteger(L, 4, 12));
   const bool bold = lua_toboolean(L, 5) != 0;
@@ -81,25 +89,29 @@ int cpTextHeight(lua_State* L) {
 }
 
 int cpRect(lua_State* L) {
-  const int x = clampCoord(luaL_checkinteger(L, 1));
-  const int y = clampCoord(luaL_checkinteger(L, 2));
-  const int w = clampCoord(luaL_checkinteger(L, 3));
-  const int h = clampCoord(luaL_checkinteger(L, 4));
+  const int screenW = g_renderer ? g_renderer->getScreenWidth() : 800;
+  const int screenH = g_renderer ? g_renderer->getScreenHeight() : 800;
+  const int x = clampCoord(luaL_checkinteger(L, 1), screenW);
+  const int y = clampCoord(luaL_checkinteger(L, 2), screenH);
+  const int w = clampSize(luaL_checkinteger(L, 3), screenW);
+  const int h = clampSize(luaL_checkinteger(L, 4), screenH);
   const bool filled = lua_toboolean(L, 5) != 0;
   if (!g_renderer) return 0;
   if (filled) {
     g_renderer->fillRect(x, y, w, h, true);
   } else {
-    g_renderer->drawRect(x, y, w, h, static_cast<int>(luaL_optinteger(L, 6, 1)), true);
+    g_renderer->drawRect(x, y, w, h, clampStroke(luaL_optinteger(L, 6, 1)), true);
   }
   return 0;
 }
 
 int cpLine(lua_State* L) {
   if (!g_renderer) return 0;
-  g_renderer->drawLine(clampCoord(luaL_checkinteger(L, 1)), clampCoord(luaL_checkinteger(L, 2)),
-                       clampCoord(luaL_checkinteger(L, 3)), clampCoord(luaL_checkinteger(L, 4)),
-                       static_cast<int>(luaL_optinteger(L, 5, 1)), true);
+  const int screenW = g_renderer->getScreenWidth();
+  const int screenH = g_renderer->getScreenHeight();
+  g_renderer->drawLine(clampCoord(luaL_checkinteger(L, 1), screenW), clampCoord(luaL_checkinteger(L, 2), screenH),
+                       clampCoord(luaL_checkinteger(L, 3), screenW), clampCoord(luaL_checkinteger(L, 4), screenH),
+                       clampStroke(luaL_optinteger(L, 5, 1)), true);
   return 0;
 }
 
@@ -108,8 +120,11 @@ int cpLine(lua_State* L) {
 // como el resto del aparato en vez de inventar su propio negro macizo.
 int cpSelection(lua_State* L) {
   if (!g_renderer) return 0;
-  drawSelectionRow(*g_renderer, clampCoord(luaL_checkinteger(L, 1)), clampCoord(luaL_checkinteger(L, 2)),
-                   clampCoord(luaL_checkinteger(L, 3)), clampCoord(luaL_checkinteger(L, 4)), 0);
+  const int screenW = g_renderer->getScreenWidth();
+  const int screenH = g_renderer->getScreenHeight();
+  drawSelectionRow(*g_renderer, clampCoord(luaL_checkinteger(L, 1), screenW),
+                   clampCoord(luaL_checkinteger(L, 2), screenH), clampSize(luaL_checkinteger(L, 3), screenW),
+                   clampSize(luaL_checkinteger(L, 4), screenH), 0);
   return 0;
 }
 
@@ -141,9 +156,12 @@ int cpMs(lua_State* L) {
 int cpBeep(lua_State* L) {
   const char* which = luaL_optstring(L, 1, "nav");
   uisound::Sound s = uisound::Sound::Nav;
-  if (strcmp(which, "ok") == 0) s = uisound::Sound::Select;
-  else if (strcmp(which, "back") == 0) s = uisound::Sound::Back;
-  else if (strcmp(which, "error") == 0) s = uisound::Sound::Error;
+  if (strcmp(which, "ok") == 0)
+    s = uisound::Sound::Select;
+  else if (strcmp(which, "back") == 0)
+    s = uisound::Sound::Back;
+  else if (strcmp(which, "error") == 0)
+    s = uisound::Sound::Error;
   UI_SOUND.play(s);
   return 0;
 }
@@ -232,18 +250,32 @@ int cpLoad(lua_State* L) {
 }
 
 const luaL_Reg CP_API[] = {
-    {"clear", cpClear},        {"text", cpText},      {"textw", cpTextWidth}, {"texth", cpTextHeight},
-    {"rect", cpRect},          {"line", cpLine},      {"selection", cpSelection},
-    {"width", cpWidth},        {"height", cpHeight},  {"motion", cpMotion},   {"ms", cpMs},
-    {"beep", cpBeep},          {"log", cpLog},        {"quit", cpQuit},       {"save", cpSave},
-    {"load", cpLoad},          {"time", cpTime},      {nullptr, nullptr},
+    {"clear", cpClear},
+    {"text", cpText},
+    {"textw", cpTextWidth},
+    {"texth", cpTextHeight},
+    {"rect", cpRect},
+    {"line", cpLine},
+    {"selection", cpSelection},
+    {"width", cpWidth},
+    {"height", cpHeight},
+    {"motion", cpMotion},
+    {"ms", cpMs},
+    {"beep", cpBeep},
+    {"log", cpLog},
+    {"quit", cpQuit},
+    {"save", cpSave},
+    {"load", cpLoad},
+    {"time", cpTime},
+    {nullptr, nullptr},
 };
 
 // --- Trabajo dentro del worker ------------------------------------------
 
 struct LoadJob {
   lua_State* L = nullptr;
-  std::string source;
+  const char* source = nullptr;
+  size_t sourceSize = 0;
   std::string chunkName;
   bool ok = false;
   std::string error;
@@ -252,7 +284,7 @@ struct LoadJob {
 void loadEntry(void* p) {
   auto* job = static_cast<LoadJob*>(p);
   lua_State* L = job->L;
-  if (luaL_loadbuffer(L, job->source.data(), job->source.size(), job->chunkName.c_str()) != LUA_OK) {
+  if (luaL_loadbuffer(L, job->source, job->sourceSize, job->chunkName.c_str()) != LUA_OK) {
     job->error = lua_tostring(L, -1) ? lua_tostring(L, -1) : "no compila";
     lua_pop(L, 1);
     return;
@@ -337,6 +369,12 @@ bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
   g_quit = false;
   quit_ = false;
 
+  HalFile script = Storage.open(path.c_str());
+  if (!script || script.isDirectory() || script.size() > SCRIPT_CAP) {
+    error_ = "la app supera el tamaño permitido";
+    return false;
+  }
+  script.close();
   const String source = Storage.readFile(path.c_str());
   if (source.length() == 0) {
     error_ = "el archivo está vacío o no se pudo leer";
@@ -360,6 +398,7 @@ bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
   LoadJob job;
   job.L = state_;
   job.source = source.c_str();
+  job.sourceSize = source.length();
   job.chunkName = "@" + name_;
   uint32_t used = 0;
   if (!tasks::runBounded("lua-loader", STACK, loadEntry, &job, &used)) {

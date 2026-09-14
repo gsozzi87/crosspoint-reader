@@ -27,7 +27,7 @@ import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from 
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
 import { sourcesLine } from "./websearch";
-import { limitBody, redactSecrets } from "./net";
+import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { accountOf, type AppEnv } from "./tenant";
 
@@ -372,7 +372,7 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const t0 = Date.now();
   let text: string;
   try {
-    text = await transcribeWav(toWav(await c.req.arrayBuffer(), c.req.header("content-type")), lang);
+    text = await transcribeWav(toWav(await readBodyBytes(c), c.req.header("content-type")), lang);
   } catch (err) {
     // Nadie habló (o Whisper inventó lo de amara.org con el silencio): se
     // contesta "no escuché nada" y NO se le pregunta nada al modelo. Antes esa

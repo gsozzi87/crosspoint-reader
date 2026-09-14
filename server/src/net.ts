@@ -6,7 +6,10 @@
 // baseUrl del proveedor, un feed RSS, el link de un artículo) sale de acá con
 // el Bearer puesto o llega a los vecinos del proyecto, así que toda URL pasa
 // por el mismo control y todo cuerpo remoto se limpia antes de mostrarse.
+import { lookup } from "node:dns/promises";
+import { isIP } from "node:net";
 import type { Context } from "hono";
+import type { AppEnv } from "./tenant";
 import { bodyLimit } from "hono/body-limit";
 
 // Tope de cuerpo POR RUTA, puesto ANTES del handler.
@@ -17,6 +20,12 @@ import { bodyLimit } from "hono/body-limit";
 // leer un solo byte; sin él (chunked) lee por bloques y corta apenas se pasa.
 // El contenedor de Railway tiene 512 MB y ahí adentro también viven Piper y el
 // masticado de noticias: un solo pedido grande se lleva puesto todo.
+export async function readBodyBytes(c: Context<AppEnv>): Promise<ArrayBuffer> {
+  const body = await c.req.arrayBuffer();
+  c.set("bodyBytes", body.byteLength);
+  return body;
+}
+
 export function limitBody(bytes: number) {
   return bodyLimit({
     maxSize: bytes,
@@ -73,6 +82,15 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
+async function assertPublicResolution(hostname: string): Promise<void> {
+  if (isPrivateHost(hostname)) throw new Error(`no se puede usar un host de red interna (${hostname})`);
+  if (isIP(hostname)) return;
+  const addresses = await lookup(hostname, { all: true, verbatim: true });
+  if (!addresses.length || addresses.some((entry) => isPrivateHost(entry.address))) {
+    throw new Error(`el host resuelve a una red interna (${hostname})`);
+  }
+}
+
 function isLoopback(hostname: string): boolean {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
   return h === "localhost" || h === "127.0.0.1" || h === "::1";
@@ -126,6 +144,7 @@ export async function safeFetchAt(
   for (let hop = 0; hop <= maxHops; hop++) {
     const check = checkUrl(url, { allowHttp: true });
     if (!check.ok) throw new Error(check.error);
+    await assertPublicResolution(check.url.hostname);
     const res = await fetch(check.url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
     if (res.status < 300 || res.status > 399) return { res, url: check.url.toString() };
     const next = res.headers.get("location");

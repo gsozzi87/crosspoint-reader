@@ -10,14 +10,15 @@
 // Transcribe en `from`, traduce con el proveedor elegido en /board -> Ajustes
 // (el mismo que usa todo lo demás) y sintetiza en `to`.
 import { Hono } from "hono";
+import type { AppEnv } from "./tenant";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
 import { synthesize } from "./tts";
 import { LANGUAGE_NAME, normalizeLang } from "./lang";
 import { chatText, LlmError } from "./llm";
-import { limitBody, redactSecrets } from "./net";
+import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
-export const translate = new Hono();
+export const translate = new Hono<AppEnv>();
 
 function framed(json: object, audio: Uint8Array | null): Response {
   const head = Buffer.from(JSON.stringify(json), "utf8");
@@ -32,7 +33,7 @@ translate.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const to = normalizeLang(c.req.query("to"));
   let text: string;
   try {
-    text = await transcribeWav(toWav(await c.req.arrayBuffer(), c.req.header("content-type")), from);
+    text = await transcribeWav(toWav(await readBodyBytes(c), c.req.header("content-type")), from);
   } catch (err) {
     // Silencio: se avisa en el idioma del que habla y no se traduce nada
     // (traducir "Gracias por ver el video" no le sirve a nadie).

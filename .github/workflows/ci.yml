@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           submodules: recursive
+          fetch-depth: 0
 
       - uses: actions/setup-python@v6
         with:
@@ -30,10 +31,27 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format-21
 
-      - name: Run clang-format
+      - name: Run clang-format on changed files
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
-          PATH="/usr/lib/llvm-21/bin:$PATH" ./bin/clang-format-fix
-          git diff --exit-code || (echo "Please run 'bin/clang-format-fix' to fix formatting issues" && exit 1)
+          BASE_SHA="${PR_BASE_SHA:-${PUSH_BEFORE_SHA:-}}"
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            BASE_SHA="$(git rev-parse HEAD^)"
+          fi
+          mapfile -d '' FILES < <(
+            git diff --name-only -z --diff-filter=ACMR "$BASE_SHA" HEAD -- \
+              '*.c' '*.cpp' '*.h' '*.hpp' \
+              ':(exclude)lib/EpdFont/builtinFonts/**' \
+              ':(exclude)lib/Epub/Epub/hyphenation/generated/**' \
+              ':(exclude)lib/uzlib/**' \
+              ':(exclude)lib/miniz/third_party/**'
+          )
+          if (( ${#FILES[@]} )); then
+            PATH="/usr/lib/llvm-21/bin:$PATH" clang-format-21 -style=file -i -- "${FILES[@]}"
+          fi
+          git diff --exit-code || (echo "Run clang-format-21 on the changed C/C++ files" && exit 1)
 
   cppcheck:
     runs-on: ubuntu-latest
