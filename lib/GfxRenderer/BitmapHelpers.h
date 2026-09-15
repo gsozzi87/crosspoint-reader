@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <new>
 
 struct BmpHeader;
 

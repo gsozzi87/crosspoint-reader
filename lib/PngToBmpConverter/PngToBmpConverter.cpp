@@ -9,6 +9,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <new>
 
 #include "BitmapHelpers.h"
 

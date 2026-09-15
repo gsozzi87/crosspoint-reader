@@ -8,6 +8,8 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <new>
+
 #include "HubStore.h"
 #include "TaskConfig.h"
 #include "music/MusicPlayer.h"

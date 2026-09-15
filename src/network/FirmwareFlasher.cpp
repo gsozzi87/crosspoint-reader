@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cstring>
 #include <memory>
+#include <new>
 
 #include "FirmwareBoardTag.h"
 #include "OtaBootSwitch.h"

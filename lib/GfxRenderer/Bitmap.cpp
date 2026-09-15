@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 // ============================================================================
 // IMAGE PROCESSING OPTIONS
