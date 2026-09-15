@@ -14,8 +14,8 @@
 
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
-#include "ServerCredentialStore.h"
 #include "ReaderFontSizes.h"
+#include "ServerCredentialStore.h"
 #include "activities/settings/SettingsActivity.h"
 #include "util/DictionaryRegistry.h"
 
@@ -539,8 +539,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                              // enciende estaba escondido y clavado en LP_MENU_DISABLED: el
                              // marcador por OK mantenido era inalcanzable, y CLAUDE.md decía
                              // que "ahora manda el ajuste de siempre". Decía mal.
-                             return s.nameId == StrId::STR_TIME_TO_SLEEP ||
-                                    s.nameId == StrId::STR_SLEEP_SCREEN ||
+                             return s.nameId == StrId::STR_TIME_TO_SLEEP || s.nameId == StrId::STR_SLEEP_SCREEN ||
                                     s.nameId == StrId::STR_SLEEP_COVER_MODE ||
                                     s.nameId == StrId::STR_SLEEP_COVER_FILTER ||
                                     s.nameId == StrId::STR_QUICK_RESUME_TIMEOUT ||
