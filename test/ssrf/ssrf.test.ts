@@ -32,23 +32,20 @@ test("las públicas siguen pasando", () => {
   pasa("https://paper-esp32.up.railway.app/");
 });
 
-test("Railway puede usar su salida CGNAT sin aceptar una URL CGNAT literal", () => {
-  bloquea("https://100.64.0.2/feed.xml");
-  expect(selectResolvedAddress([{ address: "100.64.0.2", family: 4 }], true)).toEqual({
-    address: "100.64.0.2",
-    family: 4,
-  });
-  expect(selectResolvedAddress([{ address: "100.64.0.2", family: 4 }], false)).toBeNull();
-});
-
 test("una dirección privada no invalida otra respuesta pública", () => {
   expect(
-    selectResolvedAddress(
-      [
-        { address: "10.0.0.5", family: 4 },
-        { address: "23.45.67.89", family: 4 },
-      ],
-      false,
-    ),
+    selectResolvedAddress([
+      { address: "10.0.0.5", family: 4 },
+      { address: "23.45.67.89", family: 4 },
+    ]),
   ).toEqual({ address: "23.45.67.89", family: 4 });
+});
+
+test("si todas las respuestas son internas se sigue rechazando", () => {
+  expect(
+    selectResolvedAddress([
+      { address: "10.0.0.5", family: 4 },
+      { address: "100.64.0.2", family: 4 },
+    ]),
+  ).toBeNull();
 });

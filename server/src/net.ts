@@ -87,22 +87,11 @@ function isPrivateHost(hostname: string): boolean {
 
 type PublicAddress = { address: string; family: 4 | 6 };
 
-function isCgnatAddress(address: string): boolean {
-  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
-  return !!m && Number(m[1]) === 100 && Number(m[2]) >= 64 && Number(m[2]) <= 127;
-}
-
-// Railway represents some public Internet destinations with 100.64/10
-// addresses inside its egress network. Those addresses are labelled
-// `peerKind: internet` by Railway; rejecting them after a DNS lookup broke
-// legitimate CDN-backed feeds such as El Financiero. A literal 100.64/10 URL
-// remains blocked by checkUrl(): this exception applies only to an address
-// returned for a hostname and only while running on Railway.
-export function selectResolvedAddress(
-  addresses: PublicAddress[],
-  railway = Boolean(process.env.RAILWAY_ENVIRONMENT_ID || process.env.RAILWAY_PROJECT_ID),
-): PublicAddress | null {
-  return addresses.find((entry) => !isPrivateHost(entry.address) || (railway && isCgnatAddress(entry.address))) ?? null;
+// Un dominio servido por un CDN puede devolver varias direcciones. Una AAAA
+// que este servidor no soporte no debe invalidar también la IPv4 pública: se
+// elige una única respuesta que ya pase el filtro y la conexión se fija a ésa.
+export function selectResolvedAddress(addresses: PublicAddress[]): PublicAddress | null {
+  return addresses.find((entry) => !isPrivateHost(entry.address)) ?? null;
 }
 
 async function publicResolution(hostname: string): Promise<PublicAddress> {
