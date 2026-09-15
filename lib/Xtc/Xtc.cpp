@@ -5,8 +5,6 @@
  * XTC ebook support for CrossPoint Reader
  */
 
-#include "Memory.h"
-
 #include "Xtc.h"
 
 #include <Bitmap.h>
@@ -14,6 +12,8 @@
 #include <Logging.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+
+#include "Memory.h"
 
 namespace {
 void yieldDuringThumbnail(uint8_t& rowsSinceYield) {

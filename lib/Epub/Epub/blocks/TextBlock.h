@@ -1,6 +1,4 @@
 #pragma once
-#include "Memory.h"
-
 #include <EpdFontFamily.h>
 #include <HalStorage.h>
 
@@ -12,6 +10,7 @@
 #include "Block.h"
 #include "BlockStyle.h"
 #include "Epub/FootnoteEntry.h"
+#include "Memory.h"
 
 // Represents a line of text on a page.
 //

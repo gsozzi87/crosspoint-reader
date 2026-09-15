@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "QrUtils.h"
 
 #include <Utf8.h>
@@ -9,6 +7,7 @@
 #include <memory>
 
 #include "Logging.h"
+#include "Memory.h"
 
 void QrUtils::drawQrCode(const GfxRenderer& renderer, const Rect& bounds, const std::string& textPayload) {
   // Dynamically calculate the QR code version based on text length

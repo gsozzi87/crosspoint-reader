@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "RecentBooksActivity.h"
 
 #include <GfxRenderer.h>
@@ -10,6 +8,7 @@
 #include <memory>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "RecentBooksStore.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"

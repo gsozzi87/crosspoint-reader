@@ -1,10 +1,10 @@
-#include "Memory.h"
-
 #include "HalStorage.h"
 
 #include <FS.h>  // need to be included before SdFat.h for compatibility with FS.h's File class
 #include <Logging.h>
 #include <SDCardManager.h>
+
+#include "Memory.h"
 #if FREEINK_CAP_USB_MSC
 #include <UsbMassStorage.h>
 #endif

@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "SetupActivity.h"
 
 #include <BoardConfig.h>
@@ -9,6 +7,7 @@
 
 #include "CrossPointSettings.h"
 #include "HubStore.h"
+#include "Memory.h"
 #include "WifiCredentialStore.h"
 #include "activities/ListStyle.h"
 #include "activities/home/HubLocationActivity.h"

@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "WeatherActivity.h"
 
 #include <ArduinoJson.h>
@@ -16,6 +14,7 @@
 #include <cmath>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"

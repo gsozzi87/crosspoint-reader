@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "HubSyncActivity.h"
 
 #include <ArduinoJson.h>
@@ -18,6 +16,7 @@
 #include "CrossPointSettings.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "WifiCredentialStore.h"
 #include "activities/home/AssetSyncActivity.h"

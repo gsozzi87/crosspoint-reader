@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "KOReaderAuthActivity.h"
 
 #include <GfxRenderer.h>
@@ -10,6 +8,7 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderSyncClient.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"

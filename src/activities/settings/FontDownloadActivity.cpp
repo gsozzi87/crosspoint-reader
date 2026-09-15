@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "FontDownloadActivity.h"
 
 #include <ArduinoJson.h>
@@ -14,6 +12,7 @@
 #include <cstring>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SdCardFontSystem.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"

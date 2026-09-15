@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "CalibreConnectActivity.h"
 
 #include <ESPmDNS.h>
@@ -9,6 +7,7 @@
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"
 #include "components/UITheme.h"

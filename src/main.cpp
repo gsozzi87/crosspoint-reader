@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <Epub.h>
@@ -23,6 +21,8 @@
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
+
+#include "Memory.h"
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif

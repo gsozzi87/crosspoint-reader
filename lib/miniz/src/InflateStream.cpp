@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "InflateStream.h"
 
 #include <BuildScratch.h>
@@ -7,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "Memory.h"
 #include "MinizConfig.h"
 
 namespace {

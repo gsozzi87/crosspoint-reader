@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "KOReaderSyncActivity.h"
 
 #include <GfxRenderer.h>
@@ -18,6 +16,7 @@
 #include "KOReaderCredentialStore.h"
 #include "KOReaderDocumentId.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "ReaderUtils.h"
 #include "SilentRestart.h"
 #include "activities/ActivityManager.h"

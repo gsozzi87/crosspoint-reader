@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "OpdsSettingsActivity.h"
 
 #include <GfxRenderer.h>
@@ -7,6 +5,7 @@
 #include <Logging.h>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "OpdsServerStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"

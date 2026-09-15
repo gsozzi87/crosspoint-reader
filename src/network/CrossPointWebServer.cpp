@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "CrossPointWebServer.h"
 
 #include <ArduinoJson.h>
@@ -18,6 +16,7 @@
 
 #include "CrossPointSettings.h"
 #include "FontInstaller.h"
+#include "Memory.h"
 #include "OpdsServerStore.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"

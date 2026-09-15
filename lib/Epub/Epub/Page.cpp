@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "Page.h"
 
 #include <GfxRenderer.h>
@@ -7,6 +5,8 @@
 #include <Serialization.h>
 
 #include <new>
+
+#include "Memory.h"
 
 namespace {
 

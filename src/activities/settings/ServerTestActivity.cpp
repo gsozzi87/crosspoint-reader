@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "ServerTestActivity.h"
 
 #include <GfxRenderer.h>
@@ -9,6 +7,7 @@
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"

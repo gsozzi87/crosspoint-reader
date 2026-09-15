@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "OtaUpdateActivity.h"
 
 #include <BoardConfig.h>
@@ -9,6 +7,7 @@
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/home/AssetSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"

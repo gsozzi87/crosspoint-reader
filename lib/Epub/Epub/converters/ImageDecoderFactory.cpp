@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "ImageDecoderFactory.h"
 
 #include <Logging.h>
@@ -8,6 +6,7 @@
 #include <string>
 
 #include "JpegToFramebufferConverter.h"
+#include "Memory.h"
 #include "PngToFramebufferConverter.h"
 
 std::unique_ptr<JpegToFramebufferConverter> ImageDecoderFactory::jpegDecoder = nullptr;

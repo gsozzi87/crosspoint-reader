@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "CalendarActivity.h"
 
 #include <ArduinoJson.h>
@@ -16,6 +14,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "TripActivity.h"
 #include "activities/ListStyle.h"

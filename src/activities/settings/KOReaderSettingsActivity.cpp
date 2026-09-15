@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "KOReaderSettingsActivity.h"
 
 #include <GfxRenderer.h>
@@ -11,6 +9,7 @@
 #include "KOReaderAuthActivity.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
 

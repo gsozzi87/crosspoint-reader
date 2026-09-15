@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "ClockSyncActivity.h"
 
 #include <GfxRenderer.h>
@@ -12,6 +10,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"

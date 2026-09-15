@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "TranslatorActivity.h"
 
 #include <ArduinoJson.h>
@@ -15,6 +13,7 @@
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"

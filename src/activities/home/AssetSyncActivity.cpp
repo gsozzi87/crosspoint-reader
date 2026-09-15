@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "AssetSyncActivity.h"
 
 #include <Arduino.h>
@@ -20,6 +18,7 @@
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"

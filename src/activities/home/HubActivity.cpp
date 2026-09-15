@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "HubActivity.h"
 
 #include <GfxRenderer.h>
@@ -24,6 +22,7 @@
 #include "HubStore.h"
 #include "HubSyncActivity.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "MusicActivity.h"
 #include "NewsActivity.h"
 #include "NotesActivity.h"

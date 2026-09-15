@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "OpdsBookBrowserActivity.h"
 
 #include <Arduino.h>
@@ -13,6 +11,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/util/KeyboardEntryActivity.h"

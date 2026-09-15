@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "AgendaActivity.h"
 
 #include <ArduinoJson.h>
@@ -16,6 +14,7 @@
 #include "CalendarActivity.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "VoiceActivity.h"
 #include "activities/ListStyle.h"
 #include "components/Selection.h"

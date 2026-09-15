@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "LuaAppsActivity.h"
 
 #include <GfxRenderer.h>
@@ -10,6 +8,7 @@
 #include <cstdio>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"

@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "TripActivity.h"
 
 #include <ArduinoJson.h>
@@ -18,6 +16,7 @@
 #include "../../util/FullScreenBmp.h"
 #include "CalendarActivity.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"

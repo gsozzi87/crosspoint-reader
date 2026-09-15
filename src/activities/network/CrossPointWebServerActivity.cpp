@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "CrossPointWebServerActivity.h"
 
 #include <DNSServer.h>
@@ -12,6 +10,7 @@
 #include <cstddef>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "NetworkModeSelectionActivity.h"
 #include "SilentRestart.h"
 #include "WifiSelectionActivity.h"

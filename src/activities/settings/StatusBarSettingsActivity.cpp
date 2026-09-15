@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "StatusBarSettingsActivity.h"
 
 #include <GfxRenderer.h>
@@ -13,6 +11,7 @@
 #include "ClockSyncActivity.h"
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 

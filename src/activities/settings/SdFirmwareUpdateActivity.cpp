@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "SdFirmwareUpdateActivity.h"
 
 #include <Arduino.h>
@@ -10,6 +8,7 @@
 #include <esp_ota_ops.h>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "activities/home/FileBrowserActivity.h"
 #include "activities/util/ConfirmationActivity.h"
 #include "components/UITheme.h"

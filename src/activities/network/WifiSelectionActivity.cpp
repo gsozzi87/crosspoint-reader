@@ -1,5 +1,3 @@
-#include "Memory.h"
-
 #include "WifiSelectionActivity.h"
 
 #include <BoardConfig.h>
@@ -14,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "WifiCredentialStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
