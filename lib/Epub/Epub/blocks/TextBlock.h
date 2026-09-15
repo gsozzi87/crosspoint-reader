@@ -1,4 +1,6 @@
 #pragma once
+#include "Memory.h"
+
 #include <EpdFontFamily.h>
 #include <HalStorage.h>
 

@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "QrUtils.h"
 
 #include <Utf8.h>

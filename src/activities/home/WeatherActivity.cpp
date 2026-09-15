@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "WeatherActivity.h"
 
 #include <ArduinoJson.h>

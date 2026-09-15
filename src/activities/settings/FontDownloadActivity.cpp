@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "FontDownloadActivity.h"
 
 #include <ArduinoJson.h>

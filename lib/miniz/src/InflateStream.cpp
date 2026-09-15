@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "InflateStream.h"
 
 #include <BuildScratch.h>

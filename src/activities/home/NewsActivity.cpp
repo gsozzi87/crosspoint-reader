@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "NewsActivity.h"
 
 #include <ArduinoJson.h>

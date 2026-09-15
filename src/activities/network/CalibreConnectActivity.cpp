@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "CalibreConnectActivity.h"
 
 #include <ESPmDNS.h>

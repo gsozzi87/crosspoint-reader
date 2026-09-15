@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "HubActivity.h"
 
 #include <GfxRenderer.h>

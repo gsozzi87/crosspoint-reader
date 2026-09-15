@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "KOReaderAuthActivity.h"
 
 #include <GfxRenderer.h>

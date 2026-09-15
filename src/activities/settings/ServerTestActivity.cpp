@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "ServerTestActivity.h"
 
 #include <GfxRenderer.h>

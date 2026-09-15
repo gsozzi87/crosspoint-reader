@@ -5,6 +5,8 @@
  * XTC ebook support for CrossPoint Reader
  */
 
+#include "Memory.h"
+
 #include "Xtc.h"
 
 #include <Bitmap.h>

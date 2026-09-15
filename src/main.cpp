@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include <Arduino.h>
 #include <BoardConfig.h>
 #include <Epub.h>

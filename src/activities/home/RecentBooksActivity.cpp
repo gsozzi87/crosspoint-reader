@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "RecentBooksActivity.h"
 
 #include <GfxRenderer.h>

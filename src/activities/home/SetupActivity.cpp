@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "SetupActivity.h"
 
 #include <BoardConfig.h>

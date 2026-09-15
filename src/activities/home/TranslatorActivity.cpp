@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "TranslatorActivity.h"
 
 #include <ArduinoJson.h>

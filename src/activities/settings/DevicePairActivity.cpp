@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "DevicePairActivity.h"
 
 #include <ArduinoJson.h>

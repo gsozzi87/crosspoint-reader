@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "AssetSyncActivity.h"
 
 #include <Arduino.h>

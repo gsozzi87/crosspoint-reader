@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "TripActivity.h"
 
 #include <ArduinoJson.h>

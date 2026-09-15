@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "OpdsSettingsActivity.h"
 
 #include <GfxRenderer.h>

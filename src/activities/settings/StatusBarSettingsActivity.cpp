@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "StatusBarSettingsActivity.h"
 
 #include <GfxRenderer.h>

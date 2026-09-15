@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "SdFirmwareUpdateActivity.h"
 
 #include <Arduino.h>

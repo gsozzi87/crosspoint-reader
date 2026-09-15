@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "ImageDecoderFactory.h"
 
 #include <Logging.h>

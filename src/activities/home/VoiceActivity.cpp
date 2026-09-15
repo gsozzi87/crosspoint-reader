@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "VoiceActivity.h"
 
 #include <ArduinoJson.h>

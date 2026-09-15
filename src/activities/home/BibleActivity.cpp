@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "BibleActivity.h"
 
 #include <ArduinoJson.h>

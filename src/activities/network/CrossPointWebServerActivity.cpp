@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "CrossPointWebServerActivity.h"
 
 #include <DNSServer.h>

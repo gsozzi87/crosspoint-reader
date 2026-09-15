@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "WifiSelectionActivity.h"
 
 #include <BoardConfig.h>

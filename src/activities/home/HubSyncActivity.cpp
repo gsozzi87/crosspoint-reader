@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "HubSyncActivity.h"
 
 #include <ArduinoJson.h>

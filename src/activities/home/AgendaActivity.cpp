@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "AgendaActivity.h"
 
 #include <ArduinoJson.h>

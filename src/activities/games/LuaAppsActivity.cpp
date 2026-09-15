@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "LuaAppsActivity.h"
 
 #include <GfxRenderer.h>

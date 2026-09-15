@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "Page.h"
 
 #include <GfxRenderer.h>

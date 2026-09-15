@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "BookMetadataCache.h"
 
 #include <BufferedFile.h>

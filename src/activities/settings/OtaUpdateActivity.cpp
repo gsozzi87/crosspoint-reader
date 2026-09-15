@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "OtaUpdateActivity.h"
 
 #include <BoardConfig.h>

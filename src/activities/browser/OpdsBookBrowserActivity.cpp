@@ -1,3 +1,5 @@
+#include "Memory.h"
+
 #include "OpdsBookBrowserActivity.h"
 
 #include <Arduino.h>
