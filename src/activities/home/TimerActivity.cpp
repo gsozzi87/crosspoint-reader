@@ -24,6 +24,7 @@ constexpr long POMODORO_WORK_S = 25 * 60;
 constexpr long POMODORO_BREAK_S = 5 * 60;
 constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr unsigned long CANCEL_HOLD_MS = 1000;  // Atrás mantenido: cancelar
+constexpr unsigned long SPEECH_START_GRACE_MS = 500;
 
 // Los dígitos de 7 segmentos viven en components/SevenSegment.h: los usa también
 // el reproductor de música.
@@ -229,9 +230,10 @@ void TimerActivity::ring() {
   HUB_STORE.clearTimer();
   HUB_STORE.saveToFile();
   spoken = !speech.playFile(speechcache::clipPath(tr(STR_TIMER_DONE)).c_str());
+  speechStartedAt = millis();
   if (spoken) {
     speech.stop();  // el I2S es uno solo: soltarlo antes de que lo abra el pitido
-    beep.start();
+    if (!beep.start()) LOG_ERR(TAG, "no se pudo iniciar la alarma");
   }
   requestUpdate();
 }
@@ -265,10 +267,12 @@ void TimerActivity::loop() {
   }
 
   if (finished) {
-    if (!spoken && !speech.isPlaying()) {
+    // La tarea de audio necesita una gracia antes de que isPlaying() sea fiable;
+    // parlante y pitido comparten el mismo I2S.
+    if (!spoken && millis() - speechStartedAt >= SPEECH_START_GRACE_MS && !speech.isPlaying()) {
       spoken = true;
       speech.stop();
-      beep.start();
+      if (!beep.start()) LOG_ERR(TAG, "no se pudo iniciar la alarma");
     }
     // Nadie atendió: callar y dejar que el aparato se duerma.
     if (millis() - finishedAt >= RING_MAX_MS) {
@@ -287,7 +291,8 @@ void TimerActivity::loop() {
         if (!pomodoroBreak) pomodoroRound++;
         startSegment(pomodoroBreak ? POMODORO_BREAK_S : POMODORO_WORK_S);
       } else {
-        showModePicker();
+        // Una alarma terminada vuelve al origen; el selector es solo para crearla.
+        finish();
       }
     }
     return;

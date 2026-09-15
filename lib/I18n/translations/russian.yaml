@@ -1131,3 +1131,6 @@ STR_USB_DRIVE_CONNECT_DELAY: "Подключение может занять д�
 STR_USB_DRIVE_EXIT_HINT: "Удерживайте «Назад», чтобы отключить и выйти"
 STR_BIBLE_HOLD_ASK: "Удерж.: спросить"
 STR_ASK_WORD_MEANING: "Что значит «%s» в том, что я читаю?"
+STR_VOICE_FOLLOW_UP: "Хотите ещё что-то спросить по этой теме?"
+STR_VOICE_FOLLOW_UP_HINT: "Контекст сохраняется в этом разговоре."
+STR_VOICE_FOLLOW_UP_ACTION: "Ещё вопрос"

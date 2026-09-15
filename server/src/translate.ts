@@ -52,10 +52,10 @@ translate.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     const translation = (
       await chatText({
         system: [
-          `Sos un traductor de conversación. Traducí del ${LANGUAGE_NAME[from]} al ${LANGUAGE_NAME[to]} lo que dice el usuario,`,
+          `Eres un traductor de conversación. Traduce del ${LANGUAGE_NAME[from]} al ${LANGUAGE_NAME[to]} lo que dice el usuario,`,
           "tal cual, con el mismo registro y sin agregar nada: ni comentarios, ni comillas, ni explicaciones.",
-          "El texto llega transcripto de voz y puede traer errores de reconocimiento: interpretalo con sentido común.",
-          "Respondé solo con la traducción, en texto plano.",
+          "El texto llega transcrito de voz y puede contener errores de reconocimiento: interprétalo con sentido común.",
+          "Responde solo con la traducción, en texto plano.",
         ].join(" "),
         user: text,
         maxTokens: 400,

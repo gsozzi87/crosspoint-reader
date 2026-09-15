@@ -140,30 +140,7 @@ int DictionaryWordSelectActivity::closestInRow(const uint16_t row, const int cen
   return best;
 }
 
-void DictionaryWordSelectActivity::moveVertical(const int direction) {
-  const WordBox& current = words[selected];
-  const int targetRow = static_cast<int>(current.row) + direction;
-  if (targetRow < 0 || targetRow >= static_cast<int>(rowCount)) return;
-
-  const int best = closestInRow(static_cast<uint16_t>(targetRow), current.x + current.width / 2);
-  if (best >= 0 && best != selected) {
-    selected = best;
-    requestUpdate();
-  }
-}
-
 void DictionaryWordSelectActivity::performLookup() {
-  if (askMode) {
-    // Sin diccionario en la tarjeta la palabra no se busca acá: vuelve al
-    // lector, que se la pregunta al servidor (mismo camino que "Preguntarle
-    // al libro"). Antes esto era un cartel de un segundo y volver: "no dice
-    // nada, se vuelve".
-    if (selected >= 0 && selected < static_cast<int>(words.size())) {
-      setResult(WordResult{std::string(words[selected].text)});
-    }
-    finish();
-    return;
-  }
   popup = Popup::Busy;
   if (!dictOpenAttempted) {
     dictOpenAttempted = true;
@@ -285,10 +262,16 @@ void DictionaryWordSelectActivity::loop() {
   const unsigned long now = millis();
   const bool repeat =
       mappedInput.getHeldTime() >= WORD_REPEAT_START_MS && now - lastHorizontalMoveTime >= WORD_REPEAT_INTERVAL_MS;
+  // La palanca de dos direcciones recorre todas las palabras en orden de
+  // lectura; los cuatro nombres lógicos cubren ambas orientaciones.
   const bool moveLeft = mappedInput.wasPressed(MappedInputManager::Button::ScreenLeft) ||
-                        (repeat && mappedInput.isPressed(MappedInputManager::Button::ScreenLeft));
+                        mappedInput.wasPressed(MappedInputManager::Button::ScreenUp) ||
+                        (repeat && (mappedInput.isPressed(MappedInputManager::Button::ScreenLeft) ||
+                                    mappedInput.isPressed(MappedInputManager::Button::ScreenUp)));
   const bool moveRight = mappedInput.wasPressed(MappedInputManager::Button::ScreenRight) ||
-                         (repeat && mappedInput.isPressed(MappedInputManager::Button::ScreenRight));
+                         mappedInput.wasPressed(MappedInputManager::Button::ScreenDown) ||
+                         (repeat && (mappedInput.isPressed(MappedInputManager::Button::ScreenRight) ||
+                                     mappedInput.isPressed(MappedInputManager::Button::ScreenDown)));
   if (moveLeft && selected > 0) {
     selected--;
     lastHorizontalMoveTime = now;
@@ -297,10 +280,6 @@ void DictionaryWordSelectActivity::loop() {
     selected++;
     lastHorizontalMoveTime = now;
     requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::ScreenUp)) {
-    moveVertical(-1);
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::ScreenDown)) {
-    moveVertical(1);
   }
 }
 

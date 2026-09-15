@@ -22,13 +22,13 @@ class VoiceActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return state == RECORDING; }
-  bool preventAutoSleep() override { return state != REPLY && state != FAILED; }
+  bool preventAutoSleep() override { return state != REPLY && state != FOLLOW_UP && state != FAILED; }
 
  private:
   // SPEAKING: la respuesta se está reproduciendo y hay algo que hacer después.
   // Hace falta porque el I2S es uno solo: abrir el micrófono mientras habla el
   // parlante falla ("error de micrófono"), y navegar mientras habla corta la frase.
-  enum State { RECORDING, CONNECTING, SENDING, SPEAKING, REPLY, FAILED };
+  enum State { RECORDING, CONNECTING, SENDING, SPEAKING, REPLY, FOLLOW_UP, FAILED };
   State state = RECORDING;
   // AFTER_AGENDA / AFTER_NOTES: lo que se dicto se ABRE en su pantalla para
   // confirmarlo (y, en un recordatorio, para corregirle hora y repeticion)
@@ -46,6 +46,9 @@ class VoiceActivity final : public Activity {
   std::string heard;   // what the server understood
   std::string intent;  // question | reminder | task | ...
   std::string reply;
+  // Identifica solo esta conversación en el servidor. No contiene el texto y
+  // caduca allí; permite preguntar "¿y por qué?" sin perder el tema.
+  std::string conversationId;
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
   bool wifiActivated = false;

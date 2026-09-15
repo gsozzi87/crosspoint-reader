@@ -9,22 +9,18 @@
 #include "activities/Activity.h"
 #include "util/Dictionary.h"
 
-// Word selection over the current reader page: Left/Right step through words
-// in reading order, Up/Down jump rows, Confirm looks the word up and opens
+// Word selection over the current reader page: either direction steps through
+// words in reading order, Confirm looks the word up and opens
 // DictionaryDefinitionActivity, Back returns to the reader. On touch devices a
 // touch-down moves the highlight and a tap on a word looks it up directly.
 class DictionaryWordSelectActivity final : public Activity {
  public:
-  // askMode: no hay diccionario en la tarjeta; la palabra elegida vuelve como
-  // WordResult y el lector se la pregunta al servidor en vez de buscarla.
   explicit DictionaryWordSelectActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
-                                        std::unique_ptr<Page> page, int marginLeft, int marginTop,
-                                        bool askMode = false)
+                                        std::unique_ptr<Page> page, int marginLeft, int marginTop)
       : Activity("DictionaryWordSelect", renderer, mappedInput),
         page(std::move(page)),
         marginLeft(marginLeft),
-        marginTop(marginTop),
-        askMode(askMode) {}
+        marginTop(marginTop) {}
 
   void onEnter() override;
   void loop() override;
@@ -47,7 +43,6 @@ class DictionaryWordSelectActivity final : public Activity {
   void extractWords();
   int closestInRow(uint16_t row, int centerX) const;
   int wordAt(int x, int y) const;
-  void moveVertical(int direction);
   void performLookup();
   bool drawHighlightWithSnapshot();
   void drawHints() const;
@@ -85,5 +80,4 @@ class DictionaryWordSelectActivity final : public Activity {
   int16_t snapshotW = 0;
   int16_t snapshotH = 0;
   int snapshotIdx = -1;
-  const bool askMode;  // ver el constructor
 };

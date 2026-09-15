@@ -292,7 +292,7 @@ boardApi.post("/config/test", async (c) => {
   const out: { llm?: string; stt?: string; search?: string } = {};
   const t0 = Date.now();
   try {
-    const answer = await chatText({ system: "Respondé exactamente: ok", user: "decime ok", maxTokens: 10 });
+    const answer = await chatText({ system: "Responde exactamente: ok", user: "dime ok", maxTokens: 10 });
     out.llm = `${await providerLabel()} → "${answer.trim().slice(0, 40)}" (${Date.now() - t0} ms)`;
   } catch (err) {
     out.llm = `ERROR: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`;

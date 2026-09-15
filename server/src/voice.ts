@@ -30,10 +30,67 @@ import { sourcesLine } from "./websearch";
 import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { accountOf, type AppEnv } from "./tenant";
+import { randomUUID } from "node:crypto";
 
 // La zona es la de la cuenta del pedido (el lugar que eligió para el clima).
 
 export const voice = new Hono<AppEnv>();
+
+type ConversationTurn = { user: string; assistant: string };
+type VoiceConversation = { accountId: number; expiresAt: number; turns: ConversationTurn[] };
+const conversations = new Map<string, VoiceConversation>();
+const CONVERSATION_TTL_MS = 20 * 60 * 1000;
+const CONVERSATION_MAX_TURNS = 6;
+
+function conversationFor(accountId: number, id: string): VoiceConversation | null {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
+  const found = conversations.get(id);
+  if (!found || found.accountId !== accountId || found.expiresAt <= Date.now()) {
+    conversations.delete(id);
+    return null;
+  }
+  found.expiresAt = Date.now() + CONVERSATION_TTL_MS;
+  return found;
+}
+
+function contextualMessage(turns: ConversationTurn[], text: string): string {
+  if (!turns.length) return text;
+  const history = turns
+    .map((turn, index) => `Turno ${index + 1}\nUsuario: ${turn.user}\nAsistente: ${turn.assistant}`)
+    .join("\n\n");
+  return [
+    "CONTEXTO DE ESTA CONVERSACIÓN (solo para resolver referencias; no repitas acciones anteriores):",
+    history,
+    "NUEVO MENSAJE DEL USUARIO (clasifica y responde únicamente esto):",
+    text,
+  ].join("\n\n");
+}
+
+function rememberConversation(accountId: number, requestedId: string, text: string, reply: string): string {
+  let id = requestedId;
+  let conversation = conversationFor(accountId, id);
+  if (!conversation) {
+    if (conversations.size >= 512) {
+      const now = Date.now();
+      for (const [key, value] of conversations) if (value.expiresAt <= now) conversations.delete(key);
+      // Cota dura por si hay muchas conversaciones activas a la vez. Map
+      // conserva el orden de inserción, por lo que se descarta la más antigua.
+      if (conversations.size >= 512) {
+        const oldest = conversations.keys().next().value;
+        if (oldest) conversations.delete(oldest);
+      }
+    }
+    id = randomUUID();
+    conversation = { accountId, expiresAt: Date.now() + CONVERSATION_TTL_MS, turns: [] };
+    conversations.set(id, conversation);
+  }
+  conversation.turns.push({ user: text.slice(0, 500), assistant: reply.slice(0, 1200) });
+  if (conversation.turns.length > CONVERSATION_MAX_TURNS) {
+    conversation.turns.splice(0, conversation.turns.length - CONVERSATION_MAX_TURNS);
+  }
+  conversation.expiresAt = Date.now() + CONVERSATION_TTL_MS;
+  return id;
+}
 
 function framed(json: object, audio: Uint8Array | null): Response {
   const head = Buffer.from(JSON.stringify(json), "utf8");
@@ -75,7 +132,7 @@ const SCHEMA = {
           text: { type: "string", description: "Título de la tarea/recordatorio, ítem de compra o texto de la nota." },
           list: {
             type: ["string", "null"],
-            description: "Solo hay dos listas y no se pueden crear más: la de compras y la de tareas. Poné el nombre de una de esas dos, o null.",
+            description: "Solo hay dos listas y no se pueden crear más: la de compras y la de tareas. Incluye el nombre de una de esas dos, o null.",
           },
           dueAt: {
             type: ["string", "null"],
@@ -120,21 +177,21 @@ const SCHEMA = {
 // llm.ts, que la pone en el bloque cacheado (ver store.ts / llm.ts).
 function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang): string {
   return [
-    "Sos el asistente por voz de un aparato de tinta electrónica sin teclado. Recibís una frase transcripta",
-    "de voz (puede traer errores de reconocimiento; interpretala con sentido común y no comentes la transcripción)",
-    "y devolvés JSON según el esquema.",
-    `Ahora es ${now} (${weekday}), zona ${timeZone()}. Resolvé fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
+    "Eres el asistente por voz de un aparato de tinta electrónica sin teclado. Recibes una frase transcrita",
+    "de voz (puede contener errores de reconocimiento; interprétala con sentido común y no comentes la transcripción)",
+    "y devuelves JSON según el esquema.",
+    `Ahora es ${now} (${weekday}), zona ${timeZone()}. Convierte las fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
     `Hay exactamente DOS listas y no se pueden crear más: "${lists[0]}" (lo que se compra) y "${lists[1]}" (todo lo demás por hacer).`,
-    "Si el usuario nombra cualquier otra lista, ignorá ese nombre: lo que sea una compra va a la de compras y todo lo demás a la de tareas.",
-    "Reglas: 'recordame', 'avisame', 'despertame' → reminder. En dueAt poné la hora SOLO si el usuario la dijo; si dijo",
-    "el día pero no la hora ('mañana', 'el jueves'), poné la fecha sola (YYYY-MM-DD, sin T) y NUNCA inventes una hora.",
+    "Si el usuario nombra cualquier otra lista, ignora ese nombre: lo que sea una compra va a la de compras y todo lo demás a la de tareas.",
+    "Reglas: 'recuérdame', 'avísame', 'despiértame' → reminder. En dueAt incluye la hora SOLO si el usuario la dijo; si dijo",
+    "el día pero no la hora ('mañana', 'el jueves'), incluye solo la fecha (YYYY-MM-DD, sin T) y NUNCA inventes una hora.",
     "'Comprar X', 'compras:' o",
-    "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agregá', 'anotá que tengo que',",
-    "'tengo que', 'hay que' → task (va a la lista de tareas). 'Nota:', 'anotá' → note.",
-    "'Poné N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
+    "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agrega', 'anota que tengo que',",
+    "'tengo que', 'hay que' → task (va a la lista de tareas). 'Nota:', 'anota' → note.",
+    "'Pon N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
     "OJO con la unidad: `seconds` va SIEMPRE en SEGUNDOS. '20 segundos' → 20 (no 1200). '10 minutos' → 600. " +
-    "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repetí en la reply la misma unidad que dijo el usuario.",
-    "'Alarma a las', 'despertame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
+    "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repite en la reply la misma unidad que dijo el usuario.",
+    "'Alarma a las', 'despiértame a las' → alarm con dueAt (la próxima ocurrencia de esa hora) y reply corta.",
     "UNA HORA SIN DIA ES SIEMPRE LA PROXIMA VEZ QUE PASA: si ya pasó hoy, es MAÑANA. Dicho a las 12:52,",
     "'a las ocho de la mañana' es mañana a las 08:00, NO hoy. Nunca devuelvas un dueAt anterior a ahora.",
     "REPETICIONES: 'todos los días' → {kind:daily}. 'todos los días hábiles', 'de lunes a viernes', 'entre semana' →",
@@ -142,18 +199,18 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "'cada dos semanas' → {kind:weekly, interval:2}; 'un día sí y uno no', 'cada dos días' → {kind:daily, interval:2}.",
     "'todos los meses', 'el 5 de cada mes' → {kind:monthly}; 'todos los años', cumpleaños y aniversarios → {kind:yearly}.",
     "'hasta fin de mes', 'hasta el viernes' → until con la fecha absoluta YYYY-MM-DD. Si no dice nada de repetir, kind = none.",
-    "Con una repetición semanal poné en dueAt el PRIMER día que corresponde (el próximo de esos días) con la hora dicha.",
-    "'Acordate que', 'tené presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
-    "Si está corrigiendo algo que ya sabés de él ('ya no vivo en México', 'ahora trabajo en otro lado'), también es memory:",
-    "escribí el dato NUEVO completo en text y el servidor pisa el viejo.",
+    "Con una repetición semanal incluye en dueAt el PRIMER día que corresponde (el próximo de esos días) con la hora indicada.",
+    "'Recuerda que', 'ten presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
+    "Si está corrigiendo algo que ya sabes de él ('ya no vivo en México', 'ahora trabajo en otro lugar'), también es memory:",
+    "escribe el dato NUEVO completo en text y el servidor sustituye el anterior.",
     "needsWeb va en true SOLO si el usuario PIDIO EXPRESAMENTE que busque en internet",
-    "(busca, busca en internet, fijate en internet, averigua). Que la pregunta sea de actualidad NO alcanza:",
-    "si no pidio buscar, contesta con lo que sabes y aclara que el dato puede estar desactualizado.",
-    "Buscar cuesta plata y el usuario pidio decidirlo el. En todo lo demas va false.",
-    `'Traducí', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
-    "y reply la contesta con conocimiento general, corta y directa. Si la frase trae una acción y una pregunta, guardá la",
-    "acción en actions y contestá la pregunta en reply. Si es ambiguo entre acción y pregunta, elegí task y decilo.",
-    `El usuario habla en ${LANGUAGE_NAME[lang]}: los títulos de las acciones y reply van en ese idioma (salvo la traducción). Texto plano, sin markdown ni listas. Máximo 120 palabras salvo que pida más.`,
+    "(busca, busca en internet, revisa en internet, averigua). Que la pregunta sea de actualidad NO es suficiente:",
+    "si no pidió buscar, responde con lo que sabes y aclara que el dato puede estar desactualizado.",
+    "Buscar cuesta dinero y el usuario pidió decidirlo. En todos los demás casos va false.",
+    `'Traduce', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
+    "y reply la responde con conocimiento general, de forma breve y directa. Si la frase contiene una acción y una pregunta, guarda la",
+    "acción en actions y responde la pregunta en reply. Si es ambiguo entre acción y pregunta, elige task e indícalo.",
+    `El usuario habla en ${LANGUAGE_NAME[lang]}: los títulos de las acciones y reply van en ese idioma (salvo la traducción). Usa siempre español neutro, sin voseo ni expresiones regionales. Texto plano, sin markdown ni listas. Máximo 120 palabras salvo que pida más.`,
   ].join(" ");
 }
 
@@ -201,7 +258,7 @@ async function parseTimeReply(text: string, lang: Lang, baseDate = ""): Promise<
   }
   try {
     const out = await chatText({
-      system: "Devolvé solo la hora que dice el usuario en formato HH:MM de 24 horas, sin nada más. Si no se entiende, devolvé 09:00.",
+      system: "Devuelve solo la hora que dice el usuario en formato HH:MM de 24 horas, sin nada más. Si no se entiende, devuelve 09:00.",
       user: text,
       maxTokens: 40,
     });
@@ -227,14 +284,19 @@ export function repeatFromAction(raw: Action["repeat"]): Repeat {
 }
 type Parsed = { intent: string; reply: string; needsWeb: boolean; actions: Action[] };
 
-async function classify(acc: number, text: string, lang: Lang): Promise<Parsed> {
+async function classify(acc: number, text: string, lang: Lang, history: ConversationTurn[] = []): Promise<Parsed> {
   const store = await load(acc);
   const now = new Date();
   const local = now.toLocaleString("sv-SE", { timeZone: timeZone() }).slice(0, 16).replace(" ", "T");
   const weekday = now.toLocaleDateString("en-US", { weekday: "long", timeZone: timeZone() });
   const lists = DEFAULT_LISTS;  // son dos y son fijas: compras y tareas
   const raw = await chatJson<Partial<Parsed>>(
-    { system: systemPrompt(local, weekday, lists, lang), memories: memoryLines(store), user: text, maxTokens: 1024 },
+    {
+      system: systemPrompt(local, weekday, lists, lang),
+      memories: memoryLines(store),
+      user: contextualMessage(history, text),
+      maxTokens: 1024,
+    },
     SCHEMA,
   );
   // El esquema no obliga a nadie: un modelo compatible puede volver sin reply
@@ -254,14 +316,14 @@ async function classify(acc: number, text: string, lang: Lang): Promise<Parsed> 
 async function answerWithSearch(acc: number, question: string, lang: Lang): Promise<{ screen: string; spoken: string } | null> {
   try {
     const memories = memoryLines(await load(acc));
-    const hoy = new Date().toLocaleDateString("es-AR", { timeZone: timeZone(), day: "2-digit", month: "long", year: "numeric" });
+    const hoy = new Date().toLocaleDateString("es-MX", { timeZone: timeZone(), day: "2-digit", month: "long", year: "numeric" });
     const r = await chatSearch({
       memories,
       system: [
         `Hoy es ${hoy}.`,
-        "Sos el asistente por voz de un aparato de tinta electrónica. La pregunta es sobre algo actual:",
-        "buscá en internet antes de contestar en vez de responder de memoria y decí de cuándo es el dato.",
-        "La pregunta llega transcripta de voz: puede traer errores; interpretala con sentido común.",
+        "Eres el asistente por voz de un aparato de tinta electrónica. La pregunta es sobre algo actual:",
+        "busca en internet antes de responder y señala de cuándo es el dato.",
+        "La pregunta llega transcrita de voz: puede contener errores; interprétala con sentido común.",
         `Idioma: ${LANGUAGE_NAME[lang]}. Texto plano, sin markdown ni listas. Máximo 90 palabras.`,
       ].filter(Boolean).join(" "),
       user: question,
@@ -357,6 +419,9 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
   const speak = c.req.query("speak") ?? "short";  // none | short | all (ajuste del aparato)
+  const requestedConversationId = (c.req.query("conversation") ?? "").slice(0, 36);
+  const priorConversation = conversationFor(acc, requestedConversationId);
+  const conversationTurns = priorConversation?.turns ?? [];
   // Segunda vuelta cuando le preguntamos la hora de un recordatorio: el
   // aparato reenvía el título pendiente y esta grabación es solo la hora.
   const pending = (c.req.query("pending") ?? "").slice(0, 200);
@@ -409,7 +474,7 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
       console.log(`voice: hora de "${pending}" -> ${aligned} (${repText})`);
       return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", id: pendingId, title: pending, when: label, repeatText: repText }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
     }
-    const parsed = await classify(acc, text, lang);
+    const parsed = await classify(acc, text, lang, conversationTurns);
     // Recordatorio sin hora (con día o sin día): se pregunta en vez de inventarla,
     // y no se guarda nada todavía — antes execute() ya lo había guardado y el
     // segundo turno creaba un duplicado.
@@ -435,7 +500,7 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     // Pregunta de actualidad: se vuelve a contestar con búsqueda.
     let spokenReply = parsed.reply;
     if (parsed.intent === "question" && parsed.needsWeb && !(parsed.actions ?? []).length) {
-      const better = await answerWithSearch(acc, text, lang);
+      const better = await answerWithSearch(acc, contextualMessage(conversationTurns, text), lang);
       if (better) {
         parsed.reply = better.screen;
         spokenReply = better.spoken;
@@ -458,7 +523,11 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     // reproducirlo (45 s de ADPCM son ~360 KB) y no sabe reproducir mientras baja.
     const ms = { stt: tStt - t0, llm: tLlm - tStt, tts: Date.now() - tLlm, total: Date.now() - t0 };
     console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
-    return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds, audio: audio?.length ?? 0, ms }, audio);
+    const conversationId = parsed.intent === "question"
+      ? rememberConversation(acc, requestedConversationId, text, parsed.reply)
+      : "";
+    return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds,
+      conversationId, audio: audio?.length ?? 0, ms }, audio);
   } catch (err) {
     // Igual que en ask.ts: el aparato tiene que poder distinguir "falta la
     // clave" de "el proveedor falló".

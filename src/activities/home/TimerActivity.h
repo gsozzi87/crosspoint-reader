@@ -58,6 +58,7 @@ class TimerActivity final : public Activity {
   AlertBeep beep;
   SpeechOut speech;
   bool spoken = false;
+  unsigned long speechStartedAt = 0;
 
   long elapsedMs() const;
   long remainingSeconds() const;
