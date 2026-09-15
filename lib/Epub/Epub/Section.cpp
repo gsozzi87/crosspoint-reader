@@ -3,9 +3,9 @@
 #include <HalStorage.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <Serialization.h>
 
 #include <vector>
-#include <Serialization.h>
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
@@ -76,7 +76,15 @@ constexpr uint32_t HEADER_SIZE = sizeof(uint8_t) + sizeof(int) + sizeof(float) +
 // Out-of-line so the unique_ptr<ChapterHtmlSlimParser> in BuildContext can be
 // constructed/destroyed where the parser's full definition is visible.
 Section::Section(const std::shared_ptr<Epub>& epub, const int spineIndex, GfxRenderer& renderer)
-    : epub(epub),
+    : epubOwner(epub),
+      epub(epub.get()),
+      spineIndex(spineIndex),
+      renderer(renderer),
+      filePath(epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".bin") {}
+
+Section::Section(Epub* epub, const int spineIndex, GfxRenderer& renderer)
+    : epubOwner(),
+      epub(epub),
       spineIndex(spineIndex),
       renderer(renderer),
       filePath(epub->getCachePath() + "/sections/" + std::to_string(spineIndex) + ".bin") {}
@@ -413,8 +421,12 @@ bool Section::startBuild(const ReaderRenderSpec& spec, const std::function<void(
   // captures the BuildContext pointer to append to its in-RAM LUT; build_ owns the
   // context for the parser's whole lifetime.
   BuildContext* ctxPtr = ctx.get();
+  if (!epubOwner) {
+    LOG_ERR("SCT", "Cannot build a section from a borrowed EPUB");
+    return false;
+  }
   ctx->parser = makeUniqueNoThrow<ChapterHtmlSlimParser>(
-      epub, ctxPtr->parsePath, renderer, spec.fontId, spec.lineCompression, spec.extraParagraphSpacing,
+      epubOwner, ctxPtr->parsePath, renderer, spec.fontId, spec.lineCompression, spec.extraParagraphSpacing,
       spec.paragraphAlignment, spec.viewportWidth, spec.viewportHeight, spec.hyphenationEnabled,
       spec.focusReadingEnabled,
       [this, ctxPtr](std::unique_ptr<Page> page, const uint16_t paragraphIndex, const uint16_t listItemIndex,
