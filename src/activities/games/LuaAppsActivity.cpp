@@ -55,6 +55,11 @@ void LuaAppsActivity::clampScroll() {
 void LuaAppsActivity::startSelected() {
   if (apps.empty()) return;
   app = makeUniqueNoThrow<LuaApp>();
+  if (!app) {
+    state = FAILED;
+    requestUpdate();
+    return;
+  }
   if (!app->open(renderer, apps[selected].path)) {
     state = FAILED;
   } else {

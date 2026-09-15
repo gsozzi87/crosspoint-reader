@@ -62,12 +62,12 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
 - [ ] Se llena **pareja** de vacía a llena entre 1,2 s y 3 s, sin los dos escalones de antes.
 - [ ] Soltar a mitad de camino suspende.
 
-### 5. Los temas (1.5.77 / 78)
+### 5. Tema único (1.5.89)
 
-- [ ] `Ajustes → Pantalla → Interfaz` ofrece **sólo Diario, Bento y Lyra**.
-- [ ] Cambiar entre ellos se ve **en el acto**, sin reiniciar.
-- [ ] En el log, `[UI] Using Diario theme`.
-- [ ] Que el cambio se note en el **hub y la agenda**, no sólo en el lector (ése era todo el punto).
+- [ ] `Ajustes → Pantalla` no muestra un selector de interfaz en WS397.
+- [ ] Hub, listas, agenda, ajustes, noticias y lector usan Lyra sin mezclar tipografías.
+- [ ] En el log, `[UI] Using Lyra theme`.
+- [ ] Que el cambio se note en el **hub y la agenda**, no sólo en el lector.
 
 ---
 

@@ -575,7 +575,13 @@ void NewsActivity::renderArticle() {
   const int hintY = bottom - listui::HINT_H;
   const int pagerY = hintY - PAGER_H;
   const int room = pagerY - listui::GAP - top;
-  const std::string text = chunkText(chunkIndex);
+  std::string text = chunkText(chunkIndex);
+  // Los cuerpos del servidor conservan saltos de párrafo. El motor de fuentes
+  // no dibuja caracteres de control: wrappedText puede devolver una línea que
+  // todavía los contiene y drawText intentaría buscar el glifo U+000A.
+  for (char& c : text) {
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+  }
 
   // El cuerpo va en la cara de lectura y con el paso de renglón del visor
   // (40 px): en UI_10 pegado a 26 era la pantalla más incómoda de leer del

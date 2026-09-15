@@ -24,6 +24,7 @@ let calMonth = "";   // mes visible "YYYY-MM"
 let calSel = "";     // día elegido "YYYY-MM-DD"
 let tripCache = {};  // id -> viaje entero
 let rssCache = null;
+let newsPack = null; // estado del paquete masticado que descarga el aparato
 
 const $ = (id) => document.getElementById(id);
 const qs = (root, sel) => root.querySelector(sel);
@@ -675,6 +676,16 @@ function noticiasView() {
   for (const f of S.feeds) html += '<li><span class="kind">📰</span><div class="body" data-act="feed-open" data-id="' + f.id + '"><span class="title">' + esc(f.name) + '</span><span class="sub ellip">' + esc(f.url) + "</span></div><span class=\"chev\">›</span></li>";
   html += "</ul></div>";
   if (S.feeds.length) {
+    if (newsPack === null) {
+      newsPack = "loading";
+      api("/api/news/status").then((r) => { newsPack = r; if (parts()[0] === "ajustes" && parts()[1] === "noticias") render(); })
+        .catch((e) => { newsPack = { error: e.message }; if (parts()[0] === "ajustes" && parts()[1] === "noticias") render(); });
+    }
+    const packText = newsPack === "loading" ? "Consultando…" : newsPack.error ? newsPack.error :
+      newsPack.items + " noticias listas · " + newsPack.chewed + " resumidas" + (newsPack.building ? " · preparando…" : "");
+    html += '<div class="card"><h2><span class="grow">Paquete del lector</span><button class="ghost small" data-act="news-pack-refresh">Preparar ahora</button></h2>' +
+      '<p class="hint">El servidor baja los artículos, limpia menús y publicidad y resume los que puede con la IA. El lector recibe este paquete y puede abrirlo sin conexión.</p>' +
+      '<p class="' + (newsPack.error ? "bad" : "muted") + '">' + esc(packText) + '</p></div>';
     html += '<div class="card"><h2><span class="grow">Titulares</span>' + (rssCache ? '<button class="ghost small" data-act="rss-reload">Actualizar</button>' : '<button class="ghost small" data-act="rss-load">Ver</button>') + "</h2>";
     if (rssCache === "loading") html += '<p class="loading">Bajando los feeds…</p>';
     else if (rssCache) {
@@ -705,6 +716,8 @@ function feedSheet(f) {
         if (!sure("¿Sacar el feed «" + f.name + "»?")) return false;
         rssCache = null;
         await change(() => api("/api/hub/edit", { kind: "feed", id: f.id, action: "delete" }), "Sacado");
+        newsPack = null;
+        await api("/api/news/refresh?lang=es", {});
         return true;
       },
     });
@@ -1339,6 +1352,14 @@ document.addEventListener("click", async (ev) => {
         render();
         break;
       }
+      case "news-pack-refresh": {
+        await api("/api/news/refresh?lang=es", {});
+        newsPack = null;
+        toast("Preparando noticias para el lector", 3500);
+        setTimeout(() => { newsPack = null; if (parts()[0] === "ajustes" && parts()[1] === "noticias") render(); }, 5000);
+        render();
+        break;
+      }
 
       // Fotos
 
@@ -1432,6 +1453,8 @@ document.addEventListener("submit", async (ev) => {
       toast("Buscando el feed…");
       const r = await change(() => api("/api/board/feed", { url, name: f.name.value }));
       rssCache = null;
+      newsPack = null;
+      await api("/api/news/refresh?lang=es", {});
       toast(r.name + ": " + r.count + " titulares", 4000);
     } else if (kind === "settings") {
       await change(() => api("/api/board/settings", {

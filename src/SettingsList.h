@@ -14,8 +14,8 @@
 
 #include "CrossPointSettings.h"
 #include "KOReaderCredentialStore.h"
-#include "ServerCredentialStore.h"
 #include "ReaderFontSizes.h"
+#include "ServerCredentialStore.h"
 #include "activities/settings/SettingsActivity.h"
 #include "util/DictionaryRegistry.h"
 
@@ -539,13 +539,12 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                              // enciende estaba escondido y clavado en LP_MENU_DISABLED: el
                              // marcador por OK mantenido era inalcanzable, y CLAUDE.md decía
                              // que "ahora manda el ajuste de siempre". Decía mal.
-                             return s.nameId == StrId::STR_TIME_TO_SLEEP ||
-                                    s.nameId == StrId::STR_SLEEP_SCREEN ||
+                             return s.nameId == StrId::STR_TIME_TO_SLEEP || s.nameId == StrId::STR_SLEEP_SCREEN ||
                                     s.nameId == StrId::STR_SLEEP_COVER_MODE ||
                                     s.nameId == StrId::STR_SLEEP_COVER_FILTER ||
                                     s.nameId == StrId::STR_QUICK_RESUME_TIMEOUT ||
                                     s.nameId == StrId::STR_SUNLIGHT_FADING_FIX ||
-                                    // Y el selector de interfaz: la ws397 tiene UN tema, Diario.
+                                    // Y el selector de interfaz: la WS397 tiene UN tema, Lyra.
                                     // Hubo tres (Diario, Bento, Lyra) y elegir no servía de nada:
                                     // `listui` sólo miraba las cuatro CARAS del tema, así que entre
                                     // Bento y Lyra la única diferencia era el renglón de detalle.
@@ -553,7 +552,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                     // la conclusión del usuario fue la correcta igual: tres temas
                                     // son tres cosas que mantener y probar para que el aparato se
                                     // vea de tres maneras parecidas. `UITheme::wantedTheme()`
-                                    // devuelve Diario fijo en esta placa, así que la fila no tenía
+                                    // devuelve Lyra fijo en esta placa, así que la fila no tenía
                                     // nada que ofrecer.
                                     s.nameId == StrId::STR_UI_THEME;
                            }),

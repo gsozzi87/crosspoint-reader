@@ -26,7 +26,7 @@
 //   GET /api/assets/status   -> cómo va la generación (para /board)
 //   POST /api/assets/build   -> forzar la generación (idempotente)
 //
-// Kinds: `bible` (66 archivos, uno por libro), `cards` (el índice de las
+// Kinds: `bible` (66 archivos, uno por libro), `apps` (Lua de fábrica), `cards` (el índice de las
 // tarjetas más el dibujo de cada una, BMP de 2 bpp en 4 grises que lee el
 // `Bitmap` del firmware), `sounds` (la palabra de cada tarjeta dicha por Piper,
 // ADPCM del mismo formato que /api/tts), `icons` (reservado).
@@ -48,6 +48,7 @@ import { synthesize } from "./tts";
 import { readJsonSafe, writeJsonAtomic } from "./fsjson";
 
 const DIR = process.env.ASSETS_DIR ?? "/data/assets";
+const FACTORY_APPS_DIR = process.env.FACTORY_APPS_DIR ?? `${import.meta.dir}/../../examples/Apps`;
 const BUILD_ON_START = process.env.ASSETS_BUILD !== "0";
 // Los dibujos salen de Noto Color Emoji (googlefonts/noto-emoji): Apache 2.0 +
 // OFL, o sea que NO obligan a atribuir a nadie, y son ilustraciones llenas, no
@@ -73,7 +74,7 @@ const ART_HI = 190;
 // descartan solas y se regeneran (ver loadIndex).
 const ART_REV = `noto/${NOTO_REF}/4gray-v1`;
 
-export type AssetKind = "bible" | "cards" | "sounds" | "icons";
+export type AssetKind = "bible" | "apps" | "cards" | "sounds" | "icons";
 // `tag` es de qué se generó el archivo (el dibujo, o la palabra que dice el
 // clip): si cambia, esa entrada sola se rehace. Sin eso, cambiar UNA palabra
 // obligaba a regenerar los 480 clips de Piper (minutos) o dejaba el audio viejo
@@ -90,6 +91,7 @@ const indexes = new Map<Lang, Index>();
 // coincida se descarta del índice y se genera de nuevo.
 function expectedTags(): Map<string, string> {
   const out = new Map<string, string>();
+  for (const name of ["reloj", "ahorcado", "tresenraya"]) out.set(`apps/${name}`, `factory/${name}/1`);
   out.set("cards/index", `index/${CARDS.length}`);
   for (const c of CARDS) {
     out.set(`cards/${c.id}`, c.icon);
@@ -128,7 +130,7 @@ async function loadIndex(lang: Lang): Promise<Index> {
   const want = expectedTags();
   idx.entries = Object.fromEntries(
     Object.entries(idx.entries).filter(([id, e]) => {
-      if (!want.has(id)) return e.kind === "bible";  // ids de tarjetas que ya no existen
+      if (!want.has(id)) return e.kind === "bible";  // ids viejos que ya no existen
       return e.tag === want.get(id);
     }),
   );
@@ -419,6 +421,15 @@ async function plan(lang: Lang): Promise<Planned[]> {
         const t = await bookText(lang, i);
         return t ? new TextEncoder().encode(t) : null;
       },
+    });
+  }
+  for (const name of ["reloj", "ahorcado", "tresenraya"]) {
+    out.push({
+      id: `apps/${name}`,
+      kind: "apps",
+      path: `/Apps/${name}.lua`,
+      tag: `factory/${name}/1`,
+      make: async () => new Uint8Array(await readFile(`${FACTORY_APPS_DIR}/${name}.lua`)),
     });
   }
   // Las tarjetas salieron del aparato en 1.5.63 ("tarjetas afuera, se va, luego
