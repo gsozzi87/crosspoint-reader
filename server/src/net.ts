@@ -87,15 +87,34 @@ function isPrivateHost(hostname: string): boolean {
 
 type PublicAddress = { address: string; family: 4 | 6 };
 
+function isCgnatAddress(address: string): boolean {
+  const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(address);
+  return !!m && Number(m[1]) === 100 && Number(m[2]) >= 64 && Number(m[2]) <= 127;
+}
+
+// Railway represents some public Internet destinations with 100.64/10
+// addresses inside its egress network. Those addresses are labelled
+// `peerKind: internet` by Railway; rejecting them after a DNS lookup broke
+// legitimate CDN-backed feeds such as El Financiero. A literal 100.64/10 URL
+// remains blocked by checkUrl(): this exception applies only to an address
+// returned for a hostname and only while running on Railway.
+export function selectResolvedAddress(
+  addresses: PublicAddress[],
+  railway = Boolean(process.env.RAILWAY_ENVIRONMENT_ID || process.env.RAILWAY_PROJECT_ID),
+): PublicAddress | null {
+  return addresses.find((entry) => !isPrivateHost(entry.address) || (railway && isCgnatAddress(entry.address))) ?? null;
+}
+
 async function publicResolution(hostname: string): Promise<PublicAddress> {
   if (isPrivateHost(hostname)) throw new Error(`no se puede usar un host de red interna (${hostname})`);
   const literalFamily = isIP(hostname);
   if (literalFamily) return { address: hostname, family: literalFamily as 4 | 6 };
   const addresses = await lookup(hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some((entry) => isPrivateHost(entry.address))) {
+  const selected = selectResolvedAddress(addresses as PublicAddress[]);
+  if (!selected) {
     throw new Error(`el host resuelve a una red interna (${hostname})`);
   }
-  return { address: addresses[0]!.address, family: addresses[0]!.family as 4 | 6 };
+  return selected;
 }
 
 function isLoopback(hostname: string): boolean {

@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { checkUrl } from "../../server/src/net";
+import { checkUrl, selectResolvedAddress } from "../../server/src/net";
 
 const bloquea = (u: string) => expect(checkUrl(u, { allowHttp: true }).ok).toBe(false);
 const pasa = (u: string) => expect(checkUrl(u, { allowHttp: true }).ok).toBe(true);
@@ -30,4 +30,25 @@ test("las públicas siguen pasando", () => {
   pasa("https://api.groq.com/openai/v1");
   pasa("http://8.8.8.8/");
   pasa("https://paper-esp32.up.railway.app/");
+});
+
+test("Railway puede usar su salida CGNAT sin aceptar una URL CGNAT literal", () => {
+  bloquea("https://100.64.0.2/feed.xml");
+  expect(selectResolvedAddress([{ address: "100.64.0.2", family: 4 }], true)).toEqual({
+    address: "100.64.0.2",
+    family: 4,
+  });
+  expect(selectResolvedAddress([{ address: "100.64.0.2", family: 4 }], false)).toBeNull();
+});
+
+test("una dirección privada no invalida otra respuesta pública", () => {
+  expect(
+    selectResolvedAddress(
+      [
+        { address: "10.0.0.5", family: 4 },
+        { address: "23.45.67.89", family: 4 },
+      ],
+      false,
+    ),
+  ).toEqual({ address: "23.45.67.89", family: 4 });
 });
