@@ -334,8 +334,8 @@ void EpubReaderActivity::openDictionaryWordSelect() {
   orientedMarginTop += SETTINGS.screenMargin;
   orientedMarginLeft += SETTINGS.screenMargin;
 
-  startActivityForResult(makeUniqueNoThrow<DictionaryWordSelectActivity>(
-                             renderer, mappedInput, std::move(page), orientedMarginLeft, orientedMarginTop),
+  startActivityForResult(makeUniqueNoThrow<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
+                                                                         orientedMarginLeft, orientedMarginTop),
                          [this](const ActivityResult&) { requestUpdate(); });
 }
 

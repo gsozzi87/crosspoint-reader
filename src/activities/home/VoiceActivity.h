@@ -43,8 +43,8 @@ class VoiceActivity final : public Activity {
   unsigned long speakStartedAt = 0;
 
   VoiceRecorder recorder{20};  // 20 s: con 12 se cortaba a mitad de frase
-  std::string heard;   // what the server understood
-  std::string intent;  // question | reminder | task | ...
+  std::string heard;           // what the server understood
+  std::string intent;          // question | reminder | task | ...
   std::string reply;
   // Identifica solo esta conversación en el servidor. No contiene el texto y
   // caduca allí; permite preguntar "¿y por qué?" sin perder el tema.
@@ -57,9 +57,9 @@ class VoiceActivity final : public Activity {
   bool returnToCaller = false;
   bool requestPending = false;
   FriendlyWifi wifi;
-  bool wifiPicker = false;  // la pantalla de seleccion tiene el foco
-  int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
-  SpeechOut speech;      // the reply, spoken by the server's Piper, played with the text
+  bool wifiPicker = false;   // la pantalla de seleccion tiene el foco
+  int timerSeconds = 0;      // timer/alarm intent: hand off to TimerActivity
+  SpeechOut speech;          // the reply, spoken by the server's Piper, played with the text
   std::string pendingTitle;  // reminder waiting for its hour (the server asked)
   std::string pendingDate;   // día que ya se había dicho ("2026-09-08"), vacío si no dijo ninguno
   bool askingTime = false;

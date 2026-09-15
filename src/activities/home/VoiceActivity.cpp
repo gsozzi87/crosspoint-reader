@@ -512,8 +512,7 @@ void VoiceActivity::render(RenderLock&&) {
     case REPLY:
       break;
     case FOLLOW_UP:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 26, tr(STR_VOICE_FOLLOW_UP), true,
-                                EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 26, tr(STR_VOICE_FOLLOW_UP), true, EpdFontFamily::BOLD);
       renderer.drawCenteredText(UI_10_FONT_ID, mid + 12, tr(STR_VOICE_FOLLOW_UP_HINT), true);
       confirmLabel = tr(STR_VOICE_FOLLOW_UP_ACTION);
       break;

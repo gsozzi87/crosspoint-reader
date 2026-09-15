@@ -14,7 +14,7 @@
 #include "fontIds.h"
 
 namespace {
-constexpr int SIDE = 24;      // ÚNICO margen lateral de la pantalla
+constexpr int SIDE = 24;  // ÚNICO margen lateral de la pantalla
 // Atrás mantenido sale siempre, aunque la app se coma el botón.
 constexpr unsigned long EXIT_HOLD_MS = 1000;
 }  // namespace

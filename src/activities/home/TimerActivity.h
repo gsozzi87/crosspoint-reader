@@ -48,9 +48,9 @@ class TimerActivity final : public Activity {
   bool running = false;
   bool finished = false;
   unsigned long finishedAt = 0;
-  unsigned long startMs = 0;      // when the current run (segment) started
+  unsigned long startMs = 0;        // when the current run (segment) started
   unsigned long accumulatedMs = 0;  // paused time carried over
-  long totalSeconds = 0;          // countdown / pomodoro segment length
+  long totalSeconds = 0;            // countdown / pomodoro segment length
   bool pomodoroBreak = false;
   int pomodoroRound = 1;
   long lastShownSeconds = -1;
