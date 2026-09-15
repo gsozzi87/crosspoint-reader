@@ -44,6 +44,10 @@ class LuaApp {
   // tabla que crece sin parar se lleva puesto todo lo demás.
   static constexpr size_t MEM_CAP = 192 * 1024;
   static constexpr size_t SCRIPT_CAP = 64 * 1024;
+  // Native drawing/logging lives outside Lua's allocator, so it needs its own
+  // hard caps as well.
+  static constexpr size_t TEXT_CAP = 512;
+  static constexpr size_t LOG_CAP = 1024;
   // Instrucciones antes de cortar una llamada. Un `while true do end` tiene que
   // terminar en un error de la app, no en un aparato colgado.
   static constexpr int STEP_LIMIT = 400000;

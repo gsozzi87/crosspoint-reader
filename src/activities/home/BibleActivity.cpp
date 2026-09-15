@@ -11,30 +11,30 @@
 #include <WiFi.h>
 
 #include <algorithm>
-
-#include "HubStore.h"
 #include <cstring>
 
+#include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
+#include "activities/ListStyle.h"
 #include "activities/home/AssetSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 #include "voice/VoiceNotes.h"  // mmss(): el contador de la grabación
-#include "activities/ListStyle.h"
-#include "components/Selection.h"
 
 namespace {
 constexpr const char* TAG = "BIBLE";
 constexpr int PAGER_H = 24;  // franja del paginador, debajo de las filas
 constexpr unsigned long VOICE_HOLD_MS = 1200;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
-constexpr uint32_t ASK_TIMEOUT_MS = 90000;   // transcripción + LLM del lado del servidor
+constexpr int PARTIALS_BEFORE_CLEAN = 12;        // regla del panel: refresco limpio cada 10-15 parciales
+constexpr uint32_t ASK_TIMEOUT_MS = 90000;       // transcripción + LLM del lado del servidor
 constexpr size_t MAX_CHAPTER_BYTES = 24 * 1024;  // lo que se manda del capítulo (Salmo 119 es el único que roza esto)
 constexpr uint32_t RECORD_SECONDS = 20;
 }  // namespace
@@ -132,14 +132,16 @@ bool BibleActivity::readChapter(const int book, const int chapter, std::string& 
 bool BibleActivity::fetchChapter(const int book, const int chapter, std::string& text) {
   ServerClient::Response resp;
   const ServerClient::Result r = SERVER_CLIENT.get(
-      "/api/bible/chapter?lang=" + lang + "&book=" + std::to_string(book) + "&chapter=" + std::to_string(chapter), resp);
+      "/api/bible/chapter?lang=" + lang + "&book=" + std::to_string(book) + "&chapter=" + std::to_string(chapter),
+      resp);
   if (r != ServerClient::Result::Ok) return false;
   JsonDocument doc;
   if (deserializeJson(doc, resp.body) != DeserializationError::Ok) return false;
   text = doc["text"] | "";
   if (text.empty()) return false;
   HalFile f;
-  if (Storage.openFileForWrite(TAG, cacheDir() + "/" + std::to_string(book) + "-" + std::to_string(chapter) + ".txt", f)) {
+  if (Storage.openFileForWrite(TAG, cacheDir() + "/" + std::to_string(book) + "-" + std::to_string(chapter) + ".txt",
+                               f)) {
     f.write(reinterpret_cast<const uint8_t*>(text.data()), text.size());
     f.close();
   }
@@ -202,14 +204,20 @@ std::string norm(const std::string& in) {
     if (c == 0xC3 && i + 1 < in.size()) {  // UTF-8 de las vocales acentuadas
       const unsigned char n = in[++i];
       const char* map = "aaaaaaaceeeeiiiidnooooo*ouuuuy";
-      if (n >= 0x80 && n <= 0x9E) out += map[n - 0x80];
-      else if (n >= 0xA0 && n <= 0xBE) out += map[n - 0xA0];
+      if (n >= 0x80 && n <= 0x9E)
+        out += map[n - 0x80];
+      else if (n >= 0xA0 && n <= 0xBE)
+        out += map[n - 0xA0];
       continue;
     }
-    if (c >= 'A' && c <= 'Z') out += static_cast<char>(c - 'A' + 'a');
-    else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) out += static_cast<char>(c);
-    else if (c == ' ') out += ' ';
-    else if (c < 0x80) out += ' ';
+    if (c >= 'A' && c <= 'Z')
+      out += static_cast<char>(c - 'A' + 'a');
+    else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9'))
+      out += static_cast<char>(c);
+    else if (c == ' ')
+      out += ' ';
+    else if (c < 0x80)
+      out += ' ';
   }
   // Espacios de más
   std::string tidy;
@@ -232,9 +240,8 @@ std::string norm(const std::string& in) {
 bool BibleActivity::parseRefLocal(const std::string& spoken, int& book, int& chapter, int& verse) const {
   std::string s = norm(spoken);
   // Ordinales dichos con palabras
-  const char* ord[][2] = {{"primera", "1"}, {"primero", "1"}, {"segunda", "2"}, {"segundo", "2"},
-                          {"tercera", "3"}, {"tercero", "3"}, {"first", "1"},   {"second", "2"},
-                          {"third", "3"}};
+  const char* ord[][2] = {{"primera", "1"}, {"primero", "1"}, {"segunda", "2"}, {"segundo", "2"}, {"tercera", "3"},
+                          {"tercero", "3"}, {"first", "1"},   {"second", "2"},  {"third", "3"}};
   for (const auto& o : ord) {
     const size_t at = s.find(o[0]);
     if (at != std::string::npos) s = s.substr(0, at) + o[1] + s.substr(at + strlen(o[0]));
@@ -275,7 +282,10 @@ bool BibleActivity::parseRefLocal(const std::string& spoken, int& book, int& cha
   int best = -1;
   for (size_t i = 0; i < books.size(); ++i) {
     const std::string candidate = norm(books[i].name);
-    if (candidate == name) { best = static_cast<int>(i); break; }
+    if (candidate == name) {
+      best = static_cast<int>(i);
+      break;
+    }
     if (best < 0 && candidate.compare(0, name.size(), name) == 0) best = static_cast<int>(i);
   }
   if (best < 0) return false;
@@ -387,9 +397,9 @@ void BibleActivity::showChapter(const std::string& text) {
   // El capítulo va al visor de lectura con la referencia de título (UI_14) y en
   // modo versículos: el número que abre cada uno sale en SMALL negrita, así se
   // sigue una cita sin que un número del tamaño del texto corte la lectura.
-  auto viewer = std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, title, body,
-                                                               /*htmlDefinition=*/false,
-                                                               /*verseNumbers=*/true);
+  auto viewer = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, title, body,
+                                                                /*htmlDefinition=*/false,
+                                                                /*verseNumbers=*/true);
   // "A la Biblia no le encuentro el comando para preguntarle cosas": preguntar
   // solo existía en la lista de capítulos, y uno pregunta mientras LEE. Atrás
   // mantenido dentro del capítulo abre el menú de voz con ese capítulo cargado,
@@ -414,7 +424,7 @@ void BibleActivity::ensureConnected(const State next) {
     return;
   }
   state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -523,7 +533,7 @@ void BibleActivity::performAsk() {
   suppressAssetOffer = false;
   state = READING;
   // La pregunta transcripta como título, igual que en "Preguntarle al libro".
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, question, answer),
+  startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, question, answer),
                          [this](const ActivityResult&) {
                            state = CHAPTERS;
                            forceClean = true;
@@ -668,8 +678,10 @@ void BibleActivity::loop() {
       if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, VOICE_HOLD_MS)) {
         // En los libros solo se puede buscar; en los capítulos hay uno elegido,
         // así que además se puede preguntar sobre él y hay que ofrecer las dos.
-        if (inBooks) startVoice(/*ask=*/false);
-        else openVoiceMenu();
+        if (inBooks)
+          startVoice(/*ask=*/false);
+        else
+          openVoiceMenu();
         break;
       }
       buttonNavigator.onNext([&] {
@@ -684,7 +696,8 @@ void BibleActivity::loop() {
         if (inBooks) {
           state = CHAPTERS;
           listTop = 0;
-          chapterIndex = HUB_STORE.bibleBook == bookIndex && HUB_STORE.bibleChapter > 0 ? HUB_STORE.bibleChapter - 1 : 0;
+          chapterIndex =
+              HUB_STORE.bibleBook == bookIndex && HUB_STORE.bibleChapter > 0 ? HUB_STORE.bibleChapter - 1 : 0;
           if (chapterIndex >= books[bookIndex].chapters) chapterIndex = 0;
           requestUpdate();
         } else {
@@ -760,7 +773,7 @@ void BibleActivity::loop() {
       // vuelve a la lista.
       if (offerAssets && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
         offerAssets = false;
-        startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput),
+        startActivityForResult(makeUniqueNoThrow<AssetSyncActivity>(renderer, mappedInput),
                                [this](const ActivityResult&) {
                                  refreshCardCount();
                                  state = books.empty() ? FAILED : BOOKS;
@@ -822,13 +835,13 @@ void BibleActivity::render(RenderLock&&) {
       int y = top;
       for (int i = listTop; i < count && y + listui::ROW1_H <= bottom; ++i) {
         const int book = inBooks ? i : bookIndex;
-        const std::string label = inBooks ? books[book].name
-                                          : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
+        const std::string label =
+            inBooks ? books[book].name : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
         // En los capítulos el metadato dice si se lee sin WiFi; antes era un
         // cuadradito de 6 px que no se entendía sin manual.
-        const std::string meta = inBooks ? std::to_string(books[book].chapters)
-                                         : (chapterCached(bookIndex, i + 1) ? std::string(tr(STR_PHOTO_ON_CARD))
-                                                                            : std::string());
+        const std::string meta =
+            inBooks ? std::to_string(books[book].chapters)
+                    : (chapterCached(bookIndex, i + 1) ? std::string(tr(STR_PHOTO_ON_CARD)) : std::string());
         listui::RowSpec spec;
         spec.title = label.c_str();
         spec.meta = meta.empty() ? nullptr : meta.c_str();
@@ -881,8 +894,8 @@ void BibleActivity::render(RenderLock&&) {
       break;
     }
     case LOADING:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, asking ? tr(STR_ASK_ASKING) : tr(STR_BIBLE_LOADING),
-                                true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, asking ? tr(STR_ASK_ASKING) : tr(STR_BIBLE_LOADING), true,
+                                EpdFontFamily::BOLD);
       confirmLabel = "";
       break;
     case SEARCHING: {
@@ -899,7 +912,8 @@ void BibleActivity::render(RenderLock&&) {
     case FAILED:
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);
       if (!failureDetail.empty()) {
-        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, renderer.truncatedText(UI_10_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10,
+                                  renderer.truncatedText(UI_10_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
       }
       if (offerAssets) {
         renderer.drawCenteredText(UI_10_FONT_ID, mid + 44, tr(STR_BIBLE_FROM_PACKAGE));

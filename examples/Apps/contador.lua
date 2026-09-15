@@ -20,6 +20,6 @@ end
 
 function on_draw()
   local texto = tostring(n)
-  cp.text((cp.width() - cp.textw(texto, 14)) // 2, 360, texto, 14, true)
-  cp.text(40, 700, "Palanca: sumar y restar · OK: volver a cero", 10)
+  cp.text((cp.width() - cp.textw(texto, 14)) // 2, (cp.height() - cp.texth(14)) // 2, texto, 14, true)
+  cp.text(40, cp.height() - 50, "Palanca: sumar y restar · OK: volver a cero", 10)
 end

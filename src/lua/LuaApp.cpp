@@ -4,6 +4,7 @@
 #include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
+#include <Utf8.h>
 #include <esp_heap_caps.h>
 
 #include <algorithm>
@@ -36,6 +37,18 @@ constexpr const char* EXT = ".lua";
 GfxRenderer* g_renderer = nullptr;
 bool g_quit = false;
 std::string g_appStem;
+char g_nativeText[LuaApp::TEXT_CAP + 1] = {};
+char g_logLine[LuaApp::LOG_CAP + 1] = {};
+
+const char* boundedText(lua_State* L, const int index) {
+  size_t len = 0;
+  const char* source = luaL_checklstring(L, index, &len);
+  len = std::min(len, LuaApp::TEXT_CAP);
+  len = static_cast<size_t>(utf8SafeTruncateBuffer(source, static_cast<int>(len)));
+  std::memcpy(g_nativeText, source, len);
+  g_nativeText[len] = '\0';
+  return g_nativeText;
+}
 
 // --- La tabla cp ---------------------------------------------------------
 
@@ -66,7 +79,7 @@ int cpClear(lua_State*) {
 int cpText(lua_State* L) {
   const int x = clampCoord(luaL_checkinteger(L, 1), g_renderer ? g_renderer->getScreenWidth() : 800);
   const int y = clampCoord(luaL_checkinteger(L, 2), g_renderer ? g_renderer->getScreenHeight() : 800);
-  const char* text = luaL_checkstring(L, 3);
+  const char* text = boundedText(L, 3);
   const int font = fontFor(luaL_optinteger(L, 4, 12));
   const bool bold = lua_toboolean(L, 5) != 0;
   if (g_renderer) {
@@ -76,7 +89,7 @@ int cpText(lua_State* L) {
 }
 
 int cpTextWidth(lua_State* L) {
-  const char* text = luaL_checkstring(L, 1);
+  const char* text = boundedText(L, 1);
   const int font = fontFor(luaL_optinteger(L, 2, 12));
   lua_pushinteger(L, g_renderer ? g_renderer->getTextWidth(font, text) : 0);
   return 1;
@@ -168,15 +181,21 @@ int cpBeep(lua_State* L) {
 
 int cpLog(lua_State* L) {
   const int n = lua_gettop(L);
-  std::string line;
+  size_t used = 0;
+  g_logLine[0] = '\0';
   for (int i = 1; i <= n; ++i) {
-    if (i > 1) line += ' ';
+    if (i > 1 && used < LuaApp::LOG_CAP) g_logLine[used++] = ' ';
     size_t len = 0;
     const char* s = luaL_tolstring(L, i, &len);
-    line.append(s, len);
+    const size_t take = std::min(len, LuaApp::LOG_CAP - used);
+    std::memcpy(g_logLine + used, s, take);
+    used += take;
     lua_pop(L, 1);
+    if (used == LuaApp::LOG_CAP) break;
   }
-  LOG_INF(TAG, "%s: %s", g_appStem.c_str(), line.c_str());
+  used = static_cast<size_t>(utf8SafeTruncateBuffer(g_logLine, static_cast<int>(used)));
+  g_logLine[used] = '\0';
+  LOG_INF(TAG, "%s: %s", g_appStem.c_str(), g_logLine);
   return 0;
 }
 
@@ -228,8 +247,7 @@ int cpSave(lua_State* L) {
   // Es TEXTO, no binario: se corta en el primer cero para que lo que se guarda
   // sea exactamente lo que se lee después (writeFile toma una String, que
   // termina en cero igual). Cortarlo acá lo deja dicho en vez de que sorprenda.
-  const size_t nul = std::string(data, len).find('\0');
-  if (nul != std::string::npos) len = nul;
+  if (const void* nul = std::memchr(data, '\0', len)) len = static_cast<const char*>(nul) - data;
   Storage.ensureDirectoryExists(STATE_DIR);
   const std::string path = std::string(STATE_DIR) + "/" + g_appStem + ".txt";
   String out;

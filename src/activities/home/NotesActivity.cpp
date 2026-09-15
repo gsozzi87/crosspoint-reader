@@ -14,12 +14,13 @@
 
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"
-#include "components/SevenSegment.h"
 #include "components/Selection.h"
+#include "components/SevenSegment.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
@@ -124,7 +125,7 @@ void NotesActivity::startRecording(const Take what) {
   // El tope real depende de la memoria libre de este momento; la pantalla lo
   // muestra, así que el usuario nunca se queda sin saber cuánto puede hablar.
   maxSeconds = voicenotes::maxRecordSeconds(TARGET_NOTE_SECONDS);
-  recorder = std::make_unique<VoiceRecorder>(maxSeconds);
+  recorder = makeUniqueNoThrow<VoiceRecorder>(maxSeconds);
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder->start(why)) {
     recorder.reset();
@@ -210,7 +211,7 @@ void NotesActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiSelectionComplete(!result.isCancelled);
@@ -307,11 +308,12 @@ void NotesActivity::openCurrent() {
   // El visor del diccionario ya pagina texto plano con la palanca: una nota
   // larga se lee ahí sin escribir otro paginador.
   const std::string text = HUB_STORE.notes[row->index].text;
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, tr(STR_HUB_NOTES), text),
-                         [this](const ActivityResult&) {
-                           forceClean = true;
-                           requestUpdate();
-                         });
+  startActivityForResult(
+      makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, tr(STR_HUB_NOTES), text),
+      [this](const ActivityResult&) {
+        forceClean = true;
+        requestUpdate();
+      });
 }
 
 void NotesActivity::playCurrent() {
@@ -401,10 +403,18 @@ void NotesActivity::loop() {
         const Row* row = currentRow();
         if (!row) return;
         switch (row->kind) {
-          case Row::ADD_TEXT: startRecording(TAKE_TEXT); break;
-          case Row::ADD_VOICE: startRecording(TAKE_VOICE); break;
-          case Row::VOICE: playCurrent(); break;
-          case Row::TEXT: openCurrent(); break;
+          case Row::ADD_TEXT:
+            startRecording(TAKE_TEXT);
+            break;
+          case Row::ADD_VOICE:
+            startRecording(TAKE_VOICE);
+            break;
+          case Row::VOICE:
+            playCurrent();
+            break;
+          case Row::TEXT:
+            openCurrent();
+            break;
         }
         return;
       }
@@ -664,8 +674,7 @@ void NotesActivity::render(RenderLock&&) {
       const int seconds = recorder ? static_cast<int>(recorder->seconds()) : 0;
       renderer.drawCenteredText(
           UI_14_FONT_ID, mid - DIGIT_H - 4 * listui::GAP,
-          renderer
-              .truncatedText(UI_14_FONT_ID, take == TAKE_TEXT ? tr(STR_NOTES_REC_TEXT) : tr(STR_NOTES_REC_VOICE), w)
+          renderer.truncatedText(UI_14_FONT_ID, take == TAKE_TEXT ? tr(STR_NOTES_REC_TEXT) : tr(STR_NOTES_REC_VOICE), w)
               .c_str());
       const int cx = x + (w - clockWidth(seconds)) / 2;
       sevenseg::clock(renderer, seconds, cx, mid - DIGIT_H / 2, DIGIT_W, DIGIT_H, DIGIT_T, DIGIT_GAP);

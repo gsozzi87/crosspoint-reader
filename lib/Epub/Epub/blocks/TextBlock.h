@@ -10,6 +10,7 @@
 #include "Block.h"
 #include "BlockStyle.h"
 #include "Epub/FootnoteEntry.h"
+#include "Memory.h"
 
 // Represents a line of text on a page.
 //

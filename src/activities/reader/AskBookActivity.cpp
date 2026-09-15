@@ -10,6 +10,7 @@
 
 #include "DictionaryDefinitionActivity.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
@@ -162,7 +163,7 @@ void AskBookActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiSelectionComplete(!result.isCancelled);
@@ -248,7 +249,7 @@ void AskBookActivity::showAnswer() {
   // The paged viewer the dictionary uses: the question (as understood) in the
   // header, the answer word-wrapped and paged with the nav buttons, Back
   // returns here.
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, question, answer),
+  startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, question, answer),
                          [this](const ActivityResult&) { showQuestionPicker(); });
 }
 

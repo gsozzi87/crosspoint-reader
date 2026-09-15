@@ -8,6 +8,7 @@
 #include <climits>
 #include <cstring>
 #include <memory>
+#include <new>
 
 #include "EpdFontFamily.h"
 

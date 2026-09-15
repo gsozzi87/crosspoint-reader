@@ -11,6 +11,7 @@
 
 #include "CrossPointSettings.h"
 #include "OpdsServerStore.h"
+#include "TaskConfig.h"
 #include "boot_sleep/BootActivity.h"
 #include "boot_sleep/SleepActivity.h"
 #include "browser/OpdsBookBrowserActivity.h"
@@ -27,7 +28,6 @@
 #include "util/BmpViewerActivity.h"
 #include "util/FrontlightPanelActivity.h"
 #include "util/FullScreenMessageActivity.h"
-#include "TaskConfig.h"
 
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
@@ -112,7 +112,7 @@ void ActivityManager::loop() {
       statusBarTap = mappedInput.wasScreenTapped(tx, ty) && ty < 44;
     }
     if (currentActivity->name != "FrontlightPanel" && (statusBarTap || mappedInput.wasLightPanelGesture())) {
-      pushActivity(std::make_unique<FrontlightPanelActivity>(renderer, mappedInput));
+      pushActivity(makeUniqueNoThrow<FrontlightPanelActivity>(renderer, mappedInput));
       return;
     }
 
@@ -213,6 +213,10 @@ void ActivityManager::exitActivity(const RenderLock& lock) {
 }
 
 void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
+  if (!newActivity) {
+    LOG_ERR("ACT", "OOM: replacement activity was not created");
+    return;
+  }
   // Note: no lock here, this is usually called by loop() and we may run into deadlock
   if (currentActivity) {
     // Defer launch if we're currently in an activity, to avoid deleting the current activity
@@ -227,7 +231,7 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
 }
 
 void ActivityManager::goToFileTransfer() {
-  replaceActivity(std::make_unique<CrossPointWebServerActivity>(renderer, mappedInput));
+  replaceActivity(makeUniqueNoThrow<CrossPointWebServerActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToUsbDrive() {
@@ -243,23 +247,23 @@ void ActivityManager::goToUsbDrive() {
 #endif
 }
 
-void ActivityManager::goToSettings() { replaceActivity(std::make_unique<SettingsActivity>(renderer, mappedInput)); }
+void ActivityManager::goToSettings() { replaceActivity(makeUniqueNoThrow<SettingsActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFileBrowser(std::string path) {
-  replaceActivity(std::make_unique<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
+  replaceActivity(makeUniqueNoThrow<FileBrowserActivity>(renderer, mappedInput, std::move(path)));
 }
 
 void ActivityManager::goToRecentBooks() {
-  replaceActivity(std::make_unique<RecentBooksActivity>(renderer, mappedInput));
+  replaceActivity(makeUniqueNoThrow<RecentBooksActivity>(renderer, mappedInput));
 }
 
 void ActivityManager::goToBrowser() {
   const auto& servers = OPDS_STORE.getServers();
   // Skip the server picker when there's only one server configured
   if (servers.size() == 1) {
-    replaceActivity(std::make_unique<OpdsBookBrowserActivity>(renderer, mappedInput, servers[0]));
+    replaceActivity(makeUniqueNoThrow<OpdsBookBrowserActivity>(renderer, mappedInput, servers[0]));
   } else {
-    replaceActivity(std::make_unique<OpdsServerListActivity>(renderer, mappedInput, true));
+    replaceActivity(makeUniqueNoThrow<OpdsServerListActivity>(renderer, mappedInput, true));
   }
 }
 
@@ -286,17 +290,17 @@ void ActivityManager::goToReader(std::string path, const bool allowFastInitialRe
 }
 
 void ActivityManager::goToSleep(bool fromTimeout, bool render) {
-  replaceActivity(std::make_unique<SleepActivity>(renderer, mappedInput, fromTimeout));
+  replaceActivity(makeUniqueNoThrow<SleepActivity>(renderer, mappedInput, fromTimeout));
   // Important: sleep screen must be rendered immediately, the caller will go to
   // sleep right after this returns. Salvo que el llamador vaya a pintar él otra
   // cosa encima (ws397: el fondo de pantalla con información).
   if (render) loop();
 }
 
-void ActivityManager::goToBoot() { replaceActivity(std::make_unique<BootActivity>(renderer, mappedInput)); }
+void ActivityManager::goToBoot() { replaceActivity(makeUniqueNoThrow<BootActivity>(renderer, mappedInput)); }
 
 void ActivityManager::goToFullScreenMessage(std::string message, EpdFontFamily::Style style) {
-  replaceActivity(std::make_unique<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
+  replaceActivity(makeUniqueNoThrow<FullScreenMessageActivity>(renderer, mappedInput, std::move(message), style));
 }
 
 void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefresh) {
@@ -319,19 +323,23 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
     // library screens (browser, recents, OPDS, transfer) so Back from them
     // lands where it left; Settings and everything else return to the hub.
     if (initialMenuItem == HomeMenuItem::NONE || initialMenuItem == HomeMenuItem::SETTINGS_MENU) {
-      replaceActivity(std::make_unique<HubActivity>(renderer, mappedInput, cleanInitialRefresh));
+      replaceActivity(makeUniqueNoThrow<HubActivity>(renderer, mappedInput, cleanInitialRefresh));
       return;
     }
   }
-  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, cleanInitialRefresh));
+  replaceActivity(makeUniqueNoThrow<HomeActivity>(renderer, mappedInput, initialMenuItem, cleanInitialRefresh));
 }
 
 void ActivityManager::goToClassicHome(HomeMenuItem initialMenuItem) {
-  replaceActivity(std::make_unique<HomeActivity>(renderer, mappedInput, initialMenuItem, false));
+  replaceActivity(makeUniqueNoThrow<HomeActivity>(renderer, mappedInput, initialMenuItem, false));
 }
-void ActivityManager::goToCrashReport() { replaceActivity(std::make_unique<CrashActivity>(renderer, mappedInput)); }
+void ActivityManager::goToCrashReport() { replaceActivity(makeUniqueNoThrow<CrashActivity>(renderer, mappedInput)); }
 
 void ActivityManager::pushActivity(std::unique_ptr<Activity>&& activity) {
+  if (!activity) {
+    LOG_ERR("ACT", "OOM: pushed activity was not created");
+    return;
+  }
   if (pendingActivity) {
     // Should never happen in practice
     LOG_ERR("ACT", "pendingActivity while pushActivity is not expected");

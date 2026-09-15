@@ -7,12 +7,12 @@
 #include <WiFi.h>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
+#include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
-#include "util/DeviceLog.h"
 #include "fontIds.h"
-
-#include "SilentRestart.h"
+#include "util/DeviceLog.h"
 
 void ServerTestActivity::onEnter() {
   Activity::onEnter();
@@ -20,7 +20,7 @@ void ServerTestActivity::onEnter() {
   baseUrl = SERVER_STORE.getBaseUrl();
 
   WiFi.mode(WIFI_STA);
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -118,7 +118,8 @@ void ServerTestActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, tr(STR_SERVER_WIFI_FAILED), true, EpdFontFamily::BOLD);
       break;
     case CHECKING:
-      renderer.drawCenteredText(UI_10_FONT_ID, mid - 40, baseUrl.empty() ? tr(STR_SERVER_NOT_CONFIGURED) : baseUrl.c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, mid - 40,
+                                baseUrl.empty() ? tr(STR_SERVER_NOT_CONFIGURED) : baseUrl.c_str());
       renderer.drawCenteredText(UI_10_FONT_ID, mid, tr(STR_SERVER_CHECKING), true, EpdFontFamily::BOLD);
       break;
     case DONE: {
@@ -136,8 +137,12 @@ void ServerTestActivity::render(RenderLock&&) {
       y += 30;
 
       switch (auth) {
-        case ServerClient::Result::Ok: snprintf(line, sizeof(line), "%s", tr(STR_SERVER_AUTH_OK)); break;
-        case ServerClient::Result::NoToken: snprintf(line, sizeof(line), "%s", tr(STR_SERVER_NO_TOKEN)); break;
+        case ServerClient::Result::Ok:
+          snprintf(line, sizeof(line), "%s", tr(STR_SERVER_AUTH_OK));
+          break;
+        case ServerClient::Result::NoToken:
+          snprintf(line, sizeof(line), "%s", tr(STR_SERVER_NO_TOKEN));
+          break;
         case ServerClient::Result::Unauthorized:
           snprintf(line, sizeof(line), "%s (%d)", tr(STR_SERVER_AUTH_FAILED), authStatus);
           break;

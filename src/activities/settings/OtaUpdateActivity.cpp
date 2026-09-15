@@ -1,12 +1,13 @@
 #include "OtaUpdateActivity.h"
-#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <WiFi.h>
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/home/AssetSyncActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -90,7 +91,7 @@ void OtaUpdateActivity::onEnter() {
 
   // Launch WiFi selection subactivity
   LOG_DBG("OTA", "Launching WifiSelectionActivity...");
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -251,7 +252,7 @@ void OtaUpdateActivity::loop() {
     if (assetsNext) {
       assetsNext = false;
       state = ASSETS;
-      startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput, /*wifiReady=*/true),
+      startActivityForResult(makeUniqueNoThrow<AssetSyncActivity>(renderer, mappedInput, /*wifiReady=*/true),
                              [this](const ActivityResult&) { finish(); });
       return;
     }

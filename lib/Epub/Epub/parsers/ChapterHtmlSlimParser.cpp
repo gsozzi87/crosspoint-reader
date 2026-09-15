@@ -302,7 +302,11 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
     if (currentPage && !currentPage->elements.empty()) {
       completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
       completedPageCount++;
-      currentPage.reset(new Page());
+      currentPage = makeUniqueNoThrow<Page>();
+      if (!currentPage) {
+        LOG_ERR("EHP", "OOM: page after chapter boundary");
+        return;
+      }
       currentPageNextY = 0;
       currentPageVisibleOffsetSet = false;
     }
@@ -417,7 +421,9 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
   // If the pending anchor is a TOC chapter boundary, force a page break after the previous
   // block is flushed so the chapter starts on a fresh page.
   flushPendingAnchor();
-  currentTextBlock.reset(new ParsedText(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, blockStyle));
+  currentTextBlock =
+      makeUniqueNoThrow<ParsedText>(extraParagraphSpacing, hyphenationEnabled, focusReadingEnabled, blockStyle);
+  if (!currentTextBlock) LOG_ERR("EHP", "OOM: new text block");
   wordsExtractedInBlock = 0;
   listItemBulletOnly = false;
 }
@@ -1125,7 +1131,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
                                        self->xpathListItemIndex, self->currentPageVisibleOffset);
                   self->completedPageCount++;
-                  self->currentPage.reset(new Page());
+                  self->currentPage = makeUniqueNoThrow<Page>();
                   if (!self->currentPage) {
                     LOG_ERR("EHP", "Failed to create new page");
                     return;
@@ -1133,7 +1139,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   self->currentPageNextY = 0;
                   self->currentPageVisibleOffsetSet = false;
                 } else if (!self->currentPage) {
-                  self->currentPage.reset(new Page());
+                  self->currentPage = makeUniqueNoThrow<Page>();
                   if (!self->currentPage) {
                     LOG_ERR("EHP", "Failed to create initial page");
                     return;
@@ -2110,7 +2116,11 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const
       renderer.getLineHeight(fontId, lineCompression) + line->getRubyShift(renderer.getFontAscenderSize(fontId));
 
   if (!currentPage) {
-    currentPage.reset(new Page());
+    currentPage = makeUniqueNoThrow<Page>();
+    if (!currentPage) {
+      LOG_ERR("EHP", "OOM: initial line page");
+      return;
+    }
     currentPageNextY = 0;
     currentPageVisibleOffsetSet = false;
   }
@@ -2119,7 +2129,11 @@ void ChapterHtmlSlimParser::addLineToPage(std::shared_ptr<TextBlock> line, const
     setCurrentPageVisibleOffset(visibleOffset);
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
     completedPageCount++;
-    currentPage.reset(new Page());
+    currentPage = makeUniqueNoThrow<Page>();
+    if (!currentPage) {
+      LOG_ERR("EHP", "OOM: continuation page");
+      return;
+    }
     currentPageNextY = 0;
     currentPageVisibleOffsetSet = false;
   }
@@ -2156,7 +2170,11 @@ void ChapterHtmlSlimParser::makePages() {
   }
 
   if (!currentPage) {
-    currentPage.reset(new Page());
+    currentPage = makeUniqueNoThrow<Page>();
+    if (!currentPage) {
+      LOG_ERR("EHP", "OOM: paragraph page");
+      return;
+    }
     currentPageNextY = 0;
     currentPageVisibleOffsetSet = false;
   }

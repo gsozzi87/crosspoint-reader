@@ -70,9 +70,10 @@ end
 function on_draw()
   if not hora then
     local aviso = "El aparato todavía no está en hora"
-    cp.text((cp.width() - cp.textw(aviso, 14)) // 2, 360, aviso, 14, true)
+    local centro = cp.height() // 2
+    cp.text((cp.width() - cp.textw(aviso, 14)) // 2, centro - 25, aviso, 14, true)
     local como = "Sincroniza con tu cuenta para ponerlo en hora"
-    cp.text((cp.width() - cp.textw(como, 10)) // 2, 400, como, 10)
+    cp.text((cp.width() - cp.textw(como, 10)) // 2, centro + 15, como, 10)
     return
   end
 
@@ -81,7 +82,7 @@ function on_draw()
   local aire, dosPuntos = 18, 30
   local total = 4 * w + 3 * aire + dosPuntos
   local x = (cp.width() - total) // 2
-  local y = 250
+  local y = cp.height() < 600 and 85 or 250
 
   digito(x, y, w, h, hora.hour // 10, g)
   x = x + w + aire
@@ -102,5 +103,5 @@ function on_draw()
   local anio = tostring(hora.year)
   cp.text((cp.width() - cp.textw(anio, 12)) // 2, y + h + 100, anio, 12)
 
-  cp.text(40, cp.height() - 90, "Se repinta al cambiar el minuto · OK: ahora mismo", 10)
+  cp.text(40, cp.height() - 45, "Se repinta al cambiar el minuto · OK: ahora mismo", 10)
 end

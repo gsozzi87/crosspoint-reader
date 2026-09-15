@@ -1,5 +1,4 @@
 #include "NewsActivity.h"
-#include "news/NewsPack.h"
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
@@ -14,12 +13,14 @@
 #include <string>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "news/NewsPack.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
@@ -89,7 +90,8 @@ bool NewsActivity::loadCache() {
     Feed feed;
     feed.id = fv["id"] | 0;
     feed.name = fv["name"] | "";
-    for (JsonVariantConst iv : fv["items"].as<JsonArrayConst>()) feed.items.push_back({iv["id"] | 0, iv["title"] | "", iv["when"] | ""});
+    for (JsonVariantConst iv : fv["items"].as<JsonArrayConst>())
+      feed.items.push_back({iv["id"] | 0, iv["title"] | "", iv["when"] | ""});
     feeds.push_back(std::move(feed));
   }
   return !feeds.empty();
@@ -246,8 +248,7 @@ bool NewsActivity::fetchClip(const int index, std::string& out) {
   const std::string text = chunkText(index);
   if (text.empty()) return false;
   ServerClient::Response resp;
-  const std::string path =
-      std::string("/api/tts?lang=") + uiLanguageCode() + "&max=90&text=" + urlEncode(text);
+  const std::string path = std::string("/api/tts?lang=") + uiLanguageCode() + "&max=90&text=" + urlEncode(text);
   const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
   if (r != ServerClient::Result::Ok || resp.body.size() < 16) {
     LOG_ERR(TAG, "GET /api/tts: %s %d (%u bytes)", ServerClient::resultName(r), resp.status,
@@ -383,7 +384,7 @@ void NewsActivity::ensureConnected() {
     return;
   }
   state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -471,8 +472,10 @@ void NewsActivity::loop() {
           // Reanuda donde iba. Si el clip ya se drenó mientras estaba en pausa
           // (la tarea de audio termina igual), se vuelve a poner el trozo.
           paused = false;
-          if (speech.isPlaying()) speech.resume();
-          else playClip();
+          if (speech.isPlaying())
+            speech.resume();
+          else
+            playClip();
           requestUpdate();
         } else {
           speech.pause();
@@ -529,7 +532,8 @@ void NewsActivity::loop() {
     case FAILED:
       if (mappedInput.wasPressed(MappedInputManager::Button::Back) ||
           mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-        if (feeds.empty()) activityManager.goHome();
+        if (feeds.empty())
+          activityManager.goHome();
         else {
           state = FEEDS;
           requestUpdate();
@@ -607,9 +611,9 @@ void NewsActivity::render(RenderLock&&) {
   const int mid = pageHeight / 2;
 
   renderer.clearScreen();
-  const std::string title = state == ARTICLE  ? articleTitle
-                            : state == ITEMS  ? feeds[feedIndex].name
-                                              : std::string(tr(STR_HUB_NEWS));
+  const std::string title = state == ARTICLE ? articleTitle
+                            : state == ITEMS ? feeds[feedIndex].name
+                                             : std::string(tr(STR_HUB_NEWS));
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, title.c_str());
 
   const char* okLabel = tr(STR_SELECT);
@@ -631,7 +635,8 @@ void NewsActivity::render(RenderLock&&) {
       itemsPerPage = std::max(1, (pagerY - listui::GAP - top) / listui::ROW2_H);
       const int page = count > 0 ? selected / itemsPerPage : 0;
       const int first = page * itemsPerPage;
-      if (count == 0) renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, inFeeds ? tr(STR_NEWS_NO_FEEDS) : tr(STR_NEWS_NO_ITEMS));
+      if (count == 0)
+        renderer.drawCenteredText(UI_10_FONT_ID, mid - 10, inFeeds ? tr(STR_NEWS_NO_FEEDS) : tr(STR_NEWS_NO_ITEMS));
       for (int i = first; i < count && i < first + itemsPerPage; ++i) {
         const int y = top + (i - first) * listui::ROW2_H;
         listui::RowSpec spec;

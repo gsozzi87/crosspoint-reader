@@ -5,6 +5,7 @@
 #include <Logging.h>
 
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "OpdsServerStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -107,8 +108,8 @@ void OpdsSettingsActivity::handleSelection() {
         requestUpdate();
       }
     };
-    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SERVER_NAME),
-                                                                   editServer.name, 63, InputType::Text),
+    startActivityForResult(makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_SERVER_NAME),
+                                                                    editServer.name, 63, InputType::Text),
                            handler);
   } else if (nav.selected == 1) {
     // Server URL
@@ -121,8 +122,8 @@ void OpdsSettingsActivity::handleSelection() {
         requestUpdate();
       }
     };
-    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_SERVER_URL),
-                                                                   prefillUrl, 127, InputType::Url),
+    startActivityForResult(makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_SERVER_URL),
+                                                                    prefillUrl, 127, InputType::Url),
                            handler);
   } else if (nav.selected == 2) {
     // Username
@@ -134,8 +135,8 @@ void OpdsSettingsActivity::handleSelection() {
         requestUpdate();
       }
     };
-    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_USERNAME),
-                                                                   editServer.username, 63, InputType::Text),
+    startActivityForResult(makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_USERNAME),
+                                                                    editServer.username, 63, InputType::Text),
                            handler);
   } else if (nav.selected == 3) {
     // Password
@@ -147,8 +148,8 @@ void OpdsSettingsActivity::handleSelection() {
         requestUpdate();
       }
     };
-    startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_PASSWORD),
-                                                                   editServer.password, 63, InputType::Text),
+    startActivityForResult(makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_PASSWORD),
+                                                                    editServer.password, 63, InputType::Text),
                            handler);
   } else if (nav.selected == 4 && !isNewServer) {
     // Delete flow is only available for existing servers.

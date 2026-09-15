@@ -10,6 +10,7 @@
 
 #include "HubSyncActivity.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
@@ -96,7 +97,7 @@ void HubLocationActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiSelectionComplete(!result.isCancelled);
@@ -207,7 +208,7 @@ void HubLocationActivity::performSave() {
   }
   LOG_INF(TAG, "Weather place: %s (%.3f, %.3f)", c.label.c_str(), c.lat, c.lon);
   handoff = true;
-  activityManager.replaceActivity(std::make_unique<HubSyncActivity>(renderer, mappedInput));
+  activityManager.replaceActivity(makeUniqueNoThrow<HubSyncActivity>(renderer, mappedInput));
 }
 
 void HubLocationActivity::loop() {
@@ -272,7 +273,8 @@ void HubLocationActivity::render(RenderLock&&) {
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_ASK_TRANSCRIBING), true, EpdFontFamily::BOLD);
       break;
     case SEARCHING:
-      renderer.drawCenteredText(UI_10_FONT_ID, mid - 40, renderer.truncatedText(UI_10_FONT_ID, spoken.c_str(), pageWidth - 40).c_str());
+      renderer.drawCenteredText(UI_10_FONT_ID, mid - 40,
+                                renderer.truncatedText(UI_10_FONT_ID, spoken.c_str(), pageWidth - 40).c_str());
       renderer.drawCenteredText(UI_12_FONT_ID, mid, tr(STR_HUB_LOCATION_SEARCHING), true, EpdFontFamily::BOLD);
       break;
     case PICK:
@@ -286,7 +288,8 @@ void HubLocationActivity::render(RenderLock&&) {
     case FAILED:
       renderer.drawCenteredText(UI_10_FONT_ID, mid - 20, I18N.get(failureId), true, EpdFontFamily::BOLD);
       if (!failureDetail.empty()) {
-        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10, renderer.truncatedText(UI_10_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
+        renderer.drawCenteredText(UI_10_FONT_ID, mid + 10,
+                                  renderer.truncatedText(UI_10_FONT_ID, failureDetail.c_str(), pageWidth - 40).c_str());
       }
       break;
     case CONNECTING:

@@ -1,5 +1,4 @@
 #include <Arduino.h>
-#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 #include <BoardConfig.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
@@ -10,65 +9,69 @@
 #include <HalFrontlight.h>
 #include <HalGPIO.h>
 #include <HalPowerManager.h>
-#include <PowerManager.h>
 #include <HalStorage.h>
 #include <HalSystem.h>
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <PowerManager.h>
 #include <SPI.h>
-#include <WiFi.h>
 #include <ServerCredentialStore.h>
+#include <WiFi.h>
 #include <XteinkDetect.h>
 #include <builtinFonts/all.h>
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
+
+#include "Memory.h"
 #if FREEINK_CAP_TOUCH
 #include <esp_sntp.h>
 #endif
+
+#include <esp_sleep.h>
+#include <soc/soc_caps.h>
 
 #include <cstring>
 
 #include "CrossPointSettings.h"
 #include "CrossPointState.h"
+#include "HubStore.h"
 #include "KOReaderCredentialStore.h"
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
-#include "HubStore.h"
-#include "activities/home/SleepScreen.h"
 #include "activities/home/ReminderAlertActivity.h"
 #include "activities/home/SetupActivity.h"
+#include "activities/home/SleepScreen.h"
 #include "activities/home/TimerActivity.h"
 #include "activities/home/VoiceActivity.h"
 #include "util/DeviceLog.h"
-#include <esp_sleep.h>
-#include <soc/soc_caps.h>
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
 #include <driver/rtc_io.h>
 #endif
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
+#include "TaskConfig.h"
 #include "activities/Activity.h"
 #include "activities/ActivityManager.h"
 #include "activities/settings/AudioTestActivity.h"
 #include "activities/settings/SdFirmwareUpdateActivity.h"
-#include "components/UITheme.h"
 #include "components/Selection.h"
+#include "components/UITheme.h"
 #include "fontIds.h"
 #include "images/LoadingIcon.h"
-#include "platform/UsbSerialJtagHandoff.h"
-#include "util/ButtonNavigator.h"
-#include "util/PowerKey.h"
-#include "util/Shtc3.h"
-#include "util/BatteryLog.h"
-#include "sync/Sync.h"
-#include "util/CardLayout.h"
-#include "util/TempSweep.h"
-#include "util/IdleSleep.h"
-#include "util/RtcAlarm.h"
 #include "input/MotionInput.h"
-#include "util/ScreenshotUtil.h"
 #include "music/MusicPlayer.h"
+#include "platform/UsbSerialJtagHandoff.h"
+#include "sync/Sync.h"
+#include "util/BatteryLog.h"
+#include "util/ButtonNavigator.h"
+#include "util/CardLayout.h"
+#include "util/IdleSleep.h"
+#include "util/PowerKey.h"
+#include "util/RtcAlarm.h"
+#include "util/ScreenshotUtil.h"
+#include "util/Shtc3.h"
+#include "util/TempSweep.h"
 #include "voice/VoiceRecorder.h"
-#include "TaskConfig.h"
 
 GfxRenderer renderer(display);
 MappedInputManager mappedInputManager(gpio, renderer);
@@ -92,16 +95,16 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 //   llegar a los 3 s ..... APAGA (el PMIC corta los rieles)
 // Suspender pasa al SOLTAR y no al cruzar el umbral: si durmiera a los 1,2 s
 // con el botón abajo, nunca se podría llegar a los 3.
-constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // aparece la barrita
+constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;                 // aparece la barrita
 constexpr unsigned long POWER_HOLD_SLEEP_MS = POWER_HOLD_ACTION_MS;  // soltar acá o después: suspende
-constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // el cartel pasa a "Apagando..."
+constexpr unsigned long POWER_HOLD_WARN_MS = 2300;                   // el cartel pasa a "Apagando..."
 // Cada cuánto se repinta la barrita. El panel no tiene refresco por región expuesto
 // (FreeInkDisplay::displayWindow existe pero está marcado EXPERIMENTAL y no sube ni a
 // HalDisplay ni a GfxRenderer), así que cada paso es un parcial de pantalla entera de
 // ~250 ms: 360 ms es lo más seguido que se puede pedir sin que el loop deje de ver la
 // suelta a tiempo. Da cinco pasos entre 1,2 s y 3 s, en vez de los dos saltos de antes.
-constexpr unsigned long POWER_HOLD_OFF_MS = 3000;     // apagar de verdad
-constexpr unsigned long POWER_HOLD_STEP_MS = 360;     // repintado de la barrita
+constexpr unsigned long POWER_HOLD_OFF_MS = 3000;  // apagar de verdad
+constexpr unsigned long POWER_HOLD_STEP_MS = 360;  // repintado de la barrita
 // Una pulsacion de PWR anclada antes de esto arranco con el aparato: no es un hold.
 constexpr unsigned long BOOT_KEY_IGNORE_MS = 3500;
 }  // namespace
@@ -113,9 +116,7 @@ constexpr unsigned long BOOT_KEY_IGNORE_MS = 3500;
 // watches HalGPIO::BTN_CONFIRM there — see wakeKeyIndex().
 static bool wakeKeyReleasePending = false;
 
-static uint8_t wakeKeyIndex() {
-  return BoardConfig::isWS397() ? HalGPIO::BTN_CONFIRM : HalGPIO::BTN_POWER;
-}
+static uint8_t wakeKeyIndex() { return BoardConfig::isWS397() ? HalGPIO::BTN_CONFIRM : HalGPIO::BTN_POWER; }
 
 // The logical front button the wake key is mapped to (the front buttons can be
 // remapped in settings, so physical OK is not always logical Confirm).
@@ -416,8 +417,8 @@ static void sleepNow() {
   // vencido, wake espurio del botón) no pasan por enterDeepSleep() y se estaban
   // durmiendo con el IMU muestreando a 250 Hz, que es el consumidor más grande
   // de la lista.
-  halTiltSensor.deepSleep();       // QMI8658 a dormir; idempotente
-  AudioManager::silenceAmp();      // el enable del amplificador (GPIO39) a un nivel definido
+  halTiltSensor.deepSleep();   // QMI8658 a dormir; idempotente
+  AudioManager::silenceAmp();  // el enable del amplificador (GPIO39) a un nivel definido
   armReminderWake(/*quiet=*/true);
   // ws397: the wake key is OK (GPIO5, RTC-capable, EXT1 low). PWR cannot wake:
   // the PMIC IRQ is on GPIO38, which is not an RTC GPIO. A PWR press while
@@ -485,7 +486,7 @@ static void checkVoiceShortcut() {
   const char* name = activityManager.currentActivityName();
   if (!isCalmScreen(name)) return;
   LOG_INF("MAIN", "PTT shortcut from %s", name);
-  activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
+  activityManager.pushActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInputManager));
 }
 
 // La alarma NO usa la lista blanca de pantallas tranquilas. Esa lista existe
@@ -526,13 +527,14 @@ static bool checkTimeAlarms() {
       return false;
     }
     LOG_INF("MAIN", "suena el temporizador desde %s", activityManager.currentActivityName());
-    activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
+    activityManager.pushActivity(
+        makeUniqueNoThrow<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
     return true;
   }
   if (const HubStore::Reminder* due = HUB_STORE.dueReminder(now)) {
     LOG_INF("MAIN", "suena el recordatorio %d desde %s", due->id, activityManager.currentActivityName());
     activityManager.pushActivity(
-        std::make_unique<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
+        makeUniqueNoThrow<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
     return true;
   }
   return false;
@@ -632,7 +634,7 @@ static void checkMotionGestures() {
   if (pending == MotionInput::Event::DoubleTap) {
     MOTION.take(MotionInput::Event::DoubleTap);
     LOG_INF("MAIN", "doble golpe: se abre Hablar desde %s", name);
-    activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInputManager));
+    activityManager.pushActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInputManager));
   }
 }
 
@@ -797,8 +799,8 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
   for (int i = 0; i < nLines; i++) {
     renderer.drawCenteredText(fontId, y + 24 + i * (lineH + 4),
-                              renderer.truncatedText(fontId, lines[i].c_str(), textW, EpdFontFamily::BOLD).c_str(), true,
-                              EpdFontFamily::BOLD);
+                              renderer.truncatedText(fontId, lines[i].c_str(), textW, EpdFontFamily::BOLD).c_str(),
+                              true, EpdFontFamily::BOLD);
   }
 
   // Bar: how much is left until sleep.
@@ -1254,18 +1256,19 @@ void setup() {
 
   if (timerFired) {
     // The timer ran out while asleep: same alert screen, no server round trip.
-    activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
+    activityManager.replaceActivity(
+        makeUniqueNoThrow<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
   } else if (dueReminder) {
-    activityManager.replaceActivity(std::make_unique<ReminderAlertActivity>(
+    activityManager.replaceActivity(makeUniqueNoThrow<ReminderAlertActivity>(
         renderer, mappedInputManager, dueReminder->id, dueReminder->title, dueReminder->when));
   } else if (recoveryFirmwareMode) {
     // Skip normal home/reader routing: jump straight into the SD firmware picker.
     activityManager.replaceActivity(
-        std::make_unique<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
+        makeUniqueNoThrow<SdFirmwareUpdateActivity>(renderer, mappedInputManager, /*recoveryMode=*/true));
   } else if (SetupActivity::pending()) {
     // Aparato recién salido de la caja: los primeros pasos antes que nada.
     // Se retoma solo si un paso de red lo reinicia en silencio.
-    activityManager.replaceActivity(std::make_unique<SetupActivity>(renderer, mappedInputManager));
+    activityManager.replaceActivity(makeUniqueNoThrow<SetupActivity>(renderer, mappedInputManager));
   } else if (rebootedFromPanic) {
     // If we rebooted from a panic, go to crash report screen to show the panic info
     activityManager.goToCrashReport();
@@ -1325,9 +1328,9 @@ void loop() {
     gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   }
   mappedInputManager.update();
-  POWER_KEY.pump();  // ws397: PMIC key state for this pass (no-op elsewhere)
-  MOTION.poll();     // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
-  shtc3::tick();     // temperatura de adentro, en dos tiempos y sin bloquear
+  POWER_KEY.pump();    // ws397: PMIC key state for this pass (no-op elsewhere)
+  MOTION.poll();       // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
+  shtc3::tick();       // temperatura de adentro, en dos tiempos y sin bloquear
   batterylog::tick();  // el diario de la batería, una línea cada diez minutos
 
   if (activityManager.requiresExclusiveStorageLoop()) {
@@ -1379,8 +1382,8 @@ void loop() {
   // Con la pantalla bloqueada los botones NO cuentan como actividad: el aparato
   // en la mochila tiene que poder reposar aunque la palanca se apriete sola.
   // PWR sí cuenta siempre: es el que desbloquea.
-  const bool userInput = (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() ||
-                                           halTiltSensor.hadActivity());
+  const bool userInput =
+      (gpio.wasAnyPressed() || gpio.wasAnyReleased() || gpio.wasTouchActivity() || halTiltSensor.hadActivity());
   // `isSounding()` y no `isActive()`: `isActive()` es "hay una pista cargada",
   // que sigue siendo cierto EN PAUSA. Con `isActive()` una canción pausada
   // reiniciaba el contador de ocio en cada pasada y el aparato se quedaba

@@ -163,16 +163,20 @@ local function ficha(x, y, lado, cual)
 end
 
 function on_draw()
-  cp.text(40, 60, "Tres en raya", 14, true)
+  local bajo = cp.height() < 600
+  local tituloY = bajo and 35 or 60
+  local reglaY = bajo and 70 or 100
+  cp.text(40, tituloY, "Tres en raya", 14, true)
   local marcador = ganadas .. " - " .. perdidas .. " - " .. empates
-  cp.text(cp.width() - 40 - cp.textw(marcador, 12), 62, marcador, 12)
-  cp.line(40, 100, cp.width() - 40, 100, 1)
+  cp.text(cp.width() - 40 - cp.textw(marcador, 12), tituloY + 2, marcador, 12)
+  cp.line(40, reglaY, cp.width() - 40, reglaY, 1)
 
-  local lado = 120
   local aire = 8
+  local lado = math.min(120, (cp.width() - 80 - 2 * aire) // 3,
+                         (cp.height() - reglaY - (bajo and 85 or 180) - 2 * aire) // 3)
   local total = 3 * lado + 2 * aire
   local x0 = (cp.width() - total) // 2
-  local y0 = 220
+  local y0 = reglaY + (bajo and 15 or 120)
 
   for i = 1, 9 do
     local col = (i - 1) % 3
@@ -196,5 +200,5 @@ function on_draw()
     cp.text((cp.width() - cp.textw(texto, 14)) // 2, y0 + total + 50, texto, 14, true)
     pie = "OK: otra partida · Atrás: salir"
   end
-  cp.text(40, cp.height() - 90, pie, 10)
+  cp.text(40, cp.height() - 35, pie, 10)
 end

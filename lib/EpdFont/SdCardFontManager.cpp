@@ -6,6 +6,8 @@
 #include <SdCardFont.h>
 #include <SdCardFontRegistry.h>
 
+#include <new>
+
 SdCardFontManager::~SdCardFontManager() {
   for (auto& lf : loaded_) {
     delete lf.font;

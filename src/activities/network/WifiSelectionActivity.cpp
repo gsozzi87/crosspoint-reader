@@ -12,6 +12,7 @@
 
 #include "CrossPointSettings.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "WifiCredentialStore.h"
 #include "activities/util/KeyboardEntryActivity.h"
 #include "components/UITheme.h"
@@ -351,10 +352,10 @@ void WifiSelectionActivity::promptPasswordEntry() {
   // Show password entry
   state = WifiSelectionState::PASSWORD_ENTRY;
   // Don't allow screen updates while changing activity
-  startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_PASSWORD),
-                                                                 "",  // No initial text
-                                                                 64,  // Max password length
-                                                                 InputType::Text),
+  startActivityForResult(makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_PASSWORD),
+                                                                  "",  // No initial text
+                                                                  64,  // Max password length
+                                                                  InputType::Text),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
                              state = WifiSelectionState::NETWORK_LIST;
@@ -378,10 +379,10 @@ void WifiSelectionActivity::promptHiddenSsid() {
   }
   // Suppress rendering during the activity transition (see render()).
   state = WifiSelectionState::HIDDEN_SSID_ENTRY;
-  startActivityForResult(std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_SSID),
-                                                                 "",  // No initial text
-                                                                 32,  // Max SSID length (IEEE 802.11: 32 bytes)
-                                                                 InputType::Text),
+  startActivityForResult(makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_ENTER_WIFI_SSID),
+                                                                  "",  // No initial text
+                                                                  32,  // Max SSID length (IEEE 802.11: 32 bytes)
+                                                                  InputType::Text),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
                              state = WifiSelectionState::NETWORK_LIST;
@@ -912,7 +913,8 @@ void WifiSelectionActivity::startPhoneEntry() {
   state = WifiSelectionState::PHONE_ENTRY;
   phoneCredsBefore = WIFI_STORE.getCredentialCount();
   phonePollAt = millis();
-  LOG_INF("WiFi", "clave por el teléfono: punto de acceso para %s", selectedSSID.empty() ? "(red oculta)" : selectedSSID.c_str());
+  LOG_INF("WiFi", "clave por el teléfono: punto de acceso para %s",
+          selectedSSID.empty() ? "(red oculta)" : selectedSSID.c_str());
 
   WiFi.disconnect(false);
   WiFi.mode(WIFI_AP);
@@ -927,10 +929,24 @@ void WifiSelectionActivity::startPhoneEntry() {
     return;
   }
   delay(100);
-  phoneDns.reset(new DNSServer());
+  phoneDns = makeUniqueNoThrow<DNSServer>();
+  if (!phoneDns) {
+    LOG_ERR("WiFi", "OOM: captive DNS server");
+    stopPhoneEntry();
+    state = WifiSelectionState::NETWORK_LIST;
+    requestUpdate();
+    return;
+  }
   phoneDns->setErrorReplyCode(DNSReplyCode::NoError);
   phoneDns->start(53, "*", WiFi.softAPIP());
-  phoneServer.reset(new CrossPointWebServer());
+  phoneServer = makeUniqueNoThrow<CrossPointWebServer>();
+  if (!phoneServer) {
+    LOG_ERR("WiFi", "OOM: captive web server");
+    stopPhoneEntry();
+    state = WifiSelectionState::NETWORK_LIST;
+    requestUpdate();
+    return;
+  }
   phoneServer->begin();
   if (!phoneServer->isRunning()) {
     LOG_ERR("WiFi", "no arrancó el servidor web del punto de acceso");
@@ -988,7 +1004,8 @@ void WifiSelectionActivity::renderPhoneEntry(const Rect* screen, const ThemeMetr
   const int x = screen->x + metrics->contentSidePadding;
   const int w = screen->width - metrics->contentSidePadding * 2;
   const int lineH = renderer.getLineHeight(UI_10_FONT_ID);
-  int y = screen->y + metrics->topPadding + metrics->headerHeight + metrics->tabBarHeight + metrics->verticalSpacing * 2;
+  int y =
+      screen->y + metrics->topPadding + metrics->headerHeight + metrics->tabBarHeight + metrics->verticalSpacing * 2;
 
   UITheme::drawCenteredWrappedText(renderer, Rect{x, y, w, lineH * 3}, UI_12_FONT_ID, tr(STR_WIFI_PHONE_TITLE), 2, true,
                                    EpdFontFamily::BOLD);

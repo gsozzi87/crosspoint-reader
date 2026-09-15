@@ -52,9 +52,10 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   parta del número correcto.
 - En la nube no hay hardware: pedirle al usuario que pruebe en el aparato y reporte.
 - En la nube (Claude Code web): `setup-cloud.sh` trae los workarounds del proxy (registro de PlatformIO y
-  `github.com/*/archive` bloqueados; SCons y las libs se traen de PyPI/GitHub). Sin `WS397_OTA_URL` y
-  `WS397_OTA_TOKEN` en el environment no hay release: el .bin queda con la URL de OTA vacía y no se puede subir.
-- OTA: el aparato consulta `WS397_OTA_URL` (`https://paper-esp32.up.railway.app/firmware/latest`, JSON con la forma
+  `github.com/*/archive` bloqueados; SCons y las libs se traen de PyPI/GitHub). `WS397_OTA_TOKEN` es obligatorio
+  para publicar; `WS397_OTA_URL` solo sobrescribe el destino predeterminado.
+- OTA: el aparato consulta la URL pública compilada desde `include/CrossPointOtaConfig.h`
+  (`https://paper-esp32.up.railway.app/firmware/latest`, JSON con la forma
   de un release de GitHub). Comparación estricta major.minor.patch.
 - Proveedor de IA configurable desde la web (`server/src/config.ts` → `/data/config.json`, `server/src/llm.ts`):
   Anthropic (Claude) o cualquier API compatible con OpenAI (Groq gratis, DeepSeek barato, OpenAI). `chatText()` y
@@ -127,7 +128,7 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 ## Servidor propio (Fase 1, cliente HTTP común)
 
 - `lib/ServerClient/`: `ServerCredentialStore` (`/.crosspoint/server.json`: URL del servidor y token del aparato,
-  editables en la web UI → Servidor; URL vacía = origen de `WS397_OTA_URL`) y `ServerClient` (singleton
+  editables en la web UI → Servidor; URL vacía = origen de la URL OTA compilada) y `ServerClient` (singleton
   `SERVER_CLIENT`): `get`/`postJson`/`postOrQueue` con `Authorization: Bearer <token>`, JSON, 3 intentos con
   backoff (500/1500 ms) ante fallo de transporte, 429 y 5xx, header `X-Request-Id` estable entre reintentos.
 - Cola offline: `/.crosspoint/server-queue.json` (máx. 50 POSTs, 4 KB c/u); `flushQueue()` la reproduce en orden

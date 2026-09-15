@@ -7,7 +7,10 @@
 // el Bearer puesto o llega a los vecinos del proyecto, así que toda URL pasa
 // por el mismo control y todo cuerpo remoto se limpia antes de mostrarse.
 import { lookup } from "node:dns/promises";
+import { request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
+import { Readable } from "node:stream";
 import type { Context } from "hono";
 import type { AppEnv } from "./tenant";
 import { bodyLimit } from "hono/body-limit";
@@ -82,13 +85,17 @@ function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-async function assertPublicResolution(hostname: string): Promise<void> {
+type PublicAddress = { address: string; family: 4 | 6 };
+
+async function publicResolution(hostname: string): Promise<PublicAddress> {
   if (isPrivateHost(hostname)) throw new Error(`no se puede usar un host de red interna (${hostname})`);
-  if (isIP(hostname)) return;
+  const literalFamily = isIP(hostname);
+  if (literalFamily) return { address: hostname, family: literalFamily as 4 | 6 };
   const addresses = await lookup(hostname, { all: true, verbatim: true });
   if (!addresses.length || addresses.some((entry) => isPrivateHost(entry.address))) {
     throw new Error(`el host resuelve a una red interna (${hostname})`);
   }
+  return { address: addresses[0]!.address, family: addresses[0]!.family as 4 | 6 };
 }
 
 function isLoopback(hostname: string): boolean {
@@ -129,6 +136,52 @@ export const BROWSER_UA =
 export const FEED_ACCEPT =
   "application/rss+xml, application/atom+xml, application/rdf+xml, application/xml;q=0.9, text/xml;q=0.9, application/json;q=0.8, text/html;q=0.7, */*;q=0.5";
 
+// Connect to the exact address that was validated above. Calling global
+// fetch() here would resolve the hostname a second time, leaving a DNS
+// rebinding window between the safety check and the actual connection.
+function fetchPinned(url: URL, address: PublicAddress, init: RequestInit, timeoutMs: number): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    const headers = Object.fromEntries(new Headers(init.headers).entries());
+    const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(
+      url,
+      {
+        method: init.method ?? "GET",
+        headers,
+        servername: url.hostname,
+        lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+      },
+      (incoming) => {
+        const responseHeaders = new Headers();
+        for (let i = 0; i < incoming.rawHeaders.length; i += 2) {
+          responseHeaders.append(incoming.rawHeaders[i]!, incoming.rawHeaders[i + 1]!);
+        }
+        const status = incoming.statusCode ?? 502;
+        const noBody = (init.method ?? "GET") === "HEAD" || status === 204 || status === 205 || status === 304;
+        resolve(
+          new Response(noBody ? null : (Readable.toWeb(incoming) as unknown as ReadableStream), {
+            status,
+            statusText: incoming.statusMessage,
+            headers: responseHeaders,
+          }),
+        );
+      },
+    );
+
+    request.setTimeout(timeoutMs, () => request.destroy(new Error("tiempo de espera agotado")));
+    request.once("error", reject);
+    const signal = init.signal;
+    const abort = () => request.destroy(signal?.reason instanceof Error ? signal.reason : new Error("pedido cancelado"));
+    if (signal?.aborted) abort();
+    else signal?.addEventListener("abort", abort, { once: true });
+
+    const body = init.body;
+    if (typeof body === "string" || body instanceof Uint8Array) request.end(body);
+    else if (body instanceof ArrayBuffer) request.end(new Uint8Array(body));
+    else if (body == null) request.end();
+    else request.destroy(new Error("tipo de cuerpo no soportado por safeFetch"));
+  });
+}
+
 // fetch con timeout y saltos controlados: cada Location se vuelve a validar,
 // porque un feed público puede redirigir a 169.254.169.254 y ahí están los
 // metadatos de la nube. Las redirecciones SE SIGUEN (revalidando el destino):
@@ -144,8 +197,8 @@ export async function safeFetchAt(
   for (let hop = 0; hop <= maxHops; hop++) {
     const check = checkUrl(url, { allowHttp: true });
     if (!check.ok) throw new Error(check.error);
-    await assertPublicResolution(check.url.hostname);
-    const res = await fetch(check.url, { ...init, redirect: "manual", signal: AbortSignal.timeout(timeoutMs) });
+    const address = await publicResolution(check.url.hostname);
+    const res = await fetchPinned(check.url, address, init, timeoutMs);
     if (res.status < 300 || res.status > 399) return { res, url: check.url.toString() };
     const next = res.headers.get("location");
     if (!next) return { res, url: check.url.toString() };

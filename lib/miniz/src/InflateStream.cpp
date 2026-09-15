@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "Memory.h"
 #include "MinizConfig.h"
 
 namespace {

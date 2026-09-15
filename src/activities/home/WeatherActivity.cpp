@@ -2,8 +2,8 @@
 
 #include <ArduinoJson.h>
 #include <GfxRenderer.h>
-#include <HalDisplay.h>
 #include <HalClock.h>
+#include <HalDisplay.h>
 #include <HalStorage.h>
 #include <Logging.h>
 #include <ServerClient.h>
@@ -11,18 +11,18 @@
 #include <WiFi.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "MappedInputManager.h"
-#include "util/Shtc3.h"
-
-#include <cmath>
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
-#include "components/themes/BaseTheme.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "components/icons/weatherIcons.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "util/Shtc3.h"
 #include "voice/Lang.h"
 
 namespace {
@@ -31,16 +31,15 @@ constexpr const char* CACHE = "/.crosspoint/forecast.json";
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 constexpr time_t CACHE_MAX_AGE_S = 3600;  // más viejo que esto: refrescar al entrar
 constexpr int SIDE = 22;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int PARTIALS_BEFORE_CLEAN = 12;         // regla del panel: refresco limpio cada 10-15 parciales
 constexpr int BIG_FONT_ID = NOTOSANS_18_FONT_ID;  // la temperatura de ahora, bien grande
-
 
 // Dibujo para cada código WMO de Open-Meteo (los mismos tramos que usa el
 // servidor en describeWeather()): 0 despejado, 1-2 algo nublado, 3 nublado,
 // 45/48 niebla, 51-57 llovizna, 61-67 lluvia, 71-77 nieve, 80-82 chaparrones,
 // 85-86 chaparrones de nieve, 95-99 tormenta.
 const freeink::Icon& iconForWmo(const int code, const bool big) {
-  if (code < 0) return big ? icon_wx_cloudy_64 : icon_wx_cloudy_36;   // sin dato: neutro
+  if (code < 0) return big ? icon_wx_cloudy_64 : icon_wx_cloudy_36;  // sin dato: neutro
   if (code == 0) return big ? icon_wx_clear_64 : icon_wx_clear_36;
   if (code <= 2) return big ? icon_wx_partly_64 : icon_wx_partly_36;
   if (code == 3) return big ? icon_wx_cloudy_64 : icon_wx_cloudy_36;
@@ -64,24 +63,33 @@ struct CondCode {
 // El orden importa para la pasada por subcadena: primero lo específico
 // ("Algo nublado" contiene "nublado", "Nieselregen" contiene "Regen").
 const CondCode CONDS[] = {
-    {"Algo nublado", 2},          {"Parcialmente nublado", 2}, {"Partly cloudy", 2},
-    {"Peu nuageux", 2},           {"Leicht bewölkt", 2},       {"Малооблачно", 2},
-    {"Llovizna", 51},             {"Drizzle", 51},             {"Bruine", 51},
-    {"Nieselregen", 51},          {"Chuvisco", 51},            {"Морось", 51},
-    {"Chaparrones", 80},          {"Showers", 80},             {"Averses", 80},
-    {"Schauer", 80},              {"Pancadas", 80},            {"Ливни", 80},
-    {"Tormenta", 95},             {"Thunderstorm", 95},        {"Orage", 95},
-    {"Gewitter", 95},             {"Tempestade", 95},          {"Гроза", 95},
-    {"Nieve", 71},                {"Snow", 71},                {"Neige", 71},
-    {"Schnee", 71},               {"Neve", 71},                {"Снег", 71},
-    {"Lluvia", 61},               {"Rain", 61},                {"Pluie", 61},
-    {"Regen", 61},                {"Chuva", 61},               {"Дождь", 61},
-    {"Niebla", 45},               {"Fog", 45},                 {"Brouillard", 45},
-    {"Nebel", 45},                {"Névoa", 45},               {"Туман", 45},
-    {"Nublado", 3},               {"Cloudy", 3},               {"Nuageux", 3},
-    {"Bewölkt", 3},               {"Облачно", 3},              {"Despejado", 0},
-    {"Clear", 0},                 {"Dégagé", 0},               {"Klar", 0},
-    {"Céu limpo", 0},             {"Ясно", 0},
+    {"Algo nublado", 2},   {"Parcialmente nublado", 2},
+    {"Partly cloudy", 2},  {"Peu nuageux", 2},
+    {"Leicht bewölkt", 2}, {"Малооблачно", 2},
+    {"Llovizna", 51},      {"Drizzle", 51},
+    {"Bruine", 51},        {"Nieselregen", 51},
+    {"Chuvisco", 51},      {"Морось", 51},
+    {"Chaparrones", 80},   {"Showers", 80},
+    {"Averses", 80},       {"Schauer", 80},
+    {"Pancadas", 80},      {"Ливни", 80},
+    {"Tormenta", 95},      {"Thunderstorm", 95},
+    {"Orage", 95},         {"Gewitter", 95},
+    {"Tempestade", 95},    {"Гроза", 95},
+    {"Nieve", 71},         {"Snow", 71},
+    {"Neige", 71},         {"Schnee", 71},
+    {"Neve", 71},          {"Снег", 71},
+    {"Lluvia", 61},        {"Rain", 61},
+    {"Pluie", 61},         {"Regen", 61},
+    {"Chuva", 61},         {"Дождь", 61},
+    {"Niebla", 45},        {"Fog", 45},
+    {"Brouillard", 45},    {"Nebel", 45},
+    {"Névoa", 45},         {"Туман", 45},
+    {"Nublado", 3},        {"Cloudy", 3},
+    {"Nuageux", 3},        {"Bewölkt", 3},
+    {"Облачно", 3},        {"Despejado", 0},
+    {"Clear", 0},          {"Dégagé", 0},
+    {"Klar", 0},           {"Céu limpo", 0},
+    {"Ясно", 0},
 };
 
 int wmoFromCondition(const std::string& cond) {
@@ -197,7 +205,7 @@ void WeatherActivity::ensureConnected() {
     return;
   }
   state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -272,8 +280,9 @@ void WeatherActivity::render(RenderLock&&) {
     }
     const std::string base = SERVER_STORE.getBaseUrl();
     renderer.drawCenteredText(SMALL_FONT_ID, mid + 46,
-                              base.empty() ? tr(STR_SERVER_NOT_CONFIGURED)
-                                           : renderer.truncatedText(SMALL_FONT_ID, base.c_str(), pageWidth - 40).c_str());
+                              base.empty()
+                                  ? tr(STR_SERVER_NOT_CONFIGURED)
+                                  : renderer.truncatedText(SMALL_FONT_ID, base.c_str(), pageWidth - 40).c_str());
   } else {
     int y = metrics.topPadding + metrics.headerHeight + 12;
     const int w = pageWidth - 2 * SIDE;

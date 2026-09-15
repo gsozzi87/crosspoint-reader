@@ -16,18 +16,19 @@
 #include "CrossPointSettings.h"
 #include "HubStore.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "WifiCredentialStore.h"
 #include "activities/home/AssetSyncActivity.h"
-#include "news/NewsPack.h"
-#include "sync/Sync.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "news/NewsPack.h"
+#include "sync/Sync.h"
 #include "util/DeviceLog.h"
-#include "voice/SpeechCache.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
+#include "voice/SpeechCache.h"
 
 namespace {
 constexpr const char* TAG = "HUB_SYNC";
@@ -285,7 +286,7 @@ void HubSyncActivity::pumpConnect() {
     // Ninguna red guardada anduvo: ahora si hace falta que elija una a mano.
     // autoConnect = false: ya las probamos nosotros, que muestre la lista.
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiSelectionComplete(!result.isCancelled);
@@ -331,7 +332,8 @@ void HubSyncActivity::markAttempt(const bool ok) {
 bool HubSyncActivity::fetchNow(ServerClient::Result* resultOut, int* statusOut) {
   WiFi.setSleep(false);
   ServerClient::Response resp;
-  const ServerClient::Result result = SERVER_CLIENT.get(std::string("/api/hub?lang=") + uiLanguageCode(), resp, /*auth=*/true);
+  const ServerClient::Result result =
+      SERVER_CLIENT.get(std::string("/api/hub?lang=") + uiLanguageCode(), resp, /*auth=*/true);
   if (resultOut) *resultOut = result;
   if (statusOut) *statusOut = resp.status;
   const int status = resp.status;
@@ -404,8 +406,8 @@ static void uploadLog() {
   const std::string tail = devlog::tail(24 * 1024);
   if (tail.size() < 64) return;
   ServerClient::Response resp;
-  const ServerClient::Result r =
-      SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()), tail.size(), resp);
+  const ServerClient::Result r = SERVER_CLIENT.postBytes(
+      "/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()), tail.size(), resp);
   LOG_INF(TAG, "log upload: %s (%u bytes)", ServerClient::resultName(r), (unsigned)tail.size());
 }
 
@@ -518,7 +520,7 @@ void HubSyncActivity::loop() {
       // no tiene sentido que sea desde ese menú".
       if (AssetSyncActivity::isPending()) {
         state = ASSETS;
-        startActivityForResult(std::make_unique<AssetSyncActivity>(renderer, mappedInput, /*wifiReady=*/true),
+        startActivityForResult(makeUniqueNoThrow<AssetSyncActivity>(renderer, mappedInput, /*wifiReady=*/true),
                                [this](const ActivityResult&) { finish(); });
         break;
       }
@@ -565,9 +567,10 @@ void HubSyncActivity::render(RenderLock&&) {
       // Si lo que fallo fue la red, se dice eso y nada mas: el codigo del
       // cliente HTTP no le sirve a nadie ahi.
       const char* headline = wifiFailed ? tr(STR_SERVER_WIFI_FAILED) : tr(STR_HUB_SYNC_FAILED);
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 30,
-                                renderer.truncatedText(UI_12_FONT_ID, headline, pageWidth - 40, EpdFontFamily::BOLD).c_str(),
-                                true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(
+          UI_12_FONT_ID, mid - 30,
+          renderer.truncatedText(UI_12_FONT_ID, headline, pageWidth - 40, EpdFontFamily::BOLD).c_str(), true,
+          EpdFontFamily::BOLD);
       if (!wifiFailed) {
         char detail[64];
         snprintf(detail, sizeof(detail), "%s (%d)", ServerClient::resultName(result), status);

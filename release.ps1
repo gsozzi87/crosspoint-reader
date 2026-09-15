@@ -5,12 +5,11 @@
 #   .\release.ps1 -Upload -Usb COM5 → las dos cosas
 #
 # Configurar una vez (PowerShell, persistente para tu usuario):
-#   [Environment]::SetEnvironmentVariable("WS397_OTA_URL",  "https://TU-APP.up.railway.app/firmware/latest", "User")
 #   [Environment]::SetEnvironmentVariable("WS397_OTA_TOKEN", "un-token-largo", "User")
 param([switch]$Upload = $true, [string]$Usb = "")
 $ErrorActionPreference = "Stop"
 
-if (-not $env:WS397_OTA_URL)   { throw "Falta WS397_OTA_URL (ver comentario arriba)" }
+$otaUrl = if ($env:WS397_OTA_URL) { $env:WS397_OTA_URL } else { "https://paper-esp32.up.railway.app/firmware/latest" }
 $buildFile = ".ws397-build"
 $build = if (Test-Path $buildFile) { [int](Get-Content $buildFile) + 1 } else { 1 }
 $version = "1.5.$build"
@@ -31,7 +30,7 @@ if ($Usb) {
 }
 if ($Upload) {
     if (-not $env:WS397_OTA_TOKEN) { throw "Falta WS397_OTA_TOKEN" }
-    $putUrl = $env:WS397_OTA_URL -replace "/latest$", ""
+    $putUrl = $otaUrl -replace "/latest$", ""
     Write-Host "Subiendo $bin a $putUrl..." -ForegroundColor Cyan
     Invoke-RestMethod -Method Put -Uri $putUrl -InFile $bin -ContentType "application/octet-stream" `
         -Headers @{ Authorization = "Bearer $($env:WS397_OTA_TOKEN)"; "X-Version" = $version }

@@ -9,6 +9,7 @@
 #include <deque>
 
 #include "FsHelpers.h"
+#include "Memory.h"
 
 namespace {
 constexpr uint8_t BOOK_CACHE_VERSION = 10;  // v10: ignore ambiguous guide text references

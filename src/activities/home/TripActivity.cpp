@@ -13,9 +13,10 @@
 #include <cctype>
 #include <cstdio>
 
+#include "../../util/FullScreenBmp.h"
 #include "CalendarActivity.h"
 #include "MappedInputManager.h"
-#include "../../util/FullScreenBmp.h"
+#include "Memory.h"
 #include "SilentRestart.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -512,8 +513,10 @@ bool TripActivity::fetchSuggest(const bool refresh) {
   }
   suggestAt = static_cast<time_t>(doc["at"] | (int64_t)0);
   suggestTripId = tripId;
-  if (suggestLines.empty() && suggestPacking.empty()) suggestError = tr(STR_SUGGEST_EMPTY);
-  else saveCache();
+  if (suggestLines.empty() && suggestPacking.empty())
+    suggestError = tr(STR_SUGGEST_EMPTY);
+  else
+    saveCache();
   return !suggestLines.empty() || !suggestPacking.empty();
 }
 
@@ -545,7 +548,7 @@ void TripActivity::ensureConnected() {
     return;
   }
   state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -725,8 +728,10 @@ void TripActivity::loop() {
         requestUpdate();
       });
       if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        if (packIndex >= mine) addSuggestedPacking(packIndex - mine);
-        else togglePacking();
+        if (packIndex >= mine)
+          addSuggestedPacking(packIndex - mine);
+        else
+          togglePacking();
         break;
       }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
@@ -855,7 +860,7 @@ void TripActivity::renderList() {
   }
 
   if (count == 0) {
-    const char* empty = state == ITEMS    ? tr(STR_TRIP_NO_ITEMS)
+    const char* empty = state == ITEMS     ? tr(STR_TRIP_NO_ITEMS)
                         : state == PACKING ? tr(STR_AGENDA_EMPTY)
                                            : tr(STR_TRIP_NONE);
     renderer.drawCenteredText(UI_10_FONT_ID, pageHeight / 2 - 10,
@@ -929,10 +934,14 @@ void TripActivity::renderList() {
   listui::pager(renderer, x, pagerY, w, page + 1, count > 0 ? (count + itemsPerPage - 1) / itemsPerPage : 1);
 
   const char* hint = nullptr;
-  if (state == ITEMS) hint = tr(STR_TRIP_ATTACH_HINT);
-  else if (state == PACKING && !suggestPacking.empty()) hint = tr(STR_TRIP_SUGGEST_HINT);
-  else if (state == PACKING) hint = tr(STR_TRIP_PACK_HINT);
-  else if (state == DAYS) hint = tr(STR_CAL_REFRESH_HINT);
+  if (state == ITEMS)
+    hint = tr(STR_TRIP_ATTACH_HINT);
+  else if (state == PACKING && !suggestPacking.empty())
+    hint = tr(STR_TRIP_SUGGEST_HINT);
+  else if (state == PACKING)
+    hint = tr(STR_TRIP_PACK_HINT);
+  else if (state == DAYS)
+    hint = tr(STR_CAL_REFRESH_HINT);
   listui::hint(renderer, hintY, hint);
 }
 
@@ -949,8 +958,8 @@ void TripActivity::renderSuggest() {
 
   std::vector<std::string> lines;
   for (const std::string& line : suggestLines) {
-    for (const std::string& part : renderer.wrappedText(UI_10_FONT_ID, ("• " + line).c_str(),
-                                                        pageWidth - 2 * SIDE, 6)) {
+    for (const std::string& part :
+         renderer.wrappedText(UI_10_FONT_ID, ("• " + line).c_str(), pageWidth - 2 * SIDE, 6)) {
       lines.push_back(part);
     }
   }
@@ -970,8 +979,10 @@ void TripActivity::renderSuggest() {
   if (suggestAt > 0 && halClock.getEpochUtc(now) && now > suggestAt) {
     const long mins = static_cast<long>(now - suggestAt) / 60;
     char buf[64];
-    if (mins < 60) snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
-    else snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
+    if (mins < 60)
+      snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
+    else
+      snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
     foot = buf;
   }
   if (!suggestPacking.empty()) {
@@ -1001,8 +1012,9 @@ void TripActivity::renderAttachmentText() {
     renderer.drawText(UI_10_FONT_ID, SIDE, top + i * lineH, attLines[attLine + i].c_str());
   }
   if (attPages > 0) {
-    renderer.drawCenteredText(SMALL_FONT_ID, bottom + 2,
-                              renderer.truncatedText(SMALL_FONT_ID, tr(STR_TRIP_IMAGE_HINT), pageWidth - 2 * SIDE).c_str());
+    renderer.drawCenteredText(
+        SMALL_FONT_ID, bottom + 2,
+        renderer.truncatedText(SMALL_FONT_ID, tr(STR_TRIP_IMAGE_HINT), pageWidth - 2 * SIDE).c_str());
   }
 }
 

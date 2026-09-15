@@ -1,8 +1,7 @@
 #include "VoiceActivity.h"
 
-#include <AudioManager.h>
-
 #include <ArduinoJson.h>
+#include <AudioManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
 #include <Logging.h>
@@ -12,13 +11,14 @@
 
 #include <algorithm>
 
-#include "HubStore.h"
 #include "AgendaActivity.h"
+#include "HubStore.h"
 #include "HubSyncActivity.h"
-#include "NotesActivity.h"
-#include "TimerActivity.h"
 #include "MappedInputManager.h"
+#include "Memory.h"
+#include "NotesActivity.h"
 #include "SilentRestart.h"
+#include "TimerActivity.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "activities/reader/DictionaryDefinitionActivity.h"
 #include "components/UITheme.h"
@@ -158,7 +158,7 @@ void VoiceActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiSelectionComplete(!result.isCancelled);
@@ -328,17 +328,17 @@ void VoiceActivity::runAfterSpeech() {
     return;
   }
   if (what == AFTER_TIMER) {
-    activityManager.replaceActivity(std::make_unique<TimerActivity>(renderer, mappedInput, timerSeconds));
+    activityManager.replaceActivity(makeUniqueNoThrow<TimerActivity>(renderer, mappedInput, timerSeconds));
     return;
   }
   if (what == AFTER_AGENDA) {
     const AgendaActivity::Focus focus =
         savedKind == "reminder" ? AgendaActivity::Focus::Reminder : AgendaActivity::Focus::Item;
-    activityManager.replaceActivity(std::make_unique<AgendaActivity>(renderer, mappedInput, focus, savedId));
+    activityManager.replaceActivity(makeUniqueNoThrow<AgendaActivity>(renderer, mappedInput, focus, savedId));
     return;
   }
   if (what == AFTER_NOTES) {
-    activityManager.replaceActivity(std::make_unique<NotesActivity>(renderer, mappedInput, savedId));
+    activityManager.replaceActivity(makeUniqueNoThrow<NotesActivity>(renderer, mappedInput, savedId));
     return;
   }
   showReply();
@@ -346,7 +346,7 @@ void VoiceActivity::runAfterSpeech() {
 
 void VoiceActivity::showReply() {
   state = REPLY;
-  startActivityForResult(std::make_unique<DictionaryDefinitionActivity>(renderer, mappedInput, intentTitle(), reply),
+  startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, intentTitle(), reply),
                          [this](const ActivityResult&) { leave(); });
 }
 
@@ -474,9 +474,10 @@ void VoiceActivity::render(RenderLock&&) {
                                   renderer.truncatedText(UI_10_FONT_ID, pendingTitle.c_str(), pageWidth - 40).c_str());
         renderer.drawCenteredText(UI_10_FONT_ID, mid + 26, tr(STR_VOICE_ASK_TIME_HINT));
       } else {
-        renderer.drawCenteredText(UI_12_FONT_ID, mid - 20,
-                                  renderer.truncatedText(UI_12_FONT_ID, reply.c_str(), pageWidth - 40, EpdFontFamily::BOLD).c_str(),
-                                  true, EpdFontFamily::BOLD);
+        renderer.drawCenteredText(
+            UI_12_FONT_ID, mid - 20,
+            renderer.truncatedText(UI_12_FONT_ID, reply.c_str(), pageWidth - 40, EpdFontFamily::BOLD).c_str(), true,
+            EpdFontFamily::BOLD);
       }
       break;
     case FAILED:

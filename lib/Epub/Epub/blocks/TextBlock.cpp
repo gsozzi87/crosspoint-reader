@@ -7,6 +7,7 @@
 #include <Serialization.h>
 
 #include <cstring>
+#include <new>
 
 #include "../../../../src/fontIds.h"
 

@@ -3,7 +3,6 @@
 #include <Epub.h>
 
 #include <cstdint>
-#include <memory>
 #include <string>
 
 class ChapterXPathResolver {
@@ -16,7 +15,7 @@ class ChapterXPathResolver {
    *
    * An empty string means parsing failed or the paragraph index was not found.
    */
-  static std::string findXPathForParagraph(const std::shared_ptr<Epub>& epub, int spineIndex, uint16_t paragraphIndex);
+  static std::string findXPathForParagraph(Epub* epub, int spineIndex, uint16_t paragraphIndex);
 
   /**
    * Resolve intra-spine progress to a real XHTML ancestry path plus text offset.
@@ -26,5 +25,5 @@ class ChapterXPathResolver {
    *
    * An empty string means parsing failed or the location could not be resolved.
    */
-  static std::string findXPathForProgress(const std::shared_ptr<Epub>& epub, int spineIndex, float intraSpineProgress);
+  static std::string findXPathForProgress(Epub* epub, int spineIndex, float intraSpineProgress);
 };
