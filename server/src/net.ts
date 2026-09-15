@@ -87,15 +87,23 @@ function isPrivateHost(hostname: string): boolean {
 
 type PublicAddress = { address: string; family: 4 | 6 };
 
+// Un dominio servido por un CDN puede devolver varias direcciones. Una AAAA
+// que este servidor no soporte no debe invalidar también la IPv4 pública: se
+// elige una única respuesta que ya pase el filtro y la conexión se fija a ésa.
+export function selectResolvedAddress(addresses: PublicAddress[]): PublicAddress | null {
+  return addresses.find((entry) => !isPrivateHost(entry.address)) ?? null;
+}
+
 async function publicResolution(hostname: string): Promise<PublicAddress> {
   if (isPrivateHost(hostname)) throw new Error(`no se puede usar un host de red interna (${hostname})`);
   const literalFamily = isIP(hostname);
   if (literalFamily) return { address: hostname, family: literalFamily as 4 | 6 };
   const addresses = await lookup(hostname, { all: true, verbatim: true });
-  if (!addresses.length || addresses.some((entry) => isPrivateHost(entry.address))) {
+  const selected = selectResolvedAddress(addresses as PublicAddress[]);
+  if (!selected) {
     throw new Error(`el host resuelve a una red interna (${hostname})`);
   }
-  return { address: addresses[0]!.address, family: addresses[0]!.family as 4 | 6 };
+  return selected;
 }
 
 function isLoopback(hostname: string): boolean {
