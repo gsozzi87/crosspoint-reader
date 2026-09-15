@@ -194,6 +194,7 @@ void VoiceActivity::performRequest() {
   }
   LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)bytes);
   std::string path = std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam();
+  if (!conversationId.empty()) path += "&conversation=" + urlEncode(conversationId);
   if (!pendingTitle.empty()) path += "&pending=" + urlEncode(pendingTitle);
   if (!pendingDate.empty()) path += "&pendingDate=" + urlEncode(pendingDate);
   ServerClient::Response resp;
@@ -225,6 +226,7 @@ void VoiceActivity::performRequest() {
   heard = doc["text"] | "";
   intent = doc["intent"] | "";
   reply = doc["reply"] | "";
+  conversationId = std::string(doc["conversationId"] | "");
   timerSeconds = doc["timerSeconds"] | 0;
   const char* askTime = doc["askTime"] | "";  // reminder with no time: ask for it
   const size_t audioBytes = framed ? raw.size() - 4 - jsonLen : 0;
@@ -347,7 +349,17 @@ void VoiceActivity::runAfterSpeech() {
 void VoiceActivity::showReply() {
   state = REPLY;
   startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, intentTitle(), reply),
-                         [this](const ActivityResult&) { leave(); });
+                         [this](const ActivityResult&) {
+                           // Solo las respuestas conversacionales conservan
+                           // contexto. Las acciones (temporizadores, notas,
+                           // recordatorios) mantienen su flujo habitual.
+                           if (intent == "question" && !conversationId.empty()) {
+                             state = FOLLOW_UP;
+                             requestUpdate();
+                           } else {
+                             leave();
+                           }
+                         });
 }
 
 void VoiceActivity::loop() {
@@ -404,6 +416,13 @@ void VoiceActivity::loop() {
       pumpConnect();
       break;
     case REPLY:
+      break;
+    case FOLLOW_UP:
+      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+        leave();
+      } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
+        startRecording();
+      }
       break;
   }
 }
@@ -491,6 +510,11 @@ void VoiceActivity::render(RenderLock&&) {
       if (!wifiPicker) FriendlyWifi::drawStatus(renderer, wifi, mid);
       break;
     case REPLY:
+      break;
+    case FOLLOW_UP:
+      renderer.drawCenteredText(UI_12_FONT_ID, mid - 26, tr(STR_VOICE_FOLLOW_UP), true, EpdFontFamily::BOLD);
+      renderer.drawCenteredText(UI_10_FONT_ID, mid + 12, tr(STR_VOICE_FOLLOW_UP_HINT), true);
+      confirmLabel = tr(STR_VOICE_FOLLOW_UP_ACTION);
       break;
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");

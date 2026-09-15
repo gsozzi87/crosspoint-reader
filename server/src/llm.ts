@@ -68,9 +68,9 @@ export type ChatResult = { text: string; sources: Source[]; searched: boolean; s
 
 // Instrucción que acompaña a los resultados cuando busca el servidor.
 const SEARCH_HINT = [
-  "Arriba del mensaje tenés resultados de una búsqueda en internet hecha recién.",
-  "Usalos para todo lo que dependa de la fecha: son más nuevos que lo que sabés de memoria y le ganan a tu memoria.",
-  "No inventes nada que no esté ahí; si los resultados no alcanzan para contestar, decilo en una línea.",
+  "Arriba del mensaje tienes resultados de una búsqueda reciente en internet.",
+  "Úsalos para todo lo que dependa de la fecha: son más recientes que tu conocimiento previo y tienen prioridad.",
+  "No inventes nada que no esté ahí; si los resultados no bastan para responder, indícalo en una línea.",
 ].join(" ");
 
 // ── Búsqueda incorporada del proveedor ──────────────────────────────────────
@@ -101,7 +101,7 @@ export function providerSearchKind(baseUrl: string, model: string): BuiltInSearc
 
 // País que Groq usa para dar más peso a los resultados locales.
 const SEARCH_COUNTRY: Record<Lang, string> = {
-  es: "argentina", en: "united states", fr: "france", de: "germany", pt: "brazil", ru: "russia",
+  es: "mexico", en: "united states", fr: "france", de: "germany", pt: "brazil", ru: "russia",
 };
 
 // gpt-oss deja las citas incrustadas en el texto ("...32 % share 【2†L6-L10】").

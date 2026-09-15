@@ -1,18 +1,17 @@
 #include "TimerActivity.h"
 
 #include <GfxRenderer.h>
+#include <HalClock.h>
 #include <HalDisplay.h>
 #include <I18n.h>
-
-#include <HalClock.h>
 #include <Logging.h>
 
 #include "HubStore.h"
-#include "input/MotionInput.h"
 #include "MappedInputManager.h"
 #include "components/SevenSegment.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "input/MotionInput.h"
 #include "voice/Lang.h"
 #include "voice/SpeechCache.h"
 
@@ -22,8 +21,9 @@ constexpr int DURATIONS_MIN[] = {1, 3, 5, 10, 15, 20, 25, 30, 45, 60};
 constexpr int DURATION_COUNT = sizeof(DURATIONS_MIN) / sizeof(DURATIONS_MIN[0]);
 constexpr long POMODORO_WORK_S = 25 * 60;
 constexpr long POMODORO_BREAK_S = 5 * 60;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int PARTIALS_BEFORE_CLEAN = 12;       // regla del panel: refresco limpio cada 10-15 parciales
 constexpr unsigned long CANCEL_HOLD_MS = 1000;  // Atrás mantenido: cancelar
+constexpr unsigned long SPEECH_START_GRACE_MS = 500;
 
 // Los dígitos de 7 segmentos viven en components/SevenSegment.h: los usa también
 // el reproductor de música.
@@ -229,9 +229,10 @@ void TimerActivity::ring() {
   HUB_STORE.clearTimer();
   HUB_STORE.saveToFile();
   spoken = !speech.playFile(speechcache::clipPath(tr(STR_TIMER_DONE)).c_str());
+  speechStartedAt = millis();
   if (spoken) {
     speech.stop();  // el I2S es uno solo: soltarlo antes de que lo abra el pitido
-    beep.start();
+    if (!beep.start()) LOG_ERR(TAG, "no se pudo iniciar la alarma");
   }
   requestUpdate();
 }
@@ -240,8 +241,10 @@ void TimerActivity::loop() {
   if (pendingPicker != NONE) {
     const PendingPicker next = pendingPicker;
     pendingPicker = NONE;
-    if (next == DURATION_PICKER) showDurationPicker();
-    else showModePicker();
+    if (next == DURATION_PICKER)
+      showDurationPicker();
+    else
+      showModePicker();
     return;
   }
   if (mode == PICK) {
@@ -265,10 +268,12 @@ void TimerActivity::loop() {
   }
 
   if (finished) {
-    if (!spoken && !speech.isPlaying()) {
+    // La tarea de audio necesita una gracia antes de que isPlaying() sea fiable;
+    // parlante y pitido comparten el mismo I2S.
+    if (!spoken && millis() - speechStartedAt >= SPEECH_START_GRACE_MS && !speech.isPlaying()) {
       spoken = true;
       speech.stop();
-      beep.start();
+      if (!beep.start()) LOG_ERR(TAG, "no se pudo iniciar la alarma");
     }
     // Nadie atendió: callar y dejar que el aparato se duerma.
     if (millis() - finishedAt >= RING_MAX_MS) {
@@ -287,7 +292,8 @@ void TimerActivity::loop() {
         if (!pomodoroBreak) pomodoroRound++;
         startSegment(pomodoroBreak ? POMODORO_BREAK_S : POMODORO_WORK_S);
       } else {
-        showModePicker();
+        // Una alarma terminada vuelve al origen; el selector es solo para crearla.
+        finish();
       }
     }
     return;
@@ -352,15 +358,20 @@ void TimerActivity::drawBigTime(const long seconds, const int centerY) const {
   };
   if (hours) {
     const long hh = mm / 60;
-    drawDigit(renderer, (hh / 10) % 10, x, y, digitW, digitH, thick); x += digitW + gap;
-    drawDigit(renderer, hh % 10, x, y, digitW, digitH, thick); x += digitW + gap;
+    drawDigit(renderer, (hh / 10) % 10, x, y, digitW, digitH, thick);
+    x += digitW + gap;
+    drawDigit(renderer, hh % 10, x, y, digitW, digitH, thick);
+    x += digitW + gap;
     colon();
   }
   const long m = hours ? mm % 60 : mm;
-  drawDigit(renderer, (m / 10) % 10, x, y, digitW, digitH, thick); x += digitW + gap;
-  drawDigit(renderer, m % 10, x, y, digitW, digitH, thick); x += digitW + gap;
+  drawDigit(renderer, (m / 10) % 10, x, y, digitW, digitH, thick);
+  x += digitW + gap;
+  drawDigit(renderer, m % 10, x, y, digitW, digitH, thick);
+  x += digitW + gap;
   colon();
-  drawDigit(renderer, ss / 10, x, y, digitW, digitH, thick); x += digitW + gap;
+  drawDigit(renderer, ss / 10, x, y, digitW, digitH, thick);
+  x += digitW + gap;
   drawDigit(renderer, ss % 10, x, y, digitW, digitH, thick);
 }
 
@@ -370,8 +381,11 @@ void TimerActivity::render(RenderLock&&) {
   const int pageHeight = renderer.getScreenHeight();
 
   renderer.clearScreen();
-  const char* title = mode == STOPWATCH ? tr(STR_TIMER_STOPWATCH) : mode == POMODORO ? tr(STR_TIMER_POMODORO) : tr(STR_TIMER_COUNTDOWN);
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, mode == PICK ? tr(STR_HUB_TIMER) : title);
+  const char* title = mode == STOPWATCH  ? tr(STR_TIMER_STOPWATCH)
+                      : mode == POMODORO ? tr(STR_TIMER_POMODORO)
+                                         : tr(STR_TIMER_COUNTDOWN);
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight},
+                 mode == PICK ? tr(STR_HUB_TIMER) : title);
 
   if (mode == PICK) {
     if (picker.processRender(renderer, mappedInput)) return;
@@ -385,9 +399,11 @@ void TimerActivity::render(RenderLock&&) {
 
   char sub[64] = "";
   if (finished) {
-    snprintf(sub, sizeof(sub), "%s", mode == POMODORO && !pomodoroBreak ? tr(STR_TIMER_BREAK_TIME) : tr(STR_TIMER_DONE));
+    snprintf(sub, sizeof(sub), "%s",
+             mode == POMODORO && !pomodoroBreak ? tr(STR_TIMER_BREAK_TIME) : tr(STR_TIMER_DONE));
   } else if (mode == POMODORO) {
-    snprintf(sub, sizeof(sub), "%s %d · %s", tr(STR_TIMER_ROUND), pomodoroRound, pomodoroBreak ? tr(STR_TIMER_BREAK) : tr(STR_TIMER_WORK));
+    snprintf(sub, sizeof(sub), "%s %d · %s", tr(STR_TIMER_ROUND), pomodoroRound,
+             pomodoroBreak ? tr(STR_TIMER_BREAK) : tr(STR_TIMER_WORK));
   } else if (!running) {
     snprintf(sub, sizeof(sub), "%s", tr(STR_TIMER_PAUSED));
   }

@@ -9,14 +9,12 @@
 
 #include "MappedInputManager.h"
 #include "Memory.h"
-#include "components/Selection.h"
+#include "activities/ListStyle.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 namespace {
-constexpr int ROW_H = 52;
-constexpr int SIDE = 24;      // ÚNICO margen lateral de la pantalla
-constexpr int TEXT_PAD = 24;  // borde de la fila -> texto: por dentro de la franja del resalte
+constexpr int SIDE = 24;  // ÚNICO margen lateral de la pantalla
 // Atrás mantenido sale siempre, aunque la app se coma el botón.
 constexpr unsigned long EXIT_HOLD_MS = 1000;
 }  // namespace
@@ -38,10 +36,7 @@ void LuaAppsActivity::onExit() {
 }
 
 int LuaAppsActivity::visibleRows() const {
-  const auto& metrics = UITheme::getInstance().getMetrics();
-  const int top = metrics.topPadding + metrics.headerHeight + 14;
-  const int bottom = renderer.getScreenHeight() - metrics.buttonHintsHeight - metrics.verticalSpacing;
-  return std::max(1, (bottom - top) / ROW_H);
+  return std::max(1, (listui::contentBottom(renderer) - listui::contentTop()) / listui::ROW2_H);
 }
 
 void LuaAppsActivity::clampScroll() {
@@ -166,19 +161,17 @@ void LuaAppsActivity::renderList() {
     renderer.drawCenteredText(SMALL_FONT_ID, renderer.getScreenHeight() / 2 + 12, LuaApp::dir(), true);
   } else {
     const int rows = visibleRows();
-    const int top = metrics.topPadding + metrics.headerHeight + 14;
-    const int rowW = pageWidth - 2 * SIDE;
-    const int textX = SIDE + TEXT_PAD;
-    const int textW = rowW - 2 * TEXT_PAD;
+    const int top = listui::contentTop();
+    const int rowW = listui::contentWidth(renderer);
     for (int row = 0; row < rows && scroll + row < static_cast<int>(apps.size()); ++row) {
       const int i = scroll + row;
-      const int y = top + row * ROW_H;
-      if (i == selected) drawSelectionRow(renderer, SIDE, y, rowW, ROW_H - 8, 10);
-      renderer.drawText(UI_12_FONT_ID, textX, y + 6,
-                        renderer.truncatedText(UI_12_FONT_ID, apps[i].name.c_str(), textW, EpdFontFamily::BOLD).c_str(),
-                        SELECTION_INK, EpdFontFamily::BOLD);
-      renderer.drawText(SMALL_FONT_ID, textX, y + 28,
-                        renderer.truncatedText(SMALL_FONT_ID, apps[i].path.c_str(), textW).c_str(), SELECTION_INK);
+      const int y = top + row * listui::ROW2_H;
+      listui::RowSpec spec;
+      spec.title = apps[i].name.c_str();
+      spec.detail = apps[i].path.c_str();
+      spec.selected = i == selected;
+      spec.bold = true;
+      listui::row(renderer, SIDE, y, rowW, listui::ROW2_H, spec);
     }
   }
 

@@ -515,12 +515,12 @@ calendar.post("/dictate", async (c) => {
     const raw = await chatJson<{ items?: unknown }>(
       {
         system: [
-          "El usuario dicta de un tirón todo lo que va a hacer un día y vos lo partís en actividades sueltas.",
+          "El usuario dicta de una vez todo lo que va a hacer un día y tú lo divides en actividades separadas.",
           `El día es el ${date} y la zona es ${timeZone()}.`,
-          "Devolvés JSON según el esquema: una entrada por actividad, en el orden en que las dijo.",
-          "El texto llega transcripto de voz y puede traer errores de reconocimiento: interpretalo con sentido",
+          "Devuelves JSON según el esquema: una entrada por actividad, en el orden en que las dijo.",
+          "El texto llega transcrito de voz y puede contener errores de reconocimiento: interprétalo con sentido",
           "común, no comentes la transcripción y no inventes actividades que no dijo.",
-          "Las horas van en formato de 24 horas. Si dice una hora suelta, usá el sentido común del día",
+          "Las horas van en formato de 24 horas. Si dice una hora suelta, usa el sentido común del día",
           "('a las 8' es la mañana, 'a las 9 de la noche' son las 21:00, 'a la una' es 13:00, 'al mediodía' es 12:00).",
           "Si de una actividad no dice hora, time va en null (queda como algo del día, sin hora).",
           "endTime solo si dijo hasta cuándo ('de 8 a 9', 'hasta las 10'); si no, null.",

@@ -315,12 +315,10 @@ void EpubReaderActivity::showBuildPopup(GfxRenderer& renderer, int& pagesUntilFu
 }
 
 void EpubReaderActivity::openDictionaryWordSelect() {
-  // Sin diccionario en la tarjeta: en esta placa la palabra se le pregunta al
-  // servidor ("¿qué significa X en lo que estoy leyendo?"), con el capítulo de
-  // contexto. Antes salía un cartel de un segundo y volvía: "Buscar no dice
-  // nada". En las demás placas el cartel sigue, porque no tienen servidor.
-  const bool askServer = SETTINGS.dictionaryName[0] == '\0' && BoardConfig::isWS397();
-  if (SETTINGS.dictionaryName[0] == '\0' && !askServer) {
+  // Buscar significa diccionario local. Nunca se transforma silenciosamente
+  // en una consulta a la IA: si falta el diccionario se informa y el lector
+  // permanece abierto. "Preguntar al libro" sigue siendo la acción de red.
+  if (SETTINGS.dictionaryName[0] == '\0') {
     showDictionaryMessage = true;
     dictionaryMessageTime = millis();
     requestUpdate();
@@ -336,17 +334,9 @@ void EpubReaderActivity::openDictionaryWordSelect() {
   orientedMarginTop += SETTINGS.screenMargin;
   orientedMarginLeft += SETTINGS.screenMargin;
 
-  startActivityForResult(makeUniqueNoThrow<DictionaryWordSelectActivity>(
-                             renderer, mappedInput, std::move(page), orientedMarginLeft, orientedMarginTop, askServer),
-                         [this](const ActivityResult& result) {
-                           if (const auto* w = std::get_if<WordResult>(&result.data); w && !w->word.empty()) {
-                             char q[160];
-                             snprintf(q, sizeof(q), tr(STR_ASK_WORD_MEANING), w->word.c_str());
-                             launchAskBook(q);
-                             return;
-                           }
-                           requestUpdate();
-                         });
+  startActivityForResult(makeUniqueNoThrow<DictionaryWordSelectActivity>(renderer, mappedInput, std::move(page),
+                                                                         orientedMarginLeft, orientedMarginTop),
+                         [this](const ActivityResult&) { requestUpdate(); });
 }
 
 void EpubReaderActivity::loop() {

@@ -22,13 +22,13 @@ class VoiceActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return state == RECORDING; }
-  bool preventAutoSleep() override { return state != REPLY && state != FAILED; }
+  bool preventAutoSleep() override { return state != REPLY && state != FOLLOW_UP && state != FAILED; }
 
  private:
   // SPEAKING: la respuesta se está reproduciendo y hay algo que hacer después.
   // Hace falta porque el I2S es uno solo: abrir el micrófono mientras habla el
   // parlante falla ("error de micrófono"), y navegar mientras habla corta la frase.
-  enum State { RECORDING, CONNECTING, SENDING, SPEAKING, REPLY, FAILED };
+  enum State { RECORDING, CONNECTING, SENDING, SPEAKING, REPLY, FOLLOW_UP, FAILED };
   State state = RECORDING;
   // AFTER_AGENDA / AFTER_NOTES: lo que se dicto se ABRE en su pantalla para
   // confirmarlo (y, en un recordatorio, para corregirle hora y repeticion)
@@ -43,9 +43,12 @@ class VoiceActivity final : public Activity {
   unsigned long speakStartedAt = 0;
 
   VoiceRecorder recorder{20};  // 20 s: con 12 se cortaba a mitad de frase
-  std::string heard;   // what the server understood
-  std::string intent;  // question | reminder | task | ...
+  std::string heard;           // what the server understood
+  std::string intent;          // question | reminder | task | ...
   std::string reply;
+  // Identifica solo esta conversación en el servidor. No contiene el texto y
+  // caduca allí; permite preguntar "¿y por qué?" sin perder el tema.
+  std::string conversationId;
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
   bool wifiActivated = false;
@@ -54,9 +57,9 @@ class VoiceActivity final : public Activity {
   bool returnToCaller = false;
   bool requestPending = false;
   FriendlyWifi wifi;
-  bool wifiPicker = false;  // la pantalla de seleccion tiene el foco
-  int timerSeconds = 0;  // timer/alarm intent: hand off to TimerActivity
-  SpeechOut speech;      // the reply, spoken by the server's Piper, played with the text
+  bool wifiPicker = false;   // la pantalla de seleccion tiene el foco
+  int timerSeconds = 0;      // timer/alarm intent: hand off to TimerActivity
+  SpeechOut speech;          // the reply, spoken by the server's Piper, played with the text
   std::string pendingTitle;  // reminder waiting for its hour (the server asked)
   std::string pendingDate;   // día que ya se había dicho ("2026-09-08"), vacío si no dijo ninguno
   bool askingTime = false;

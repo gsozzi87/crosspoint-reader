@@ -11,7 +11,7 @@ export function normalizeLang(raw: string | null | undefined): Lang {
 
 // Cómo se le pide a Claude que hable.
 export const LANGUAGE_NAME: Record<Lang, string> = {
-  es: "español rioplatense, informal",
+  es: "español neutro, claro y natural, sin regionalismos ni voseo",
   en: "English",
   fr: "français",
   de: "Deutsch",
@@ -68,8 +68,8 @@ export const LABELS: Record<
 export const QUOTES: Record<Lang, string[]> = {
   es: [
     "Lo que no se empieza hoy nunca se termina mañana.",
-    "Un libro es un sueño que tenés en las manos.",
-    "Hacé lo que puedas, con lo que tengas, donde estés.",
+    "Un libro es un sueño que tienes en las manos.",
+    "Haz lo que puedas, con lo que tengas, donde estés.",
     "La paciencia es amarga, pero su fruto es dulce.",
     "Leer es viajar sin moverse.",
     "Cada día es una página nueva.",
