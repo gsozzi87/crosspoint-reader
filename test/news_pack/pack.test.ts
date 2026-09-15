@@ -3,7 +3,7 @@
 // que publica mucho se come el paquete y los otros no aparecen nunca.
 import { expect, test } from "bun:test";
 
-import { interleave } from "../../server/src/news";
+import { carryUnavailable, interleave } from "../../server/src/news";
 
 const feed = (id: number, name: string, n: number) => ({
   feed: name,
@@ -41,4 +41,23 @@ test("un feed corto no corta a los demás", () => {
 test("el feedId viaja con cada ítem", () => {
   const out = interleave([feed(7, "A", 1), feed(9, "B", 1)], 2);
   expect(out.map((o) => o.feedId)).toEqual([7, 9]);
+});
+
+test("una caída conserva las últimas noticias buenas de ese feed", () => {
+  const previous = [
+    { id: "7-1", feed: "A", title: "una", when: "", sha: "a", bytes: 10, chewed: true, link: "" },
+    { id: "9-1", feed: "B", title: "dos", when: "", sha: "b", bytes: 10, chewed: false, link: "" },
+  ];
+  const bodies = {
+    "7-1": { id: "7-1", title: "una", feed: "A", when: "", text: "texto" },
+    "9-1": { id: "9-1", title: "dos", feed: "B", when: "", text: "texto" },
+  };
+  expect(carryUnavailable(previous, bodies, new Set([7])).map((item) => item.id)).toEqual(["7-1"]);
+});
+
+test("no conserva una entrada cuyo cuerpo ya no existe", () => {
+  const previous = [
+    { id: "7-1", feed: "A", title: "una", when: "", sha: "a", bytes: 10, chewed: true, link: "" },
+  ];
+  expect(carryUnavailable(previous, {}, new Set([7]))).toEqual([]);
 });

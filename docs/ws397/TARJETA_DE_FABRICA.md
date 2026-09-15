@@ -39,7 +39,9 @@ no van en la tarjeta.
 
 ### `/Apps` — las apps de Lua
 
-Las tres de fábrica, copiadas de `examples/Apps/`:
+Las tres de fábrica se descargan automáticamente desde el paquete de contenido
+del servidor. Para una imagen de microSD que deba funcionar sin red desde el
+primer arranque, también pueden copiarse de `examples/Apps/`:
 
 ```
 /Apps/reloj.lua

@@ -50,6 +50,21 @@ export type PackItem = {
 type Body = { id: string; title: string; feed: string; when: string; text: string };
 type Pack = { at: string; items: PackItem[]; bodies: Record<string, Body> };
 
+// Conserva las últimas notas buenas de los feeds que no contestaron en esta
+// pasada. Una caída temporal de un diario no puede convertir el manifiesto en
+// uno vacío y ordenar al aparato que borre toda su caché.
+export function carryUnavailable(
+  previous: PackItem[],
+  bodies: Record<string, Body>,
+  unavailable: ReadonlySet<number>,
+): PackItem[] {
+  return previous.filter((item) => {
+    const dash = item.id.indexOf("-");
+    if (dash <= 0 || !bodies[item.id]) return false;
+    return unavailable.has(Number(item.id.slice(0, dash)));
+  });
+}
+
 function shape(raw: unknown): Pack {
   const p = (raw && typeof raw === "object" ? raw : {}) as Partial<Pack>;
   return {
@@ -111,7 +126,14 @@ export function interleave<T>(feeds: { feed: string; id: number; items: T[] }[],
 export async function rebuild(accountId: number, lang: Lang = "es"): Promise<number> {
   const store = await loadStore(accountId);
   const feeds = store.feeds ?? [];
-  if (feeds.length === 0) return 0;
+  if (feeds.length === 0) {
+    await mutateDoc(accountId, "news", shape, (pack) => {
+      pack.at = new Date().toISOString();
+      pack.items = [];
+      pack.bodies = {};
+    });
+    return 0;
+  }
 
   // El masticado gasta modelo SIN que nadie lo pida (corre solo cada hora), así
   // que respeta el mismo tope mensual que las rutas metered: pasado el tope el
@@ -124,11 +146,14 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   // Los titulares de todos los feeds, intercalados: uno de cada uno y después
   // la segunda vuelta, así un diario que publica mucho no se come el paquete.
   const porFeed: { feed: string; id: number; items: Awaited<ReturnType<typeof readFeed>>["items"] }[] = [];
+  const unavailable = new Set<number>();
   for (const f of feeds) {
     try {
       const r = await readFeed(f.url);
-      porFeed.push({ feed: f.name || r.title, id: f.id, items: r.items });
+      if (r.items.length) porFeed.push({ feed: f.name || r.title, id: f.id, items: r.items });
+      else unavailable.add(f.id);
     } catch (err) {
+      unavailable.add(f.id);
       console.error("news feed:", f.url.slice(0, 60), String(err).slice(0, 100));
     }
   }
@@ -178,6 +203,25 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     });
   }
 
+  // Si ningún feed produjo una nota utilizable, se consideran indisponibles
+  // todos los configurados. Esto también cubre páginas que contestaron pero
+  // sólo trajeron titulares o cuerpos demasiado cortos.
+  if (items.length === 0) {
+    for (const feed of feeds) unavailable.add(feed.id);
+  }
+  const seen = new Set(items.map((item) => item.id));
+  for (const old of carryUnavailable(previo.items, previo.bodies, unavailable)) {
+    if (seen.has(old.id)) continue;
+    items.push(old);
+    bodies[old.id] = previo.bodies[old.id];
+    seen.add(old.id);
+  }
+  if (items.length > PACK_ITEMS) items.length = PACK_ITEMS;
+  const selectedIds = new Set(items.map((item) => item.id));
+  for (const id of Object.keys(bodies)) {
+    if (!selectedIds.has(id)) delete bodies[id];
+  }
+
   await mutateDoc(accountId, "news", shape, (pack) => {
     pack.at = new Date().toISOString();
     pack.items = items;
@@ -190,6 +234,15 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
 // El temporizador del proceso. Sobrevive a un redeploy porque el paquete está
 // en el volumen y la primera pasada al arrancar lo refresca si quedó viejo.
 let timer: ReturnType<typeof setInterval> | null = null;
+const running = new Map<number, Promise<number>>();
+
+export function refreshPack(accountId: number, lang: Lang = "es"): Promise<number> {
+  const active = running.get(accountId);
+  if (active) return active;
+  const job = rebuild(accountId, lang).finally(() => running.delete(accountId));
+  running.set(accountId, job);
+  return job;
+}
 
 export function startRefresher(): void {
   if (timer) return;
@@ -198,7 +251,7 @@ export function startRefresher(): void {
       // Sin multiusuario hay una sola cuenta. Con multiusuario, las cuentas se
       // refrescan cuando su aparato pide el paquete (ver la ruta de abajo): un
       // barrido de todas cada hora gastaría modelo por gente que no lo usa.
-      await rebuild(DEFAULT_ACCOUNT);
+      await refreshPack(DEFAULT_ACCOUNT);
     } catch (err) {
       console.error("news refresher:", String(err).slice(0, 200));
     }
@@ -216,23 +269,38 @@ export const news = new Hono<AppEnv>();
 news.get("/pack", async (c) => {
   const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
-  let pack = await loadPack(acc);
+  const pack = await loadPack(acc);
   const viejo = !pack.at || Date.now() - Date.parse(pack.at) > REFRESH_MS;
-  if (viejo) {
-    // Refrescar en el momento sólo si hace falta: la pasada horaria cubre el
-    // caso normal, y esto cubre a la cuenta que recién carga sus feeds.
-    try {
-      await rebuild(acc, lang);
-      pack = await loadPack(acc);
-    } catch (err) {
-      console.error("news pack:", String(err).slice(0, 200));
-    }
-  }
+  // La preparación de 18 artículos puede tardar más que el timeout HTTP del
+  // lector. Se dispara en segundo plano y se devuelve inmediatamente el último
+  // paquete bueno; la siguiente sincronización recogerá el nuevo.
+  if (viejo || pack.items.length === 0)
+    void refreshPack(acc, lang).catch((err) => console.error("news pack:", String(err).slice(0, 200)));
   return c.json({
     ok: true,
     at: pack.at,
     items: pack.items.map(({ id, feed, title, when, sha, bytes, chewed }) => ({ id, feed, title, when, sha, bytes, chewed })),
   });
+});
+
+news.get("/status", async (c) => {
+  const acc = accountOf(c);
+  const pack = await loadPack(acc);
+  return c.json({
+    ok: true,
+    building: running.has(acc),
+    at: pack.at,
+    items: pack.items.length,
+    chewed: pack.items.filter((item) => item.chewed).length,
+  });
+});
+
+news.post("/refresh", async (c) => {
+  const acc = accountOf(c);
+  const lang = normalizeLang(c.req.query("lang"));
+  const pack = await loadPack(acc);
+  void refreshPack(acc, lang).catch((err) => console.error("news refresh:", String(err).slice(0, 200)));
+  return c.json({ ok: true, building: true, items: pack.items.length }, 202);
 });
 
 // Una nota, entera. El aparato baja las que le falten, de a una.

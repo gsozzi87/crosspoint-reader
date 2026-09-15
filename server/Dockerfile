@@ -10,6 +10,18 @@ RUN mkdir -p /opt/piper/voices && cd /opt \
     && echo "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992  piper.tar.gz" | sha256sum -c - \
     && tar xzf piper.tar.gz && rm piper.tar.gz
 
+# Apps Lua de fábrica. Se fijan al commit de la release y se verifican antes de
+# incorporarlas al paquete que el lector descarga a /Apps.
+RUN mkdir -p /opt/apps && cd /opt/apps \
+    && curl -fsSL --retry 3 -o reloj.lua https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/09d15206f9c7bbb0d991c26bdf466cfbf1740a72/examples/Apps/reloj.lua \
+    && curl -fsSL --retry 3 -o ahorcado.lua https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/09d15206f9c7bbb0d991c26bdf466cfbf1740a72/examples/Apps/ahorcado.lua \
+    && curl -fsSL --retry 3 -o tresenraya.lua https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/09d15206f9c7bbb0d991c26bdf466cfbf1740a72/examples/Apps/tresenraya.lua \
+    && printf '%s  %s\n' \
+      df3764a6128dc7890d8b4a469386b25aea4e81d999d81c20696e480859c6ae73 reloj.lua \
+      1d7d38d61467bd4ecc3a92a04ffeeaae888deb78ec5623556859ba69cd6417f0 ahorcado.lua \
+      c8b29ea6d6755ccbfcb94ad264606f1348871b5faeed8fa8aeaa7763c72662de tresenraya.lua \
+      | sha256sum -c -
+
 # Voces (rhasspy/piper-voices en Hugging Face): es, en, fr, de, pt, ru
 ARG HF=https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c
 RUN cd /opt/piper/voices && for v in \
@@ -32,6 +44,6 @@ RUN bun install --production --frozen-lockfile
 COPY src ./src
 COPY public ./public
 
-ENV PIPER_BIN=/opt/piper/piper PIPER_VOICES=/opt/piper/voices BIBLE_DIR=/opt/bible PORT=3000
+ENV PIPER_BIN=/opt/piper/piper PIPER_VOICES=/opt/piper/voices BIBLE_DIR=/opt/bible FACTORY_APPS_DIR=/opt/apps PORT=3000
 EXPOSE 3000
 CMD ["bun", "run", "src/index.ts"]
