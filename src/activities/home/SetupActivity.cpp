@@ -109,13 +109,13 @@ void SetupActivity::openStepActivity() {
   };
   switch (step) {
     case WIFI:
-      startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput), seguir);
+      startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput), seguir);
       break;
     case PAIR:
-      startActivityForResult(std::make_unique<DevicePairActivity>(renderer, mappedInput), seguir);
+      startActivityForResult(makeUniqueNoThrow<DevicePairActivity>(renderer, mappedInput), seguir);
       break;
     case PLACE:
-      startActivityForResult(std::make_unique<HubLocationActivity>(renderer, mappedInput), seguir);
+      startActivityForResult(makeUniqueNoThrow<HubLocationActivity>(renderer, mappedInput), seguir);
       break;
     default:
       waiting = false;

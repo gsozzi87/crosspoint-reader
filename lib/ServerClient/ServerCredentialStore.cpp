@@ -1,6 +1,7 @@
 #include "ServerCredentialStore.h"
 
 #include <Arduino.h>
+#include <CrossPointOtaConfig.h>
 #include <ObfuscationUtils.h>
 #include <esp_random.h>
 

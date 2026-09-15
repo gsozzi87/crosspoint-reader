@@ -25,9 +25,9 @@
 namespace {
 constexpr const char* TAG = "AGENDA";
 constexpr unsigned long MENU_HOLD_MS = 1200;
-constexpr int PAGER_H = 24;   // franja del paginador, debajo de las filas
-constexpr int TABS_H = 40;    // barra de pestañas de la vista de ítems
-constexpr int TAB_GAP = 24;   // aire entre una pestaña y la siguiente
+constexpr int PAGER_H = 24;  // franja del paginador, debajo de las filas
+constexpr int TABS_H = 40;   // barra de pestañas de la vista de ítems
+constexpr int TAB_GAP = 24;  // aire entre una pestaña y la siguiente
 constexpr int TAB_COUNT_GAP = 8;
 
 std::string dateOffset(int days) {
@@ -140,24 +140,30 @@ void AgendaActivity::rebuildSections() {
 
 int AgendaActivity::itemCount() const {
   switch (current().kind) {
-    case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
-    case LIST: return static_cast<int>(HUB_STORE.lists[current().listIndex].items.size());
+    case REMINDERS:
+      return static_cast<int>(HUB_STORE.reminders.size());
+    case LIST:
+      return static_cast<int>(HUB_STORE.lists[current().listIndex].items.size());
   }
   return 0;
 }
 
 int AgendaActivity::sectionItemCount(const int index) const {
   switch (sections[index].kind) {
-    case REMINDERS: return static_cast<int>(HUB_STORE.reminders.size());
-    case LIST: return static_cast<int>(HUB_STORE.lists[sections[index].listIndex].items.size());
+    case REMINDERS:
+      return static_cast<int>(HUB_STORE.reminders.size());
+    case LIST:
+      return static_cast<int>(HUB_STORE.lists[sections[index].listIndex].items.size());
   }
   return 0;
 }
 
 std::string AgendaActivity::sectionTitle(const int index) const {
   switch (sections[index].kind) {
-    case REMINDERS: return tr(STR_HUB_REMINDERS);
-    case LIST: return HUB_STORE.lists[sections[index].listIndex].name;
+    case REMINDERS:
+      return tr(STR_HUB_REMINDERS);
+    case LIST:
+      return HUB_STORE.lists[sections[index].listIndex].name;
   }
   return "";
 }
@@ -193,7 +199,8 @@ std::string AgendaActivity::itemText(const int index, std::string& detail) const
       detail = r.when;
       return r.title;
     }
-    case LIST: return HUB_STORE.lists[current().listIndex].items[index].text;
+    case LIST:
+      return HUB_STORE.lists[current().listIndex].items[index].text;
   }
   return "";
 }
@@ -256,7 +263,8 @@ void AgendaActivity::sendEdit(const char* action, const char* list, const char* 
     if (dueDate) doc["dueDate"] = dueDate;
     serializeJson(doc, body);
   }
-  LOG_INF(TAG, "edit %s %d: %s", action, menuItemId, ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/edit", body)));
+  LOG_INF(TAG, "edit %s %d: %s", action, menuItemId,
+          ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/edit", body)));
 }
 
 void AgendaActivity::openItemMenu() {
@@ -300,10 +308,14 @@ void AgendaActivity::onMenuPick(const int index) {
     }
     menuStep = NONE;
   } else if (menuStep == DATE) {
-    if (index == 0) sendEdit("date", nullptr, dateOffset(0).c_str());
-    else if (index == 1) sendEdit("date", nullptr, dateOffset(1).c_str());
-    else if (index == 2) sendEdit("date", nullptr, dateOffset(7).c_str());
-    else if (index == 3) sendEdit("date", nullptr, "");
+    if (index == 0)
+      sendEdit("date", nullptr, dateOffset(0).c_str());
+    else if (index == 1)
+      sendEdit("date", nullptr, dateOffset(1).c_str());
+    else if (index == 2)
+      sendEdit("date", nullptr, dateOffset(7).c_str());
+    else if (index == 3)
+      sendEdit("date", nullptr, "");
     menuStep = NONE;
   }
   requestUpdate();
@@ -316,7 +328,7 @@ void AgendaActivity::onMenuPick(const int index) {
 // "si no hay recordatorios o tareas no te deja entrar a generar uno nuevo". El
 // aparato no tiene teclado, así que lo nuevo se dicta.
 void AgendaActivity::dictateNew() {
-  activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
+  activityManager.pushActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInput));
 }
 
 void AgendaActivity::openSection() {
@@ -335,13 +347,20 @@ void AgendaActivity::openSection() {
 
 const char* AgendaActivity::repeatCode() const {
   switch (edit.repeatKind) {
-    case REP_DAILY: return "daily";
-    case REP_WEEKDAYS: return "weekdays";
-    case REP_WEEKLY: return "weekly";
-    case REP_WEEKS: return "weeks";
-    case REP_MONTHLY: return "monthly";
-    case REP_YEARLY: return "yearly";
-    default: return "once";
+    case REP_DAILY:
+      return "daily";
+    case REP_WEEKDAYS:
+      return "weekdays";
+    case REP_WEEKLY:
+      return "weekly";
+    case REP_WEEKS:
+      return "weeks";
+    case REP_MONTHLY:
+      return "monthly";
+    case REP_YEARLY:
+      return "yearly";
+    default:
+      return "once";
   }
 }
 
@@ -350,16 +369,20 @@ std::string AgendaActivity::repeatLabel(const bool marking) const {
   const bool markDow = marking && editField == F_WEEKDAY;
   const bool markN = marking && editField == F_INTERVAL;
   switch (edit.repeatKind) {
-    case REP_DAILY: return mark(tr(STR_REP_DAILY), markKind);
-    case REP_WEEKDAYS: return mark(tr(STR_REP_WEEKDAYS), markKind);
+    case REP_DAILY:
+      return mark(tr(STR_REP_DAILY), markKind);
+    case REP_WEEKDAYS:
+      return mark(tr(STR_REP_WEEKDAYS), markKind);
     case REP_WEEKLY:
-      return mark(tr(STR_REP_WEEKLY), markKind) + ": " +
-             mark(CalendarActivity::weekdayName(edit.weekday), markDow);
+      return mark(tr(STR_REP_WEEKLY), markKind) + ": " + mark(CalendarActivity::weekdayName(edit.weekday), markDow);
     case REP_WEEKS:
       return mark(formatCount(tr(STR_REP_WEEKS_FORMAT), mark(std::to_string(edit.interval), markN)), markKind);
-    case REP_MONTHLY: return mark(tr(STR_REP_MONTHLY), markKind);
-    case REP_YEARLY: return mark(tr(STR_REP_YEARLY), markKind);
-    default: return mark(tr(STR_REP_ONCE), markKind);
+    case REP_MONTHLY:
+      return mark(tr(STR_REP_MONTHLY), markKind);
+    case REP_YEARLY:
+      return mark(tr(STR_REP_YEARLY), markKind);
+    default:
+      return mark(tr(STR_REP_ONCE), markKind);
   }
 }
 
@@ -399,16 +422,22 @@ void AgendaActivity::openEditor() {
     edit.month = m;
     edit.day = d;
   }
-  if (r.repeat == "daily") edit.repeatKind = REP_DAILY;
-  else if (r.repeat == "weekdays") edit.repeatKind = REP_WEEKDAYS;
-  else if (r.repeat == "weekly") edit.repeatKind = REP_WEEKLY;
-  else if (r.repeat == "weeks") edit.repeatKind = REP_WEEKS;
-  else if (r.repeat == "monthly") edit.repeatKind = REP_MONTHLY;
-  else if (r.repeat == "yearly") edit.repeatKind = REP_YEARLY;
-  else edit.repeatKind = REP_ONCE;
-  edit.weekday = r.weekday >= 0 && r.weekday <= 6
-                     ? r.weekday
-                     : CalendarActivity::weekdayOfCivil(edit.year, edit.month, edit.day);
+  if (r.repeat == "daily")
+    edit.repeatKind = REP_DAILY;
+  else if (r.repeat == "weekdays")
+    edit.repeatKind = REP_WEEKDAYS;
+  else if (r.repeat == "weekly")
+    edit.repeatKind = REP_WEEKLY;
+  else if (r.repeat == "weeks")
+    edit.repeatKind = REP_WEEKS;
+  else if (r.repeat == "monthly")
+    edit.repeatKind = REP_MONTHLY;
+  else if (r.repeat == "yearly")
+    edit.repeatKind = REP_YEARLY;
+  else
+    edit.repeatKind = REP_ONCE;
+  edit.weekday =
+      r.weekday >= 0 && r.weekday <= 6 ? r.weekday : CalendarActivity::weekdayOfCivil(edit.year, edit.month, edit.day);
   edit.interval = r.interval >= 2 ? r.interval : 2;
   editRow = ROW_DATE;  // lo primero que se suele cambiar
   editField = F_NONE;
@@ -460,13 +489,21 @@ void AgendaActivity::confirmEditRow() {
   if (editField != F_NONE) {
     // OK dentro de un campo pasa al siguiente pedazo y al final confirma.
     switch (editField) {
-      case F_DAY: editField = F_MONTH; break;
-      case F_MONTH: editField = F_YEAR; break;
-      case F_HOUR: editField = edit.hour < 0 ? F_NONE : F_MINUTE; break;
+      case F_DAY:
+        editField = F_MONTH;
+        break;
+      case F_MONTH:
+        editField = F_YEAR;
+        break;
+      case F_HOUR:
+        editField = edit.hour < 0 ? F_NONE : F_MINUTE;
+        break;
       case F_REPEAT:
         editField = edit.repeatKind == REP_WEEKLY ? F_WEEKDAY : edit.repeatKind == REP_WEEKS ? F_INTERVAL : F_NONE;
         break;
-      default: editField = F_NONE; break;
+      default:
+        editField = F_NONE;
+        break;
     }
     requestUpdate();
     return;
@@ -476,7 +513,7 @@ void AgendaActivity::confirmEditRow() {
       // El aparato no tiene teclado: el título se cambia hablando. Lo que ya se
       // tocó acá se guarda antes de irse, para no perderlo.
       saveEditedReminder();
-      activityManager.pushActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
+      activityManager.pushActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInput));
       return;
     case ROW_DATE:
       editBackup = edit;
@@ -531,9 +568,8 @@ void AgendaActivity::saveEditedReminder() {
   // repetición se arma acá con las mismas palabras que manda el servidor.
   for (HubStore::Reminder& rem : HUB_STORE.reminders) {
     if (rem.id != edit.id) continue;
-    rem.dueAt = edit.hour >= 0
-                    ? CalendarActivity::epochFromLocal(edit.year, edit.month, edit.day, edit.hour, edit.minute)
-                    : 0;
+    rem.dueAt =
+        edit.hour >= 0 ? CalendarActivity::epochFromLocal(edit.year, edit.month, edit.day, edit.hour, edit.minute) : 0;
     rem.repeat = repeatCode();
     rem.weekday = edit.repeatKind == REP_WEEKLY ? edit.weekday : -1;
     rem.interval = edit.repeatKind == REP_WEEKS ? edit.interval : 0;
@@ -560,7 +596,8 @@ void AgendaActivity::deleteEditedReminder() {
     doc["action"] = "delete";
     serializeJson(doc, body);
   }
-  LOG_INF(TAG, "delete reminder %d: %s", id, ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/edit", body)));
+  LOG_INF(TAG, "delete reminder %d: %s", id,
+          ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/edit", body)));
   level = ITEMS;
   if (itemIndex >= itemCount() && itemIndex > 0) itemIndex--;
   requestUpdate();
@@ -687,10 +724,17 @@ void AgendaActivity::renderEditor() {
         label = tr(STR_REM_REPEAT);
         value = repeatLabel(sel);
         break;
-      case ROW_SAVE: label = tr(STR_REM_SAVE); break;
-      case ROW_DONE: label = tr(STR_REM_DONE_ROW); break;
-      case ROW_DELETE: label = tr(STR_REM_DELETE_ROW); break;
-      default: break;
+      case ROW_SAVE:
+        label = tr(STR_REM_SAVE);
+        break;
+      case ROW_DONE:
+        label = tr(STR_REM_DONE_ROW);
+        break;
+      case ROW_DELETE:
+        label = tr(STR_REM_DELETE_ROW);
+        break;
+      default:
+        break;
     }
     listui::RowSpec spec;
     spec.title = label;
@@ -699,7 +743,7 @@ void AgendaActivity::renderEditor() {
     listui::row(renderer, x, y, w, listui::ROW1_H, spec);
   }
 
-  const char* hint = editField != F_NONE ? tr(STR_REM_FIELD_HINT)
+  const char* hint = editField != F_NONE    ? tr(STR_REM_FIELD_HINT)
                      : editRow == ROW_TITLE ? tr(STR_REM_VOICE_HINT)
                                             : tr(STR_REM_ROW_HINT);
   listui::hint(renderer, listui::contentBottom(renderer) - listui::HINT_H, hint);

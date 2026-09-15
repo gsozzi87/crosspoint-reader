@@ -34,7 +34,7 @@ void CalibreConnectActivity::onEnter() {
   exitRequested = false;
 
   if (WiFi.status() != WL_CONNECTED) {
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                            [this](const ActivityResult& result) {
                              if (!result.isCancelled) {
                                const auto& wifi = std::get<WifiResult>(result.data);
@@ -91,7 +91,13 @@ void CalibreConnectActivity::startWebServer() {
     LOG_DBG("CAL", "Free heap before server alloc: %d bytes", ESP.getFreeHeap());
   }
 
-  webServer.reset(new CrossPointWebServer());
+  webServer = makeUniqueNoThrow<CrossPointWebServer>();
+  if (!webServer) {
+    LOG_ERR("CAL", "OOM: web server");
+    state = CalibreConnectState::ERROR;
+    requestUpdate();
+    return;
+  }
   webServer->begin();
 
   if (webServer->isRunning()) {

@@ -763,14 +763,13 @@ class ParagraphStreamer final : public Print {
   }
 };
 
-bool streamSpine(const std::shared_ptr<Epub>& epub, int spineIndex, ParagraphStreamer& s) {
+bool streamSpine(Epub* epub, int spineIndex, ParagraphStreamer& s) {
   const auto href = epub->getSpineItem(spineIndex).href;
   return !href.empty() && epub->readItemContentsToStream(href, s, 1024);
 }
 }  // namespace
 
-SavedProgressPosition ProgressMapper::toSavedProgress(const std::shared_ptr<Epub>& epub,
-                                                      const CrossPointPosition& pos) {
+SavedProgressPosition ProgressMapper::toSavedProgress(Epub* epub, const CrossPointPosition& pos) {
   SavedProgressPosition result;
   float intra =
       (pos.totalPages > 1) ? static_cast<float>(pos.pageNumber) / static_cast<float>(pos.totalPages - 1) : 0.0f;
@@ -790,8 +789,7 @@ SavedProgressPosition ProgressMapper::toSavedProgress(const std::shared_ptr<Epub
   return result;
 }
 
-std::optional<CrossPointPosition> ProgressMapper::fromRichPosition(const std::shared_ptr<Epub>& epub,
-                                                                   const KOReaderRichPosition& rich,
+std::optional<CrossPointPosition> ProgressMapper::fromRichPosition(Epub* epub, const KOReaderRichPosition& rich,
                                                                    GfxRenderer& renderer, bool xpathAlreadyTried) {
   const int spineCount = epub->getSpineItemsCount();
   if (static_cast<int>(rich.spineIndex) >= spineCount) {
@@ -855,9 +853,9 @@ std::optional<CrossPointPosition> ProgressMapper::fromRichPosition(const std::sh
   return result;
 }
 
-CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epub, const SavedProgressPosition& koPos,
-                                                GfxRenderer& renderer, int currentSpineIndex,
-                                                int totalPagesInCurrentSpine, int fallbackTotalPages) {
+CrossPointPosition ProgressMapper::toCrossPoint(Epub* epub, const SavedProgressPosition& koPos, GfxRenderer& renderer,
+                                                int currentSpineIndex, int totalPagesInCurrentSpine,
+                                                int fallbackTotalPages) {
   CrossPointPosition result{};
   const size_t bookSize = epub->getBookSize();
   if (bookSize == 0) return result;
@@ -1058,7 +1056,7 @@ CrossPointPosition ProgressMapper::toCrossPoint(const std::shared_ptr<Epub>& epu
   return result;
 }
 
-std::string ProgressMapper::generateXPath(const std::shared_ptr<Epub>& epub, int spineIndex, float intra) {
+std::string ProgressMapper::generateXPath(Epub* epub, int spineIndex, float intra) {
   const std::string base = "/body/DocFragment[" + std::to_string(spineIndex + 1) + "]/body";
   if (intra <= 0.0f) return base;
 

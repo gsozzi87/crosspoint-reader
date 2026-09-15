@@ -134,7 +134,7 @@ void OpdsServerListActivity::handleSelection() {
     if (nav.selected < serverCount) {
       const auto* server = OPDS_STORE.getServer(static_cast<size_t>(nav.selected));
       if (server) {
-        activityManager.replaceActivity(std::make_unique<OpdsBookBrowserActivity>(renderer, mappedInput, *server));
+        activityManager.replaceActivity(makeUniqueNoThrow<OpdsBookBrowserActivity>(renderer, mappedInput, *server));
       }
     } else {
       auto editor = makeUniqueNoThrow<OpdsSettingsActivity>(renderer, mappedInput, -1);
@@ -163,8 +163,8 @@ void OpdsServerListActivity::handleSelection() {
       }
     };
     startActivityForResult(
-        std::make_unique<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_DOWNLOAD_FOLDER),
-                                                std::string(SETTINGS.opdsDownloadFolder), 63, InputType::Text),
+        makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, tr(STR_OPDS_DOWNLOAD_FOLDER),
+                                                 std::string(SETTINGS.opdsDownloadFolder), 63, InputType::Text),
         folderHandler);
     return;
   }
@@ -191,9 +191,9 @@ void OpdsServerListActivity::handleSelection() {
   };
 
   if (nav.selected < serverCount) {
-    startActivityForResult(std::make_unique<OpdsSettingsActivity>(renderer, mappedInput, nav.selected), resultHandler);
+    startActivityForResult(makeUniqueNoThrow<OpdsSettingsActivity>(renderer, mappedInput, nav.selected), resultHandler);
   } else {
-    startActivityForResult(std::make_unique<OpdsSettingsActivity>(renderer, mappedInput, -1), resultHandler);
+    startActivityForResult(makeUniqueNoThrow<OpdsSettingsActivity>(renderer, mappedInput, -1), resultHandler);
   }
 }
 

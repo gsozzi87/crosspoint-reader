@@ -52,26 +52,35 @@ local function dado(x, y, lado, valor)
 end
 
 function on_draw()
-  cp.text(40, 60, "Dados", 14, true)
-  cp.line(40, 100, cp.width() - 40, 100, 1)
+  local bajo = cp.height() < 600
+  local tituloY = bajo and 35 or 60
+  local reglaY = bajo and 70 or 100
+  cp.text(40, tituloY, "Dados", 14, true)
+  cp.line(40, reglaY, cp.width() - 40, reglaY, 1)
 
-  local lado, aire = 120, 24
+  local aire = bajo and 16 or 24
   local porFila = 3
   local total = 0
   for _ in ipairs(tirada) do total = total + 1 end
+  local filas = (total + porFila - 1) // porFila
+  local y0 = reglaY + 25
+  local reservado = bajo and 95 or 180
+  local lado = math.min(120, (cp.width() - 80 - 2 * aire) // porFila,
+                         (cp.height() - y0 - reservado - math.max(0, filas - 1) * aire) // filas)
   local anchoFila = math.min(total, porFila) * (lado + aire) - aire
   local x0 = (cp.width() - anchoFila) // 2
 
   for i, valor in ipairs(tirada) do
     local col = (i - 1) % porFila
     local fila = (i - 1) // porFila
-    dado(x0 + col * (lado + aire), 180 + fila * (lado + aire), lado, valor)
+    dado(x0 + col * (lado + aire), y0 + fila * (lado + aire), lado, valor)
   end
 
   local suma = 0
   for _, v in ipairs(tirada) do suma = suma + v end
   local texto = "Suma: " .. suma
-  cp.text((cp.width() - cp.textw(texto, 14)) // 2, 560, texto, 14, true)
-  cp.text(40, 690, "Palanca: cuántos dados (" .. cuantos .. ")", 10)
-  cp.text(40, 715, "OK o sacudir: tirar de nuevo", 10)
+  local finDados = y0 + filas * lado + math.max(0, filas - 1) * aire
+  cp.text((cp.width() - cp.textw(texto, 14)) // 2, finDados + 15, texto, 14, true)
+  cp.text(40, cp.height() - 55, "Palanca: cuántos dados (" .. cuantos .. ")", 10)
+  cp.text(40, cp.height() - 30, "OK o sacudir: tirar de nuevo", 10)
 end

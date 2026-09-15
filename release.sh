@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Equivalente Linux de release.ps1: bump del build, compila y sube el .bin al servidor OTA.
-# Requiere WS397_OTA_URL y WS397_OTA_TOKEN en el entorno (en Claude Code web: variables del environment).
+# Requiere WS397_OTA_TOKEN. WS397_OTA_URL permite sobrescribir el servidor.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-: "${WS397_OTA_URL:?Falta WS397_OTA_URL}"
 : "${WS397_OTA_TOKEN:?Falta WS397_OTA_TOKEN}"
+WS397_OTA_URL="${WS397_OTA_URL:-https://paper-esp32.up.railway.app/firmware/latest}"
 
 build=$(( $(cat .ws397-build 2>/dev/null || echo 0) + 1 ))
 version="1.5.$build"

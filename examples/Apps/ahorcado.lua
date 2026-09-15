@@ -118,12 +118,15 @@ local function horca(x, y)
 end
 
 function on_draw()
-  cp.text(40, 60, "Ahorcado", 14, true)
+  local bajo = cp.height() < 600
+  local tituloY = bajo and 35 or 60
+  local reglaY = bajo and 70 or 100
+  cp.text(40, tituloY, "Ahorcado", 14, true)
   local marcador = ganadas .. " - " .. perdidas
-  cp.text(cp.width() - 40 - cp.textw(marcador, 12), 62, marcador, 12)
-  cp.line(40, 100, cp.width() - 40, 100, 1)
+  cp.text(cp.width() - 40 - cp.textw(marcador, 12), tituloY + 2, marcador, 12)
+  cp.line(40, reglaY, cp.width() - 40, reglaY, 1)
 
-  horca(60, 140)
+  horca(60, bajo and 85 or 140)
 
   -- La palabra, con guiones bajos donde falta. Cuando se pierde se muestra
   -- entera: quedarse sin saber cuál era es lo único que no se perdona.
@@ -136,19 +139,22 @@ function on_draw()
       mostrada = mostrada .. "_ "
     end
   end
-  cp.text((cp.width() - cp.textw(mostrada, 14)) // 2, 400, mostrada, 14, true)
+  local palabraY = bajo and 290 or 400
+  cp.text((cp.width() - cp.textw(mostrada, 14)) // 2, palabraY, mostrada, 14, true)
 
   if estado == "jugando" then
     -- El abecedario en dos filas, con el resalte del sistema visual sobre la
     -- letra elegida y un marco fino sobre las ya probadas.
     local porFila = 13
-    local celda = (cp.width() - 80) // porFila
+    local letrasY = bajo and 325 or 480
+    local celda = math.min((cp.width() - 80) // porFila,
+                           (cp.height() - letrasY - (bajo and 38 or 90)) // 2 - 4)
     for i = 1, #ABECEDARIO do
       local letra = string.sub(ABECEDARIO, i, i)
       local col = (i - 1) % porFila
       local fila = (i - 1) // porFila
       local x = 40 + col * celda
-      local y = 480 + fila * (celda + 8)
+      local y = letrasY + fila * (celda + 8)
       if i == cursor then
         cp.selection(x, y, celda, celda)
       elseif probadas[letra] then
@@ -157,10 +163,10 @@ function on_draw()
       cp.text(x + (celda - cp.textw(letra, 12)) // 2, y + (celda - cp.texth(12)) // 2, letra, 12,
               i == cursor)
     end
-    cp.text(40, cp.height() - 90, "Palanca: elegir letra · OK: probarla", 10)
+    cp.text(40, cp.height() - (bajo and 25 or 90), "Palanca: elegir letra · OK: probarla", 10)
   else
     local texto = estado == "ganado" and "¡Ganaste!" or "Se acabó"
-    cp.text((cp.width() - cp.textw(texto, 14)) // 2, 500, texto, 14, true)
-    cp.text(40, cp.height() - 90, "OK: otra palabra · Atrás: salir", 10)
+    cp.text((cp.width() - cp.textw(texto, 14)) // 2, bajo and 350 or 500, texto, 14, true)
+    cp.text(40, cp.height() - (bajo and 25 or 90), "OK: otra palabra · Atrás: salir", 10)
   end
 end

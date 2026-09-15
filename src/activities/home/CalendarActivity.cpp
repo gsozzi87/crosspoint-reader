@@ -30,7 +30,7 @@ constexpr const char* CACHE = "/.crosspoint/calendar.json";
 constexpr int SIDE = listui::SIDE;
 constexpr int PAGER_H = 24;
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
-constexpr unsigned long MENU_HOLD_MS = 1200;   // Atrás mantenido sobre una actividad
+constexpr unsigned long MENU_HOLD_MS = 1200;    // Atrás mantenido sobre una actividad
 constexpr uint32_t DICTATE_TIMEOUT_MS = 90000;  // el modelo parte el día dictado
 constexpr time_t CACHE_MAX_AGE_S = 6 * 3600;
 constexpr int MAX_CACHED_MONTHS = 3;
@@ -82,8 +82,9 @@ int dayOfIso(const std::string& iso) {
 void readEvent(JsonVariantConst v, CalendarActivity::Item& out, std::string& date) {
   // `start` puede ser el arranque de la serie ("2026-09-15T10:30") o un epoch
   // ya resuelto; `startAt` es siempre el de la serie cuando viene.
-  const std::string start = v["startAt"].is<const char*>() ? std::string(v["startAt"] | "")
-                                                           : std::string(v["start"].is<const char*>() ? v["start"] | "" : "");
+  const std::string start = v["startAt"].is<const char*>()
+                                ? std::string(v["startAt"] | "")
+                                : std::string(v["start"].is<const char*>() ? v["start"] | "" : "");
   date = v["date"] | "";
   if (date.empty() && start.size() >= 10) date = start.substr(0, 10);
   out.id = v["id"] | 0;
@@ -138,18 +139,17 @@ std::string twoDigits(const int value) {
 }  // namespace
 
 const char* CalendarActivity::monthName(const int month) {
-  static const StrId ids[12] = {StrId::STR_CAL_MONTH_1, StrId::STR_CAL_MONTH_2,  StrId::STR_CAL_MONTH_3,
-                                StrId::STR_CAL_MONTH_4, StrId::STR_CAL_MONTH_5,  StrId::STR_CAL_MONTH_6,
-                                StrId::STR_CAL_MONTH_7, StrId::STR_CAL_MONTH_8,  StrId::STR_CAL_MONTH_9,
+  static const StrId ids[12] = {StrId::STR_CAL_MONTH_1,  StrId::STR_CAL_MONTH_2,  StrId::STR_CAL_MONTH_3,
+                                StrId::STR_CAL_MONTH_4,  StrId::STR_CAL_MONTH_5,  StrId::STR_CAL_MONTH_6,
+                                StrId::STR_CAL_MONTH_7,  StrId::STR_CAL_MONTH_8,  StrId::STR_CAL_MONTH_9,
                                 StrId::STR_CAL_MONTH_10, StrId::STR_CAL_MONTH_11, StrId::STR_CAL_MONTH_12};
   if (month < 1 || month > 12) return "";
   return I18N.get(ids[month - 1]);
 }
 
 const char* CalendarActivity::weekdayName(const int dow) {
-  static const StrId ids[7] = {StrId::STR_CAL_DOW_0, StrId::STR_CAL_DOW_1, StrId::STR_CAL_DOW_2,
-                               StrId::STR_CAL_DOW_3, StrId::STR_CAL_DOW_4, StrId::STR_CAL_DOW_5,
-                               StrId::STR_CAL_DOW_6};
+  static const StrId ids[7] = {StrId::STR_CAL_DOW_0, StrId::STR_CAL_DOW_1, StrId::STR_CAL_DOW_2, StrId::STR_CAL_DOW_3,
+                               StrId::STR_CAL_DOW_4, StrId::STR_CAL_DOW_5, StrId::STR_CAL_DOW_6};
   if (dow < 0 || dow > 6) return "";
   return I18N.get(ids[dow]);
 }
@@ -174,22 +174,22 @@ int CalendarActivity::daysInMonth(const int year, const int month) {
 long CalendarActivity::daysFromCivil(int year, const int month, const int day) {
   year -= month <= 2 ? 1 : 0;
   const long era = (year >= 0 ? year : year - 399) / 400;
-  const long yoe = year - era * 400;                                     // [0, 399]
+  const long yoe = year - era * 400;                                           // [0, 399]
   const long doy = (153L * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;  // [0, 365]
-  const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;                // [0, 146096]
+  const long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;                      // [0, 146096]
   return era * 146097L + doe - 719468L;
 }
 
 void CalendarActivity::civilFromDays(const long days, int& year, int& month, int& day) {
   const long z = days + 719468L;
   const long era = (z >= 0 ? z : z - 146096) / 146097;
-  const long doe = z - era * 146097;                                          // [0, 146096]
-  const long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;      // [0, 399]
+  const long doe = z - era * 146097;                                       // [0, 146096]
+  const long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;  // [0, 399]
   const long y = yoe + era * 400;
-  const long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);                    // [0, 365]
-  const long mp = (5 * doy + 2) / 153;                                         // [0, 11]
-  const long d = doy - (153 * mp + 2) / 5 + 1;                                 // [1, 31]
-  const long m = mp + (mp < 10 ? 3 : -9);                                      // [1, 12]
+  const long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);  // [0, 365]
+  const long mp = (5 * doy + 2) / 153;                       // [0, 11]
+  const long d = doy - (153 * mp + 2) / 5 + 1;               // [1, 31]
+  const long m = mp + (mp < 10 ? 3 : -9);                    // [1, 12]
   year = static_cast<int>(y + (m <= 2 ? 1 : 0));
   month = static_cast<int>(m);
   day = static_cast<int>(d);
@@ -202,9 +202,7 @@ int CalendarActivity::weekdayOfCivil(const int year, const int month, const int 
 }
 
 namespace {
-long localOffsetSeconds() {
-  return (static_cast<long>(SETTINGS.clockUtcOffsetQ) - 48L) * 900L;
-}
+long localOffsetSeconds() { return (static_cast<long>(SETTINGS.clockUtcOffsetQ) - 48L) * 900L; }
 }  // namespace
 
 time_t CalendarActivity::epochFromLocal(const int year, const int month, const int day, const int hour,
@@ -264,7 +262,7 @@ void CalendarActivity::openHomeRow() {
       openToday();
       return;
     case ROW_TRIPS:
-      startActivityForResult(std::make_unique<TripActivity>(renderer, mappedInput),
+      startActivityForResult(makeUniqueNoThrow<TripActivity>(renderer, mappedInput),
                              [this](const ActivityResult&) { requestUpdate(); });
       return;
     default:
@@ -381,8 +379,10 @@ void CalendarActivity::buildTodayLines() {
     if (suggestAt > 0 && halClock.getEpochUtc(now) && now > suggestAt) {
       const long mins = static_cast<long>(now - suggestAt) / 60;
       char buf[64];
-      if (mins < 60) snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
-      else snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
+      if (mins < 60)
+        snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
+      else
+        snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
       push(buf, 2);
     }
   }
@@ -447,8 +447,10 @@ bool CalendarActivity::fetchSuggest(const bool refresh) {
   }
   suggestAt = static_cast<time_t>(doc["at"] | (int64_t)0);
   suggestDate = date;
-  if (suggestLines.empty()) suggestError = tr(STR_SUGGEST_EMPTY);
-  else saveSuggestToCache();
+  if (suggestLines.empty())
+    suggestError = tr(STR_SUGGEST_EMPTY);
+  else
+    saveSuggestToCache();
   return !suggestLines.empty();
 }
 
@@ -746,7 +748,6 @@ void CalendarActivity::openDay() {
   ensureConnected();
 }
 
-
 // ---------------------------------------------------------------------------
 // Dictar el día, y cambiar o borrar una actividad
 // ---------------------------------------------------------------------------
@@ -801,8 +802,8 @@ void CalendarActivity::performDictate() {
   // Sin reloj ni día abierto no se manda fecha: el servidor usa su hoy, que es
   // mejor que mandarle un "0000-00-00".
   const std::string date = dayDate.size() >= 10 ? dayDate
-                           : viewYear > 0      ? isoDate(viewYear, viewMonth, cursorDay)
-                                               : std::string();
+                           : viewYear > 0       ? isoDate(viewYear, viewMonth, cursorDay)
+                                                : std::string();
   std::string body;
   {
     JsonDocument doc;
@@ -812,8 +813,7 @@ void CalendarActivity::performDictate() {
     serializeJson(doc, body);
   }
   ServerClient::Response resp;
-  const ServerClient::Result r =
-      SERVER_CLIENT.postJson("/api/calendar/dictate", body, resp, DICTATE_TIMEOUT_MS);
+  const ServerClient::Result r = SERVER_CLIENT.postJson("/api/calendar/dictate", body, resp, DICTATE_TIMEOUT_MS);
   if (r != ServerClient::Result::Ok) {
     char buf[96];
     snprintf(buf, sizeof(buf), "%s (%d)", ServerClient::resultName(r), resp.status);
@@ -1004,7 +1004,7 @@ void CalendarActivity::ensureConnected() {
     return;
   }
   state = CONNECTING;
-  startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput),
                          [this](const ActivityResult& result) { onWifiSelectionComplete(!result.isCancelled); });
 }
 
@@ -1071,8 +1071,10 @@ void CalendarActivity::loop() {
         if (!ok) LOG_ERR(TAG, "día: %s", failureDetail.c_str());
         requestUpdate();
       } else if (p == DICTATE_SEND || p == TITLE_SEND) {
-        if (p == DICTATE_SEND) performDictate();
-        else performTitle();
+        if (p == DICTATE_SEND)
+          performDictate();
+        else
+          performTitle();
         WiFi.setSleep(true);
         afterWifi = NONE;
         menuItem = -1;
@@ -1374,8 +1376,10 @@ void CalendarActivity::renderMonth() {
     const bool isToday = haveToday && todayY == viewYear && todayM == viewMonth && todayD == day;
     // La celda elegida usa el estilo de mosaico (marco + trama, sin pestaña: en
     // una celda cuadrada la pestaña queda torcida) y HOY, un marco fino.
-    if (selected) drawSelectionRow(renderer, x + 2, y + 2, cellW - 4, cellH - 6, 0, SelectionStyle::Tile);
-    else if (isToday) renderer.drawRect(x + 2, y + 2, cellW - 4, cellH - 6, 1, true);
+    if (selected)
+      drawSelectionRow(renderer, x + 2, y + 2, cellW - 4, cellH - 6, 0, SelectionStyle::Tile);
+    else if (isToday)
+      renderer.drawRect(x + 2, y + 2, cellW - 4, cellH - 6, 1, true);
 
     char num[4];
     snprintf(num, sizeof(num), "%d", day);
@@ -1408,8 +1412,8 @@ void CalendarActivity::renderMonth() {
   // para saber si el cursor quedó donde uno cree.
   const int infoY = gridTop + 6 * cellH + listui::GAP;
   const int w = listui::contentWidth(renderer);
-  std::string line = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " +
-                     std::to_string(cursorDay);
+  std::string line =
+      std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " + std::to_string(cursorDay);
   int ty = 0, tm = 0, td = 0;
   if (localToday(ty, tm, td) && ty == viewYear && tm == viewMonth && td == cursorDay) {
     line += " · " + std::string(tr(STR_CAL_TODAY));
@@ -1485,8 +1489,9 @@ void CalendarActivity::renderDictating() {
   const bool title = recordMode == REC_TITLE;
   renderer.drawCenteredText(
       UI_12_FONT_ID, top,
-      renderer.truncatedText(UI_12_FONT_ID, title ? tr(STR_CAL_TITLE_PROMPT) : tr(STR_CAL_DICTATE_PROMPT),
-                             pageWidth - 30, EpdFontFamily::BOLD)
+      renderer
+          .truncatedText(UI_12_FONT_ID, title ? tr(STR_CAL_TITLE_PROMPT) : tr(STR_CAL_DICTATE_PROMPT), pageWidth - 30,
+                         EpdFontFamily::BOLD)
           .c_str(),
       true, EpdFontFamily::BOLD);
   const char* hint = title ? tr(STR_CAL_TITLE_HINT) : tr(STR_CAL_DICTATE_HINT);
@@ -1516,8 +1521,9 @@ void CalendarActivity::renderTimeEditor() {
             (editMinuteField ? "[" + twoDigits(editMinute) + "]" : twoDigits(editMinute));
   }
   renderer.drawCenteredText(UI_12_FONT_ID, top + 60, label.c_str(), true, EpdFontFamily::BOLD);
-  renderer.drawCenteredText(SMALL_FONT_ID, top + 110,
-                            renderer.truncatedText(SMALL_FONT_ID, tr(STR_REM_FIELD_HINT), pageWidth - 2 * SIDE).c_str());
+  renderer.drawCenteredText(
+      SMALL_FONT_ID, top + 110,
+      renderer.truncatedText(SMALL_FONT_ID, tr(STR_REM_FIELD_HINT), pageWidth - 2 * SIDE).c_str());
 }
 
 void CalendarActivity::render(RenderLock&&) {
@@ -1536,8 +1542,8 @@ void CalendarActivity::render(RenderLock&&) {
   } else if (state == TIME_EDIT) {
     title = tr(STR_CAL_ITEM_TIME);
   } else if (state == DAY && viewYear != 0) {
-    title = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " +
-            std::to_string(cursorDay) + " " + monthName(viewMonth);
+    title = std::string(weekdayName(weekdayOfCivil(viewYear, viewMonth, cursorDay))) + " " + std::to_string(cursorDay) +
+            " " + monthName(viewMonth);
   } else if (viewYear != 0) {
     title = std::string(monthName(viewMonth)) + " " + std::to_string(viewYear);
   }
@@ -1583,9 +1589,9 @@ void CalendarActivity::render(RenderLock&&) {
   // El menú de la actividad se dibuja encima de todo y se queda con los botones.
   if (menuOpen && menu.processRender(renderer, mappedInput)) return;
   // En Hoy, OK es lo único que le pide sugerencias al servidor, así que lo dice.
-  const char* okLabel = state == DAY       ? tr(STR_CAL_DICTATE)
-                        : state == TODAY   ? (suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO))
-                                           : tr(STR_SELECT);
+  const char* okLabel = state == DAY     ? tr(STR_CAL_DICTATE)
+                        : state == TODAY ? (suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO))
+                                         : tr(STR_SELECT);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // La cadencia de refrescos limpios la lleva el coordinador del panel.

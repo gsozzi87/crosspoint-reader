@@ -10,7 +10,6 @@
 #include <WiFi.h>
 
 #include "HubStore.h"
-
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
 #include "activities/network/WifiSelectionActivity.h"
@@ -76,7 +75,7 @@ void DevicePairActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiReady(!result.isCancelled);
@@ -206,8 +205,9 @@ void DevicePairActivity::render(RenderLock&&) {
       }
 
       renderer.drawCenteredText(UI_10_FONT_ID, mid + 70, tr(STR_PAIR_WAITING), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(SMALL_FONT_ID, mid + 100,
-                                renderer.truncatedText(SMALL_FONT_ID, tr(STR_PAIR_EXPIRES), pageWidth - 2 * side).c_str());
+      renderer.drawCenteredText(
+          SMALL_FONT_ID, mid + 100,
+          renderer.truncatedText(SMALL_FONT_ID, tr(STR_PAIR_EXPIRES), pageWidth - 2 * side).c_str());
       // El identificador del aparato, por si hay más de uno a la vista.
       const std::string id = std::string(tr(STR_PAIR_DEVICE_ID)) + " " + ServerCredentialStore::deviceId();
       renderer.drawCenteredText(SMALL_FONT_ID, mid + 130,
@@ -225,14 +225,15 @@ void DevicePairActivity::render(RenderLock&&) {
     case FAILED:
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 30, I18N.get(failure), true, EpdFontFamily::BOLD);
       if (!failureDetail.empty()) {
-        renderer.drawCenteredText(SMALL_FONT_ID, mid + 6,
-                                  renderer.truncatedText(SMALL_FONT_ID, failureDetail.c_str(), pageWidth - 2 * side).c_str());
+        renderer.drawCenteredText(
+            SMALL_FONT_ID, mid + 6,
+            renderer.truncatedText(SMALL_FONT_ID, failureDetail.c_str(), pageWidth - 2 * side).c_str());
       }
       break;
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), state == WAITING || state == CONNECTING ? "" : tr(STR_DONE),
-                                            "", "");
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), state == WAITING || state == CONNECTING ? "" : tr(STR_DONE), "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 
   const bool clean = ++partials >= PARTIALS_BEFORE_CLEAN || state != WAITING;

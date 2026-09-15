@@ -192,10 +192,10 @@ void StatusBarSettingsActivity::handleSelection() {
       break;
     case ITEM_CLOCK_UTC_OFFSET:
       // Launch the dedicated offset picker. It saves on exit, no result handler needed.
-      startActivityForResult(std::make_unique<ClockOffsetActivity>(renderer, mappedInput), nullptr);
+      startActivityForResult(makeUniqueNoThrow<ClockOffsetActivity>(renderer, mappedInput), nullptr);
       return;
     case ITEM_CLOCK_SYNC:
-      startActivityForResult(std::make_unique<ClockSyncActivity>(renderer, mappedInput), nullptr);
+      startActivityForResult(makeUniqueNoThrow<ClockSyncActivity>(renderer, mappedInput), nullptr);
       return;
     default:
       return;

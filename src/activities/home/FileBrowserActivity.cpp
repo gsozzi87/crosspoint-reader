@@ -308,7 +308,7 @@ void FileBrowserActivity::activateSelected(const bool forceDelete) {
 
     std::string heading = tr(STR_DELETE) + std::string("? ");
 
-    startActivityForResult(std::make_unique<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
+    startActivityForResult(makeUniqueNoThrow<ConfirmationActivity>(renderer, mappedInput, heading, entry), handler);
     return;
   } else {
     // --- SHORT PRESS ACTION: OPEN/NAVIGATE ---

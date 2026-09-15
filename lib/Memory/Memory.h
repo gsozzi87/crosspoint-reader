@@ -1,5 +1,7 @@
 #pragma once
 
+#ifdef __cplusplus
+
 #include <cstddef>
 #include <memory>
 #include <new>
@@ -52,3 +54,5 @@ struct [[nodiscard]] ScopedCleanup final {
 
 template <typename F>
 ScopedCleanup(F) -> ScopedCleanup<F>;
+
+#endif  // __cplusplus

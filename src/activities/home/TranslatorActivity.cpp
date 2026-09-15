@@ -14,8 +14,8 @@
 #include "HubStore.h"
 #include "MappedInputManager.h"
 #include "SilentRestart.h"
-#include "activities/network/WifiSelectionActivity.h"
 #include "activities/ListStyle.h"
+#include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "voice/Lang.h"
@@ -29,7 +29,7 @@ struct LangInfo {
   const char* code;
   const char* name;
 };
-const LangInfo LANGS[] = {{"es", "Español"}, {"en", "English"}, {"fr", "Français"},
+const LangInfo LANGS[] = {{"es", "Español"}, {"en", "English"},   {"fr", "Français"},
                           {"de", "Deutsch"}, {"pt", "Português"}, {"ru", "Русский"}};
 
 // Word-wraps into at most maxLines lines for the two text panes.
@@ -185,7 +185,7 @@ void TranslatorActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiSelectionComplete(!result.isCancelled);
@@ -212,8 +212,9 @@ void TranslatorActivity::performRequest() {
   const std::string from = meSpeaking ? mine : other;
   const std::string to = meSpeaking ? other : mine;
   ServerClient::Response resp;
-  const ServerClient::Result r = SERVER_CLIENT.postBytes("/api/translate?from=" + from + "&to=" + to, "audio/wav",
-                                                         recorder.wav(), recorder.wavBytes(), resp, TRANSLATE_TIMEOUT_MS);
+  const ServerClient::Result r =
+      SERVER_CLIENT.postBytes("/api/translate?from=" + from + "&to=" + to, "audio/wav", recorder.wav(),
+                              recorder.wavBytes(), resp, TRANSLATE_TIMEOUT_MS);
   recorder.release();
   WiFi.setSleep(true);
   if (r != ServerClient::Result::Ok) {

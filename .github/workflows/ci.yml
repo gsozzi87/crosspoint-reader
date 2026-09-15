@@ -149,15 +149,16 @@ jobs:
           restore-keys: pio-${{ runner.os }}-
 
       - name: Build ${{ matrix.env }} firmware
-        # El env ws397 pide ${sysenv.WS397_OTA_URL}. Sin la variable, PlatformIO
-        # la sustituye por vacío y el .bin compila igual pero queda sin OTA: sirve
-        # para saber si compila, no para flashearlo. Con la variable puesta en el
-        # repositorio, el artefacto de CI es el bueno.
-        env:
-          WS397_OTA_URL: ${{ vars.WS397_OTA_URL }}
         run: |
           set -euo pipefail
           pio run -e ${{ matrix.env }} | tee pio.log
+
+      - name: Verify WS397 OTA URL is embedded
+        if: matrix.env == 'ws397'
+        run: |
+          set -euo pipefail
+          strings .pio/build/ws397/firmware.bin | grep -Fqx \
+            'https://paper-esp32.up.railway.app/firmware/latest'
 
       - name: Extract firmware stats
         run: |

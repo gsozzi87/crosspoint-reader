@@ -76,7 +76,7 @@ std::unique_ptr<PageImage> PageImage::deserialize(HalFile& file) {
   serialization::readPod(file, yPos);
 
   auto ib = ImageBlock::deserialize(file);
-  return std::unique_ptr<PageImage>(new PageImage(std::move(ib), xPos, yPos));
+  return makeUniqueNoThrow<PageImage>(std::move(ib), xPos, yPos);
 }
 
 void PageHorizontalRule::render(GfxRenderer& renderer, const int fontId, const int xOffset, const int yOffset) {
@@ -183,7 +183,11 @@ bool Page::serialize(HalFile& file) const {
 }
 
 std::unique_ptr<Page> Page::deserialize(HalFile& file) {
-  auto page = std::unique_ptr<Page>(new Page());
+  auto page = makeUniqueNoThrow<Page>();
+  if (!page) {
+    LOG_ERR("PGE", "OOM: page during deserialization");
+    return nullptr;
+  }
 
   uint16_t count;
   serialization::readPod(file, count);

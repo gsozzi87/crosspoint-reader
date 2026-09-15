@@ -53,7 +53,7 @@ void LuaAppsActivity::clampScroll() {
 
 void LuaAppsActivity::startSelected() {
   if (apps.empty()) return;
-  app = std::make_unique<LuaApp>();
+  app = makeUniqueNoThrow<LuaApp>();
   if (!app->open(renderer, apps[selected].path)) {
     state = FAILED;
   } else {
@@ -114,10 +114,14 @@ void LuaAppsActivity::loop() {
   }
 
   const char* key = nullptr;
-  if (mappedInput.wasPressed(MappedInputManager::Button::Up)) key = "up";
-  else if (mappedInput.wasPressed(MappedInputManager::Button::Down)) key = "down";
-  else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) key = "ok";
-  else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) key = "back";
+  if (mappedInput.wasPressed(MappedInputManager::Button::Up))
+    key = "up";
+  else if (mappedInput.wasPressed(MappedInputManager::Button::Down))
+    key = "down";
+  else if (mappedInput.wasReleased(MappedInputManager::Button::Confirm))
+    key = "ok";
+  else if (mappedInput.wasReleased(MappedInputManager::Button::Back))
+    key = "back";
 
   if (key) {
     const bool repaint = app->onKey(key);
@@ -172,8 +176,8 @@ void LuaAppsActivity::renderList() {
     }
   }
 
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), apps.empty() ? "" : tr(STR_SELECT), tr(STR_DIR_UP),
-                                            tr(STR_DIR_DOWN));
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), apps.empty() ? "" : tr(STR_SELECT), tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Setup script del environment de Claude Code web (se pega en la configuración del entorno).
-# Además de esto, el environment necesita las variables WS397_OTA_URL y WS397_OTA_TOKEN:
-# sin ellas release.sh no sube, y el .bin queda con CROSSPOINT_OTA_RELEASE_URL="" (el
-# aparato no encontraría updates).
+# Además de esto, el environment necesita WS397_OTA_TOKEN para publicar.
+# La URL pública del WS397 vive en include/CrossPointOtaConfig.h y no depende
+# del entorno; WS397_OTA_URL solo la sobrescribe para publicar en otro servidor.
 set -e
 git submodule update --init --recursive
 pip install -q platformio scons==4.8.1

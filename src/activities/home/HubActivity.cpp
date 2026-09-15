@@ -2,10 +2,10 @@
 
 #include <GfxRenderer.h>
 #include <HalClock.h>
-#include <ServerCredentialStore.h>
 #include <HalDisplay.h>
 #include <I18n.h>
 #include <Icon.h>
+#include <ServerCredentialStore.h>
 #include <WiFi.h>
 
 #include <algorithm>
@@ -15,51 +15,50 @@
 #include <string>
 #include <vector>
 
+#include "AgendaActivity.h"
+#include "BibleActivity.h"
+#include "CalendarActivity.h"
 #include "CrossPointSettings.h"
 #include "HubStore.h"
 #include "HubSyncActivity.h"
 #include "MappedInputManager.h"
-#include "RecentBooksStore.h"
-#include "AgendaActivity.h"
-#include "CalendarActivity.h"
-#include "BibleActivity.h"
 #include "MusicActivity.h"
 #include "NewsActivity.h"
-#include "activities/games/LuaAppsActivity.h"
-#include "activities/home/AssetSyncActivity.h"
-#include "WeatherActivity.h"
 #include "NotesActivity.h"
+#include "RecentBooksStore.h"
 #include "TimerActivity.h"
 #include "TranslatorActivity.h"
 #include "VoiceActivity.h"
+#include "WeatherActivity.h"
+#include "activities/games/LuaAppsActivity.h"
+#include "activities/home/AssetSyncActivity.h"
+#include "components/Selection.h"
 #include "components/UITheme.h"
-#include "components/themes/BaseTheme.h"
-#include "util/Shtc3.h"
 #include "components/icons/hubIcons.h"
 #include "components/icons/hubWidgetIcons.h"
 #include "components/icons/listIcons.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
-#include "components/Selection.h"
 #include "music/MusicPlayer.h"
-
+#include "util/Shtc3.h"
 
 namespace {
 constexpr int SIDE = 24;        // único margen lateral, y todo cae en la grilla de 8
 constexpr int STATUS_H = 48;    // barra de estado (hora en UI_14)
 constexpr int MIN_TILE_H = 82;  // icono de 48 + su etiqueta: menos que esto la corta
 constexpr int MAX_TILE_H = 100;
-constexpr int TILE_LABEL_H = 26;    // banda BLANCA de la etiqueta, debajo del campo del ícono
+constexpr int TILE_LABEL_H = 26;  // banda BLANCA de la etiqueta, debajo del campo del ícono
 constexpr int TILE_RADIUS = 10;
-constexpr int SUMMARY_ROW_H = 36;   // recordatorio, música/libro
+constexpr int SUMMARY_ROW_H = 36;  // recordatorio, música/libro
 constexpr int SUMMARY_WEATHER_H = 64;
-constexpr int SUMMARY_MIN_H = 210;  // lo que el sumario le reserva a la grilla (incluye el aire de abajo)
-constexpr int SUMMARY_GAP = 8;      // entre el sumario y el marco de la grilla
-constexpr int HINT_GAP = 26;        // aire entre el aviso del atajo de voz y la barra de botones
-constexpr unsigned long SYNC_HOLD_MS = 1200;      // Back held this long = sync now
-constexpr unsigned long TICK_MS = 15000;          // cada cuánto se mira si cambió algo de la barra
-constexpr time_t SYNC_INTERVAL_S = 3 * 3600;      // cache older than this at entry = sync
-                                                  // (3 h: lo que se carga desde /board tarda menos en llegar)
-constexpr time_t SYNC_RETRY_S = 3600;             // after a failed attempt
+constexpr int SUMMARY_MIN_H = 210;            // lo que el sumario le reserva a la grilla (incluye el aire de abajo)
+constexpr int SUMMARY_GAP = 8;                // entre el sumario y el marco de la grilla
+constexpr int HINT_GAP = 26;                  // aire entre el aviso del atajo de voz y la barra de botones
+constexpr unsigned long SYNC_HOLD_MS = 1200;  // Back held this long = sync now
+constexpr unsigned long TICK_MS = 15000;      // cada cuánto se mira si cambió algo de la barra
+constexpr time_t SYNC_INTERVAL_S = 3 * 3600;  // cache older than this at entry = sync
+                                              // (3 h: lo que se carga desde /board tarda menos en llegar)
+constexpr time_t SYNC_RETRY_S = 3600;         // after a failed attempt
 
 // Alturas de las fuentes (el ascender, que es lo que devuelve getTextHeight):
 // UI_14 28, UI_12 24, UI_10 20, SMALL 18. Se usan para alinear por la línea de
@@ -69,7 +68,6 @@ constexpr int H_UI12 = 24;
 constexpr int H_UI10 = 20;
 constexpr int H_SMALL = 18;
 
-
 struct TileSpec {
   StrId label;
   const freeink::Icon* icon;
@@ -78,11 +76,15 @@ struct TileSpec {
 // El orden manda: tiene que coincidir con el enum Tile del .h.
 const TileSpec TILES[] = {
     {StrId::STR_HUB_DAY, &icon_hub_day_48},
-    {StrId::STR_HUB_READ, &icon_hub_read_48},         {StrId::STR_HUB_TALK, &icon_hub_ask_48},
+    {StrId::STR_HUB_READ, &icon_hub_read_48},
+    {StrId::STR_HUB_TALK, &icon_hub_ask_48},
     {StrId::STR_HUB_TRANSLATOR, &icon_hub_translator_48},
-    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48}, {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
-    {StrId::STR_HUB_NOTES, &icon_hub_notes_48},       {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
-    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},       {StrId::STR_HUB_NEWS, &icon_hub_news_48},
+    {StrId::STR_HUB_REMINDERS, &icon_hub_reminders_48},
+    {StrId::STR_HUB_TIMER, &icon_hub_timer_48},
+    {StrId::STR_HUB_NOTES, &icon_hub_notes_48},
+    {StrId::STR_HUB_BIBLE, &icon_hub_bible_48},
+    {StrId::STR_HUB_MUSIC, &icon_hub_music_48},
+    {StrId::STR_HUB_NEWS, &icon_hub_news_48},
     {StrId::STR_HUB_GAMES, &icon_hub_games_48},
     {StrId::STR_WEATHER_TITLE, &icon_hub_weather_48},
     {StrId::STR_SETTINGS_TITLE, &icon_hub_settings_48},
@@ -127,7 +129,7 @@ bool HubActivity::shouldAutoSync() const {
 }
 
 void HubActivity::startSync() {
-  activityManager.replaceActivity(std::make_unique<HubSyncActivity>(renderer, mappedInput));
+  activityManager.replaceActivity(makeUniqueNoThrow<HubSyncActivity>(renderer, mappedInput));
 }
 
 void HubActivity::loadLastBook() {
@@ -149,47 +151,47 @@ void HubActivity::activate(const int tile) {
       activityManager.goToClassicHome();
       break;
     case TILE_TALK:
-      activityManager.replaceActivity(std::make_unique<VoiceActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInput));
       break;
     case TILE_DAY:
-      startActivityForResult(std::make_unique<CalendarActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+      startActivityForResult(makeUniqueNoThrow<CalendarActivity>(renderer, mappedInput), [this](const ActivityResult&) {
         loadLastBook();
         requestUpdate();
       });
       break;
     case TILE_REMINDERS:
-      startActivityForResult(std::make_unique<AgendaActivity>(renderer, mappedInput), [this](const ActivityResult&) {
+      startActivityForResult(makeUniqueNoThrow<AgendaActivity>(renderer, mappedInput), [this](const ActivityResult&) {
         loadLastBook();
         requestUpdate();
       });
       break;
     case TILE_TRANSLATOR:
-      activityManager.replaceActivity(std::make_unique<TranslatorActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<TranslatorActivity>(renderer, mappedInput));
       break;
     case TILE_BIBLE:
-      activityManager.replaceActivity(std::make_unique<BibleActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<BibleActivity>(renderer, mappedInput));
       break;
     case TILE_MUSIC:
-      activityManager.replaceActivity(std::make_unique<MusicActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<MusicActivity>(renderer, mappedInput));
       break;
     case TILE_NEWS:
-      activityManager.replaceActivity(std::make_unique<NewsActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<NewsActivity>(renderer, mappedInput));
       break;
     case TILE_WEATHER:
-      activityManager.replaceActivity(std::make_unique<WeatherActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<WeatherActivity>(renderer, mappedInput));
       break;
     case TILE_GAMES:
       // El mosaico abre DIRECTO las apps en Lua. Los doce juegos compilados se
       // sacaron: "los juegos que tenemos no sirven, vaciá ese menú, vamos a
       // dejar ese espacio para que abra todo lo lua". Ya no hay un menú de
       // juegos con "Apps de la tarjeta" adentro: es Lua y nada más.
-      activityManager.replaceActivity(std::make_unique<LuaAppsActivity>(renderer, mappedInput));
+      activityManager.replaceActivity(makeUniqueNoThrow<LuaAppsActivity>(renderer, mappedInput));
       break;
     case TILE_TIMER:
-      activityManager.pushActivity(std::make_unique<TimerActivity>(renderer, mappedInput));
+      activityManager.pushActivity(makeUniqueNoThrow<TimerActivity>(renderer, mappedInput));
       break;
     case TILE_NOTES:
-      startActivityForResult(std::make_unique<NotesActivity>(renderer, mappedInput),
+      startActivityForResult(makeUniqueNoThrow<NotesActivity>(renderer, mappedInput),
                              [this](const ActivityResult&) { requestUpdate(); });
       break;
     case TILE_SETTINGS:
@@ -267,15 +269,19 @@ void HubActivity::formatTimeChip(char* out, const size_t size) const {
   auto minutes = [](long seconds) { return seconds <= 0 ? 0L : (seconds + 59) / 60; };
   if (HUB_STORE.timerRunning() && haveClock) {
     const long left = static_cast<long>(HUB_STORE.timerEndAt - now);
-    if (left > 60) snprintf(out, size, "%s %ld min", tr(STR_HUB_TIMER), minutes(left));
-    else snprintf(out, size, "%s <1 min", tr(STR_HUB_TIMER));
+    if (left > 60)
+      snprintf(out, size, "%s %ld min", tr(STR_HUB_TIMER), minutes(left));
+    else
+      snprintf(out, size, "%s <1 min", tr(STR_HUB_TIMER));
   } else if (HUB_STORE.timerPaused()) {
     snprintf(out, size, "%s %ld min %s", tr(STR_HUB_TIMER), minutes(HUB_STORE.timerPausedLeft),
              tr(STR_TIMER_PAUSED_SHORT));
   } else if (HUB_STORE.stopwatchActive() && haveClock) {
     const long el = HUB_STORE.stopwatchElapsed(now);
-    if (el >= 60) snprintf(out, size, "%s %ld min", tr(STR_TIMER_STOPWATCH), el / 60);
-    else snprintf(out, size, "%s <1 min", tr(STR_TIMER_STOPWATCH));
+    if (el >= 60)
+      snprintf(out, size, "%s %ld min", tr(STR_TIMER_STOPWATCH), el / 60);
+    else
+      snprintf(out, size, "%s <1 min", tr(STR_TIMER_STOPWATCH));
   }
 }
 
@@ -325,8 +331,7 @@ void HubActivity::drawStatusLine(const int y, const int height) const {
   // drawBatteryLeft pone el porcentaje arriba de la Rect y el icono 6 px más
   // abajo, así que la Rect va donde arranca ese texto: con eso el porcentaje
   // comparte la línea de base con la hora.
-  GUI.drawBatteryLeft(renderer,
-                      Rect{batteryX, baseline - H_SMALL, metrics.batteryWidth, metrics.batteryHeight}, true);
+  GUI.drawBatteryLeft(renderer, Rect{batteryX, baseline - H_SMALL, metrics.batteryWidth, metrics.batteryHeight}, true);
   int rightEdge = batteryX - 12;
   if (WiFi.status() == WL_CONNECTED && rightEdge - 24 > dateX) {
     rightEdge -= 24;
@@ -434,11 +439,11 @@ void HubActivity::drawWeatherRow(const int x, const int y, const int w, const in
   if (hub.weatherLine.empty()) {
     // El motivo concreto en vez de "sin datos": falta el token, falta el lugar,
     // o el servicio del clima falló en el servidor.
-    const char* none = !SERVER_STORE.hasToken()      ? tr(STR_HUB_NO_TOKEN)
-                       : !hub.hasSynced()            ? tr(STR_HUB_NEVER_SYNCED)
-                       : hub.weatherNoPlace          ? tr(STR_HUB_NO_PLACE)
-                       : !hub.weatherError.empty()   ? tr(STR_HUB_WEATHER_ERROR)
-                                                     : tr(STR_HUB_NO_WEATHER);
+    const char* none = !SERVER_STORE.hasToken()    ? tr(STR_HUB_NO_TOKEN)
+                       : !hub.hasSynced()          ? tr(STR_HUB_NEVER_SYNCED)
+                       : hub.weatherNoPlace        ? tr(STR_HUB_NO_PLACE)
+                       : !hub.weatherError.empty() ? tr(STR_HUB_WEATHER_ERROR)
+                                                   : tr(STR_HUB_NO_WEATHER);
     // La interior va IGUAL, y acá es cuando más sirve: sin sincronizar, sin
     // lugar cargado o con el servicio de clima caído, es el único dato de
     // temperatura que tiene el aparato y antes desaparecía justo ahí.
@@ -547,12 +552,12 @@ void HubActivity::drawMediaRow(const int x, const int y, const int w, const int 
     }
     const int sideW = renderer.getTextWidth(SMALL_FONT_ID, side.c_str());
     renderer.drawText(SMALL_FONT_ID, x + w - sideW, top + H_UI12 - H_SMALL, side.c_str());
-    renderer.drawText(
-        UI_12_FONT_ID, tx, top,
-        renderer.truncatedText(UI_12_FONT_ID, MUSIC.nowPlayingLine().c_str(), std::max(20, tw - sideW - 12),
-                               EpdFontFamily::BOLD)
-            .c_str(),
-        true, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, tx, top,
+                      renderer
+                          .truncatedText(UI_12_FONT_ID, MUSIC.nowPlayingLine().c_str(), std::max(20, tw - sideW - 12),
+                                         EpdFontFamily::BOLD)
+                          .c_str(),
+                      true, EpdFontFamily::BOLD);
     return;
   }
 
@@ -568,11 +573,9 @@ void HubActivity::drawMediaRow(const int x, const int y, const int w, const int 
   renderer.drawText(SMALL_FONT_ID, x + w - sideW, top + H_UI12 - H_SMALL, shownSide.c_str());
   renderer.drawText(
       UI_12_FONT_ID, tx, top,
-      renderer.truncatedText(UI_12_FONT_ID, lastBookTitle.c_str(), std::max(20, tw - sideW - 12),
-                             EpdFontFamily::BOLD)
+      renderer.truncatedText(UI_12_FONT_ID, lastBookTitle.c_str(), std::max(20, tw - sideW - 12), EpdFontFamily::BOLD)
           .c_str(),
-      true,
-      EpdFontFamily::BOLD);
+      true, EpdFontFamily::BOLD);
 }
 
 // La agenda de hoy o, con el día vacío, el versículo o la frase.
@@ -590,7 +593,7 @@ void HubActivity::drawAgendaRow(const int x, const int y, const int w, const int
     time_t epoch = 0;
     const bool verseDay = halClock.getEpochUtc(epoch) && ((epoch / 86400) % 2 == 0);
     const bool useVerse = !hub.verseText.empty() && (verseDay || hub.quote.empty());
-    const std::string line = useVerse      ? hub.verseText + " (" + hub.verseRef + ")"
+    const std::string line = useVerse            ? hub.verseText + " (" + hub.verseRef + ")"
                              : hub.quote.empty() ? std::string(tr(STR_HUB_NO_EVENTS))
                                                  : hub.quote;
     // Corte por palabras: truncar y seguir desde el corte partía la palabra al

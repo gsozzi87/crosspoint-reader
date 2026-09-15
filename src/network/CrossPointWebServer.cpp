@@ -1,5 +1,4 @@
 #include "CrossPointWebServer.h"
-#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <ArduinoJson.h>
 #include <BoardConfig.h>
@@ -10,6 +9,7 @@
 #include <WiFi.h>
 #include <esp_efuse.h>
 #include <esp_efuse_table.h>
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <algorithm>
 #include <cctype>
@@ -143,7 +143,11 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Network mode: %s", apMode ? "AP" : "STA");
 
   LOG_DBG("WEB", "Creating web server on port %d...", port);
-  server.reset(new WebServer(port));
+  server = makeUniqueNoThrow<WebServer>(port);
+  if (!server) {
+    LOG_ERR("WEB", "Failed to allocate WebServer");
+    return;
+  }
 
   // Disable WiFi sleep to improve responsiveness and prevent 'unreachable' errors.
   // This is critical for reliable web server operation on ESP32.
@@ -156,11 +160,6 @@ void CrossPointWebServer::begin() {
   // We rely on disabling WiFi sleep for responsiveness.
 
   LOG_DBG("WEB", "[MEM] Free heap after WebServer allocation: %d bytes", ESP.getFreeHeap());
-
-  if (!server) {
-    LOG_ERR("WEB", "Failed to create WebServer!");
-    return;
-  }
 
   // Add Access-Control-Allow-* headers to every response so web-based clients
   // and PWAs on other origins can use the HTTP API. Preflight OPTIONS requests
@@ -219,14 +218,26 @@ void CrossPointWebServer::begin() {
   // Collect WebDAV headers and register handler
   const char* davHeaders[] = {"Depth", "Destination", "Overwrite", "If", "Lock-Token", "Timeout"};
   server->collectHeaders(davHeaders, 6);
-  server->addHandler(new WebDAVHandler());  // Note: WebDAVHandler will be deleted by WebServer when server is stopped
+  auto* davHandler = new (std::nothrow) WebDAVHandler();
+  if (!davHandler) {
+    LOG_ERR("WEB", "Failed to allocate WebDAV handler");
+    server.reset();
+    return;
+  }
+  server->addHandler(davHandler);  // WebServer owns and deletes the handler.
   LOG_DBG("WEB", "WebDAV handler initialized");
 
   server->begin();
 
   // Start WebSocket server for fast binary uploads
   LOG_DBG("WEB", "Starting WebSocket server on port %d...", wsPort);
-  wsServer.reset(new WebSocketsServer(wsPort));
+  wsServer = makeUniqueNoThrow<WebSocketsServer>(wsPort);
+  if (!wsServer) {
+    LOG_ERR("WEB", "Failed to allocate WebSocket server");
+    server->stop();
+    server.reset();
+    return;
+  }
   wsInstance = const_cast<CrossPointWebServer*>(this);
   wsServer->begin();
   wsServer->onEvent(wsEventCallback);

@@ -10,9 +10,8 @@
 #include <ServerCredentialStore.h>
 #include <StreamingJsonParser.h>
 #include <WiFi.h>
-#include <ws397_version.h>  // ws397: el número de build vive acá, no en un -D
-
 #include <mbedtls/sha256.h>
+#include <ws397_version.h>  // ws397: el número de build vive acá, no en un -D
 
 #include <cstdio>
 #include <cstdlib>
@@ -29,11 +28,11 @@
 namespace {
 constexpr const char* TAG = "ASSETS";
 constexpr const char* LOCAL_MANIFEST = "/.crosspoint/assets.json";
-constexpr int PARTIALS_BEFORE_CLEAN = 12;   // regla del panel: refresco limpio cada 10-15 parciales
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 constexpr unsigned long PAINT_EVERY_MS = 1500;
-constexpr int MAX_TRIES = 3;                // intentos por archivo antes de saltearlo
+constexpr int MAX_TRIES = 3;                   // intentos por archivo antes de saltearlo
 constexpr size_t MAX_FILE_BYTES = 512 * 1024;  // sin streaming, el archivo entra entero en memoria
-constexpr int SAVE_EVERY = 20;              // cada cuántos archivos se guarda el manifiesto local
+constexpr int SAVE_EVERY = 20;                 // cada cuántos archivos se guarda el manifiesto local
 
 // La ruta que manda el servidor: absoluta si arranca con "/", si no cuelga de
 // nuestro directorio. Así la Biblia cae en /.crosspoint/bible/<lang>/bNN.txt,
@@ -125,11 +124,16 @@ void mOnString(void* ctx, const char* value, const size_t len) {
   if (s->depth == 1 && s->key == "version") {
     s->version = v;
   } else if (s->inItems && s->depth == 2) {
-    if (s->key == "id") s->cur.id = v;
-    else if (s->key == "kind") s->cur.kind = v;
-    else if (s->key == "path") s->cur.path = v;
-    else if (s->key == "sha") s->cur.sha = v;
-    else if (s->key == "bytes") s->cur.bytes = strtoul(v.c_str(), nullptr, 10);  // por si viene como texto
+    if (s->key == "id")
+      s->cur.id = v;
+    else if (s->key == "kind")
+      s->cur.kind = v;
+    else if (s->key == "path")
+      s->cur.path = v;
+    else if (s->key == "sha")
+      s->cur.sha = v;
+    else if (s->key == "bytes")
+      s->cur.bytes = strtoul(v.c_str(), nullptr, 10);  // por si viene como texto
   }
   s->key.clear();
 }
@@ -247,7 +251,7 @@ void AssetSyncActivity::pumpConnect() {
   }
   if (phase == FriendlyWifi::Phase::NeedsPicker) {
     wifiPicker = true;
-    startActivityForResult(std::make_unique<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
+    startActivityForResult(makeUniqueNoThrow<WifiSelectionActivity>(renderer, mappedInput, /*autoConnect=*/false),
                            [this](const ActivityResult& result) {
                              wifiPicker = false;
                              onWifiReady(!result.isCancelled);
@@ -287,8 +291,7 @@ void AssetSyncActivity::fetchManifest() {
   }
   WiFi.setSleep(false);
   ServerClient::Response resp;
-  const std::string path =
-      "/api/assets/manifest?lang=" + lang + "&v=" + urlEncode(WS397_VERSION);
+  const std::string path = "/api/assets/manifest?lang=" + lang + "&v=" + urlEncode(WS397_VERSION);
   const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
@@ -569,18 +572,17 @@ void AssetSyncActivity::render(RenderLock&&) {
       if (fill > 4) renderer.fillRect(62, mid + 28, fill - 4, 10, true);
 
       if (index < items.size()) {
-        renderer.drawCenteredText(
-            SMALL_FONT_ID, mid + 54,
-            renderer.truncatedText(SMALL_FONT_ID, items[index].id.c_str(), textW).c_str());
+        renderer.drawCenteredText(SMALL_FONT_ID, mid + 54,
+                                  renderer.truncatedText(SMALL_FONT_ID, items[index].id.c_str(), textW).c_str());
       }
       renderer.drawCenteredText(SMALL_FONT_ID, mid + 86, tr(STR_ASSETS_STOP_HINT));
       backLabel = tr(STR_ASSETS_STOP);
       break;
     }
     case DONE: {
-      const StrId head = upToDate ? StrId::STR_ASSETS_UP_TO_DATE
-                        : stopped ? StrId::STR_ASSETS_STOPPED
-                                  : StrId::STR_ASSETS_DONE;
+      const StrId head = upToDate  ? StrId::STR_ASSETS_UP_TO_DATE
+                         : stopped ? StrId::STR_ASSETS_STOPPED
+                                   : StrId::STR_ASSETS_DONE;
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 40, I18N.get(head), true, EpdFontFamily::BOLD);
       if (!upToDate) {
         char line[96];
