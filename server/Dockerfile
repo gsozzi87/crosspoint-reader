@@ -22,6 +22,10 @@ RUN mkdir -p /opt/apps && cd /opt/apps \
       c8b29ea6d6755ccbfcb94ad264606f1348871b5faeed8fa8aeaa7763c72662de tresenraya.lua \
       | sha256sum -c -
 
+# Apps agregadas en esta release. Van dentro del contexto de Docker para que el
+# despliegue no dependa de que la rama de GitHub ya se haya actualizado.
+COPY factory-apps/viajes.lua factory-apps/investigar_epub.lua /opt/apps/
+
 # Voces (rhasspy/piper-voices en Hugging Face): es, en, fr, de, pt, ru
 ARG HF=https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c
 RUN cd /opt/piper/voices && for v in \

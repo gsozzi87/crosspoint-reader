@@ -169,7 +169,7 @@ function initZxing(): Promise<void> {
   return zxingReady;
 }
 
-type RawImage = { data: Uint8ClampedArray<ArrayBuffer>; width: number; height: number };
+type RawImage = { data: Uint8ClampedArray; width: number; height: number };
 
 type Found = { format: string; text: string; box: { x: number; y: number; w: number; h: number } | null };
 

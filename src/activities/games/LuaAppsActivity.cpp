@@ -10,6 +10,7 @@
 #include "MappedInputManager.h"
 #include "Memory.h"
 #include "activities/ListStyle.h"
+#include "activities/games/LuaServiceActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
@@ -140,6 +141,16 @@ void LuaAppsActivity::loop() {
 
   if (app->quitRequested()) {
     backToList();
+    return;
+  }
+  const std::string action = app->takeAction();
+  if (!action.empty()) {
+    startActivityForResult(makeUniqueNoThrow<LuaServiceActivity>(renderer, mappedInput, action),
+                           [this](const ActivityResult&) {
+                             // La app vuelve a leer su caché en on_open. Se
+                             // reabre para no conservar tablas viejas.
+                             startSelected();
+                           });
     return;
   }
   if (!app->ok()) {
