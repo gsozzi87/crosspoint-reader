@@ -570,8 +570,12 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **El cajón** (`src/lua/LuaSandbox.cpp`): están `math`, `string`, `table`, `utf8`, `coroutine` y la base; NO
   están `io`, `os`, `package`, `debug`, `require`, `load`, `loadstring`, `dofile`, `loadfile` ni `string.dump`
   (los `.c` de esas bibliotecas ni se copiaron a `lib/Lua`). Topes: 192 KB de memoria desde PSRAM, 400.000
-  instrucciones por llamada (un `while true do end` termina en error de la app, no en un aparato colgado) y
-  32 KB de stack en un worker de `runBounded`.
+  instrucciones por llamada, 64 KB de tamaño de archivo y 32 KB de stack en un worker de `runBounded`.
+  El tope de instrucciones corta de verdad **incluso si la app se come el error con `pcall`**: el error de la
+  guardia es un error de Lua común y `pcall` lo atrapaba, así que hasta 1.5.90 un bucle envuelto en `pcall` no
+  terminaba nunca y —como `runBounded` espera con `portMAX_DELAY`— colgaba el loop de Arduino, no la app. Ahora
+  pasarse del tope CONDENA al intérprete: el asignador deja de dar memoria y Lua no puede ni armar el objeto de
+  error ni entrar a un `pcall`. Ver `stepHook` en `LuaSandbox.cpp`.
 - Está separado de `LuaApp` justamente para poder probarlo sin placa: **`./test/lua_sandbox/run.sh`** verifica de
   escritorio que lo que tiene que estar está, que lo que no, no, que la guardia corta un bucle infinito sin tocar
   uno normal, que el techo de memoria aguanta y que las apps de ejemplo corren sus callbacks sin error.
@@ -721,8 +725,8 @@ cable. No se toca sin poder probar en hardware.
 - **Los juegos compilados y las tarjetas se fueron.** El mosaico Juegos abre DIRECTO las apps en Lua ("la pestaña
   juegos es sólo para LUA… quita apps lua de ahí, va a ser lua en general"). Las tarjetas alcanzaron a tener
   mosaico propio y duraron una versión: "tarjetas afuera, se va, luego lo hacemos en LUA". El hub volvió a trece
-  mosaicos. En el servidor el catálogo (`CARDS`) y el dibujante siguen en `assets.ts`, pero `CARDS_IN_PACK = false`:
-  el paquete de contenido NO manda más ni los BMP ni los dos audios por tarjeta.
+  mosaicos. En el servidor el catálogo (`CARDS`) y el dibujante quedaron en `assets.ts` apagados por
+  `CARDS_IN_PACK = false` hasta que **se borraron enteros en 1.5.91**.
 - **Guiones de partición de palabras**: `-DHYPH_PRODUCT_LANGS=1` deja sólo los seis idiomas del producto y saca
   fi/it/pl/sv/uk (−63,5 KB). El flash está en 87 %. El que sobra es el alemán, 201 KB él solo; las fuentes son
   1994 KB. Lua no es la palanca para el flash: son las fuentes y los guiones.
@@ -914,8 +918,8 @@ Y la caza de huérfanos —la parte que el usuario pidió— encontró **dos cos
   sea fuera del `try` del handler, así que ni siquiera se veía como error. `node --check` pasaba igual. Restaurados.
 - **Las tarjetas se seguían mandando.** `CARDS_IN_PACK = false` (1.5.65) apagó la GENERACIÓN, pero el manifiesto
   se sirve desde el índice **persistido**, así que un servidor que ya las había armado las anunciaba para siempre:
-  en el aparato del usuario eso eran **787 archivos** en el manifiesto. Ahora `loadIndex()` poda las entradas de
-  tipo `cards`.
+  en el aparato del usuario eso eran **787 archivos** en el manifiesto. `loadIndex()` las poda. (Esa poda filtraba
+  por `kind`, que dejaba pasar los 480 audios; se completó en 1.5.91, cuando además se borró `cards.ts` entero.)
 - **"Menú de pulsación larga" estaba escondido con una premisa que había dejado de ser cierta.** Se escondió en
   1.5.38 porque con OK = confirm + power la rama no se disparaba nunca; en 1.5.47 el encendido pasó al PMIC y en
   1.5.49 se sacó el `if (WS397) return 0;`. O sea que desde 1.5.49 la rama funciona **pero el ajuste que la
@@ -928,6 +932,64 @@ Y la caza de huérfanos —la parte que el usuario pidió— encontró **dos cos
 archivo de ajustes y al `/api/settings`. El campo queda en el default del struct y no hay puerta para moverlo. Por
 eso cada entrada de esa lista tiene que decir por qué el default es el valor correcto — y hay que volver a mirarla
 cuando cambia el motivo.
+
+## Auditoría de la cabeza sin revisar (1.5.91)
+
+Cuatro fusiones (1.5.87 a 1.5.90) habían entrado sin que las mirara nadie: 121 archivos, ~1600 líneas. Se
+auditaron con quince agentes en paralelo y cada hallazgo se verificó adversarialmente contra el árbol antes de
+creerle: **118 hallazgos, 28 confirmados, 48 refutados, 42 sin verificar** (se acabó el límite de sesión). Lo que
+salió:
+
+- **El token se podía LEER otra vez, y no por un archivo.** En 1.5.85 se tapó `/download`; la puerta de al lado
+  quedó abierta. `getSettingsList()` tiene dos entradas `DynamicString` cuyos getters devuelven
+  `SERVER_STORE.getToken()` y `KOREADER_STORE.getPassword()`, y `handleGetSettings()` las emitía como
+  `doc["value"]`. `GET /api/settings` **no pide credencial**, así que sobre el punto de acceso ABIERTO de "clave
+  por el teléfono" alcanzaba un `curl` desde la vereda. Ahora hay una marca `secret` en `SettingInfo`: el valor se
+  ESCRIBE pero no se LEE (viaja `hasValue` y el valor vacío, la misma regla que ya cumple el servidor de Railway
+  con las claves de IA). Como la página sólo manda las claves que cambiaron, no tocar el campo no lo borra.
+- **DECISIÓN DEL DUEÑO: `POST /api/settings` queda SIN credencial, a propósito.** Sí, eso significa que un vecino
+  en el punto de acceso abierto puede escribir `srvUrl` y `srvToken` y apuntar el aparato a su propio servidor.
+  Se deja así porque ese endpoint ES la forma de cargar la clave del WiFi desde el teléfono y de configurar el
+  servidor desde la web, y cerrarlo sacaría las dos cosas. **No cerrarlo sin preguntar**: ya está evaluado.
+- **El arreglo de 1.5.85 era sólo de lectura.** `/upload`, `/mkdir` y el subidor por WebSocket nunca llamaron a
+  ninguna guardia: se podía escribir dentro de `/.crosspoint`, que es peor que leer — plantando ahí un
+  `server-queue.json` armado a mano, el aparato manda esos POST **firmados con su Bearer** en la próxima
+  sincronización — y en un aparato nuevo hasta se podía CREAR el directorio.
+- **La regla de rutas protegidas estaba escrita DOS veces** (`CrossPointWebServer.cpp` y `WebDAVHandler.cpp`) y
+  las copias se fueron separando: por eso 1.5.85 arregló una sola. Vive en **`src/network/ProtectedPaths.h`** y la
+  usan las dos. De paso tapa el **alias 8.3 de FAT**, que esquivaba el filtro por nombre (`.crosspoint` tiene
+  nombre corto `CROSSP~1`, que no empieza con punto). Un `libro~1.epub` de verdad no cae: el 8.3 no llega a cuatro
+  letras de extensión.
+- **La guardia de Lua no servía contra `pcall`.** `stepHook` tira un error de Lua común y `pcall` está en la base,
+  así que `while true do pcall(function() while true do end end) end` se lo comía en cada vuelta. Y como
+  `runBounded` espera al worker con `portMAX_DELAY`, el que se colgaba no era la app: era el loop de Arduino, sin
+  recordatorios, sin reposo y sin salida salvo cortar la corriente. La promesa escrita acá valía sólo para el caso
+  ingenuo. Se cierra por donde Lua no puede seguir: pasarse del tope **condena al intérprete** y el asignador deja
+  de dar memoria, así que no puede ni armar el objeto de error ni entrar a un `pcall`. Va en dos tiempos para no
+  perder el mensaje entendible en el caso normal. `lua_close` también arma la guardia: corre los finalizadores
+  `__gc` —código de la app— desde el loop de Arduino, o sea que un `__gc` infinito colgaba el aparato justo en la
+  puerta de salida.
+- **Noticias perdió dos cosas al pasar de `fetch()` a un cliente propio** (el pin de DNS de 1.5.90): la
+  descompresión **gzip**, que el `fetch` global hacía gratis y sin la cual un feed comprimido llega como bytes
+  crudos y el parser no encuentra nada; y el **plazo**, porque `request.setTimeout` es INACTIVIDAD del socket —un
+  servidor que gotea lo resetea para siempre— y la resolución de nombres no tenía ninguno.
+- **Las tarjetas se seguían mandando a medias.** La poda de 1.5.86 filtraba por `kind !== "cards"`, pero los DOS
+  audios de cada tarjeta viven bajo `sounds/<lang>/<id>` con kind `"sounds"`: se iban los 240 BMP y quedaban los
+  480 audios anunciados para siempre. **La mitad de un arreglo es peor que ninguno, porque parece hecho.**
+- **`.ws397-build` decía 89 con el header en 90.** Es el único archivo que lee la aritmética de `release.sh`, así
+  que el próximo release publicaba un binario DISTINTO bajo el número 1.5.90 — que ningún aparato que ya lo
+  tuviera habría instalado nunca (la comparación es `major.minor.patch` estricta).
+
+Y la limpieza que pidió el dueño, de lo que ya estaba afuera del producto: `GameUi.{h,cpp}` (253 líneas de los
+juegos compilados), `gen_game_icons.py`, `search24.h`, los íconos de Fotos y del Conversor, `HubStore::wallpaperName`,
+**197 claves de traducción × 7 idiomas**, `server/src/cards.ts` entero con todo su dibujante de emojis de Noto
+(`assets.ts` pasó de 694 a 424 líneas), `photosDir()`/`PHOTOS_DIR`, un import muerto y el CSS de la grilla de fotos.
+Ojo con el número de las claves: la tabla de strings bajó 29 KB pero **el binario sólo bajó 644 bytes**, porque el
+build ya las venía descartando. Es limpieza para que no vuelvan si alguien regenera sin `--strip-unused`, no flash.
+
+**Lo que NO se tocó y hay que saberlo**: los 14 íconos de 64 px de `hubIcons.h` no los usa nadie (`TILES[]` usa los
+de 48; el comentario del manifiesto decía lo contrario y se corrigió). Se dejan porque son un par generado, no una
+función muerta.
 
 ## Roadmap acordado
 
