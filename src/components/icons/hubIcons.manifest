@@ -2,8 +2,10 @@
 #   python3 <freeink-sdk>/libs/assets/Icons/tools/gen_icons.py \
 #     --manifest src/components/icons/hubIcons.manifest \
 #     --svgdir <lucide/icons> --sizes 48,64 --out src/components/icons/hubIcons.h
-# Los mosaicos del hub usan los de 64 px; los de 48 quedan para quien los precise
-# fuera del hub (el linker tira los que no se usan).
+# Los mosaicos del hub usan los de 48 px (`TILES[]` en HubActivity.cpp). Los de
+# 64 se generan igual y hoy no los referencia nadie; el linker los tira.
+# Photos y Units salieron del manifiesto en 1.5.91: las dos funciones ya no
+# existen (fotos en 1.5.74, conversor en 1.5.86) y sus íconos quedaron colgando.
 # En la nube no hay rsvg-convert: se rasteriza con resvg_py (mismo resultado byte
 # a byte que librsvg, verificado contra los 48 px que ya estaban generados).
 hub_read = book-open
@@ -16,8 +18,6 @@ hub_timer = timer
 hub_notes = notebook-pen
 hub_translator = languages
 hub_news = newspaper
-hub_photos = image
 hub_weather = cloud-sun
 hub_games = gamepad-2
 hub_day = calendar-days
-hub_units = arrow-left-right

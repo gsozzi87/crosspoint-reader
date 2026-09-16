@@ -40,7 +40,7 @@ import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
 import { boardAttachment } from "./attachments";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
-import { clampNote, MAX_NOTE_CHARS } from "./notes";
+import { clampNote } from "./notes";
 
 export const boardApi = new Hono<AppEnv>();
 

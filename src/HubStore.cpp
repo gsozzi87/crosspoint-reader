@@ -40,7 +40,7 @@ void parseLists(JsonVariantConst doc, std::vector<HubStore::List>& out) {
     HubStore::List list;
     list.key = str(l, "key");
     list.name = str(l, "name");
-    if (list.key.empty()) list.key = list.name;   // servidor viejo: una sola clave
+    if (list.key.empty()) list.key = list.name;  // servidor viejo: una sola clave
     if (list.name.empty()) list.name = list.key;
     for (JsonVariantConst i : l["items"].as<JsonArrayConst>()) {
       if (list.items.size() >= HubStore::MAX_ITEMS) break;
@@ -116,7 +116,6 @@ void HubStore::toJson(JsonDocument& doc) const {
     m["ys"] = imuMap.ySign;
   }
   doc["musicFolder"] = musicFolder;
-  doc["wallpaperName"] = wallpaperName;
   doc["timerEndAt"] = static_cast<int64_t>(timerEndAt);
   doc["timerTotal"] = timerTotal;
   doc["timerMode"] = timerMode;
@@ -180,7 +179,6 @@ bool HubStore::fromJson(JsonVariantConst doc) {
     }
   }
   musicFolder = str(doc, "musicFolder");
-  wallpaperName = str(doc, "wallpaperName");
   timerEndAt = static_cast<time_t>(doc["timerEndAt"] | (int64_t)0);
   timerTotal = doc["timerTotal"] | 0;
   timerMode = doc["timerMode"] | 0;
@@ -237,15 +235,21 @@ void HubStore::applySettings(JsonVariantConst s) {
   if (rev <= settingsRev) return;
   settingsRev = rev;
   const std::string speak = str(s, "speak");
-  if (speak == "none") speakMode = 0;
-  else if (speak == "all") speakMode = 2;
-  else if (speak == "short") speakMode = 1;
+  if (speak == "none")
+    speakMode = 0;
+  else if (speak == "all")
+    speakMode = 2;
+  else if (speak == "short")
+    speakMode = 1;
   // Sonidos de la interfaz, igual que los demás ajustes de la web: solo se
   // toca si la clave viene, así el que no la manda no los apaga.
   const std::string uiSound = str(s, "uiSound");
-  if (uiSound == "off") uiSoundMode = 0;
-  else if (uiSound == "soft") uiSoundMode = 1;
-  else if (uiSound == "normal") uiSoundMode = 2;
+  if (uiSound == "off")
+    uiSoundMode = 0;
+  else if (uiSound == "soft")
+    uiSoundMode = 1;
+  else if (uiSound == "normal")
+    uiSoundMode = 2;
   const int vol = s["musicVolume"] | -1;
   if (vol >= 0 && vol <= 100) musicVolume = vol;
   const std::string other = str(s, "translatorLang");

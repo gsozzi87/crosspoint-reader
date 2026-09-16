@@ -422,30 +422,19 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `sectionTitleFont`, `sectionDatumFont`; 0 = el default de siempre) y son **funciones**, no constantes, porque el
   tema se cambia en caliente.
   La geometría (margen de 24 px, grilla de 8) NO se movió al tema a propósito: es del sistema visual, no del tema.
-- **Diario** (`src/components/themes/diario/DiarioTheme.h`) es el tema de fábrica de la ws397: serif para lo que se
-  lee, la sans chica para etiquetas y datos, filete de 3 px al pie del cabezal. Hereda de Lyra y sólo pisa lo que
-  hace al carácter.
-- **La ws397 tiene UN tema y no se elige: Diario (1.5.86).** Hubo un selector propio con Diario, Bento y Lyra
-  sobre un campo aparte (`uiThemeWs397`), y elegir no servía de nada: hasta 1.5.82 `listui` sólo miraba las cuatro
-  CARAS del tema, así que entre Bento y Lyra la única diferencia era el renglón de detalle. Eso se arregló —ahora
-  también manda la forma— pero la conclusión del usuario fue la correcta igual ("el cambio de interfaz es una
-  verga… dejamos DIARIO"): tres temas son tres cosas que mantener y probar para que el aparato se vea de tres
-  maneras parecidas.
-  `UITheme::wantedTheme()` devuelve Diario **fijo** en esta placa —y no el valor guardado— para que el aparato que
-  venía con Bento o Lyra puestos también pase a Diario sin migrar nada. La fila salió de Ajustes, el campo
-  `uiThemeWs397` se borró y `BentoTheme` también. `BENTO` se sacó del enum `UI_THEME` porque era el ÚLTIMO valor:
-  mover cualquier otro renumeraría y le cambiaría el tema a quien ya eligió en las otras placas, donde el selector
-  de cuatro sigue igual.
-  **Lyra NO se puede borrar**: `DiarioMetrics` parte de `LyraMetrics`. (La CLASE `DiarioTheme` sí dejó de heredar
-  de `LyraTheme` en 1.5.87: ahora hereda de `BaseTheme`, o sea componentes rectos y sin pastillas, que es lo que
-  pide `DISENO.md`. Lo que hace a Diario —serif para lo que se lee, la sans chica para datos, filete de 3 px—
-  vive en las MÉTRICAS, no en la clase, así que el carácter no se perdió. Sí se perdieron cinco overrides de
-  Lyra: el ícono de batería, el sub-encabezado, las ayudas laterales, el menú de botones y la portada de
-  "Continuar leyendo". Falta mirarlos en el aparato.)
-
-  **En 1.5.89 alguien cambió esto a Lyra sin que nadie lo pidiera** y reescribió los comentarios y
-  `PENDIENTE_VERIFICAR.md` como si siempre hubiera sido Lyra. Volvió a Diario en 1.5.91. Si vuelve a pasar,
-  que sea porque el dueño cambió de opinión y lo dijo.
+- **La ws397 tiene UN tema y no se elige: Lyra (1.5.91).** Hubo un momento en que la placa iba a tener su propio
+  tema (Diario) y un selector propio con Diario, Bento y Lyra, y elegir no servía de nada: hasta 1.5.82 `listui`
+  sólo miraba las cuatro CARAS del tema, así que entre Bento y Lyra la única diferencia era el renglón de detalle.
+  Eso se arregló —ahora también manda la forma— pero la conclusión del usuario fue la correcta igual ("el cambio de
+  interfaz es una verga"): un tema es una cosa para mantener y probar, y tres son tres. La decisión final es **una
+  sola interfaz, unificada, Lyra en todas las pantallas**.
+  `UITheme::wantedTheme()` devuelve Lyra **fijo** en esta placa —y no el valor guardado— para que una tarjeta que
+  venga con otro número puesto no mezcle métricas ni tipografías entre pantallas. La fila `STR_UI_THEME` está
+  escondida en la ws397; las otras placas siguen con su selector.
+  **Se borraron los dos temas propios**: `BentoTheme` en 1.5.86 y `DiarioTheme` en 1.5.91, con sus métricas, su
+  directorio, su clave `STR_THEME_DIARIO` y su valor del enum. `BENTO` (5) y `DIARIO` (4) eran el ÚLTIMO valor de
+  `UI_THEME` cuando se sacaron, así que ninguno renumeró a los de arriba: lo que se persiste es el NÚMERO, y mover
+  cualquier otro le cambiaría el tema a quien ya eligió en las otras placas. Borrar del final es lo único seguro.
   Ojo: **Riel y Estación siguen siendo maquetas, no código** (`docs/ws397/maquetas/`).
 - **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
   jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
@@ -816,7 +805,7 @@ cable. No se toca sin poder probar en hardware.
   que llaman a `row()` tiene que cambiar su cuenta de posiciones.
   `headerUnderlineSize` se usa como SÍ o NO y no como grosor: allá arriba es el filete del cabezal de pantalla, y
   traerlo tal cual dejaría cada división de sección con una barra de 3 px, que a esta escala es una mancha.
-  Y Diario pasó a `listRowRadius = 0`: hereda de Lyra, que trae 6, y el lenguaje impreso va con esquinas vivas.
+  (Diario también ponía `listRowRadius = 0`, pero el tema se borró en 1.5.91: la placa va con Lyra y nada más.)
 - **Ajustes → Sistema → Memoria pintaba las filas encima del título.** `visible()` deja pasar la fila que cruza
   el borde de arriba —tiene que hacerlo, o la lista saltaría de a bloques enteros—, así que esa fila sobresalía
   sobre el cabezal. Ahora el cabezal se dibuja **al final**, sobre una banda tapada en blanco, y lo mismo abajo

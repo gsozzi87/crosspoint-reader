@@ -145,13 +145,10 @@ export async function mutateDoc<D, R>(
 // (la que ya venía andando) se queda en las rutas de siempre para no tener que
 // mover nada; las cuentas nuevas viven bajo /data/accounts/<id>/.
 // El accountId es un número, así que ninguna ruta puede escaparse del directorio.
-const PHOTOS_DIR = process.env.PHOTOS_DIR ?? "/data/photos";
+// `PHOTOS_DIR` y `photosDir()` se borraron en 1.5.91: las fotos salieron del
+// producto en 1.5.74 y estos dos quedaron colgando desde entonces.
 const DEVICE_LOG_FILE = process.env.DEVICE_LOG_FILE ?? "/data/device.log";
 const ACCOUNTS_DIR = process.env.ACCOUNTS_DIR ?? "/data/accounts";
-
-export function photosDir(accountId: number): string {
-  return accountId === DEFAULT_ACCOUNT ? PHOTOS_DIR : `${ACCOUNTS_DIR}/${accountId | 0}/photos`;
-}
 
 export function attachmentsDir(accountId: number): string {
   return accountId === DEFAULT_ACCOUNT ? ATTACHMENTS_DIR : `${ACCOUNTS_DIR}/${accountId | 0}/attachments`;
