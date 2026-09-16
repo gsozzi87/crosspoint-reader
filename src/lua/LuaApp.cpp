@@ -1,6 +1,7 @@
 #include "LuaApp.h"
 
 #include <GfxRenderer.h>
+#include <ArduinoJson.h>
 #include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
@@ -8,6 +9,7 @@
 #include <esp_heap_caps.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 #include "../HubStore.h"
@@ -37,6 +39,7 @@ constexpr const char* EXT = ".lua";
 GfxRenderer* g_renderer = nullptr;
 bool g_quit = false;
 std::string g_appStem;
+std::string g_action;
 char g_nativeText[LuaApp::TEXT_CAP + 1] = {};
 char g_logLine[LuaApp::LOG_CAP + 1] = {};
 
@@ -204,6 +207,82 @@ int cpQuit(lua_State*) {
   return 0;
 }
 
+bool validService(const std::string& service) {
+  if (service == "travel_refresh" || service == "research_epub") return true;
+  const char* prefixes[] = {"travel:", "travel_guide:"};
+  for (const char* prefix : prefixes) {
+    const size_t n = strlen(prefix);
+    if (service.compare(0, n, prefix) != 0 || service.size() <= n || service.size() > n + 64) continue;
+    return std::all_of(service.begin() + n, service.end(), [](const unsigned char c) {
+      return std::isalnum(c) || c == '-' || c == '_';
+    });
+  }
+  return false;
+}
+
+int cpOpen(lua_State* L) {
+  size_t len = 0;
+  const char* raw = luaL_checklstring(L, 1, &len);
+  const std::string service(raw, std::min<size_t>(len, 96));
+  if (!validService(service)) return luaL_error(L, "servicio no permitido");
+  g_action = service;
+  lua_pushboolean(L, 1);
+  return 1;
+}
+
+void pushJson(lua_State* L, JsonVariantConst value, const int depth) {
+  if (depth > 8 || value.isNull()) {
+    lua_pushnil(L);
+  } else if (value.is<JsonArrayConst>()) {
+    const JsonArrayConst arr = value.as<JsonArrayConst>();
+    lua_createtable(L, static_cast<int>(arr.size()), 0);
+    int i = 1;
+    for (JsonVariantConst child : arr) {
+      pushJson(L, child, depth + 1);
+      lua_rawseti(L, -2, i++);
+    }
+  } else if (value.is<JsonObjectConst>()) {
+    const JsonObjectConst obj = value.as<JsonObjectConst>();
+    lua_createtable(L, 0, static_cast<int>(obj.size()));
+    for (JsonPairConst pair : obj) {
+      pushJson(L, pair.value(), depth + 1);
+      lua_setfield(L, -2, pair.key().c_str());
+    }
+  } else if (value.is<bool>()) {
+    lua_pushboolean(L, value.as<bool>());
+  } else if (value.is<long long>()) {
+    lua_pushinteger(L, static_cast<lua_Integer>(value.as<long long>()));
+  } else if (value.is<double>()) {
+    lua_pushnumber(L, value.as<double>());
+  } else {
+    const char* text = value.as<const char*>();
+    const size_t len = text ? strnlen(text, LuaApp::TEXT_CAP) : 0;
+    lua_pushlstring(L, text ? text : "", len);
+  }
+}
+
+// Solo expone el documento que escribió TravelSyncActivity. Lua nunca recibe
+// una ruta y no puede leer ningún otro archivo.
+int cpTravel(lua_State* L) {
+  constexpr const char* CACHE = "/.crosspoint/travel-lua.json";
+  if (!Storage.exists(CACHE)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  const String raw = Storage.readFile(CACHE);
+  if (raw.length() == 0 || raw.length() > 64 * 1024) {
+    lua_pushnil(L);
+    return 1;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, raw) != DeserializationError::Ok) {
+    lua_pushnil(L);
+    return 1;
+  }
+  pushJson(L, doc.as<JsonVariantConst>(), 0);
+  return 1;
+}
+
 // La hora. Es la ÚNICA forma que tiene una app de saberla: `os` no está en el
 // cajón (`os.execute` y `os.remove` vienen en la misma biblioteca), así que sin
 // esto una agenda, un reloj o un juego por turnos no se podían escribir.
@@ -282,6 +361,8 @@ const luaL_Reg CP_API[] = {
     {"beep", cpBeep},
     {"log", cpLog},
     {"quit", cpQuit},
+    {"open", cpOpen},
+    {"travel", cpTravel},
     {"save", cpSave},
     {"load", cpLoad},
     {"time", cpTime},
@@ -385,6 +466,7 @@ bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
   g_appStem = name_;
   g_renderer = &renderer;
   g_quit = false;
+  g_action.clear();
   quit_ = false;
 
   HalFile script = Storage.open(path.c_str());
@@ -444,6 +526,7 @@ void LuaApp::close() {
   state_ = nullptr;
   g_renderer = nullptr;
   hasTick_ = false;
+  action_.clear();
 }
 
 bool LuaApp::callback(const char* fn, const char* arg) {
@@ -462,7 +545,17 @@ bool LuaApp::callback(const char* fn, const char* arg) {
     return false;
   }
   if (g_quit) quit_ = true;
+  if (!g_action.empty()) {
+    action_ = std::move(g_action);
+    g_action.clear();
+  }
   return job.repaint;
+}
+
+std::string LuaApp::takeAction() {
+  std::string out = std::move(action_);
+  action_.clear();
+  return out;
 }
 
 bool LuaApp::onKey(const char* key) { return callback("on_key", key); }

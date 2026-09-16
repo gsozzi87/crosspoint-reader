@@ -67,6 +67,22 @@ regla número uno del sistema visual es que **nunca hay letras sobre trama**.
 | `cp.quit()` | Cierra la app y vuelve al catálogo |
 | `cp.time()` | La hora local, o `nil` si el aparato no está en hora |
 
+### Servicios de las apps de fábrica
+
+`viajes.lua` e `investigar_epub.lua` necesitan red, autenticación y escritura
+de libros. Eso no abre el cajón para las demás apps. Hay dos llamadas cerradas:
+
+| Llamada | Qué hace |
+| --- | --- |
+| `cp.travel()` | Devuelve únicamente el caché de viajes como tabla, o `nil` |
+| `cp.open(servicio)` | Pide uno de los servicios de fábrica permitidos |
+
+Los únicos servicios aceptados son `travel_refresh`, `travel:<id>`,
+`travel_guide:<id>` y `research_epub`. Los identificadores admiten sólo letras,
+números, guion y guion bajo. No existe un `fetch(url)` ni una función para abrir
+rutas: Lua no puede convertir este puente en acceso general a la red o a la
+tarjeta.
+
 `cp.time()` es la **única** forma que tiene una app de saber la hora: `os` no
 está en el cajón (`os.execute` y `os.remove` vienen en la misma biblioteca).
 Devuelve una tabla con `year`, `month`, `day`, `hour`, `min`, `sec`, `wday`

@@ -15,7 +15,7 @@
 // tres pantallas, elegidas en un menú de tres filas:
 //   Hoy         -> lo del día (agenda y viaje) más las sugerencias de la IA
 //   Calendario  -> la cuadrícula del mes y la vista de un día
-//   Viajes      -> TripActivity
+// Viajes salió de esta pantalla: desde 1.5.91 es /Apps/viajes.lua.
 // Antes el calendario y los viajes estaban escondidos como secciones adentro de
 // Recordatorios; ahora son pestaña propia, que es como los pidió el usuario.
 //
@@ -105,7 +105,7 @@ class CalendarActivity final : public Activity {
   // Qué se está grabando: el día entero o el título de una actividad.
   enum RecordMode { REC_DAY, REC_TITLE };
   // Filas del menú de entrada.
-  enum HomeRow { ROW_TODAY, ROW_CALENDAR, ROW_TRIPS, HOME_ROWS };
+  enum HomeRow { ROW_TODAY, ROW_CALENDAR, HOME_ROWS };
   // Un renglón de la pantalla Hoy: el texto y con qué fuente se dibuja.
   struct Line {
     std::string text;

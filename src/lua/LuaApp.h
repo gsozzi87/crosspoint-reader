@@ -72,6 +72,7 @@ class LuaApp {
   const std::string& error() const { return error_; }
   const std::string& name() const { return name_; }
   bool quitRequested() const { return quit_; }
+  std::string takeAction();
 
   // Las tres llamadas al script. Devuelven true si hay que repintar. Un error
   // adentro deja `error()` cargado y la app se da por terminada.
@@ -88,4 +89,5 @@ class LuaApp {
   std::string path_;
   bool quit_ = false;
   bool hasTick_ = false;
+  std::string action_;
 };

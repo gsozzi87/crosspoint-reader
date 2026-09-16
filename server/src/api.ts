@@ -29,6 +29,7 @@ import { attachmentApi } from "./attachments";
 import { calendar } from "./calendar";
 import { suggest } from "./suggest";
 import { notes } from "./notes";
+import { research } from "./research";
 import { accountApi, pairStatus, startPairing } from "./accounts";
 import { readBody } from "./net";
 import { accountOf, bearerOf, requireTenant, type AppEnv } from "./tenant";
@@ -91,6 +92,7 @@ const METERED: { path: string; llm: number; audio: boolean }[] = [
   { path: "/api/translate", llm: 1, audio: true },
   { path: "/api/bible/ask", llm: 1, audio: false },
   { path: "/api/calendar/dictate", llm: 1, audio: false },
+  { path: "/api/research/epub", llm: 1, audio: false },
 ];
 
 api.use("*", async (c, next) => {
@@ -124,6 +126,7 @@ api.route("/tts", tts);               // GET  /api/tts?text=   → voz Piper en 
 api.route("/translate", translate);   // POST /api/translate?from=&to= → traductor en conversación: texto + traducción + voz
 api.route("/board", boardApi);        // POST /api/board/{reminder,item,note} → lo que se carga desde la página web
 api.route("/notes", notes);          // POST /api/notes → nota rápida, sin pasar por el clasificador
+api.route("/research", research);    // POST /api/research/epub → investigación web convertida en libro
 api.route("/bible", bibleApi);        // GET  /api/bible/{books,chapter,day,find}; POST /api/bible/ask → Biblia y preguntas sobre el capítulo
 api.route("/news", news);             // paquete masticado, estado y actualización manual
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board

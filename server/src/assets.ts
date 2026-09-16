@@ -91,7 +91,8 @@ const indexes = new Map<Lang, Index>();
 // coincida se descarta del índice y se genera de nuevo.
 function expectedTags(): Map<string, string> {
   const out = new Map<string, string>();
-  for (const name of ["reloj", "ahorcado", "tresenraya"]) out.set(`apps/${name}`, `factory/${name}/1`);
+  for (const name of ["reloj", "ahorcado", "tresenraya", "viajes", "investigar_epub"])
+    out.set(`apps/${name}`, `factory/${name}/1`);
   out.set("cards/index", `index/${CARDS.length}`);
   for (const c of CARDS) {
     out.set(`cards/${c.id}`, c.icon);
@@ -423,7 +424,7 @@ async function plan(lang: Lang): Promise<Planned[]> {
       },
     });
   }
-  for (const name of ["reloj", "ahorcado", "tresenraya"]) {
+  for (const name of ["reloj", "ahorcado", "tresenraya", "viajes", "investigar_epub"]) {
     out.push({
       id: `apps/${name}`,
       kind: "apps",
