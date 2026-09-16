@@ -56,15 +56,39 @@ bool failed(const char* code) { return !run(code).empty(); }
 // agrega una función a `cp` en el aparato y no acá, una app que la use falla
 // en esta prueba, que es justamente cuando conviene enterarse.
 
-int stubZero(lua_State* L) { lua_pushinteger(L, 0); return 1; }
-int stubNil(lua_State* L) { lua_pushnil(L); return 1; }
+int stubZero(lua_State* L) {
+  lua_pushinteger(L, 0);
+  return 1;
+}
+int stubNil(lua_State* L) {
+  lua_pushnil(L);
+  return 1;
+}
 int stubNone(lua_State*) { return 0; }
-int stubWidth(lua_State* L) { lua_pushinteger(L, 480); return 1; }
-int stubHeight(lua_State* L) { lua_pushinteger(L, 800); return 1; }
-int stubTextW(lua_State* L) { lua_pushinteger(L, 8 * static_cast<int>(strlen(luaL_checkstring(L, 1)))); return 1; }
-int stubTextH(lua_State* L) { lua_pushinteger(L, 18); return 1; }
-int stubMs(lua_State* L) { lua_pushinteger(L, 12345); return 1; }
-int stubTrue(lua_State* L) { lua_pushboolean(L, 1); return 1; }
+int stubWidth(lua_State* L) {
+  lua_pushinteger(L, 480);
+  return 1;
+}
+int stubHeight(lua_State* L) {
+  lua_pushinteger(L, 800);
+  return 1;
+}
+int stubTextW(lua_State* L) {
+  lua_pushinteger(L, 8 * static_cast<int>(strlen(luaL_checkstring(L, 1))));
+  return 1;
+}
+int stubTextH(lua_State* L) {
+  lua_pushinteger(L, 18);
+  return 1;
+}
+int stubMs(lua_State* L) {
+  lua_pushinteger(L, 12345);
+  return 1;
+}
+int stubTrue(lua_State* L) {
+  lua_pushboolean(L, 1);
+  return 1;
+}
 
 // Con el reloj puesto y sin el reloj puesto: el aparato de verdad devuelve nil
 // mientras no esté en hora, y una app que no lo contemple se rompe justo cuando
@@ -94,11 +118,10 @@ int stubTime(lua_State* L) {
 
 void installStubCp(lua_State* L) {
   static const luaL_Reg CP[] = {
-      {"clear", stubNone},   {"text", stubNone},      {"textw", stubTextW}, {"texth", stubTextH},
-      {"rect", stubNone},    {"line", stubNone},      {"selection", stubNone},
-      {"width", stubWidth},  {"height", stubHeight},  {"motion", stubNil},  {"ms", stubMs},
-      {"beep", stubNone},    {"log", stubNone},       {"quit", stubNone},   {"save", stubTrue},
-      {"load", stubNil},     {"time", stubTime},      {nullptr, nullptr},
+      {"clear", stubNone}, {"text", stubNone},      {"textw", stubTextW}, {"texth", stubTextH},   {"rect", stubNone},
+      {"line", stubNone},  {"selection", stubNone}, {"width", stubWidth}, {"height", stubHeight}, {"motion", stubNil},
+      {"ms", stubMs},      {"beep", stubNone},      {"log", stubNone},    {"quit", stubNone},     {"save", stubTrue},
+      {"load", stubNil},   {"time", stubTime},      {nullptr, nullptr},
   };
   luaL_newlib(L, CP);
   lua_setglobal(L, "cp");
@@ -129,17 +152,22 @@ std::string runApp(const char* path) {
   } else if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
     err = lua_tostring(L, -1);
   } else {
-    struct Call { const char* fn; const char* arg; };
-    const Call calls[] = {{"on_open", nullptr}, {"on_key", "up"},   {"on_key", "down"},
-                          {"on_key", "ok"},     {"on_key", "back"}, {"on_tick", nullptr},
-                          {"on_draw", nullptr}};
+    struct Call {
+      const char* fn;
+      const char* arg;
+    };
+    const Call calls[] = {{"on_open", nullptr}, {"on_key", "up"},     {"on_key", "down"},  {"on_key", "ok"},
+                          {"on_key", "back"},   {"on_tick", nullptr}, {"on_draw", nullptr}};
     for (const Call& c : calls) {
       if (lua_getglobal(L, c.fn) != LUA_TFUNCTION) {
         lua_pop(L, 1);
         continue;
       }
       int argc = 0;
-      if (c.arg) { lua_pushstring(L, c.arg); argc = 1; }
+      if (c.arg) {
+        lua_pushstring(L, c.arg);
+        argc = 1;
+      }
       luasandbox::armStepLimit(L, 400000);
       const int rc = lua_pcall(L, argc, 1, 0);
       luasandbox::clearStepLimit(L);
@@ -173,7 +201,10 @@ std::string playApp(const char* path, const char* const* teclas, const int cuant
       return;
     }
     int argc = 0;
-    if (arg) { lua_pushstring(L, arg); argc = 1; }
+    if (arg) {
+      lua_pushstring(L, arg);
+      argc = 1;
+    }
     luasandbox::armStepLimit(L, 400000);
     const int rc = lua_pcall(L, argc, 1, 0);
     luasandbox::clearStepLimit(L);
@@ -182,8 +213,7 @@ std::string playApp(const char* path, const char* const* teclas, const int cuant
     }
     lua_pop(L, 1);
   };
-  if (luaL_loadbuffer(L, source.data(), source.size(), path) != LUA_OK ||
-      lua_pcall(L, 0, 0, 0) != LUA_OK) {
+  if (luaL_loadbuffer(L, source.data(), source.size(), path) != LUA_OK || lua_pcall(L, 0, 0, 0) != LUA_OK) {
     err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "no carga";
   } else {
     llamar("on_open", nullptr);
@@ -235,6 +265,19 @@ int main() {
   // Recursión sin fondo: tiene que dar error de Lua, no desbordar el stack de C.
   check(failed("local function f() return f() + 1 end; f()"), "una recursión sin fondo da error de Lua");
 
+  // `pcall` se come el error de la guardia — está en la base y tiene que estar.
+  // Hasta 1.5.90 eso alcanzaba para que la app NO terminara nunca, y como
+  // `runBounded` espera al worker sin tope, el que quedaba colgado era el loop
+  // de Arduino: ni recordatorios, ni reposo, ni forma de salir sin cortar la
+  // corriente. Ahora pasarse del tope condena al intérprete (el asignador deja
+  // de dar memoria), así que la llamada termina igual.
+  const std::string swallowed = run("while true do pcall(function() while true do end end) end", 50000);
+  check(!swallowed.empty(), "un bucle que se come el error con pcall termina igual");
+  // Y con los pcall anidados, que es la vuelta de tuerca obvia.
+  const std::string nested =
+      run("pcall(function() while true do pcall(function() while true do end end) end end); error('vivo')", 50000);
+  check(!nested.empty(), "ni con pcall anidados la app sigue para siempre");
+
   printf("\n-- el tope de memoria --\n");
   const std::string fat = run("local t = {}; for i = 1, 1e7 do t[i] = i end", 0, 128 * 1024);
   check(!fat.empty(), "una tabla que crece sin parar se topa contra el techo");
@@ -242,9 +285,8 @@ int main() {
   check(luasandbox::memUsed() == 0, "al cerrar no queda nada pedido");
 
   printf("\n-- las apps de ejemplo y las de fábrica --\n");
-  const char* APPS[] = {"examples/Apps/contador.lua", "examples/Apps/dados.lua",
-                        "examples/Apps/reloj.lua", "examples/Apps/ahorcado.lua",
-                        "examples/Apps/tresenraya.lua"};
+  const char* APPS[] = {"examples/Apps/contador.lua", "examples/Apps/dados.lua", "examples/Apps/reloj.lua",
+                        "examples/Apps/ahorcado.lua", "examples/Apps/tresenraya.lua"};
   for (const char* file : APPS) {
     const std::string err = runApp(file);
     check(err.empty(), (std::string(file) + (err.empty() ? "" : ": " + err)).c_str());

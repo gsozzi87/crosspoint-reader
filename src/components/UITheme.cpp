@@ -23,10 +23,20 @@ UITheme::UITheme() { setTheme(wantedTheme()); }
 
 // El resto de las placas sigue con el selector de siempre sobre `uiTheme`.
 CrossPointSettings::UI_THEME UITheme::wantedTheme() {
-  // La WS397 usa Lyra en toda la interfaz. Se fuerza acá para que una tarjeta
-  // que conserve otro valor de una versión anterior no mezcle métricas,
-  // tipografías ni componentes entre pantallas.
-  if (BoardConfig::isWS397()) return CrossPointSettings::UI_THEME::LYRA;
+  // La ws397 tiene UN tema y no se elige: DIARIO. Es una decisión del dueño del
+  // producto, textual: "vamos a dejar UN solo tema, no vamos a elegir más entre
+  // uno y otro, vamos a dejar DIARIO".
+  //
+  // Va fijo acá y no en el valor guardado a propósito, para que el aparato que
+  // venía con otro tema puesto en la tarjeta también pase a Diario sin migrar
+  // nada. La fila STR_UI_THEME está escondida en esta placa, así que este es el
+  // único lugar que lo decide.
+  //
+  // OJO: en 1.5.89 esto se cambió a LYRA. No lo pidió nadie, dejó a Diario sin
+  // puerta —serif afuera, esquinas redondeadas adentro— y de paso reescribió
+  // los comentarios como si siempre hubiera sido Lyra. Si alguien lo vuelve a
+  // tocar, que sea porque el dueño cambió de opinión y lo dijo.
+  if (BoardConfig::isWS397()) return CrossPointSettings::UI_THEME::DIARIO;
   return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
 }
 

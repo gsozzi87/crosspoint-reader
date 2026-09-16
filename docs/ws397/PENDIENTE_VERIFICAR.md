@@ -62,12 +62,16 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
 - [ ] Se llena **pareja** de vacía a llena entre 1,2 s y 3 s, sin los dos escalones de antes.
 - [ ] Soltar a mitad de camino suspende.
 
-### 5. Tema único (1.5.89)
+### 5. Tema único: Diario (1.5.91)
 
-- [ ] `Ajustes → Pantalla` no muestra un selector de interfaz en WS397.
-- [ ] Hub, listas, agenda, ajustes, noticias y lector usan Lyra sin mezclar tipografías.
-- [ ] En el log, `[UI] Using Lyra theme`.
-- [ ] Que el cambio se note en el **hub y la agenda**, no sólo en el lector.
+- [ ] `Ajustes → Pantalla` no muestra un selector de interfaz en la ws397.
+- [ ] En el log, `[UI] Using Diario theme`. (En 1.5.89 y 1.5.90 decía Lyra: se había cambiado sin pedirlo.)
+- [ ] Hub, listas, agenda, ajustes, noticias y lector: **serif** en los títulos y la sans chica en los datos,
+      sin mezclar tipografías entre pantallas.
+- [ ] Filete de 3 px al pie del cabezal, esquinas vivas y **ninguna pastilla negra maciza**.
+- [ ] Lo que cambió de padre en 1.5.87 y hay que mirar con atención, porque ya no sale de Lyra: el **ícono de
+      batería**, el **sub-encabezado**, las **ayudas laterales**, el **menú de botones** y la portada del widget
+      **Continuar leyendo**.
 
 ---
 

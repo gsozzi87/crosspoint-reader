@@ -92,6 +92,9 @@ const indexes = new Map<Lang, Index>();
 function expectedTags(): Map<string, string> {
   const out = new Map<string, string>();
   for (const name of ["reloj", "ahorcado", "tresenraya"]) out.set(`apps/${name}`, `factory/${name}/1`);
+  // Sin tarjetas en el paquete no se anuncia ninguna: si se dejaran acá, el
+  // índice las volvería a dar por buenas apenas se regenerara.
+  if (!CARDS_IN_PACK) return out;
   out.set("cards/index", `index/${CARDS.length}`);
   for (const c of CARDS) {
     out.set(`cards/${c.id}`, c.icon);
@@ -99,6 +102,17 @@ function expectedTags(): Map<string, string> {
     out.set(`sounds/en/${c.id}`, c.en);
   }
   return out;
+}
+
+// Todo lo que pertenece a las tarjetas, por ID y no por `kind`. Los DOS audios
+// de cada tarjeta viven bajo `sounds/<lang>/<id>` con kind "sounds", así que
+// filtrar por `kind !== "cards"` —como hacía la poda de 1.5.86— sacaba los 240
+// BMP y dejaba los 480 audios anunciados para siempre. La mitad de un arreglo
+// es peor que ninguno: parecía hecho.
+function isCardEntry(id: string): boolean {
+  if (id === "cards/index" || id.startsWith("cards/")) return true;
+  const sound = /^sounds\/[^/]+\/(.+)$/.exec(id);
+  return sound !== null && CARDS.some((c) => c.id === sound[1]);
 }
 
 async function loadIndex(lang: Lang): Promise<Index> {
@@ -116,7 +130,7 @@ async function loadIndex(lang: Lang): Promise<Index> {
   // versión.
   if (!CARDS_IN_PACK) {
     const antes = Object.keys(idx.entries).length;
-    idx.entries = Object.fromEntries(Object.entries(idx.entries).filter(([, e]) => e.kind !== "cards"));
+    idx.entries = Object.fromEntries(Object.entries(idx.entries).filter(([id]) => !isCardEntry(id)));
     const sacadas = antes - Object.keys(idx.entries).length;
     if (sacadas > 0) console.log(`assets: ${sacadas} entradas de tarjetas podadas del índice (${lang})`);
   }

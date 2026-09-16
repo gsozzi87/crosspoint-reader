@@ -54,7 +54,12 @@ struct SettingInfo {
   const char* key = nullptr;             // JSON API key (nullptr for ACTION types)
   StrId category = StrId::STR_NONE_OPT;  // Category for web UI grouping
   bool obfuscated = false;               // Save/load via base64 obfuscation (passwords)
-  bool inTextSettings = false;           // Surfaced in the Text Settings screen; hidden from the flat Reader list
+  // El valor NO sale nunca por `GET /api/settings`: se puede escribir, no leer.
+  // `obfuscated` es otra cosa (cómo se guarda en la tarjeta) y no alcanza: el
+  // servidor web del aparato vive sobre un punto de acceso ABIERTO mientras se
+  // carga la clave del WiFi desde el teléfono, y ese endpoint no pide credencial.
+  bool secret = false;
+  bool inTextSettings = false;  // Surfaced in the Text Settings screen; hidden from the flat Reader list
   // Se dibuja como interruptor aunque no sea SettingType::TOGGLE: un ENUM de
   // dos valores que en realidad es un si/no (los gestos del IMU). Los TOGGLE
   // de verdad no necesitan la marca.
@@ -72,6 +77,11 @@ struct SettingInfo {
 
   SettingInfo& withObfuscated() {
     obfuscated = true;
+    return *this;
+  }
+
+  SettingInfo& withSecret() {
+    secret = true;
     return *this;
   }
 

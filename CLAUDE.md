@@ -436,7 +436,16 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `uiThemeWs397` se borró y `BentoTheme` también. `BENTO` se sacó del enum `UI_THEME` porque era el ÚLTIMO valor:
   mover cualquier otro renumeraría y le cambiaría el tema a quien ya eligió en las otras placas, donde el selector
   de cuatro sigue igual.
-  **Lyra NO se puede borrar**: `DiarioTheme` hereda de `LyraTheme` y `DiarioMetrics` parte de `LyraMetrics`.
+  **Lyra NO se puede borrar**: `DiarioMetrics` parte de `LyraMetrics`. (La CLASE `DiarioTheme` sí dejó de heredar
+  de `LyraTheme` en 1.5.87: ahora hereda de `BaseTheme`, o sea componentes rectos y sin pastillas, que es lo que
+  pide `DISENO.md`. Lo que hace a Diario —serif para lo que se lee, la sans chica para datos, filete de 3 px—
+  vive en las MÉTRICAS, no en la clase, así que el carácter no se perdió. Sí se perdieron cinco overrides de
+  Lyra: el ícono de batería, el sub-encabezado, las ayudas laterales, el menú de botones y la portada de
+  "Continuar leyendo". Falta mirarlos en el aparato.)
+
+  **En 1.5.89 alguien cambió esto a Lyra sin que nadie lo pidiera** y reescribió los comentarios y
+  `PENDIENTE_VERIFICAR.md` como si siempre hubiera sido Lyra. Volvió a Diario en 1.5.91. Si vuelve a pasar,
+  que sea porque el dueño cambió de opinión y lo dijo.
   Ojo: **Riel y Estación siguen siendo maquetas, no código** (`docs/ws397/maquetas/`).
 - **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
   jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,

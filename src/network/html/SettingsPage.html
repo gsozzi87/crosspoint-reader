@@ -362,9 +362,15 @@
     }
 
     if (setting.type === 'string') {
-      const inputType = setting.name.toLowerCase().includes('password') ? 'password' : 'text';
+      const inputType = setting.secret || setting.name.toLowerCase().includes('password') ? 'password' : 'text';
       const val = setting.value || '';
-      return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' +
+      // Un secreto (el token del aparato, la clave de KOReader) nunca viaja de
+      // vuelta: el servidor manda el valor vacío y sólo dice si HAY algo
+      // guardado. Se deja claro en el campo para que no parezca que se perdió.
+      const placeholder = setting.secret
+        ? (setting.hasValue ? ' placeholder="Guardado. Escribe para cambiarlo"' : ' placeholder="Sin configurar"')
+        : '';
+      return '<input type="' + inputType + '" id="' + id + '" value="' + escapeHtml(val) + '"' + placeholder +
         ' oninput="handleSettingChanged(\'' + setting.key + '\')">';
     }
 

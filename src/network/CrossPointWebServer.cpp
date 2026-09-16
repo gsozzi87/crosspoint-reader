@@ -18,6 +18,7 @@
 #include "FontInstaller.h"
 #include "Memory.h"
 #include "OpdsServerStore.h"
+#include "ProtectedPaths.h"
 #include "SdCardFontSystem.h"
 #include "SettingsList.h"
 #include "WebDAVHandler.h"
@@ -31,9 +32,12 @@
 #include "util/TaskWatchdog.h"
 
 namespace {
-// Folders/files to hide from the web interface file browser
-// Note: Items starting with "." are automatically hidden
-constexpr const char* HIDDEN_ITEMS[] = {"System Volume Information", "XTCache"};
+// Qué se esconde y qué no se deja tocar por la red vive en ProtectedPaths.h,
+// compartido con WebDAVHandler: la regla estaba escrita dos veces y las dos
+// copias se fueron separando (1.5.85 arregló una y dejó la otra).
+using protectedpaths::isProtectedName;
+using protectedpaths::isProtectedPath;
+
 constexpr uint16_t UDP_PORTS[] = {54982, 48123, 39001, 44044, 59678};
 constexpr uint16_t LOCAL_UDP_PORT = 8134;
 
@@ -70,46 +74,6 @@ String normalizeWebPath(const String& inputPath) {
     result = result.substring(0, result.length() - 1);
   }
   return result;
-}
-
-bool isProtectedItemName(const String& name) {
-  if (name.startsWith(".")) {
-    return true;
-  }
-  for (const auto* item : HIDDEN_ITEMS) {
-    if (name.equals(item)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-// Lo mismo pero sobre la RUTA ENTERA, segmento por segmento.
-//
-// Mirar sólo el último nombre era un agujero de verdad, no un detalle:
-// `/download?path=/.crosspoint/server.json` daba `server.json`, que no empieza
-// con punto y no está en HIDDEN_ITEMS, así que el servidor entregaba el TOKEN
-// del aparato en claro. Al lado hay `wifi.json` (claves ofuscadas, reversibles
-// con el código de este repo) y `device.log`, que lleva los nombres de las redes
-// y todo lo que se dictó por voz.
-// Y no es una red de confianza: en la ws397 este mismo servidor se levanta sobre
-// un punto de acceso ABIERTO cuando se carga la clave del WiFi desde el teléfono
-// (`WifiSelectionActivity`, `softAP(..., nullptr, ...)`), así que alcanzaba con
-// estar cerca. `WebDAVHandler::isProtectedPath` ya recorría todos los segmentos;
-// esto es la misma regla para el servidor web.
-bool isProtectedItemPath(const String& path) {
-  int start = 0;
-  while (start < static_cast<int>(path.length())) {
-    if (path.charAt(start) == '/') {
-      ++start;
-      continue;
-    }
-    int end = path.indexOf('/', start);
-    if (end == -1) end = path.length();
-    if (isProtectedItemName(path.substring(start, end))) return true;
-    start = end + 1;
-  }
-  return false;
 }
 }  // namespace
 
@@ -490,18 +454,11 @@ void CrossPointWebServer::scanFiles(const char* path, const std::function<void(F
     file.getName(name, sizeof(name));
     auto fileName = String(name);
 
-    // Skip hidden items (starting with ".")
-    bool shouldHide = !SETTINGS.showHiddenFiles && fileName.startsWith(".");
-
-    // Check against explicitly hidden items list
-    if (!shouldHide) {
-      for (const auto* item : HIDDEN_ITEMS) {
-        if (fileName.equals(item)) {
-          shouldHide = true;
-          break;
-        }
-      }
-    }
+    // Los que empiezan con punto se muestran sólo si el usuario lo pidió; los
+    // de la lista explícita (y los alias 8.3) no se muestran nunca.
+    const bool hiddenByDot = fileName.startsWith(".");
+    const bool shouldHide =
+        (hiddenByDot && !SETTINGS.showHiddenFiles) || (!hiddenByDot && protectedpaths::isProtectedName(fileName));
 
     if (!shouldHide) {
       FileInfo info;
@@ -551,7 +508,7 @@ void CrossPointWebServer::handleFileListData() const {
   // El listado filtra los hijos ocultos, pero no miraba la carpeta PEDIDA: un
   // `/api/files?path=/.crosspoint` listaba adentro igual. Se contesta 403 y no
   // una lista vacía, para que la página pueda decir algo en vez de mentir.
-  if (isProtectedItemPath(currentPath)) {
+  if (isProtectedPath(currentPath)) {
     server->send(403, "application/json", "[]");
     return;
   }
@@ -606,7 +563,7 @@ void CrossPointWebServer::handleDownload() const {
     itemPath = "/" + itemPath;
   }
 
-  if (isProtectedItemPath(itemPath)) {
+  if (isProtectedPath(itemPath)) {
     server->send(403, "text/plain", "Cannot access system files");
     return;
   }
@@ -741,6 +698,17 @@ void CrossPointWebServer::handleUpload(UploadState& state) const {
     String filePath = state.path;
     if (!filePath.endsWith("/")) filePath += "/";
     filePath += state.fileName;
+
+    // En 1.5.85 se tapó la LECTURA y quedó abierta la ESCRITURA. Escribir en
+    // /.crosspoint es peor que leer: dejando ahí un `server-queue.json` armado a
+    // mano, el aparato manda esos POST FIRMADOS CON SU BEARER en la próxima
+    // sincronización. Y el nombre del archivo lo elige quien sube, así que hay
+    // que mirar la ruta COMPLETA, destino incluido.
+    if (isProtectedPath(filePath)) {
+      state.error = "Forbidden path";
+      LOG_ERR("WEB", "[UPLOAD] RECHAZADO (ruta protegida): %s", filePath.c_str());
+      return;
+    }
 
     // Check if file already exists - SD operations can be slow
     resetTaskWatchdogIfSubscribed();
@@ -878,6 +846,15 @@ void CrossPointWebServer::handleCreateFolder() const {
   if (!folderPath.endsWith("/")) folderPath += "/";
   folderPath += folderName;
 
+  // Misma regla que /upload: sin esto se puede fabricar /.crosspoint en un
+  // aparato nuevo (donde todavía no existe) y dejarlo listo para plantarle
+  // archivos adentro.
+  if (isProtectedPath(folderPath)) {
+    LOG_ERR("WEB", "mkdir RECHAZADO (ruta protegida): %s", folderPath.c_str());
+    server->send(403, "text/plain", "Forbidden path");
+    return;
+  }
+
   LOG_DBG("WEB", "Creating folder: %s", folderPath.c_str());
 
   // Check if already exists
@@ -918,12 +895,12 @@ void CrossPointWebServer::handleRename() const {
     server->send(400, "text/plain", "Invalid file name");
     return;
   }
-  if (isProtectedItemName(newName)) {
+  if (isProtectedName(newName)) {
     server->send(403, "text/plain", "Cannot rename to protected name");
     return;
   }
 
-  if (isProtectedItemPath(itemPath)) {
+  if (isProtectedPath(itemPath)) {
     server->send(403, "text/plain", "Cannot rename protected item");
     return;
   }
@@ -996,12 +973,12 @@ void CrossPointWebServer::handleMove() const {
     return;
   }
 
-  if (isProtectedItemPath(itemPath)) {
+  if (isProtectedPath(itemPath)) {
     server->send(403, "text/plain", "Cannot move protected item");
     return;
   }
   const String itemName = itemPath.substring(itemPath.lastIndexOf('/') + 1);
-  if (destPath != "/" && isProtectedItemPath(destPath)) {
+  if (destPath != "/" && isProtectedPath(destPath)) {
     server->send(403, "text/plain", "Cannot move into protected folder");
     return;
   }
@@ -1126,7 +1103,7 @@ void CrossPointWebServer::handleDelete() const {
 
     // Security check: prevent deletion of protected items. Por ruta entera: con
     // el último nombre solo, `/.crosspoint/server.json` pasaba el filtro.
-    if (isProtectedItemPath(itemPath)) {
+    if (isProtectedPath(itemPath)) {
       failedItems += itemPath + " (hidden/system file); ";
       allSuccess = false;
       continue;
@@ -1241,7 +1218,23 @@ void CrossPointWebServer::handleGetSettings() const {
       }
       case SettingType::STRING: {
         doc["type"] = "string";
-        if (s.stringGetter) {
+        // Un secreto se ESCRIBE pero no se LEE. El token del aparato y la clave
+        // de KOReader salían en claro por acá, y este endpoint no pide
+        // credencial: sobre el punto de acceso ABIERTO de "clave por el
+        // teléfono" alcanzaba un `curl http://192.168.4.1/api/settings` desde la
+        // vereda. Es la misma regla que ya cumple el servidor de Railway con las
+        // claves de IA: se devuelve si HAY, nunca cuál es.
+        if (s.secret) {
+          std::string stored;
+          if (s.stringGetter) {
+            stored = s.stringGetter();
+          } else if (s.stringMaxLen > 0) {
+            stored = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
+          }
+          doc["secret"] = true;
+          doc["hasValue"] = !stored.empty();
+          doc["value"] = "";
+        } else if (s.stringGetter) {
           doc["value"] = s.stringGetter();
         } else if (s.stringMaxLen > 0) {
           doc["value"] = reinterpret_cast<const char*>(&SETTINGS) + s.stringOffset;
@@ -1686,6 +1679,14 @@ void CrossPointWebServer::onWebSocketEvent(uint8_t num, WStype_t type, uint8_t* 
           String filePath = wsUploadPath;
           if (!filePath.endsWith("/")) filePath += "/";
           filePath += wsUploadFileName;
+
+          // El subidor por WebSocket es la tercera puerta de escritura, además
+          // de /upload y /mkdir, y tampoco miraba la ruta.
+          if (isProtectedPath(filePath)) {
+            LOG_ERR("WS", "Upload RECHAZADO (ruta protegida): %s", filePath.c_str());
+            wsServer->sendTXT(num, "ERROR:Forbidden path");
+            return;
+          }
 
           resetTaskWatchdogIfSubscribed();
           if (Storage.exists(filePath.c_str())) {
