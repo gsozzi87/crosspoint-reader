@@ -79,9 +79,12 @@ void VoiceActivity::onExit() {
     WiFi.disconnect(false);
     delay(30);
     if (timerSeconds > 0) return;  // TimerActivity takes over; a restart would kill it
-    if (returnToCaller) {
+    if (returnToCaller || !requestMade) {
       // La pantalla de abajo sigue viva: se apaga la radio y se vuelve ahí.
       // El reinicio silencioso es para el lector, que necesita el heap entero.
+      // Y sin un POST de por medio (Atrás durante la toma, toma demasiado
+      // corta) no hubo TLS: no hay heap que recuperar y el reinicio sería
+      // pagar dos segundos y una pantalla por nada.
       WiFi.mode(WIFI_OFF);
       return;
     }
@@ -113,6 +116,16 @@ void VoiceActivity::fail(StrId why, std::string detail) {
 
 void VoiceActivity::startRecording() {
   speech.stop();  // el parlante y el micrófono comparten el I2S: si sigue hablando, la captura falla
+  // La radio se levanta ANTES de abrir el micrófono y se conecta MIENTRAS se
+  // habla (pumpConnect desde el loop de RECORDING). Hasta 1.5.102 se conectaba
+  // recién al terminar la toma: 4-5 s de cartel de WiFi en CADA pregunta,
+  // sumados a la grabación y al servidor. Si ya está conectado (segunda vuelta,
+  // la hora del recordatorio) no hace nada; si no hay red guardada, la pantalla
+  // de selección espera a que termine la toma, como siempre.
+  if (wifi.phase() == FriendlyWifi::Phase::Idle) {
+    wifiActivated = true;
+    wifi.begin();
+  }
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder.start(why)) {
     // El motivo exacto va EN PANTALLA, no sólo al log: el log viaja al
@@ -124,11 +137,13 @@ void VoiceActivity::startRecording() {
     return;
   }
   state = RECORDING;
+  tRecordStart = millis();
   requestUpdate();
 }
 
 void VoiceActivity::stopRecording() {
   recorder.stop();
+  tRecordEnd = millis();
   if (recorder.tooShort()) {
     leave();  // accidental press
     return;
@@ -141,7 +156,7 @@ void VoiceActivity::stopRecording() {
 // la pantalla de seleccion aparece solo si ninguna anda.
 void VoiceActivity::beginConnect() {
   wifiPicker = false;
-  wifi.begin();
+  if (wifi.phase() == FriendlyWifi::Phase::Idle) wifi.begin();  // normalmente ya arrancó con la toma
   state = CONNECTING;
   if (wifi.isDone()) {  // ya conectado o sin redes guardadas: sin cartel de mas
     pumpConnect();
@@ -175,6 +190,7 @@ void VoiceActivity::onWifiSelectionComplete(const bool connected) {
     fail(StrId::STR_SERVER_WIFI_FAILED);
     return;
   }
+  tWifiUp = millis();
   state = SENDING;  // the request runs from loop() so the screen paints first
   requestPending = true;
   requestUpdate();
@@ -200,7 +216,16 @@ void VoiceActivity::performRequest() {
   if (!pendingTitle.empty()) path += "&pending=" + urlEncode(pendingTitle);
   if (!pendingDate.empty()) path += "&pendingDate=" + urlEncode(pendingDate);
   ServerClient::Response resp;
+  requestMade = true;
+  const unsigned long tReq = millis();
   const ServerClient::Result r = SERVER_CLIENT.postBytes(path, "audio/adpcm", body, bytes, resp, VOICE_TIMEOUT_MS);
+  const unsigned long reqMs = millis() - tReq;
+  // La línea de tiempos del aparato, para no tener que deducir de los sellos:
+  // cuánto se habló, cuánto se esperó al WiFi después de hablar y cuánto tardó
+  // la ida y vuelta (con reintentos adentro; ServerClient ya loguea cada uno).
+  LOG_INF(TAG, "tiempos: toma %lu ms, WiFi +%lu ms tras la toma, ida y vuelta %lu ms%s",
+          tRecordEnd - tRecordStart, tWifiUp > tRecordEnd ? tWifiUp - tRecordEnd : 0UL, reqMs,
+          reqMs > 15000 ? " — LENTO" : "");
   recorder.release();
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
@@ -376,7 +401,18 @@ void VoiceActivity::loop() {
         stopRecording();
         break;
       }
-      if (!recorder.pump()) fail(StrId::STR_AUDIO_CAPTURE_FAILED);
+      if (!recorder.pump()) {
+        fail(StrId::STR_AUDIO_CAPTURE_FAILED);
+        break;
+      }
+      // El WiFi se conecta mientras se habla. Cada 100 ms alcanza: el loop
+      // gira sin pausa en RECORDING y WiFi.status() en cada vuelta es de más.
+      // Sólo se le da cuerda al intento; el selector de red (NeedsPicker)
+      // espera a que termine la toma, en pumpConnect().
+      if (!wifi.isDone() && wifi.phase() != FriendlyWifi::Phase::Idle && millis() - lastWifiPumpMs >= 100) {
+        lastWifiPumpMs = millis();
+        wifi.pump();
+      }
       break;
     case SENDING:
       // Atrás cancela la espera: si el servidor tarda, el usuario no queda preso.

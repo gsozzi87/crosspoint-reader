@@ -12,6 +12,7 @@
 #include "ServerCredentialStore.h"
 
 #if defined(FREEINK_NET_WOLFSSL)
+#include <SecureClient.h>
 #include <SecureHttpClient.h>
 #endif
 
@@ -65,6 +66,18 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   out.status = 0;
   out.body.clear();
 #if defined(FREEINK_NET_WOLFSSL)
+  // Keepalive de TCP en cada conexión al servidor (parche 0025 del SDK): un
+  // router que deja de entregar la bajada dejaba la petición esperando el
+  // tope entero (40-90 s) sobre una conexión que el servidor ya había
+  // contestado. Con esto la conexión muda se cae a los 5 + 3·3 = 14 s y el
+  // reintento de abajo sale por una conexión nueva, que en los logs siempre
+  // anduvo en 3-4 s. Un servidor lento pero vivo contesta las sondas y no lo
+  // dispara. Es un ajuste global del SDK: se pone una vez.
+  static bool keepAliveSet = false;
+  if (!keepAliveSet) {
+    freeink::SecureClient::setKeepAlive(5, 3, 3);
+    keepAliveSet = true;
+  }
   freeink::SecureHttpClient http;
   http.setTimeout(timeoutMs ? timeoutMs : TIMEOUT_MS);
   // Same trust model as HttpDownloader's wolfSSL path.
