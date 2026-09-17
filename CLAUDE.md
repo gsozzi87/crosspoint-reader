@@ -1315,6 +1315,73 @@ Lo que NO arreglaba actualizar, y por eso va acá:
 **El diagnóstico de la hora, entonces, se lee en una línea del arranque.** Si dice `el RTC se quedó sin
 alimentación (oscilador parado)`, la pila está seca o no hace contacto y no hay software que lo arregle.
 
+## El aparato pintaba dos veces: un bug tapaba al otro (1.5.95)
+
+El usuario reportó que desde 1.5.93 la pantalla "se pinta dos veces" y quedan manchas que antes no
+estaban: dos marcos de selección a la vez, renglones de la pestaña Lector encima de los de Sistema,
+el "Editar" sobre el "Selecc.", **todo en negro nítido y no en gris**. Lo que lo resolvió no fue
+leer código: fue **un número**.
+
+    1.5.90 / 1.5.91          1.5.94
+    FAST   582 ms      →      95 ms
+    HALF  1793 ms      →     114 ms
+    FULL  2191 ms      →     118 ms
+
+El FULL dieciocho veces más rápido, y los tres modos midiendo casi lo mismo. Eso no es una mejora:
+es **la onda que no se espera**, y lo que se mide es sólo la escritura del framebuffer. Confirmado
+en el aparato en Ajustes → Sistema → Memoria → Panel, y confirmado a mano por el usuario: **tocando
+un botón y esperando dos segundos la pantalla queda limpia**. O sea que el panel corre su onda
+perfecta —la LUT, la temperatura, los rieles, los dos bancos de RAM, todo bien— y lo único roto es
+que nadie la espera. Esa prueba de un minuto descartó cuatro hipótesis de golpe.
+
+**La cadena, y es de manual de por qué un arreglo destapa otro defecto:**
+
+1. `EpdBus::waitRefreshComplete()` toma el camino **por interrupción**, porque este firmware no
+   instala el *slice hook* (no hay un solo llamador de `setBusyWaitSliceHook`). Ese camino arma un
+   `attachInterrupt(CHANGE)` sobre BUSY y duerme la tarea **20 ms** esperando el flanco con el que
+   el panel avisa que arrancó; sin flanco, `detachInterrupt` y `return` **sin esperar nada**.
+2. El propio SDK avisa del peligro en el comentario de esa misma función: *"edge interrupts do not
+   fire during light sleep, so a completion edge taken while the host is slept would be missed"*.
+3. Hasta 1.5.92 eso no se veía **porque el aparato no reposaba nunca**: el usuario tenía un
+   recordatorio vencido sin atender, `msUntilNextAlarm()` devuelve 1 ms con algo vencido, y con ese
+   tope `IdleSleep::tick()` no entra (`MIN_REST_MS` son 500).
+4. En 1.5.93 se arregló eso —`if (cap > 0 && cap < MIN_REST_MS && !alarmWouldRingHere()) cap = 0;`—
+   y el aparato empezó a reposar de verdad. **Incluido en el medio de un refresco.**
+5. Flanco perdido → vencen los 20 ms → la espera vuelve en el acto → el cuadro siguiente se escribe
+   sobre una onda que el panel sigue dibujando.
+
+**Un bug tapaba al otro, y el que quedó a la vista era el viejo.** El arreglo de 1.5.93 era correcto;
+lo que faltaba es que **nada en todo el árbol le decía al reposo que había un refresco en curso**
+(`grep -rn "isRendering\|renderBusy\|renderInFlight"` no devolvía una línea).
+
+Dos candados, y hacen falta los dos:
+
+- **`gfxPanelRefreshInFlight()`** (`lib/GfxRenderer`): un contador atómico que se levanta alrededor
+  de cada llamada al panel —los tres caminos síncronos, el disparo asíncrono y el
+  `waitRefreshComplete()` del lector— y que `main.cpp` consulta en la cadena de motivos del reposo.
+  Ataca la causa: sin light sleep en el medio, el flanco llega y la espera funciona de verdad.
+- **El PISO por modo**: si la espera vuelve antes de lo que la onda puede durar, se espera la
+  diferencia. Los valores salen de lo MEDIDO en este panel en 1.5.80 (FAST 582, HALF 1793, FULL
+  2191), recortados a 550 / 1700 / 2100 para no alargar jamás una espera sana: con BUSY andando,
+  la espera real ya los supera y esto no hace absolutamente nada. Y cuando el piso SÍ entra, lo
+  dice en el log (`la espera del panel volvió en N ms … se perdió el flanco de BUSY, van N`), que
+  es la única forma de medir sin cable cuán seguido se pierde.
+
+Ninguno de los dos toca una LUT, una secuencia 0x22 ni el registro de temperatura: la regla de no
+tocar una onda sin hardware delante sigue intacta, y acá además habría sido el arreglo equivocado.
+
+**Lo que queda anotado**: el camino bueno es instalar el *slice hook* que el SDK ofrece justo para
+este anfitrión (deja light-sleepear DURANTE el refresco con despertar por GPIO, y de paso enruta
+`waitRefreshComplete()` al camino polleado, que sí tiene ventana de gracia). Eso es más cirugía y
+va con el aparato delante; el candado de arriba cuesta como mucho dos segundos de reposo por
+refresco y no puede salir mal.
+
+**Y la moraleja de fechar logs**: en esta misma investigación fechamos mal el firmware DOS veces
+leyendo el log, porque hasta 1.5.92 el aparato remandaba sus 24 KB enteros en cada sincronización y
+el servidor los apendaba: el blob tenía bloques de 1.5.85, 1.5.90 y 1.5.91 mezclados mientras el
+aparato ya corría 1.5.94. Antes de deducir de un log, mirar el encabezado de arranque de CADA
+bloque — y si hay dudas, vaciarlo desde `/board/log` y sincronizar una vez.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

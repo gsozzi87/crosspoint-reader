@@ -10,6 +10,7 @@
 #include <Utf8.h>
 
 #include <algorithm>
+#include <atomic>
 
 #include "FontCacheManager.h"
 
@@ -1708,6 +1709,80 @@ HalDisplay::RefreshMode GfxRenderer::applyPromotedRefresh(const HalDisplay::Refr
   return promotedRefresh_;
 }
 
+// ── El panel, el reposo y la onda que nadie esperaba ────────────────────────
+//
+// `EpdBus::waitRefreshComplete()` no instala el "slice hook" en este firmware
+// (nadie llama a setBusyWaitSliceHook), así que toma el camino POR INTERRUPCIÓN:
+// arma un attachInterrupt(CHANGE) sobre BUSY y duerme la tarea hasta 20 ms
+// esperando el flanco con el que el panel avisa que arrancó. Y el propio SDK
+// avisa, en el comentario de esa misma función, que ese camino es peligroso en
+// un anfitrión que entra en light sleep: "edge interrupts do not fire during
+// light sleep, so a completion edge taken while the host is slept would be
+// missed". Perdido el flanco, vencen los 20 ms y la espera vuelve SIN ESPERAR
+// NADA — y el cuadro siguiente se le escribe encima a una onda que sigue
+// corriendo. Eso es el aparato pintando dos veces y no borrando lo anterior.
+//
+// Hasta 1.5.92 esto estaba tapado por otro defecto: un recordatorio vencido que
+// la pantalla de turno no iba a atender dejaba el tope del reposo en 1 ms, así
+// que el aparato NO REPOSABA NUNCA y el flanco siempre se veía. Al arreglar
+// aquello en 1.5.93, esto quedó a la vista. Un bug tapaba al otro.
+//
+// Dos candados, y hacen falta los dos:
+//
+//  1. `panelRefreshInFlight()` — el reposo lo consulta y no entra mientras haya
+//     un refresco en curso. Ataca la causa: sin light sleep en el medio, el
+//     flanco llega y la espera de verdad funciona.
+//  2. El PISO de abajo — por si el flanco se pierde por cualquier otro motivo.
+//     Son los tiempos MEDIDOS en este panel en 1.5.80 (FAST 582, HALF 1793,
+//     FULL 2191), recortados para no alargar nunca una espera sana: si BUSY
+//     anda, la espera real ya los supera y esto no hace absolutamente nada.
+//
+// Ninguno de los dos toca una LUT, una secuencia 0x22 ni el registro de
+// temperatura: la regla del proyecto es no tocar una onda sin hardware delante,
+// y acá el panel no tiene nada malo — la onda corre bien, sólo no se esperaba.
+namespace {
+std::atomic<int> g_panelBusy{0};
+
+struct PanelBusyScope {
+  PanelBusyScope() { g_panelBusy.fetch_add(1, std::memory_order_relaxed); }
+  ~PanelBusyScope() { g_panelBusy.fetch_sub(1, std::memory_order_relaxed); }
+};
+
+// Piso por modo, con margen: nunca por encima de lo medido, para que una espera
+// sana no pague ni un milisegundo de más.
+unsigned long panelFloorMs(const HalDisplay::RefreshMode mode) {
+  switch (mode) {
+    case HalDisplay::FULL_REFRESH:
+      return 2100;  // medido 2191
+    case HalDisplay::HALF_REFRESH:
+      return 1700;  // medido 1793
+    default:
+      return 550;  // FAST, medido 582
+  }
+}
+
+// Espera lo que le falte a la onda y deja constancia cuando tuvo que actuar:
+// esa línea es la ÚNICA forma de saber sin cable cuán seguido se pierde el
+// flanco. Se cuenta y se dice de a tandas para no llenar el log de 24 KB.
+void holdForWave(const HalDisplay::RefreshMode mode, const unsigned long panelMs) {
+  const unsigned long floor = panelFloorMs(mode);
+  if (panelMs >= floor) return;
+  static uint32_t veces = 0;
+  static unsigned long ultimoAviso = 0;
+  const unsigned long falta = floor - panelMs;
+  ++veces;
+  const unsigned long ahora = millis();
+  if (veces == 1 || ahora - ultimoAviso > 60000) {
+    ultimoAviso = ahora;
+    LOG_ERR("GFX", "la espera del panel volvió en %lu ms (piso %lu): se perdió el flanco de BUSY, van %lu",
+            panelMs, floor, (unsigned long)veces);
+  }
+  delay(falta);
+}
+}  // namespace
+
+bool gfxPanelRefreshInFlight() { return g_panelBusy.load(std::memory_order_relaxed) > 0; }
+
 HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode,
                                                    const PanelRefreshCoordinator::Hint hint) const {
   auto elapsed = millis() - start_ms;
@@ -1739,9 +1814,15 @@ HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refre
     refresh_.commitSkip(refreshMode, hint);
     return p.mode;
   }
-  const unsigned long tPanel = millis();
-  display.displayBuffer(p.mode, fadingFix);
-  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(millis() - tPanel));
+  unsigned long panelMs = 0;
+  {
+    PanelBusyScope busy;
+    const unsigned long tPanel = millis();
+    display.displayBuffer(p.mode, fadingFix);
+    panelMs = millis() - tPanel;
+    holdForWave(p.mode, panelMs);
+  }
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(panelMs));
   return p.mode;
 }
 
@@ -1757,18 +1838,34 @@ HalDisplay::RefreshMode GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode 
   if (fadingFix) {
     const PanelRefreshCoordinator::Plan p =
         refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/false, /*allowSkip=*/false);
-    const unsigned long tPanel = millis();
-    display.displayBuffer(p.mode, fadingFix);
-    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(millis() - tPanel));
+    unsigned long panelMs = 0;
+    {
+      PanelBusyScope busy;
+      const unsigned long tPanel = millis();
+      display.displayBuffer(p.mode, fadingFix);
+      panelMs = millis() - tPanel;
+      holdForWave(p.mode, panelMs);
+    }
+    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(panelMs));
     return p.mode;
   }
   const PanelRefreshCoordinator::Plan p = refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/true);
+  // El asíncrono no lleva piso —ahí el que espera es `waitRefreshComplete()` del
+  // lector, más tarde— pero el reposo tiene que saber igual que hay una onda
+  // corriendo: si entra en light sleep acá, se come el mismo flanco.
+  PanelBusyScope busy;
   display.displayBufferAsync(p.mode);
   refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/true);
   return p.mode;
 }
 
-void GfxRenderer::waitRefreshComplete() const { display.waitRefreshComplete(); }
+void GfxRenderer::waitRefreshComplete() const {
+  // El camino asíncrono (el del lector) espera la onda ACÁ, más tarde, así que
+  // el candado del reposo tiene que cubrir también esta espera: si el aparato
+  // entra en light sleep mientras el lector espera, se come el mismo flanco.
+  PanelBusyScope busy;
+  display.waitRefreshComplete();
+}
 
 bool GfxRenderer::supportsAsyncRefresh() const { return !fadingFix && display.supportsAsyncRefresh(); }
 
@@ -2281,9 +2378,15 @@ HalDisplay::RefreshMode GfxRenderer::displayGrayscaleBase(const HalDisplay::Refr
   const bool inverted = display.isInverted();
   const PanelRefreshCoordinator::Plan p =
       refresh_.plan(frameBuffer, fallback, hint, inverted, /*async=*/false, /*allowSkip=*/false);
-  const unsigned long tPanel = millis();
-  display.displayGrayscaleBase(p.mode, fadingFix);
-  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(millis() - tPanel));
+  unsigned long panelMs = 0;
+  {
+    PanelBusyScope busy;
+    const unsigned long tPanel = millis();
+    display.displayGrayscaleBase(p.mode, fadingFix);
+    panelMs = millis() - tPanel;
+    holdForWave(p.mode, panelMs);
+  }
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(panelMs));
   return p.mode;
 }
 

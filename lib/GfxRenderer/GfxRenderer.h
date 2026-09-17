@@ -27,6 +27,15 @@ class SdCardFont;
 // 0 = transparent, 1-16 = gray levels (white to black)
 enum Color : uint8_t { Clear = 0x00, White = 0x01, LightGray = 0x05, DarkGray = 0x0A, Black = 0x10 };
 
+// ¿Hay una onda del panel corriendo AHORA MISMO?
+//
+// El reposo tiene que preguntarlo antes de entrar en light sleep: durante el
+// light sleep las interrupciones por flanco NO se disparan, así que dormir con
+// un refresco en curso se come el flanco con el que el panel avisa que arrancó
+// y `waitRefreshComplete()` vuelve sin esperar la onda. El resultado es el
+// cuadro siguiente escrito encima de uno a medio dibujar: eso fue 1.5.93/94.
+bool gfxPanelRefreshInFlight();
+
 class GfxRenderer {
  public:
   enum RenderMode { BW, GRAYSCALE_LSB, GRAYSCALE_MSB };
