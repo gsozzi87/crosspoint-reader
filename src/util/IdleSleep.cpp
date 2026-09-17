@@ -77,8 +77,37 @@ bool IdleSleep::armWakeSources(const unsigned long budgetMs) {
   return true;
 }
 
+// DESARMAR ES OBLIGATORIO EN TODA SALIDA, y no saberlo costó un aparato trabado.
+//
+// `armWakeSources()` arma los botones con `GPIO_INTR_LOW_LEVEL`: una interrupción
+// POR NIVEL, no por flanco. Mientras el pin siga en bajo esa interrupción se
+// vuelve a disparar sola, una y otra vez. Normalmente no importa porque
+// `esp_light_sleep_start()` la consume y al volver se desarma todo.
+//
+// Pero si se arma y NO se duerme, queda una interrupción por nivel sin nadie que
+// la atienda: apretar un botón deja la CPU sin salir del vector de interrupción
+// hasta que salta el WATCHDOG DE INTERRUPCIONES. Y como al reiniciar pasa lo
+// mismo, el aparato entra en un bucle de reinicios del que sólo se sale
+// sacándole la batería. Eso fue exactamente 1.5.97: la guardia del panel
+// (`gfxPanelRefreshInFlight()`) volvía DESPUÉS de armar y desarmaba sólo el
+// timer. Un `return` en el lugar equivocado.
+void IdleSleep::disarmWakeSources() {
+  for (uint32_t pin = 0; pin < 64; ++pin) {
+    if (!(buttonMask_ & (1ULL << pin))) continue;
+    gpio_wakeup_disable(static_cast<gpio_num_t>(pin));
+  }
+  if (rtcIntUsable_ && assigned(rtcIntPin_)) gpio_wakeup_disable(static_cast<gpio_num_t>(rtcIntPin_));
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+}
+
 IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) {
-  if (!available_ || blocked || idleMs < REST_AFTER_MS) {
+  // La guardia del panel va ACÁ ARRIBA, junto a las demás, y no pegada al sueño:
+  // así no hay nada armado que desarmar. `main.cpp` ya la consultó, pero entre
+  // aquella consulta y ésta pasan varios milisegundos —dos lecturas I2C en el
+  // medio— y en ese hueco puede arrancar un refresco. Dormir con una onda en
+  // curso se come el flanco de BUSY.
+  if (!available_ || blocked || gfxPanelRefreshInFlight() || idleMs < REST_AFTER_MS) {
     if (resting_) {
       LOG_DBG(TAG, "fin del reposo tras %lu ms en %u ciclos", restedMs_, (unsigned)cycles_);
       resting_ = false;
@@ -106,6 +135,9 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
   }
 
   if (!armWakeSources(budget)) {
+    // Puede haber alcanzado a armar algunos pines antes de fallar, y armado sin
+    // dormir es la receta del watchdog de interrupciones: se desarma todo.
+    disarmWakeSources();
     available_ = false;
     resting_ = false;
     LOG_ERR(TAG, "no se pudo armar el despertador: reposo apagado");
@@ -118,24 +150,12 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
   // vuelve a encender solo en cuanto el loop corra de nuevo.
   halTiltSensor.deepSleep();
 
-  // ÚLTIMA PREGUNTA, PEGADA AL SUEÑO. `main.cpp` ya consultó
-  // `gfxPanelRefreshInFlight()`, pero entre aquella consulta y esta línea pasan
-  // varios milisegundos —una lectura I2C del RTC y otra del IMU— y en ese hueco
-  // puede arrancar un refresco. Dormir con una onda en curso se come el flanco
-  // de BUSY, que es exactamente el defecto que se está arreglando.
-  if (gfxPanelRefreshInFlight()) {
-    resting_ = false;
-    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-    return Woke::NotSlept;
-  }
-
   const unsigned long before = millis();
   const esp_err_t err = esp_light_sleep_start();
   const unsigned long slept = millis() - before;
   // El timer se desarma siempre: si quedara puesto, el deep sleep que venga
   // después heredaría estos 2 s y el aparato arrancaría en bucle.
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
-  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  disarmWakeSources();
   capMs_ = 0;
 
   if (err != ESP_OK) {

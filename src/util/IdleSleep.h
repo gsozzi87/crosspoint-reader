@@ -91,6 +91,9 @@ class IdleSleep {
 
  private:
   bool armWakeSources(unsigned long budgetMs);
+  // Obligatorio en TODA salida que haya armado: armar sin dormir deja una
+  // interrupción por nivel sin dueño y el aparato se cuelga en el watchdog.
+  void disarmWakeSources();
   void probeRtcInt();
 
   bool available_ = false;
