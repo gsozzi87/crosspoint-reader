@@ -1625,6 +1625,19 @@ el framebuffer conserva lo pintado, el borde y el texto del grande quedaban asom
 cuadro reserva siempre dos renglones y el texto de uno se centra en el hueco: el segundo cuadro tapa
 exactamente al primero.
 
+## Buscar en internet cuando hace falta, no sólo cuando se dice "busca" (servidor, después de 1.5.102)
+
+El dueño: *"encima no buscó en internet la respuesta"*. La búsqueda existía entera (`server/src/llm.ts`:
+con Anthropic la herramienta `web_search` del propio servidor de Anthropic, con Groq la incorporada, con el
+resto la hace el servidor por Google Noticias + DuckDuckGo), pero desde 1.5.41 el clasificador de voz ponía
+`needsWeb` **sólo si el usuario decía "busca"** —regla que él mismo había pedido entonces—, y el `auto` de
+Preguntarle al libro hacía lo mismo. Y la casilla de `/board` decía "Buscar cuando haga falta", que era
+mentira. Ahora `needsWeb` va en true también cuando la respuesta depende de datos actuales (noticias,
+precios, cargos, clima, cualquier hecho del que el modelo no esté seguro), y el `auto` mira además
+`needsFreshInfo()`. "Busca…" sigue forzando. Apagarla del todo sigue en `/board` → Ajustes → IA.
+**La línea `voice ms:` del servidor lleva ahora `intent=` y `web=no|si|sin resultados|FALLO|apagada`**:
+sin eso, "no buscó" y "buscó y no encontró" eran el mismo síntoma.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
