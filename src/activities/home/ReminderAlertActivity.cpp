@@ -31,6 +31,7 @@ void ReminderAlertActivity::onEnter() {
   // pantalla se abre antes de que el loop llegue a MOTION.poll()), tampoco se
   // arma acá: se decide en el loop con la primera posición conocida.
   gestureArmed = MOTION.primed() && !MOTION.faceDown();
+  snoozesAtOpen = HUB_STORE.snoozeCount(reminderId);
   // "Reminder: <title>" from the SD (cached at sync), then the beeps.
   const std::string clip = speechcache::clipPath(std::string(tr(STR_HUB_REMINDERS)) + ": " + title);
   spoken = !speech.playFile(clip.c_str());
@@ -79,7 +80,18 @@ void ReminderAlertActivity::done() {
 void ReminderAlertActivity::snooze(const bool byUser) {
   if (byUser) attended = true;
   time_t now = 0;
-  halClock.getEpochUtc(now);
+  // SIN RELOJ NO SE TOCA EL `dueAt`. El retorno se ignoraba, así que un fallo
+  // del RTC (el bus I²C es compartido y acá encima está sonando audio) dejaba
+  // `now` en 0 y el posponer escribía `dueAt = 600`: enero de 1970, o sea
+  // vencido para siempre. Con eso `nextWakeInstant()` devuelve "ahora", el deep
+  // sleep se arma al piso de 5 s y el aparato arranca en loop hasta quedarse sin
+  // batería — y el tope de postergaciones no lo corta, porque `giveUp()` reinicia
+  // la racha. Mejor dejar la alarma como está y que suene de nuevo.
+  if (!halClock.getEpochUtc(now) || now <= 0) {
+    LOG_ERR(TAG, "sin reloj: no se posterga (quedaría vencido en 1970)");
+    leave();
+    return;
+  }
   // El tope se mira ANTES de postergar otra vez: con MAX_SNOOZES ya cumplidas,
   // esta vez se descarta en vez de correr la alarma diez minutos más.
   if (HUB_STORE.snoozeCount(reminderId) >= HubStore::MAX_SNOOZES) {
@@ -109,13 +121,6 @@ void ReminderAlertActivity::snooze(const bool byUser) {
 // que el aparato avisa al servidor que se dio por vencido y no que el usuario
 // lo hizo (`dismissed`), para que la Pizarra pueda decir la verdad.
 void ReminderAlertActivity::giveUp() {
-  time_t at = 0;
-  for (const HubStore::Reminder& r : HUB_STORE.reminders) {
-    if (r.id == reminderId) {
-      at = r.dueAt;
-      break;
-    }
-  }
   time_t now = 0;
   halClock.getEpochUtc(now);
   const bool repite = HUB_STORE.completeReminder(reminderId, now);
@@ -126,10 +131,23 @@ void ReminderAlertActivity::giveUp() {
     doc["kind"] = "reminder";
     doc["id"] = reminderId;
     doc["dismissed"] = true;
-    if (at > 0) doc["at"] = static_cast<int64_t>(at);
+    // EL DESCARTE NO MANDA `at`, A PROPÓSITO. El servidor usa `at` como
+    // guardia antirreplay comparándolo con SU `dueAt`: si no coinciden, da el
+    // pedido por repetido y no hace nada. Y después de tres postergaciones no
+    // pueden coincidir — el nuestro es "ahora + 600" con segundos, el del
+    // servidor está truncado al minuto (`epochToLocal`) y corrido por el
+    // desfase de reloj que el propio firmware tolera hasta 120 s. O sea que el
+    // descarte se perdía entero y la sincronización siguiente resucitaba la
+    // alarma con otras cuatro sonadas.
+    //
+    // La idempotencia del descarte no se resuelve con la marca de tiempo sino
+    // con el estado: el servidor sólo cierra la ocurrencia si SIGUE VENCIDA
+    // (ver `markDone` con `dismissed`), así que un reintento que llega después
+    // no encuentra nada que cerrar. Eso es cierto aunque los relojes no
+    // coincidan, que es justamente lo que acá falla.
     serializeJson(doc, body);
   }
-  LOG_INF(TAG, "descartado %d tras %d postergaciones (%s): %s", reminderId, HubStore::MAX_SNOOZES,
+  LOG_INF(TAG, "descartado %d tras %d postergaciones (%s): %s", reminderId, snoozesAtOpen,
           repite ? "queda el proximo ciclo" : "no repite, se borra",
           ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/done", body)));
   leave();
@@ -190,6 +208,16 @@ void ReminderAlertActivity::loop() {
       // antes de armar: si no, se consume recién al armarse y vale igual.
       MOTION.take(MotionInput::Event::FaceDown);
     }
+  }
+  // Y LO MISMO CON LA SACUDIDA, que no necesita armado pero sí ser de AHORA.
+  // `checkMotionGestures()` sólo consume Shake mientras se graba, así que una
+  // sacudida dada en Notas un segundo antes queda pendiente y esta pantalla la
+  // tomaba en su primera pasada: alarma postergada sin que nadie reaccionara a
+  // la alarma, y una de las tres gastada. Lo que pasó antes de que la pantalla
+  // existiera no es una respuesta a la pantalla.
+  if (!startupGesturesDropped) {
+    startupGesturesDropped = true;
+    MOTION.take(MotionInput::Event::Shake);
   }
   // Darlo vuelta es posponer sin buscar ningún botón: es el gesto de tapar el
   // despertador. Sacudirlo también lo pospone (es "pará"), que es lo primero

@@ -52,10 +52,18 @@ class ReminderAlertActivity final : public Activity {
   // levante: si no, el aparato se posterga la alarma a sí mismo en cada
   // repique, cada diez minutos, para siempre.
   bool gestureArmed = false;
+  // Los gestos que ya estaban pendientes cuando esta pantalla se abrió se tiran
+  // en la primera pasada: son de antes, no una respuesta a la alarma.
+  bool startupGesturesDropped = false;
   // Alguien apretó algo o dio vuelta el aparato a propósito. Lo que se resuelve
-  // solo (el plazo de GIVE_UP_MS) no cuenta como atendido y se va a dormir sin
+  // solo (el plazo de BEEP_MS) no cuenta como atendido y se va a dormir sin
   // pasar por el hub.
   bool attended = false;
+  // Cuántas postergaciones traía esta ocurrencia al abrirse. Sirve para dos
+  // cosas: decir en el log el número de verdad (y no la constante del tope), y
+  // saber si el `dueAt` que tenemos sigue siendo el original — que es lo único
+  // que el servidor puede reconocer como `at`.
+  int snoozesAtOpen = 0;
   void done();
   void snooze(bool byUser);
   void giveUp();

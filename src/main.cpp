@@ -206,6 +206,13 @@ EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
 // Definitions for SilentRestart.h. RTC_NOINIT survives ESP.restart() but not power loss.
+// Cuántos arranques por temporizador seguidos encontraron el RTC mudo. Va en
+// RTC RAM porque cada reintento es un arranque distinto: en una variable normal
+// el contador nace en cero cada vez y el tope no existiría. `RTC_DATA_ATTR` (y
+// no NOINIT) porque acá sí conviene que un encendido en frío lo ponga en cero.
+RTC_DATA_ATTR int clocklessRetries;
+constexpr int MAX_CLOCKLESS_RETRIES = 5;
+
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
@@ -528,14 +535,20 @@ static bool checkTimeAlarms() {
       return false;
     }
     LOG_INF("MAIN", "suena el temporizador desde %s", activityManager.currentActivityName());
-    activityManager.pushActivity(
-        makeUniqueNoThrow<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
+    // Si no hay heap, `makeUniqueNoThrow` devuelve nullptr y `pushActivity` no
+    // hace nada: decir que sí igual deja al llamador contándolo como actividad
+    // y el aparato reintentando cada cinco segundos sin dormir nunca.
+    auto timer = makeUniqueNoThrow<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true);
+    if (!timer) return false;
+    activityManager.pushActivity(std::move(timer));
     return true;
   }
   if (const HubStore::Reminder* due = HUB_STORE.dueReminder(now)) {
     LOG_INF("MAIN", "suena el recordatorio %d desde %s", due->id, activityManager.currentActivityName());
-    activityManager.pushActivity(
-        makeUniqueNoThrow<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
+    auto alerta =
+        makeUniqueNoThrow<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when);
+    if (!alerta) return false;
+    activityManager.pushActivity(std::move(alerta));
     return true;
   }
   return false;
@@ -1182,13 +1195,27 @@ void setup() {
       if (!haveClock) delay(20);
     }
     if (haveClock) {
+      clocklessRetries = 0;  // el reloj contestó: la racha se corta
       dueReminder = HUB_STORE.dueReminder(nowEpoch + 30);
       timerFired = HUB_STORE.timerEndAt > 0 && HUB_STORE.timerEndAt <= nowEpoch + 30;
     } else if (isReminderWake) {
       // Despertó por el timer y el RTC no contestó: reintentar en un minuto en
       // vez de dormir sin nada armado (quedaría mudo para siempre).
-      LOG_ERR("MAIN", "timer wake without a clock: retrying in 60 s");
-      esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+      // CON TOPE. Sin tope, un RTC mudo (pila agotada, el PCF85063 que no
+      // contesta) deja el aparato arrancando cada 60 s PARA SIEMPRE: sesenta
+      // arranques por hora, cada uno pagando el montaje de la tarjeta, los
+      // `loadFromFile` y el arranque de los periféricos. Es el peor patrón de
+      // consumo que hay y no se recupera solo. Pasado el tope se duerme sin
+      // timer y espera el botón: el recordatorio se pierde, pero sin reloj ya
+      // estaba perdido, y al menos queda batería para que alguien lo prenda.
+      if (++clocklessRetries > MAX_CLOCKLESS_RETRIES) {
+        LOG_ERR("MAIN", "timer wake without a clock %d times: giving up, only the button wakes now",
+                clocklessRetries - 1);
+      } else {
+        LOG_ERR("MAIN", "timer wake without a clock (%d/%d): retrying in 60 s", clocklessRetries,
+                MAX_CLOCKLESS_RETRIES);
+        esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+      }
       // Se apagan a mano los mismos consumidores que apaga sleepNow(): este
       // camino NO pasa por ahí, y si el RTC sigue mudo el aparato se queda en
       // un ciclo de arranque-dormir cada 60 s con el QMI8658 a 250 Hz.
@@ -1426,7 +1453,13 @@ void loop() {
       RTC_ALARM.clearFlag();
       RTC_ALARM.disarm();  // se re-arma sola con el próximo vencimiento
       LOG_INF("MAIN", "alarma del RTC: venció");
-      lastActivityTime = millis();
+      // Y NO se reinicia el contador de ocio: esto no lo hizo una persona, lo
+      // hizo el propio firmware. `clearFlag()` y `disarm()` no comprueban la
+      // escritura, así que un bus que lee bien pero no escribe deja AF puesta y
+      // `fired()` en true PARA SIEMPRE: con el reinicio acá, el contador de ocio
+      // se rearmaba cada cinco segundos y el aparato no volvía a dormir nunca —
+      // 40 mA hasta agotar la batería. Lo que sigue (checkTimeAlarms) sí cuenta
+      // como actividad, pero sólo si de verdad puso una alarma en pantalla.
     }
     if (checkTimeAlarms()) {
       lastActivityTime = millis();
@@ -1532,8 +1565,19 @@ void loop() {
     // Cubre lo que el auto-sleep no puede cubrir: una Activity que pide
     // "no duermas" para siempre (OpdsBookBrowserActivity lo hace) congela el
     // contador de ocio y con él el auto-sleep de los diez minutos.
+    //
+    // LA COMPUERTA TAMBIÉN TIENE QUE MEDIR CONTRA `lastUserInputTime`. Medía
+    // contra `lastActivityTime`, que unas líneas más arriba —en ESTA misma
+    // pasada del loop— lo reinician `preventAutoSleep()`, la música y PWR. O
+    // sea que cuando el reposo estaba bloqueado POR alguna de esas tres, la
+    // compuerta valía ~0 ms, nunca abría, y `restBlockedSince` se reiniciaba en
+    // el `else`: la red no armaba jamás. Y los únicos bloqueos que SÍ la abrían
+    // (WiFi arriba, skipLoopDelay) ya los agarra el auto-sleep de los diez
+    // minutos, o sea antes. Era código muerto, y justo para el caso que dice
+    // cubrir. Los dos plazos miden lo mismo ahora: lo último que hizo una
+    // persona.
     static unsigned long restBlockedSince = 0;
-    if (restBlocked && !cablePuesto && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
+    if (restBlocked && !cablePuesto && millis() - lastUserInputTime >= IdleSleep::REST_AFTER_MS) {
       if (restBlockedSince == 0) restBlockedSince = millis();
       if (millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS &&
           millis() - lastUserInputTime >= REST_BLOCKED_GIVE_UP_MS) {

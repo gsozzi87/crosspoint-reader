@@ -168,6 +168,14 @@ void MotionInput::poll() {
   Imu& imu = halTiltSensor.imu();
   if (imu.mode() == Imu::Mode::Off) {
     imu.setMode(gyroOn_ ? Imu::Mode::AccelGyro : Imu::Mode::AccelOnly);
+    // Y HAY QUE VOLVER A CEBAR. El chip estuvo apagado (el reposo lo duerme,
+    // `IdleSleep::tick`), así que entre la última muestra y la próxima pudo
+    // pasar cualquier cosa: el aparato pudo quedar dado vuelta y nadie lo vio.
+    // Sin esto, la primera lectura después de un reposo se juzga como
+    // TRANSICIÓN contra trabas de hace horas, que es exactamente el defecto de
+    // arriba entrando por la otra puerta: un recordatorio que vence durante el
+    // reposo se auto-posterga porque "boca abajo" parece recién hecho.
+    primed_ = false;
     return;  // una muestra de descarte mientras arranca
   }
 

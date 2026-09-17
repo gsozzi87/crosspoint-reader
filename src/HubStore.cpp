@@ -8,12 +8,24 @@ std::string str(JsonVariantConst v, const char* key) {
   return std::string(s);
 }
 
-// Cuánta diferencia de vencimiento sigue siendo LA MISMA ocurrencia. El
-// servidor recalcula el `dueAt` del posponer con SU reloj y el aparato con el
-// suyo, así que vuelven unos segundos corridos; más que esto y es otra cosa
-// (la ocurrencia siguiente, o alguien la editó desde la web), y ahí el
-// contador de postergaciones tiene que arrancar de cero.
-constexpr time_t SAME_OCCURRENCE_S = 120;
+// Cuánta diferencia de vencimiento sigue siendo LA MISMA ocurrencia.
+//
+// NO son "unos segundos": entre el `dueAt` que calcula el aparato y el que
+// devuelve el servidor se acumulan tres cosas, y ninguna es chica.
+//   1. el servidor guarda la hora TRUNCADA AL MINUTO (`epochToLocal` corta el
+//      ISO en los minutos), o sea hasta 59 s;
+//   2. los relojes pueden estar corridos hasta 120 s y el firmware NO los
+//      corrige: `HubSyncActivity` sólo pone el RTC en hora si la diferencia
+//      SUPERA esa tolerancia, así que 110 s de desfase es un aparato "en hora";
+//   3. la latencia del POST.
+// Con una ventana de 120 s la racha se reiniciaba en cada sincronización y el
+// tope de MAX_SNOOZES no se alcanzaba nunca en un aparato con WiFi en casa —
+// que es justo el caso que el tope tiene que cubrir.
+//
+// Quince minutos separan holgadamente las dos cosas que hay que distinguir: la
+// misma ocurrencia postergada (se corre 10 min) y la ocurrencia siguiente, que
+// en la repetición más corta que existe acá (diaria) está a 24 horas.
+constexpr time_t SAME_OCCURRENCE_S = 15 * 60;
 
 void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) {
   // Lo que había antes, para no perder el contador de postergaciones al
@@ -27,12 +39,13 @@ void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) 
     int id;
     time_t dueAt;
     int snoozes;
+    time_t baseDueAt;
   };
   Streak before[HubStore::MAX_REMINDERS];
   int beforeCount = 0;
   for (const HubStore::Reminder& r : out) {
     if (r.snoozes <= 0 || beforeCount >= HubStore::MAX_REMINDERS) continue;
-    before[beforeCount++] = {r.id, r.dueAt, r.snoozes};
+    before[beforeCount++] = {r.id, r.dueAt, r.snoozes, r.baseDueAt};
   }
   out.clear();
   for (JsonVariantConst r : doc["reminders"].as<JsonArrayConst>()) {
@@ -49,11 +62,15 @@ void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) 
     // Del archivo viene en el propio JSON; del servidor no viene y sale del
     // que había, siempre que siga siendo la misma ocurrencia.
     rem.snoozes = r["snoozes"] | 0;
+    rem.baseDueAt = static_cast<time_t>(r["baseDueAt"] | (int64_t)0);
     if (rem.snoozes == 0) {
       for (int i = 0; i < beforeCount; ++i) {
         if (before[i].id != rem.id) continue;
         const time_t d = rem.dueAt > before[i].dueAt ? rem.dueAt - before[i].dueAt : before[i].dueAt - rem.dueAt;
-        if (d <= SAME_OCCURRENCE_S) rem.snoozes = before[i].snoozes;
+        if (d <= SAME_OCCURRENCE_S) {
+          rem.snoozes = before[i].snoozes;
+          if (rem.baseDueAt == 0) rem.baseDueAt = before[i].baseDueAt;
+        }
         break;
       }
     }
@@ -108,6 +125,7 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["weekday"] = r.weekday;
     o["interval"] = r.interval;
     o["snoozes"] = r.snoozes;
+    o["baseDueAt"] = static_cast<int64_t>(r.baseDueAt);
   }
   JsonArray ls = doc["lists"].to<JsonArray>();
   for (const List& l : lists) {
@@ -359,7 +377,9 @@ time_t nextRepeatDue(const time_t due, const std::string& repeat, const int inte
 bool HubStore::completeReminder(const int id, const time_t now) {
   for (Reminder& r : reminders) {
     if (r.id != id) continue;
-    time_t next = nextRepeatDue(r.dueAt, r.repeat, r.interval);
+    // Desde el vencimiento ORIGINAL, no desde el ya postergado (ver baseDueAt).
+    const time_t desde = r.baseDueAt > 0 ? r.baseDueAt : r.dueAt;
+    time_t next = nextRepeatDue(desde, r.repeat, r.interval);
     // Un diario que estuvo cuatro dias sin confirmarse: correrlo un solo paso
     // lo dejaria vencido y volveria a sonar en el acto, cuatro veces. Se corre
     // hasta pasar la hora actual (tope de 400 pasos: un anual no da mas de eso
@@ -371,7 +391,8 @@ bool HubStore::completeReminder(const int id, const time_t now) {
     }
     if (next > 0) {
       r.dueAt = next;
-      r.snoozes = 0;  // ocurrencia nueva, racha nueva
+      r.snoozes = 0;    // ocurrencia nueva, racha nueva
+      r.baseDueAt = 0;  // y base nueva
       // `when` viene traducido y armado por el servidor ("hoy 08:00"), asi que
       // aca queda viejo a proposito: no hay forma de rearmarlo sin duplicar el
       // formateo del servidor, y la proxima sincronizacion lo corrige. Lo que
@@ -450,6 +471,7 @@ const HubStore::Reminder* HubStore::dueReminder(const time_t now) const {
 int HubStore::snoozeReminder(const int id, const time_t until) {
   for (Reminder& r : reminders) {
     if (r.id != id) continue;
+    if (r.baseDueAt == 0) r.baseDueAt = r.dueAt;  // la hora de verdad, antes de correrla
     r.dueAt = until;
     if (r.snoozes < 1000) ++r.snoozes;  // tope bobo: es un contador, no un acumulador
     return r.snoozes;

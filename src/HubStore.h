@@ -35,6 +35,14 @@ class HubStore : public PersistableStore<HubStore> {
     // aparato duerme entre uno y otro y el contador en RAM no llegaría al
     // segundo. A las MAX_SNOOZES la alarma se descarta (ver completeReminder).
     int snoozes = 0;
+    // El vencimiento ORIGINAL de esta ocurrencia, antes de la primera
+    // postergación (0 = no se postergó). La repetición se calcula desde acá y
+    // no desde el `dueAt` corrido: si no, un diario a las 08:00 que nadie
+    // atiende cuatro veces queda armado mañana a las 08:30, pasado a las 09:00,
+    // y en una semana se corrió cuatro horas y media. El servidor lo corrige en
+    // la próxima sincronización, pero sin WiFi no hay próxima sincronización, y
+    // la caché existe justamente para ese caso.
+    time_t baseDueAt = 0;
   };
 
   // Postergaciones seguidas antes de darse por vencido. Tres repiques de diez

@@ -452,6 +452,7 @@ hub.post("/done", async (c) => {
   const at = Number(body.at) > 0 ? Math.floor(Number(body.at)) : 0;
   const dismissed = body.dismissed === true;
   if (dismissed) console.log(`recordatorio ${id} descartado por el aparato (sonó y nadie lo atendió)`);
-  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0, at);
+  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0, at,
+                               dismissed);
   return c.json({ ok: true, found, dismissed });
 });

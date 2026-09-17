@@ -1076,6 +1076,65 @@ servidor**: Railway construye desde su rama. Así que los arreglos de servidor d
 de tarjetas— no están en producción. Publicar firmware y desplegar servidor son dos cosas distintas y hay que
 hacer las dos.
 
+## Lo que encontró la revisión adversarial de 1.5.92
+
+Los arreglos de arriba se mandaron a revisar por afuera (un agente sobre los caminos de energía, otro
+adversarial sobre el propio diff) y cada hallazgo se verificó contra el árbol antes de creerle. Salieron
+**dos arreglos a medias míos** y **cuatro defectos de fondo que venían de antes**:
+
+- **EL LOG SE BORRABA EN CADA ARRANQUE, y ése era el problema de verdad.** `openFileForWrite()` del SDK abre
+  con `O_TRUNC`, así que el `if (append) f.seek(f.size())` de `devlog::begin()` era un no-op sobre un archivo
+  que ya estaba en cero. O sea que `device.log` nunca acumuló nada entre arranques, y lo que quedaba para subir
+  era casi siempre `device.prev.log` —viejo y que no cambia—, que se comía el presupuesto de 24 KB. De ahí las
+  mismas tandas repetidas con firmware de hace semanas. El arreglo de 1.5.55 (mandar CURRENT antes que PREVIOUS)
+  atacó el orden, que era la mitad. Ahora se abre con `Storage.open(CURRENT, O_RDWR | O_CREAT)`, que sí agrega.
+- **La red de seguridad del reposo no podía dispararse NUNCA.** La compuerta medía `lastActivityTime`, que unas
+  líneas más arriba —en la misma pasada del loop— reinician `preventAutoSleep()`, la música y PWR. O sea que
+  cuando el reposo estaba bloqueado POR alguna de esas tres, la compuerta valía ~0 ms y `restBlockedSince` se
+  reiniciaba: código muerto, y justo para el caso que dice cubrir. Los dos plazos miden ahora `lastUserInputTime`.
+- **"Clave del WiFi por el teléfono" no tenía plazo.** Ese estado levanta el punto de acceso, atiende un servidor
+  web y pide `skipLoopDelay()` + `preventAutoSleep()`: radio transmitiendo y CPU al 100 % sin que el auto-sleep
+  pueda intervenir. Y está en el paso 2 del asistente de primer arranque, o sea que alcanza con distraerse. Diez
+  minutos y se baja, como ya hacía `UsbDriveActivity` con su `HOST_WAIT_TIMEOUT_MS`.
+- **Sin reloj, posponer escribía `dueAt = 600`** (enero de 1970, o sea vencido para siempre): el retorno de
+  `getEpochUtc()` se ignoraba. Con eso `nextWakeInstant()` devuelve "ahora", el deep sleep se arma al piso de 5 s
+  y el aparato arranca en bucle — y el tope de postergaciones no lo corta, porque `giveUp()` reinicia la racha.
+  Ahora sin reloj no se toca el `dueAt`.
+- **El descarte no llegaba al servidor.** `at` es la guardia antirreplay de `markDone`, y después de tres
+  postergaciones no puede coincidir nunca: el `dueAt` del aparato es "ahora + 600" con segundos y el del servidor
+  está truncado al minuto y corrido por el desfase de reloj que el firmware tolera hasta 120 s **sin corregir**.
+  El descarte se perdía entero y la sincronización siguiente resucitaba la alarma. El `dismissed` ya no manda
+  `at`: su idempotencia sale del ESTADO (sólo se cierra lo que sigue vencido), que es cierto aunque los relojes
+  no coincidan. Y queda anotado en `dismissedAt`, que antes era un `console.log` y se perdía.
+- **El mismo desfase rompía el contador de postergaciones**: la ventana de "misma ocurrencia" eran 120 s, menos
+  que el error que el propio sistema tolera. Son 15 minutos, que separan holgadamente una postergación (10 min)
+  de la ocurrencia siguiente (24 h en la repetición más corta).
+- **Cebar la posición del IMU no alcanzaba con hacerlo al arrancar**: el reposo apaga el acelerómetro, así que la
+  primera lectura al volver se juzgaba como transición contra trabas de hace horas. Un recordatorio que vence
+  durante el reposo se auto-postergaba igual. Ahora se ceba también al reencender el chip.
+- **`RTC_ALARM.fired()` contaba como actividad del usuario.** `clearFlag()` no comprueba la escritura, así que un
+  bus que lee bien pero no escribe deja AF puesta y `fired()` en true para siempre: el contador de ocio se
+  rearmaba cada cinco segundos y el aparato no volvía a dormir nunca.
+- **"Timer wake sin reloj" reintentaba cada 60 s sin tope**: con la pila del RTC agotada, sesenta arranques por
+  hora para siempre. Cinco intentos (contador en RTC RAM) y después se espera el botón.
+- **Mi guardia del asistente lo mataba en un aparato REALMENTE nuevo.** "Existe hub.json → no es nuevo" es falso:
+  apagar con PWR en la pantalla de idioma pasa por `powerOffNow()`, que hace `HUB_STORE.saveToFile()`. La
+  pregunta correcta es "existe y NO se pudo leer". De paso: `WIFI_STORE` no lo carga nadie en el arranque, así
+  que esa guardia leía cero siempre y no guardaba nada.
+- **`ensureToken()` dejaba un callejón sin salida**: sin token, el servidor rechaza el vacío y vincular tampoco
+  se podía. Ajustes → Vincular llama ahora a `mintToken()`, que acuña igual — porque ahí sí hay alguien
+  pidiéndolo, que es exactamente lo que faltaba.
+- Y lo chico: la marca del log confirmaba `n` aunque `read()` devolviera menos (se perdían bytes en silencio);
+  la prueba de servidor decía "no se pudo enviar el log" cuando simplemente no había nada nuevo; la repetición se
+  calculaba desde el `dueAt` ya postergado, así que un diario sin WiFi se corría media hora por día
+  (`baseDueAt`); una sacudida dada ANTES de que la alarma existiera se consumía como respuesta a la alarma; y
+  `devlog::tail()` quedó sin llamadores y se borró.
+
+**Queda sin hacer y anotado**: el fondo de pantalla se repinta con un FULL (2190 ms) en cada sueño sin comparar
+contra lo que ya está en el vidrio; `OpdsBookBrowserActivity` pide `preventAutoSleep()` incondicional (es
+upstream); Ajustes → Movimiento a mitad de calibración no deja dormir; la música con repetir no se corta nunca; y
+`msUntilNextAlarm()` hace una lectura I²C del RTC en cada pasada del loop.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

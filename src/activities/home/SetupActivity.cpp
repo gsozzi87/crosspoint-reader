@@ -38,16 +38,28 @@ bool SetupActivity::pending() {
   if (HUB_STORE.setupStep > 0) return true;
   // Un aparato que ya se venía usando NO tiene que ver el asistente al
   // actualizarse: si hay una red cargada o alguna vez sincronizó, está en uso.
+  //
+  // Lo del WiFi hay que CARGARLO primero: nadie carga `WIFI_STORE` en el
+  // arranque (lo hacen las dos Activities de red cuando les toca), así que esta
+  // pregunta se contestaba sobre un store vacío y daba 0 siempre. La guardia
+  // existía y no guardaba nada.
   if (HUB_STORE.hasSynced()) return false;
+  const bool wifiExiste = Storage.exists(WifiCredentialStore::getFilePath());
+  const bool wifiSeLeyo = wifiExiste && WIFI_STORE.loadFromFile();
   if (WIFI_STORE.getCredentialCount() > 0) return false;
+
   // Y LAS DOS PREGUNTAS DE ARRIBA SE CONTESTAN CON LO QUE SE PUDO LEER, que no
-  // es lo mismo que con lo que hay. Un JSON que existe pero no parsea (una
+  // es lo mismo que con lo que hay. Un JSON que EXISTE PERO NO PARSEA (una
   // tarjeta con la FAT dañada: pasó, le sacaron la batería en caliente) se lee
-  // como store vacío, o sea "nunca sincronizó" y "no hay redes", y el aparato
-  // se creía recién salido de la caja. Que el ARCHIVO exista ya dice que este
-  // aparato tuvo una vida antes, aunque hoy no se pueda leer.
-  if (Storage.exists(HubStore::getFilePath())) return false;
-  if (Storage.exists(WifiCredentialStore::getFilePath())) return false;
+  // como store vacío, o sea "nunca sincronizó" y "no hay redes", y el aparato se
+  // creía recién salido de la caja: asistente de primeros pasos y token nuevo.
+  //
+  // La pregunta es "existe y NO se pudo leer", no "existe" a secas. Con "existe"
+  // a secas el asistente moría para siempre en un aparato REALMENTE nuevo:
+  // apagar con PWR en la pantalla de idioma pasa por `powerOffNow()`, que hace
+  // `HUB_STORE.saveToFile()` y crea hub.json sin que haya habido vida ninguna.
+  if (wifiExiste && !wifiSeLeyo) return false;
+  if (Storage.exists(HubStore::getFilePath()) && !HUB_STORE.loadFromFile()) return false;
   return true;
 }
 

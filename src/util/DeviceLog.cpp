@@ -22,7 +22,6 @@ constexpr const char* PREVIOUS = "/.crosspoint/device.prev.log";
 // archivo (y no en hub.json) para que el log se pueda subir aunque la
 // sincronización falle, que es justamente cuando más sirve.
 constexpr const char* MARK = "/.crosspoint/log.sent";
-constexpr size_t HEAD_BYTES = 3 * 1024;  // cabecera de la sesión que se manda siempre (ver tail)
 constexpr size_t MAX_BYTES = 64 * 1024;
 constexpr size_t FLUSH_EVERY = 2 * 1024;
 // Huella de la línea para deduplicar. Larga a propósito: dos líneas distintas
@@ -170,10 +169,20 @@ void openCurrent(const bool append) {
     Storage.rename(CURRENT, PREVIOUS);
     resetMark();
   }
-  HalFile f;
-  if (!Storage.openFileForWrite("LOG", CURRENT, f)) return;
-  if (append) f.seek(f.size());
-  written = f.size();
+  // AGREGAR ES AGREGAR, Y `openFileForWrite` NO AGREGA: abre con O_TRUNC
+  // (SDCardManager.cpp), así que el `seek(size())` de acá era un no-op sobre un
+  // archivo que ya había quedado en cero. O sea que device.log se BORRABA en
+  // cada arranque y lo que quedaba para subir era casi siempre device.prev.log,
+  // que es viejo y no cambia: por eso en /board/log se veían las mismas tandas
+  // con versiones de firmware de hace semanas en cada sincronización. El
+  // arreglo de 1.5.55 (mandar CURRENT antes que PREVIOUS) atacó el orden, que
+  // era la mitad; esto es la otra mitad.
+  // Sin LOG_ERR: este archivo ES el sumidero del log y `emit()` llama acá.
+  HalFile f = Storage.open(CURRENT, O_RDWR | O_CREAT);
+  if (!f.isOpen()) return;
+  const size_t n = f.size();
+  if (append && n > 0) f.seek(n);
+  written = append ? n : 0;
   file = std::move(f);
 }
 
@@ -324,6 +333,11 @@ std::string devlog::unsent(const size_t maxBytes, size_t& mark) {
     return "";
   }
   out.resize(got);
+  // La marca es hasta donde LLEGÓ la lectura, no hasta donde queríamos llegar:
+  // `read` puede devolver menos de lo pedido sin que sea un error, y confirmar
+  // `n` ahí daría por subido un pedazo que nunca viajó. Silenciosamente, que es
+  // la peor forma de perder un log.
+  mark = from + static_cast<size_t>(got);
   if (saltado) out.insert(0, "--- (el log creció más de lo que entra en una subida: falta el medio) ---\n");
   return out;
 }
@@ -336,90 +350,4 @@ void devlog::confirmSent(const size_t mark) {
   const int n = snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(mark));
   if (n > 0) f.write(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n));
   f.close();
-}
-
-std::string devlog::tail(const size_t maxBytes) {
-  devlog::flush();
-  std::string out;
-  auto readInto = [&](const char* path) {
-    HalFile f;
-    if (!Storage.openFileForRead("LOG", path, f)) return;
-    const size_t n = f.size();
-    const size_t want = std::min(n, maxBytes - std::min(out.size(), maxBytes));
-    if (want == 0) {
-      f.close();
-      return;
-    }
-    std::string chunk;
-    chunk.resize(want);
-    f.seek(n - want);
-    const int got = f.read(&chunk[0], want);
-    f.close();
-    if (got > 0) {
-      chunk.resize(got);
-      out += chunk;
-    }
-  };
-  // EL ORDEN IMPORTA, y estaba al reves: se leia PREVIOUS primero y, como el
-  // archivo rotado suele estar lleno (64 KB), se comia el presupuesto entero y
-  // a CURRENT le quedaban cero bytes. O sea que el aparato subia SIEMPRE el
-  // final del log VIEJO y nunca una linea de lo que acababa de pasar: en
-  // /board/log se veia la misma tanda de hace semanas en cada sincronizacion,
-  // y borrarla no servia de nada porque la siguiente subida repetia lo mismo.
-  //
-  // Ahora manda lo nuevo: primero el final de CURRENT y, solo si sobra lugar,
-  // el final de PREVIOUS delante para dar contexto.
-  readInto(CURRENT);
-  // El ARRANQUE de este log también va siempre: la cabecera de la sesión
-  // (versión, por qué arrancó, los registros del PMIC, la polaridad del PWR)
-  // está en las primeras líneas, y cuando la sesión es larga el final de 24 KB
-  // ya no la incluye. Un PWR "errático" sin esas líneas no se puede leer.
-  {
-    HalFile f;
-    if (Storage.openFileForRead("LOG", CURRENT, f)) {
-      const size_t n = f.size();
-      if (n > out.size() && HEAD_BYTES < maxBytes) {
-        // El tail no llegó al principio del archivo: se antepone el principio.
-        const size_t want = std::min(n - out.size(), HEAD_BYTES);
-        std::string head;
-        head.resize(want);
-        f.seek(0);
-        const int got = f.read(&head[0], want);
-        if (got > 0) {
-          head.resize(got);
-          head += "\n--- (... se saltó el medio del log ...) ---\n";
-          if (out.size() + head.size() > maxBytes) out.erase(0, out.size() + head.size() - maxBytes);
-          out = head + out;
-        }
-      }
-      f.close();
-    }
-  }
-  if (out.size() < maxBytes && Storage.exists(PREVIOUS)) {
-    const size_t room = maxBytes - out.size();
-    std::string current;
-    current.swap(out);
-    std::string tailOfPrev;
-    {
-      HalFile f;
-      if (Storage.openFileForRead("LOG", PREVIOUS, f)) {
-        const size_t n = f.size();
-        const size_t want = std::min(n, room);
-        if (want > 0) {
-          tailOfPrev.resize(want);
-          f.seek(n - want);
-          const int got = f.read(&tailOfPrev[0], want);
-          if (got > 0)
-            tailOfPrev.resize(got);
-          else
-            tailOfPrev.clear();
-        }
-        f.close();
-      }
-    }
-    out = tailOfPrev;
-    if (!out.empty()) out += "\n--- (arriba: log anterior) ---\n";
-    out += current;
-  }
-  return out;
 }

@@ -95,8 +95,24 @@ Esto es lo que se acaba de arreglar y lo que más importa mirar, porque es lo qu
 
 - [ ] `/board/log` tiene que mostrar **una sola** copia de cada cosa, en orden, y **nada de más de un día**.
       Si aparecen dos veces las mismas líneas, la marca de subida no se está guardando.
-- [ ] Sincronizar dos veces seguidas sin hacer nada en el medio: la segunda **no** sube nada
-      (`log upload` no aparece, o aparece con muy pocos bytes).
+- [ ] Sincronizar dos veces seguidas sin hacer nada en el medio: la segunda **no** sube nada, y
+      `Ajustes → Sistema → Prueba de servidor` dice "Log enviado (ya estaba al día)" y **no** "no se pudo".
+- [ ] **El log ahora acumula entre arranques** (antes `openFileForWrite` lo truncaba en cada uno): dormir,
+      despertar y sincronizar tiene que dejar en `/board/log` el arranque viejo Y el nuevo, uno debajo del otro.
+
+### 5 quáter. Lo que salió de la revisión adversarial (1.5.92)
+
+- [ ] **Clave del WiFi por el teléfono**: dejar esa pantalla abierta diez minutos sin cargar nada. Tiene que
+      bajar el punto de acceso sola y volver a la lista de redes (`el teléfono no cargó la clave en 10 min`).
+- [ ] **Un recordatorio que vence durante el reposo**, con el aparato dado vuelta DESPUÉS de entrar al reposo:
+      no se puede auto-postergar. En el log tiene que verse `posicion inicial:` otra vez al reencender el IMU.
+- [ ] **El descarte llega al servidor**: después de las cuatro sonadas, en `/board` → Agenda el recordatorio de
+      hoy tiene que quedar cerrado y **no volver** en la sincronización siguiente.
+- [ ] **Un diario que nadie atiende no se corre de hora**: al día siguiente tiene que sonar a la hora original,
+      no media hora más tarde.
+- [ ] **Vincular funciona aunque el aparato haya quedado sin token** (`el aparato no tenía token: se acuña uno`).
+- [ ] Y el de siempre, ahora que la red de seguridad del reposo puede dispararse: dejarlo con algo que bloquee
+      el reposo y confirmar que a la media hora se duerme igual y lo dice en el log.
 
 ---
 

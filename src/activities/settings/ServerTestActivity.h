@@ -38,6 +38,11 @@ class ServerTestActivity final : public Activity {
   // forzar una sincronización entera. Esta pantalla ya levanta el WiFi y ya es
   // "el diagnóstico", así que es el lugar natural para mandarlo a pedido.
   bool logSent = false;
+  // No había nada nuevo que subir. NO es un fallo: desde que el aparato manda
+  // sólo lo nuevo, sincronizar y entrar acto seguido a esta pantalla deja el
+  // log al día — y decir "falló" ahí es que la pantalla de diagnóstico mienta
+  // justo en el caso normal.
+  bool logNothingNew = false;
   size_t logBytes = 0;
 
   void onWifiSelectionComplete(bool connected);

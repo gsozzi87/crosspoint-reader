@@ -652,12 +652,31 @@ export async function editEntry(accountId: number, body: { kind?: string; id?: n
 // `GET /api/hub` como epoch UTC). Un replay llega con el `at` de la ocurrencia
 // vieja, que ya no coincide con la del store, y no avanza nada. Solo se aplica
 // a los repetidos: sin `at` (web, firmware viejo) se comporta como antes.
-export async function markDone(accountId: number, kind: "reminder" | "item", id: number, snoozeSeconds = 0, at = 0): Promise<boolean> {
+//
+// `dismissed` = el aparato sonó tres veces, nadie lo atendió y se dio por
+// vencido. Cierra la ocurrencia igual que un tilde, pero NO usa `at` como
+// guardia antirreplay, porque ahí esa guardia no puede funcionar: después de
+// tres postergaciones el `dueAt` del aparato es "ahora + 600" con segundos y el
+// de acá está truncado al minuto (`epochToLocal`) y corrido por el desfase de
+// reloj que el firmware tolera hasta 120 s sin corregir. No coinciden nunca, la
+// guardia se comía el descarte entero y la sincronización siguiente resucitaba
+// la alarma. Su idempotencia sale del ESTADO y no de la marca de tiempo: sólo
+// se cierra lo que SIGUE VENCIDO, así que un reintento posterior no encuentra
+// nada que cerrar. Eso vale aunque los relojes no coincidan.
+export async function markDone(accountId: number, kind: "reminder" | "item", id: number, snoozeSeconds = 0, at = 0, dismissed = false): Promise<boolean> {
   return mutate(accountId, (store) => {
   let found = false;
   if (kind === "reminder") {
     for (const r of store.reminders) {
       if (r.id !== id) continue;
+      if (dismissed) {
+        found = true;
+        const vencido = !r.dueAt || localToEpoch(r.dueAt) <= Math.floor(Date.now() / 1000);
+        if (!vencido) continue;  // ya se cerró: esto es el reintento
+        r.dismissedAt = new Date().toISOString();
+        if (!advanceRepeat(r)) r.done = true;
+        continue;
+      }
       if (at > 0 && snoozeSeconds === 0 && normalizeRepeat(r.repeat).kind !== "none" && r.dueAt && localToEpoch(r.dueAt) !== at) {
         // Ya se aplicó: esto es el reintento del mismo tilde.
         found = true;
