@@ -49,6 +49,22 @@ class PowerKey {
   // The hold gesture already acted (the banner is up): the release must not
   // count as a short press.
   void consumeHold() { holdConsumed_ = true; }
+  // True once per release, whatever the hold length. The owner's rule for
+  // this key is "press and release = suspend", so main.cpp acts on the
+  // release itself, not on its length. tookShortPress() clears this too: every
+  // caller of that one is dropping the tap, and a dropped tap has no release.
+  bool tookRelease();
+
+  // REPOSO: el light sleep arma GPIO38 como fuente de despertar POR NIVEL
+  // (`gpio_wakeup_enable(LOW_LEVEL)`), y eso escribe el tipo de interrupción
+  // del pin. Con la ISR de flanco de este módulo enganchada, ese pin en bajo
+  // dispara la ISR sin parar hasta el watchdog de interrupciones — y el PMIC
+  // mantiene la línea en bajo hasta que el loop la lea por I2C, que no llega
+  // nunca. Así que ANTES de armar el pin se suelta la ISR (pauseIrq) y al
+  // volver del reposo se vuelve a enganchar (resumeIrq), que además restaura
+  // el tipo a flanco, porque `gpio_wakeup_disable` NO lo hace. Ver 1.5.99.
+  void pauseIrq();
+  void resumeIrq();
   // The PMIC answered in begin() and the key is being decoded.
   bool available() const { return available_; }
 
@@ -101,6 +117,8 @@ class PowerKey {
   bool longSeen_ = false;    // LONG latched during the current press
   bool holdConsumed_ = false;
   bool shortPress_ = false;
+  bool releasePending_ = false;
+  bool irqPaused_ = false;
   unsigned long pressStartMs_ = 0;
   unsigned long heldMs_ = 0;
 

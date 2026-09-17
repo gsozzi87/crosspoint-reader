@@ -1,6 +1,9 @@
 #include "IdleSleep.h"
 
 #include <GfxRenderer.h>
+#include <soc/gpio_struct.h>
+
+#include "PowerKey.h"
 
 #include <BoardConfig.h>
 #include <HalTiltSensor.h>
@@ -62,8 +65,20 @@ void IdleSleep::probeRtcInt() {
 }
 
 bool IdleSleep::armWakeSources(const unsigned long budgetMs) {
+  // GPIO38 tiene la ISR de flanco de PowerKey: se suelta ANTES de armarlo por
+  // nivel, o la primera pulsación de PWR después del reposo es un bucle de
+  // interrupción hasta el watchdog (ver disarmWakeSources()).
+  POWER_KEY.pauseIrq();
   for (uint32_t pin = 0; pin < 64; ++pin) {
     if (!(buttonMask_ & (1ULL << pin))) continue;
+    // Un pin con una interrupción habilitada NO se arma por nivel, sea de
+    // quien sea: sería dejar armada la bomba de 1.5.93-1.5.98 para el próximo
+    // que enganche una ISR en un botón. Se dice y no se reposa.
+    if (GPIO.pin[pin].int_ena != 0) {
+      LOG_ERR(TAG, "GPIO%u tiene una interrupción habilitada (tipo=%u): armarlo por nivel colgaría el aparato al "
+              "apretarlo, no se reposa", (unsigned)pin, (unsigned)GPIO.pin[pin].int_type);
+      return false;
+    }
     if (gpio_wakeup_enable(static_cast<gpio_num_t>(pin), GPIO_INTR_LOW_LEVEL) != ESP_OK) {
       LOG_ERR(TAG, "GPIO%u no acepta despertar", (unsigned)pin);
       return false;
@@ -91,6 +106,18 @@ bool IdleSleep::armWakeSources(const unsigned long budgetMs) {
 // sacándole la batería. Eso fue exactamente 1.5.97: la guardia del panel
 // (`gfxPanelRefreshInFlight()`) volvía DESPUÉS de armar y desarmaba sólo el
 // timer. Un `return` en el lugar equivocado.
+//
+// Y ESO ERA LA MITAD (1.5.99). `gpio_wakeup_enable(pin, LOW_LEVEL)` escribe el
+// TIPO de interrupción del pin (bits 7-9 de GPIO_PINn_REG) y `gpio_wakeup_disable`
+// sólo apaga el bit de despertar: el tipo queda en NIVEL para siempre (verificado
+// desensamblando libesp_driver_gpio.a). A los cuatro botones no les importa —no
+// tienen ISR—, pero GPIO38 tiene la ISR de flanco de PowerKey con la interrupción
+// habilitada. O sea que desde el PRIMER reposo, toda pulsación de PWR (y el propio
+// despertar por PWR) era una interrupción por nivel entrando sin parar hasta el
+// watchdog, y como el PMIC mantiene la línea en bajo hasta que el loop la lea por
+// I2C, no había salida. Desde 1.5.93 —cuando el reposo empezó a entrar de verdad—
+// hasta 1.5.98. Por eso la ISR se suelta antes de armar y se vuelve a enganchar
+// acá, que es lo que restaura el tipo a flanco.
 void IdleSleep::disarmWakeSources() {
   for (uint32_t pin = 0; pin < 64; ++pin) {
     if (!(buttonMask_ & (1ULL << pin))) continue;
@@ -99,6 +126,7 @@ void IdleSleep::disarmWakeSources() {
   if (rtcIntUsable_ && assigned(rtcIntPin_)) gpio_wakeup_disable(static_cast<gpio_num_t>(rtcIntPin_));
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_GPIO);
+  POWER_KEY.resumeIrq();
 }
 
 IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) {
