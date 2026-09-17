@@ -1071,11 +1071,14 @@ De paso, dos cosas que hacían que el síntoma no se pudiera leer:
 - "el DNS no devolvió nada" y "resuelve a red interna" eran el mismo mensaje. Son cosas distintas y mandan a
   buscar el problema a lugares distintos.
 
-**Y lo que hay que mirar antes de creerle a un arreglo del servidor: los commits de 1.5.91 nunca se fusionaron
-a `ws397`.** El firmware sí se publicó (`release.sh` sube el `.bin` al volumen), pero eso **no redespliega el
-servidor**: Railway construye desde su rama. Así que los arreglos de servidor de 1.5.91 —gzip, plazos, la poda
-de tarjetas— no están en producción. Publicar firmware y desplegar servidor son dos cosas distintas y hay que
-hacer las dos.
+**PUBLICAR FIRMWARE Y DESPLEGAR EL SERVIDOR SON DOS COSAS DISTINTAS, y hay que hacer las dos.** Esto se descubrió
+acá: los commits de servidor de 1.5.91 —gzip, plazos, la poda de tarjetas— nunca habían llegado a producción,
+porque `release.sh` sube el `.bin` al volumen y **eso no redespliega nada**. Railway construye desde la rama
+**`ws397`** (Settings → Source: ahí están la rama Y el Root Directory = `server`, que son dos ajustes distintos
+y es fácil confundirlos). Todo eso se fusionó y se desplegó junto con 1.5.92.
+
+Regla, entonces: un arreglo del servidor no existe hasta que **`ws397`** lo tiene. Si el síntoma sigue después de
+"arreglarlo", lo primero que hay que mirar es `git log origin/ws397..HEAD`.
 
 ## Lo que encontró la revisión adversarial de 1.5.92
 
