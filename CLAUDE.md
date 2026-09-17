@@ -1486,6 +1486,41 @@ consulta de `main.cpp` y el sueño pasan varios ms, con dos lecturas I²C en el 
 deja pasar la cola, largo le cobra a un refresco sano. Se pollea BUSY hasta que baje, con el tope
 por modo como cordura y 3 s de tope duro.
 
+## El aparato se colgaba con un toque de PWR, y lo detectó el log solo (1.5.98)
+
+**La línea nueva de 1.5.96 contestó en el primer intento, que era exactamente para lo que se puso:**
+
+    === 1.5.97-ws397 | arranque por encendido | reset: WATCHDOG de interrupciones ===
+    !!! OJO: el aparato NO se apagó solo — se cayó por WATCHDOG de interrupciones. Esto no es normal.
+
+Siete arranques seguidos así, hasta que el dueño le sacó la batería. Un toque de PWR y el aparato
+entraba en bucle de reinicios. **Y la causa era mía, de 1.5.97.**
+
+`armWakeSources()` arma los botones con `gpio_wakeup_enable(pin, GPIO_INTR_LOW_LEVEL)`: una
+interrupción **POR NIVEL**, no por flanco. Mientras el pin siga en bajo esa interrupción se vuelve a
+disparar sola, para siempre. Normalmente no importa, porque `esp_light_sleep_start()` la consume y
+al volver se desarma todo (el camino normal desarma **las dos** fuentes, timer Y GPIO).
+
+Pero en 1.5.97 metí la guardia del panel (`gfxPanelRefreshInFlight()`) **pegada al sueño, después de
+armar**, y su `return` desarmaba **sólo el timer**. O sea: pines armados con una interrupción por
+nivel, sin nadie que la atienda y sin sueño que la consuma. Apretar un botón dejaba a la CPU sin
+salir del vector de interrupción hasta el watchdog — y como al reiniciar pasaba lo mismo, bucle del
+que sólo se sale sacando la batería.
+
+**El arreglo es de ubicación, no de lógica**: la pregunta va ARRIBA DE TODO, junto a `blocked` y al
+`idleMs < REST_AFTER_MS`, antes de armar nada. Así no hay nada que desarmar. Y además existe ahora
+`disarmWakeSources()` —que apaga pin por pin y las dos fuentes— y la usan **todas** las salidas,
+incluido el camino de fallo de `armWakeSources()`, que tenía el mismo agujero desde siempre.
+
+**La regla, que es la que faltaba escrita**: en `IdleSleep::tick()`, todo `return` posterior a
+`armWakeSources()` **tiene que desarmar**. Armar sin dormir no es un desperdicio, es un cuelgue.
+
+**Y la moraleja del log**: esto es lo que el dueño había pedido dos versiones antes — *"quisiera que
+el log detecte estas cosas y no tener que estar diciéndote todo"*. La cabecera con
+`esp_reset_reason()` convirtió "se reinicia y se traba, no sé por qué" en una causa con nombre, a la
+primera, sin cable y sin que él tuviera que reproducir nada. **Cuando un síntoma cuesta tres vueltas
+de adivinanzas, el arreglo que hay que hacer primero es el que lo vuelve visible.**
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
