@@ -1,5 +1,7 @@
 #include "IdleSleep.h"
 
+#include <GfxRenderer.h>
+
 #include <BoardConfig.h>
 #include <HalTiltSensor.h>
 #include <Logging.h>
@@ -115,6 +117,17 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
   // por nada: es el consumidor más grande de la lista. MotionInput::poll() lo
   // vuelve a encender solo en cuanto el loop corra de nuevo.
   halTiltSensor.deepSleep();
+
+  // ÚLTIMA PREGUNTA, PEGADA AL SUEÑO. `main.cpp` ya consultó
+  // `gfxPanelRefreshInFlight()`, pero entre aquella consulta y esta línea pasan
+  // varios milisegundos —una lectura I2C del RTC y otra del IMU— y en ese hueco
+  // puede arrancar un refresco. Dormir con una onda en curso se come el flanco
+  // de BUSY, que es exactamente el defecto que se está arreglando.
+  if (gfxPanelRefreshInFlight()) {
+    resting_ = false;
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+    return Woke::NotSlept;
+  }
 
   const unsigned long before = millis();
   const esp_err_t err = esp_light_sleep_start();

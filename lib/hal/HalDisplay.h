@@ -50,6 +50,15 @@ class HalDisplay {
   // True when displayBufferAsync() genuinely overlaps (panel driver defers);
   // false where it falls back to a blocking refresh.
   bool supportsAsyncRefresh() const;
+
+  // ESPERAR LA ONDA POR NIVEL Y NO POR FLANCO. Con este puntero no nulo,
+  // `EpdBus::waitRefreshComplete()` deja el camino por interrupción y pasa al
+  // polleado: lee el pin BUSY cada milisegundo hasta que baja. La diferencia no
+  // es de estilo — el camino por flanco arma un attachInterrupt(CHANGE) y si
+  // ese flanco no se ve en 20 ms se va SIN ESPERAR NADA, y el driver le
+  // reescribe la RAM al controlador con el panel todavía manejando. Por nivel
+  // eso no puede pasar, se pierda el flanco por lo que se pierda.
+  void setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel));
   void refreshDisplay(RefreshMode mode = RefreshMode::FAST_REFRESH, bool turnOffScreen = false);
 
   // Output polarity. The framebuffer remains in normal polarity; inversion is

@@ -1382,6 +1382,110 @@ el servidor los apendaba: el blob tenía bloques de 1.5.85, 1.5.90 y 1.5.91 mezc
 aparato ya corría 1.5.94. Antes de deducir de un log, mirar el encabezado de arranque de CADA
 bloque — y si hay dudas, vaciarlo desde `/board/log` y sincronizar una vez.
 
+## El piso quedaba corto, y el log no avisaba de nada (1.5.96)
+
+Dos cosas, y la segunda importa más que la primera.
+
+**EL PISO DE 1.5.95 SE QUEDABA CORTO, por dos motivos a la vez y los dos míos.** Lo medido
+(582/1793/2191) se cuenta desde ANTES de escribir el framebuffer, y la onda recién arranca DESPUÉS,
+con `MASTER_ACTIVATION`: la escritura son unos 90 ms, así que un piso de 550 contado desde el mismo
+lugar le deja a la onda 460 cuando necesita ~490. Y encima los había recortado por debajo de lo
+medido "para no alargar una espera sana". Recorte sobre recorte: el cuadro siguiente seguía cayendo
+sobre la cola de la onda y la mancha seguía. Ahora son **dos números distintos**: uno DETECTA
+(550/1700/2100, justo por debajo de lo medido, así que un refresco sano nunca lo cruza y no paga
+nada) y otro ESPERA (700/1950/2350, con margen de sobra, y sólo lo paga el refresco que ya venía
+roto).
+
+**Y el número que teníamos para diagnosticar estaba mintiendo.** `commit()` recibía el tiempo de
+ANTES del piso, así que Ajustes → Memoria → Panel decía "FULL 116 ms" cuando el refresco de verdad
+había durado dos segundos — mintiendo justo hacia el lado que hacía parecer que el arreglo no hacía
+nada. Ahora se commitea el tiempo real.
+
+**EL LOG TIENE QUE DETECTAR, NO EL USUARIO.** El dueño lo dijo con todas las letras: *"quisiera que
+el log detecte estas cosas y no tener que estar diciéndote todo"*, y tenía razón — estaba haciendo
+él el trabajo del aparato. El caso que lo disparó: apretó PWR en el hub y **el aparato se reinició**,
+y en el log no había una sola línea al respecto. Motivo: la cabecera decía "arranque por boton",
+que sale de `wakeReasonName()` — la causa de DESPERTAR del deep sleep. Un pánico, un watchdog o un
+brownout quedaban anotados igual que si el usuario lo hubiera prendido a propósito. **Son dos
+preguntas distintas y sólo se contestaba una.**
+
+Ahora la cabecera lleva las dos (`arranque por … | reset: …`) con `esp_reset_reason()` en
+castellano, y cuando el reset NO es uno de los tres normales —encendido en frío, sueño profundo,
+reinicio pedido por software— sale una línea gritada:
+
+    !!! OJO: el aparato NO se apagó solo — se cayó por CAÍDA DE TENSIÓN (brownout). Esto no es normal.
+
+Regla que sale de acá, y vale para todo lo demás: **si el usuario tuvo que contarme un síntoma que
+el aparato podía haber detectado solo, el bug no es sólo el síntoma — es también que el log no lo
+dijo.** Las dos cosas se arreglan juntas.
+
+**Sin resolver todavía**: por qué PWR reinicia en vez de mostrar la barrita. La línea nueva del
+arranque lo va a nombrar la próxima vez que pase; hasta entonces no hay con qué, y no se adivina.
+Lo que el dueño quiere de ese botón está escrito y no se negocia: apretar y soltar = suspender; la
+barrita sólo carga mientras se mantiene; soltar con la barrita a medias = suspender; **reiniciar,
+nunca**.
+
+## La espera del panel, por NIVEL y no por flanco (1.5.97)
+
+**El arreglo de verdad, y es una línea.** `HalDisplay::begin()` instala el *slice hook* que el SDK
+ofrece justo para un anfitrión como éste y que nunca habíamos puesto:
+
+```cpp
+if (BoardConfig::isWS397()) {
+  einkDisplay.setBusyWaitSliceHook([](int8_t, uint8_t) -> bool { return false; });
+}
+```
+
+Con ese puntero no nulo, `EpdBus::waitRefreshComplete()` abandona el camino **por flanco**
+(`attachInterrupt(BUSY, CHANGE)` + 20 ms para verlo; sin flanco, `detachInterrupt` y `return` sin
+esperar nada) y pasa al **polleado**: 20 ms de gracia por NIVEL y después `waitBusy()`, que para
+ActiveHigh es `while (digitalRead(busy) == HIGH)`. **Un nivel no se puede perder**, se pierda el
+flanco por lo que se pierda. Cuesta el ~9 % de energía por refresco que el SDK documenta. Si BUSY
+estuviera muerto, cae de largo igual que hoy —no queda peor— y el lazo corta a los 30 s.
+
+**Por qué el piso de 1.5.95/96 no podía alcanzar, y esto es lo que yo no había visto.** El build es
+`EINK_DISPLAY_SINGLE_BUFFER_MODE=1`, así que `Ssd1677Driver::displayImpl` hace, **adentro** de
+`display.displayBuffer()** y apenas vuelve `refresh()`:
+
+```cpp
+if (prev == nullptr && !async) {
+  setRamArea(bus, 0, 0, _w, _h);
+  writeRam(bus, CMD_WRITE_RAM_BW,  fb, _bufferSize);
+  writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+}
+```
+
+O sea que **el daño ya está hecho antes de que GfxRenderer recupere el control**: cualquier piso
+puesto más afuera llega tarde por diseño. El piso queda igual, pero como lo que de verdad es —el
+instrumento que mide la falla sin cable, y una segunda línea de defensa para no encimar el cuadro
+siguiente—, no como el arreglo.
+
+**Y por qué la mancha es negra y nítida y son exactamente DOS cuadros**: el FAST sale diferencial
+contra RED (`CTRL1_NORMAL`) y el HALF y el FULL salen absolutos (`CTRL1_BYPASS_RED`). La tinta que
+quedó "coincide" con lo que dice RED, así que **no se vuelve a manejar nunca** hasta que cae una
+limpieza. Una sola onda perdida envenena el vidrio hasta el próximo HALF.
+
+**LA CORRECCIÓN QUE ME DEBO, y es la tercera de esta sesión.** En 1.5.95 dije con todas las letras
+que la causa era mía, de la línea de 1.5.93 que destapó el reposo. **Ese mecanismo es real y está
+cerrado, pero NO explica el log del usuario**, y dos verificaciones independientes lo mostraron con
+aritmética: en ese log hay trece refrescos en 28,3 s, uno cada 2,2 s sostenido — el aparato EN USO.
+El ocio nunca llega a los 30 s de `REST_AFTER_MS`, así que el reposo no entró ni una vez, y sin
+embargo los refrescos salen todos cortos. Quedan dos candidatos y **el árbol no alcanza para
+decidir**: (A) el flanco se lo come el light sleep, o (B) BUSY levanta más tarde que los 20 ms de la
+ventana, despierto, en todos los refrescos. El hook arregla los dos. La línea del log los separa: si
+aparece pegada a un `[REST] a reposar…` era A; si aparece sin reposo cerca, era B.
+Y del diff de 1.5.91 a 1.5.94 no sale nada que toque GPIO, interrupciones, frecuencia de CPU ni
+SPI, y el submódulo no se movió: **puede no haber sido un commit**.
+
+**Dos huecos del candado de 1.5.95, encontrados en la misma revisión y cerrados**: `IdleSleep::tick()`
+ahora repregunta `gfxPanelRefreshInFlight()` **pegado** a `esp_light_sleep_start()` (entre la
+consulta de `main.cpp` y el sueño pasan varios ms, con dos lecturas I²C en el medio), y
+`displayGrayBuffer()` —la onda de gris del lector, 366 ms— había quedado sin candado y sin piso.
+
+**El piso ahora mira el pin, no el reloj.** Un número fijo es frágil en las dos direcciones: corto
+deja pasar la cola, largo le cobra a un refresco sano. Se pollea BUSY hasta que baje, con el tope
+por modo como cordura y 3 s de tope duro.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

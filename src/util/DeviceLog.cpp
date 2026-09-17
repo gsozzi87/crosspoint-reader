@@ -1,5 +1,7 @@
 #include "DeviceLog.h"
 
+#include <esp_system.h>
+
 #include <Arduino.h>
 #include <HalClock.h>
 #include <HalPowerManager.h>
@@ -103,13 +105,72 @@ const char* wakeReasonName() {
   }
 }
 
+// POR QUÉ SE REINICIÓ, Y NO SÓLO QUÉ LO DESPERTÓ. Son dos preguntas distintas y
+// hasta acá la cabecera sólo contestaba la segunda: `wakeReasonName()` mira la
+// causa de DESPERTAR del deep sleep, así que un pánico, un watchdog o una caída
+// de tensión salían anotados como "arranque por encendido" o "por boton" — o
+// sea, indistinguibles de que el usuario lo prendiera a propósito. El usuario
+// vio el aparato reiniciarse solo apretando PWR y en el log no había una sola
+// línea al respecto: la tenía que reportar él. Eso es trabajo del aparato.
+const char* resetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+      return "encendido en frío";
+    case ESP_RST_DEEPSLEEP:
+      return "sueño profundo";
+    case ESP_RST_SW:
+      return "reinicio pedido por software";
+    case ESP_RST_PANIC:
+      return "PÁNICO (excepción)";
+    case ESP_RST_INT_WDT:
+      return "WATCHDOG de interrupciones";
+    case ESP_RST_TASK_WDT:
+      return "WATCHDOG de tarea";
+    case ESP_RST_WDT:
+      return "WATCHDOG";
+    case ESP_RST_BROWNOUT:
+      return "CAÍDA DE TENSIÓN (brownout)";
+    case ESP_RST_EXT:
+      return "reset externo";
+    case ESP_RST_SDIO:
+      return "sdio";
+    case ESP_RST_USB:
+      return "usb";
+    case ESP_RST_JTAG:
+      return "jtag";
+    default:
+      return "DESCONOCIDO";
+  }
+}
+
+// ¿Este arranque es uno de los normales? Sólo tres lo son: el usuario lo
+// prendió, volvió del sueño profundo, o el firmware pidió reiniciar (el
+// reinicio silencioso del lector). Todo lo demás es un aparato que se cayó, y
+// tiene que salir GRITADO en el log para que se vea sin que nadie lo cuente.
+bool resetEsNormal() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+    case ESP_RST_DEEPSLEEP:
+    case ESP_RST_SW:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Cabecera de sesión: sin esto, un log rotado no decía ni qué versión lo
 // escribió. Va también arriba del archivo nuevo cuando rota, para que el
 // pedazo que sobrevive siga siendo legible.
 void writeHeader() {
-  char line[160];
-  snprintf(line, sizeof(line), "\n=== %s | arranque por %s ===\n", CROSSPOINT_VERSION, wakeReasonName());
+  char line[220];
+  snprintf(line, sizeof(line), "\n=== %s | arranque por %s | reset: %s ===\n", CROSSPOINT_VERSION, wakeReasonName(),
+           resetReasonName());
   rawLine(line);
+  if (!resetEsNormal()) {
+    snprintf(line, sizeof(line), "!!! OJO: el aparato NO se apagó solo — se cayó por %s. Esto no es normal.\n",
+             resetReasonName());
+    rawLine(line);
+  }
   snprintf(
       line, sizeof(line), "bateria %u%% | heap %lu KB libre (bloque mayor %lu KB) | psram %lu KB libre\n",
       static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned long>(ESP.getFreeHeap() / 1024),

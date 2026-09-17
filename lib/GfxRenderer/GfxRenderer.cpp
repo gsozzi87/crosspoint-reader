@@ -1748,9 +1748,23 @@ struct PanelBusyScope {
   ~PanelBusyScope() { g_panelBusy.fetch_sub(1, std::memory_order_relaxed); }
 };
 
-// Piso por modo, con margen: nunca por encima de lo medido, para que una espera
-// sana no pague ni un milisegundo de más.
-unsigned long panelFloorMs(const HalDisplay::RefreshMode mode) {
+// EL PISO DE 1.5.95 SE QUEDABA CORTO, POR DOS MOTIVOS A LA VEZ.
+//
+// (1) Lo medido (582/1793/2191) se cuenta desde ANTES de escribir el
+//     framebuffer, y la onda recién arranca DESPUÉS, con MASTER_ACTIVATION. La
+//     escritura son unos 90 ms, así que un piso de 550 contado desde el mismo
+//     lugar le deja a la onda 460 y la onda necesita ~490.
+// (2) Encima yo los había recortado por debajo de lo medido "para no alargar
+//     una espera sana". Recorte sobre recorte: el cuadro siguiente seguía
+//     cayendo sobre la cola de la onda, y la mancha seguía.
+//
+// Ahora son dos números distintos y cada uno hace una cosa:
+//   - DETECTAR: por debajo de esto la espera claramente no esperó la onda. Va
+//     justo por debajo de lo medido, así que un refresco sano nunca lo cruza y
+//     no paga un solo milisegundo.
+//   - ESPERAR: hasta acá se espera cuando hubo que actuar, con margen de sobra
+//     por encima de lo medido. Sólo lo paga el refresco que ya venía roto.
+unsigned long panelShortMs(const HalDisplay::RefreshMode mode) {
   switch (mode) {
     case HalDisplay::FULL_REFRESH:
       return 2100;  // medido 2191
@@ -1761,23 +1775,52 @@ unsigned long panelFloorMs(const HalDisplay::RefreshMode mode) {
   }
 }
 
+unsigned long panelTargetMs(const HalDisplay::RefreshMode mode) {
+  switch (mode) {
+    case HalDisplay::FULL_REFRESH:
+      return 2350;  // medido 2191 + la escritura + margen
+    case HalDisplay::HALF_REFRESH:
+      return 1950;  // medido 1793 + la escritura + margen
+    default:
+      return 700;  // FAST, medido 582 + la escritura + margen
+  }
+}
+
 // Espera lo que le falte a la onda y deja constancia cuando tuvo que actuar:
 // esa línea es la ÚNICA forma de saber sin cable cuán seguido se pierde el
 // flanco. Se cuenta y se dice de a tandas para no llenar el log de 24 KB.
-void holdForWave(const HalDisplay::RefreshMode mode, const unsigned long panelMs) {
-  const unsigned long floor = panelFloorMs(mode);
-  if (panelMs >= floor) return;
+unsigned long holdForWave(const HalDisplay::RefreshMode mode, const unsigned long panelMs) {
+  if (panelMs >= panelShortMs(mode)) return panelMs;
+  const unsigned long target = panelTargetMs(mode);
   static uint32_t veces = 0;
   static unsigned long ultimoAviso = 0;
-  const unsigned long falta = floor - panelMs;
   ++veces;
   const unsigned long ahora = millis();
   if (veces == 1 || ahora - ultimoAviso > 60000) {
     ultimoAviso = ahora;
-    LOG_ERR("GFX", "la espera del panel volvió en %lu ms (piso %lu): se perdió el flanco de BUSY, van %lu",
-            panelMs, floor, (unsigned long)veces);
+    LOG_ERR("GFX", "la espera del panel volvió en %lu ms (se espera hasta %lu): flanco de BUSY perdido, van %lu",
+            panelMs, target, (unsigned long)veces);
   }
-  delay(falta);
+  // MIRAR EL PIN, NO EL RELOJ. Un piso fijo es frágil en las dos direcciones:
+  // corto deja pasar la cola de la onda, largo le cobra a un refresco sano. El
+  // pin dice la verdad, así que se pollea hasta que BUSY baje, con el `target`
+  // sólo como tope de cordura y 3 s de tope duro por si el pin está muerto.
+  const int8_t busyPin = BoardConfig::ACTIVE.display.busy;
+  const unsigned long limite = millis() + 3000;
+  if (busyPin >= 0) {
+    while (digitalRead(busyPin) == HIGH && millis() < limite) delay(1);
+  }
+  // Y aunque el pin ya diga libre, se completa el mínimo: esto es la SEGUNDA
+  // línea de defensa, no la primera. La primera es esperar por nivel (el gancho
+  // de HalDisplay), porque el daño de verdad —la reescritura de BW y RED con el
+  // panel manejando— ocurre ADENTRO del driver, antes de llegar hasta acá.
+  if (panelMs < target) delay(target - panelMs);
+  // Y devuelve el tiempo REAL, no el que volvió el driver. En 1.5.95 se
+  // commiteaba el de antes del piso, así que Ajustes -> Memoria -> Panel decía
+  // "FULL 116 ms" cuando el refresco de verdad había durado dos segundos: el
+  // único número que teníamos para diagnosticar estaba mintiendo, y encima
+  // hacia el lado que hacía parecer que el arreglo no hacía nada.
+  return target;
 }
 }  // namespace
 
@@ -1820,7 +1863,7 @@ HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refre
     const unsigned long tPanel = millis();
     display.displayBuffer(p.mode, fadingFix);
     panelMs = millis() - tPanel;
-    holdForWave(p.mode, panelMs);
+    panelMs = holdForWave(p.mode, panelMs);
   }
   refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(panelMs));
   return p.mode;
@@ -1844,7 +1887,7 @@ HalDisplay::RefreshMode GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode 
       const unsigned long tPanel = millis();
       display.displayBuffer(p.mode, fadingFix);
       panelMs = millis() - tPanel;
-      holdForWave(p.mode, panelMs);
+      panelMs = holdForWave(p.mode, panelMs);
     }
     refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(panelMs));
     return p.mode;
@@ -2384,7 +2427,7 @@ HalDisplay::RefreshMode GfxRenderer::displayGrayscaleBase(const HalDisplay::Refr
     const unsigned long tPanel = millis();
     display.displayGrayscaleBase(p.mode, fadingFix);
     panelMs = millis() - tPanel;
-    holdForWave(p.mode, panelMs);
+    panelMs = holdForWave(p.mode, panelMs);
   }
   refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(panelMs));
   return p.mode;
@@ -2415,6 +2458,9 @@ void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuff
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
 
 void GfxRenderer::displayGrayBuffer() const {
+  // La onda de gris del lector también es una onda: el reposo no puede entrar
+  // en el medio y el piso vale igual. Quedó afuera del candado de 1.5.95.
+  PanelBusyScope busy;
   display.displayGrayBuffer(fadingFix);
   // Inverted output renders a crisp BW page (the facade skips the gray
   // planes), so only a real gray pass leaves residue for the coordinator.
