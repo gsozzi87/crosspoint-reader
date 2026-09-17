@@ -56,7 +56,15 @@ class HalClock {
   // esto, verificar el certificado del servidor es imposible, porque todo
   // certificado del mundo parece "todavía no válido" en 1970.
   // Devuelve false si el RTC no contesta o si lo que tiene no es creíble.
+  // Loguea CUÁL de los tres motivos fue: el chip no contesta por I2C, el
+  // oscilador se paró (se quedó sin alimentación) o nunca se lo puso en hora.
   bool applyToSystemClock() const;
+
+  // `settimeofday` con un epoch ya validado. La usan applyToSystemClock() y
+  // los dos caminos que ponen el RTC en hora (servidor y NTP): poner uno de
+  // los dos relojes y no el otro es lo que dejaba `time(nullptr)` en 1970
+  // durante toda la sesión justo después de sincronizar.
+  static bool applySystemClock(time_t epoch);
 
   // ¿El reloj del sistema está en una fecha creíble? (después de 2024).
   static bool systemClockLooksSet();
