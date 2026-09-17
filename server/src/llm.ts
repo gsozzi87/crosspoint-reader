@@ -13,7 +13,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config";
 import { checkUrl, redactSecrets } from "./net";
-import { searchWeb, asksForSearch, asksForReasoning, needsFreshInfo, formatResults } from "./websearch";
+import { searchWeb, asksForSearch, asksForReasoning, formatResults } from "./websearch";
 import type { Lang } from "./lang";
 
 // `code` es para el aparato: "no_key" se muestra distinto que un fallo del
@@ -30,9 +30,8 @@ export class LlmError extends Error {
 // como segundo bloque de system con cache_control y las preguntas siguientes
 // sobre el mismo capítulo casi no pagan entrada. En las APIs compatibles se pega
 // al system y listo.
-// `search`: "off" no busca nunca; "auto" busca si el usuario lo pidió o si la
-// frase huele a actualidad (y con Anthropic, aun así, decide el modelo);
-// "force" busca sí o sí (el clasificador de voz ya dijo que hace falta).
+// `search`: "off" no busca nunca; "auto" busca sólo si el usuario lo pidió en
+// la frase ("busca…"); "force" busca sí o sí (el clasificador de voz ya lo vio).
 type Options = {
   system: string;
   user: string;
@@ -313,11 +312,10 @@ export async function chatText(o: Options): Promise<string> {
 export async function chatSearch(o: Options): Promise<ChatResult> {
   const cfg = await config();
   const lang0: Lang = o.lang ?? "es";
-  // "force" lo pide quien llama (el clasificador de voz ya decidió). "auto":
-  // si lo pidió expresamente ("busca...") o si la frase huele a actualidad
-  // (needsFreshInfo). Entre 1.5.41 y 1.5.102 "auto" era SOLO lo pedido
-  // expresamente; el dueño pidió después que busque cuando hace falta.
-  const asked = o.search === "force" || (o.search === "auto" && (asksForSearch(o.user, lang0) || needsFreshInfo(o.user, lang0)));
+  // REGLA DEL DUEÑO (1.5.41, reafirmada después de 1.5.102): buscar SOLO si el
+  // usuario lo pidió expresamente ("busca..."). "force" lo pide quien llama;
+  // "auto" no adivina por actualidad: se mira la frase y nada más.
+  const asked = o.search === "force" || (o.search === "auto" && asksForSearch(o.user, lang0));
   const on = asked && cfg.search.enabled;
   // Idem razonar: solo si lo dijo. Cuesta tiempo y el aparato ya tarda.
   const reason = asksForReasoning(o.user, lang0);

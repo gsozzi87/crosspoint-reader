@@ -52,6 +52,15 @@ class VoiceActivity final : public Activity {
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
   bool wifiActivated = false;
+  // Hubo un POST de verdad (TLS): sólo entonces vale la pena el reinicio
+  // silencioso al salir. Si se salió durante la toma, la radio se apaga y listo.
+  bool requestMade = false;
+  // Para la línea de tiempos del log: cuánto duró la toma, cuánto se esperó al
+  // WiFi DESPUÉS de terminar de hablar (0 si ya estaba) y cuánto la petición.
+  unsigned long tRecordStart = 0;
+  unsigned long tRecordEnd = 0;
+  unsigned long tWifiUp = 0;
+  unsigned long lastWifiPumpMs = 0;
   // Se vuelve a la pantalla que abrió Hablar (dos Atrás, doble golpe, la
   // agenda) en vez de al hub; ahí no hay reinicio silencioso.
   bool returnToCaller = false;

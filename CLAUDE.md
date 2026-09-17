@@ -1625,18 +1625,38 @@ el framebuffer conserva lo pintado, el borde y el texto del grande quedaban asom
 cuadro reserva siempre dos renglones y el texto de uno se centra en el hueco: el segundo cuadro tapa
 exactamente al primero.
 
-## Buscar en internet cuando hace falta, no sólo cuando se dice "busca" (servidor, después de 1.5.102)
+## "Busca" es la única llave de internet, y la pregunta tardaba por otra cosa (1.5.103)
 
-El dueño: *"encima no buscó en internet la respuesta"*. La búsqueda existía entera (`server/src/llm.ts`:
-con Anthropic la herramienta `web_search` del propio servidor de Anthropic, con Groq la incorporada, con el
-resto la hace el servidor por Google Noticias + DuckDuckGo), pero desde 1.5.41 el clasificador de voz ponía
-`needsWeb` **sólo si el usuario decía "busca"** —regla que él mismo había pedido entonces—, y el `auto` de
-Preguntarle al libro hacía lo mismo. Y la casilla de `/board` decía "Buscar cuando haga falta", que era
-mentira. Ahora `needsWeb` va en true también cuando la respuesta depende de datos actuales (noticias,
-precios, cargos, clima, cualquier hecho del que el modelo no esté seguro), y el `auto` mira además
-`needsFreshInfo()`. "Busca…" sigue forzando. Apagarla del todo sigue en `/board` → Ajustes → IA.
-**La línea `voice ms:` del servidor lleva ahora `intent=` y `web=no|si|sin resultados|FALLO|apagada`**:
-sin eso, "no buscó" y "buscó y no encontró" eran el mismo síntoma.
+**REGLA DEL DUEÑO, reafirmada**: el servidor busca en internet **sólo si el usuario lo dice** ("busca…",
+"fijate en internet"), en Hablar y en Preguntarle al libro. La había pedido en 1.5.41 y la volvió a pedir
+después de 1.5.102, cuando por una tarde se cambió a "cuando haga falta": *"quiero que siga igual, solo cuando le
+digo busca, que busque; esto tiene que estar también en el helper"*. No cambiarlo sin preguntar. La casilla de
+`/board` decía "Buscar cuando haga falta" y ahora dice lo que hace. Lo que sí quedó del intento: la línea
+`voice ms:` del servidor lleva `intent=` y `web=no|si|sin resultados|FALLO|apagada`, así "no buscó" y "buscó y
+no encontró" dejan de ser el mismo síntoma.
+
+**Y la pregunta que "tarda un montón, así sea la distancia a la luna" no era el modelo.** Los logs de 1.5.99 y
+1.5.100 dicen lo mismo en cada pregunta: toma de 4-8 s, **4-5 s de WiFi DESPUÉS de terminar de hablar**
+(`Take` → `upload`), y el servidor en 3-4 s — o **90 s** cuando la conexión se quedaba muda y el reintento
+salía en 3,5 s. O sea 15 s en el mejor caso y un minuto y medio en el peor. Dos cosas, las dos en el aparato:
+
+- **El WiFi se conecta MIENTRAS se habla.** `VoiceActivity::startRecording()` arranca `FriendlyWifi` antes de
+  abrir el micrófono y le da cuerda cada 100 ms desde el loop de `RECORDING`; al terminar la toma, si ya está
+  conectado, se manda en el acto. Estaba así desde 1.5.39 (grabar, DESPUÉS conectar), no era una regresión: era
+  el diseño. Sin red guardada, el selector espera a que termine la toma, como siempre. Grabar con la radio
+  encendida ya pasaba en la segunda vuelta (la hora del recordatorio) y en la Biblia, y transcribía bien.
+  Y si se sale durante la toma (Atrás, toma demasiado corta) **no hay reinicio silencioso**: sin un POST no
+  hubo TLS, no hay heap que recuperar, se apaga la radio y listo (`requestMade`).
+- **Una conexión muda ya no se come el tope entero.** `SecureClient::setKeepAlive()` (parche 0025 del SDK,
+  apagado por defecto; `ServerClient` lo enciende en 5 + 3·3 s): el router que deja de entregar la bajada
+  dejaba la petición esperando 40-90 s sobre una conexión que el servidor **ya había contestado** (los
+  `29776 bytes subidos` del log dicen que la subida fue confirmada). Con keepalive el socket se cae a los ~14 s
+  y el reintento sale por una conexión nueva. Un servidor lento pero vivo contesta las sondas: no dispara.
+  OJO: `performRequest()` ya ponía `WiFi.setSleep(false)` ANTES de 1.5.101 y el POST de Hablar se quedaba mudo
+  igual, así que el modem sleep **no explica** ese caso; el keepalive lo acota sea cual sea la causa.
+- **El aparato dice sus tiempos**: `tiempos: toma N ms, WiFi +N ms tras la toma, ida y vuelta N ms` (con
+  `— LENTO` pasados los 15 s), al lado de la línea del servidor (`stt= llm= tts=`). Con esas dos líneas la
+  próxima queja de "tarda" se lee sin deducir nada de los sellos.
 
 ## Roadmap acordado
 
