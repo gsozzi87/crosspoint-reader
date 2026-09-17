@@ -165,6 +165,15 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
   // One id across the retries of a request: a server that applied the first
   // attempt but lost the response can recognise the replay.
   const std::string requestId = newRequestId();
+  // SIN AHORRO DE ENERGÍA DEL WIFI MIENTRAS HAY UNA PETICIÓN EN CURSO. Con el
+  // modem sleep puesto (el default), en algunos routers domésticos —el
+  // INFINITUM del dueño, no el otro— una de cada dos conexiones nuevas se
+  // quedaba muda hasta el tope (90 s en Hablar, 20-30 s en el hub) y el
+  // reintento salía en 3 s. La OTA, que ya pone WIFI_PS_NONE, nunca se
+  // trabó en esa misma red, y SpeechToText hace exactamente esto desde
+  // siempre. Cuesta unos 70 mA sólo mientras dura la petición.
+  const bool wifiDormia = WiFi.getSleep();
+  if (wifiDormia) WiFi.setSleep(false);
   Result result = Result::Transport;
   for (int attempt = 0; attempt < ATTEMPTS; ++attempt) {
     if (attempt > 0) {
@@ -187,6 +196,7 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
     }
     if (!retryable(out.status)) break;
   }
+  if (wifiDormia) WiFi.setSleep(true);
   if (result != Result::Ok) {
     LOG_ERR(TAG, "%s %s -> %s (status %d)", method, path.c_str(), resultName(result), out.status);
   }

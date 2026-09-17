@@ -463,6 +463,12 @@ constexpr unsigned long DOUBLE_BACK_MS = 1200;
 // el hub y el de abrir el menú del ítem en las listas. Por debajo del umbral más
 // chico de esos dos (1 s), así que ningún gesto largo se cuela como toque.
 constexpr unsigned long LONG_BACK_MS = 600;
+// Dos sueltas a menos de esto no son dos toques: son el rebote de una. En el
+// log había un "doble Atrás (104 ms)" 170 ms después de un Atrás mantenido —
+// nadie toca dos veces en un décimo de segundo. Y después de un mantenido, la
+// suelta puede rebotar: medio segundo de cuarentena.
+constexpr unsigned long MIN_DOUBLE_BACK_MS = 150;
+constexpr unsigned long AFTER_LONG_BACK_MS = 500;
 // Media hora de ocio sin poder reposar ni una vez: algo lo está bloqueando y en
 // "siempre encendido" nadie más va a mandar a dormir. Ver la red de seguridad
 // en el loop.
@@ -503,6 +509,7 @@ static bool isCalmScreen(const char* name) {
 static void checkVoiceShortcut() {
   static unsigned long lastBackRelease = 0;
   static unsigned long backPressedAt = 0;
+  static unsigned long lastLongBackRelease = 0;
   if (mappedInputManager.wasPressed(MappedInputManager::Button::Back)) backPressedAt = millis();
   if (!mappedInputManager.wasReleased(MappedInputManager::Button::Back)) return;
   const unsigned long now = millis();
@@ -516,10 +523,19 @@ static void checkVoiceShortcut() {
   backPressedAt = 0;
   if (held > LONG_BACK_MS) {
     lastBackRelease = 0;
+    lastLongBackRelease = now;
     LOG_DBG("MAIN", "Atrás mantenido %lu ms: no cuenta para el atajo de voz", held);
     return;
   }
+  if (lastLongBackRelease != 0 && now - lastLongBackRelease < AFTER_LONG_BACK_MS) {
+    LOG_DBG("MAIN", "Atrás %lu ms después de un Atrás mantenido: rebote, no cuenta", now - lastLongBackRelease);
+    return;
+  }
   const unsigned long gap = lastBackRelease != 0 ? now - lastBackRelease : 0;
+  if (lastBackRelease != 0 && gap < MIN_DOUBLE_BACK_MS) {
+    LOG_DBG("MAIN", "Atrás a %lu ms del anterior: rebote, no cuenta", gap);
+    return;
+  }
   const bool isDouble = lastBackRelease != 0 && gap <= DOUBLE_BACK_MS;
   lastBackRelease = isDouble ? 0 : now;  // el segundo toque cierra la ventana
   if (!isDouble) {

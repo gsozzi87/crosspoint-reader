@@ -22,7 +22,7 @@ import { DEFAULT_ACCOUNT, sha256Hex } from "./db";
 import { mutateDoc, readDoc } from "./fsjson";
 import { chatText } from "./llm";
 import { normalizeLang, type Lang } from "./lang";
-import { download, DownloadError, extractArticle, readFeed } from "./rss";
+import { DEFAULT_TZ, download, DownloadError, extractArticle, readFeed, whenLabel } from "./rss";
 import { load as loadStore } from "./store";
 import { addUsage, overQuota } from "./usage";
 
@@ -143,6 +143,11 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   const previo = await loadPack(accountId);
   const conocido = new Map(previo.items.map((i) => [i.id, i]));
 
+  // La hora de cada nota va en la zona de la CUENTA (la del lugar del clima) y
+  // no en la del servidor, que es UTC. Sin lugar cargado, HUB_TZ.
+  const lugar = await readDoc<{ timezone?: unknown } | null>(accountId, "hub-settings", null);
+  const tz = typeof lugar?.timezone === "string" && lugar.timezone ? lugar.timezone : DEFAULT_TZ;
+
   // Los titulares de todos los feeds, intercalados: uno de cada uno y después
   // la segunda vuelta, así un diario que publica mucho no se come el paquete.
   const porFeed: { feed: string; id: number; items: Awaited<ReturnType<typeof readFeed>>["items"] }[] = [];
@@ -189,13 +194,13 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     const puedeMasticar = !sinCupo && chewedCount < DIGEST_PER_RUN;
     const { text: final, chewed } = puedeMasticar ? await chew(accountId, text, lang) : { text: text.slice(0, MAX_BODY), chewed: false };
     if (chewed) chewedCount++;
-    const body: Body = { id, title: item.title, feed, when: item.when, text: final };
+    const body: Body = { id, title: item.title, feed, when: whenLabel(item.whenAt, tz), text: final };
     bodies[id] = body;
     items.push({
       id,
       feed,
       title: item.title,
-      when: item.when,
+      when: whenLabel(item.whenAt, tz),
       sha: (await sha256Hex(final)).slice(0, 16),
       bytes: final.length,
       chewed,

@@ -1592,6 +1592,31 @@ otra cosa: *"cuando le pregunto algo se queda pensando un montón de tiempo, cua
 Regla: **lo que se latchea mientras el loop no corre es del pasado, no una orden.** Vale para el PMIC, para el
 IMU y para cualquier otro periférico con estado pegajoso que se lea por sondeo.
 
+## El router, el ahorro del WiFi y lo que quedaba de la tanda (1.5.101)
+
+- **Las conexiones mudas coinciden con el ROUTER, no con el firmware.** Desde que el aparato pasó de
+  "Esthetique" (BSSID `50:46:4a:…`, fallida a las 22:18) a "INFINITUM6902_2.4" (`c2:68:cc:…`), una de cada dos
+  conexiones nuevas al servidor se quedaba muda hasta el tope: `POST /api/voice` 90 s, `GET /api/hub` 20 s,
+  `GET /api/news/pack` 28 s, y el reintento salía en 3 s. Desde acá Railway contesta en 0,2-0,5 s doce veces
+  seguidas. Lo que distingue a la OTA —5,7 MB por la misma red sin un solo traspié— es que pone
+  `WIFI_PS_NONE`: el modem sleep del ESP32 con ciertos routers domésticos pierde paquetes hasta que TCP se
+  rinde. `ServerClient::request()` apaga el modem sleep mientras dura la petición (como ya hacía
+  `SpeechToText`) y lo devuelve al terminar. El tope de Hablar bajó de 90 a 40 s: el servidor tarda 1,5-5 s.
+  La transferencia de archivos por esa misma red "se conecta pero tarda horrores": ahí el aparato es el
+  servidor y ya tenía `setSleep(false)`; el log dice ahora la dirección con máscara y puerta de enlace, y
+  cada vez que alguien llega a la página. Si con eso sigue lento, es el router.
+- **Apoyar el aparato era un doble golpe.** Cada Hablar abierto solo tenía un evento de posición (inclinar,
+  horizontal, boca arriba) 100-650 ms antes; los dobles a propósito llegan con el aparato ya quieto en la mano.
+  `TAP_AFTER_MOVE_MS` (700): un golpe dentro de ese plazo después de un evento de posición no es un gesto y el
+  log lo dice (`recién movido: se ignora`).
+- **El doble Atrás tenía un rebote**: `doble Atrás (104 ms)` 170 ms después de un Atrás mantenido. Nadie toca dos
+  veces en un décimo de segundo. Dos sueltas a menos de 150 ms son una, y medio segundo de cuarentena después
+  de un mantenido.
+- Noticias: la hora salía en UTC porque `getHours()` corre en Railway. Ahora va en la zona del lugar del clima de
+  la cuenta (`hub-settings.timezone`) o `HUB_TZ`. Los paquetes ya armados se corrigen en la pasada de cada hora.
+- Ajustes → Memoria: "quedan N h" en dos renglones; en uno, con el metadato a la derecha, se cortaba justo lo
+  único que se viene a leer. Biblia: se fue el "En la tarjeta" de cada capítulo ("es irrelevante").
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

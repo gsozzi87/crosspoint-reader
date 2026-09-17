@@ -137,6 +137,7 @@ class MotionInput {
   bool status1Works_ = false;  // STATUS1 ya reportó un golpe alguna vez: el byte deja de ser respaldo
   unsigned long lastTapEmitMs_ = 0;
   unsigned long lastBigMoveMs_ = 0;
+  unsigned long lastPositionEventMs_ = 0;  // último inclinar/horizontal/boca: apoyar o mover el aparato
   const char* tapFailure_ = nullptr;
   bool gyroOn_ = false;
   unsigned long lastPollMs_ = 0;

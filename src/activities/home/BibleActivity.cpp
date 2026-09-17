@@ -850,11 +850,9 @@ void BibleActivity::render(RenderLock&&) {
         const int book = inBooks ? i : bookIndex;
         const std::string label =
             inBooks ? books[book].name : (tr(STR_BIBLE_CHAPTER) + std::string(" ") + std::to_string(i + 1));
-        // En los capítulos el metadato dice si se lee sin WiFi; antes era un
-        // cuadradito de 6 px que no se entendía sin manual.
-        const std::string meta =
-            inBooks ? std::to_string(books[book].chapters)
-                    : (chapterCached(bookIndex, i + 1) ? std::string(tr(STR_PHOTO_ON_CARD)) : std::string());
+        // En los capítulos no va metadato: con la Biblia entera en la tarjeta,
+        // "En la tarjeta" en cada renglón no decía nada ("es irrelevante").
+        const std::string meta = inBooks ? std::to_string(books[book].chapters) : std::string();
         listui::RowSpec spec;
         spec.title = label.c_str();
         spec.meta = meta.empty() ? nullptr : meta.c_str();
