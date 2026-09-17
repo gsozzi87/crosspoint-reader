@@ -1801,7 +1801,20 @@ unsigned long holdForWave(const HalDisplay::RefreshMode mode, const unsigned lon
     LOG_ERR("GFX", "la espera del panel volvió en %lu ms (se espera hasta %lu): flanco de BUSY perdido, van %lu",
             panelMs, target, (unsigned long)veces);
   }
-  delay(target - panelMs);
+  // MIRAR EL PIN, NO EL RELOJ. Un piso fijo es frágil en las dos direcciones:
+  // corto deja pasar la cola de la onda, largo le cobra a un refresco sano. El
+  // pin dice la verdad, así que se pollea hasta que BUSY baje, con el `target`
+  // sólo como tope de cordura y 3 s de tope duro por si el pin está muerto.
+  const int8_t busyPin = BoardConfig::ACTIVE.display.busy;
+  const unsigned long limite = millis() + 3000;
+  if (busyPin >= 0) {
+    while (digitalRead(busyPin) == HIGH && millis() < limite) delay(1);
+  }
+  // Y aunque el pin ya diga libre, se completa el mínimo: esto es la SEGUNDA
+  // línea de defensa, no la primera. La primera es esperar por nivel (el gancho
+  // de HalDisplay), porque el daño de verdad —la reescritura de BW y RED con el
+  // panel manejando— ocurre ADENTRO del driver, antes de llegar hasta acá.
+  if (panelMs < target) delay(target - panelMs);
   // Y devuelve el tiempo REAL, no el que volvió el driver. En 1.5.95 se
   // commiteaba el de antes del piso, así que Ajustes -> Memoria -> Panel decía
   // "FULL 116 ms" cuando el refresco de verdad había durado dos segundos: el
@@ -2445,6 +2458,9 @@ void GfxRenderer::copyGrayscaleLsbBuffers() const { display.copyGrayscaleLsbBuff
 void GfxRenderer::copyGrayscaleMsbBuffers() const { display.copyGrayscaleMsbBuffers(frameBuffer); }
 
 void GfxRenderer::displayGrayBuffer() const {
+  // La onda de gris del lector también es una onda: el reposo no puede entrar
+  // en el medio y el piso vale igual. Quedó afuera del candado de 1.5.95.
+  PanelBusyScope busy;
   display.displayGrayBuffer(fadingFix);
   // Inverted output renders a crisp BW page (the facade skips the gray
   // planes), so only a real gray pass leaves residue for the coordinator.

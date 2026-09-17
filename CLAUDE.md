@@ -1425,6 +1425,67 @@ Lo que el dueño quiere de ese botón está escrito y no se negocia: apretar y s
 barrita sólo carga mientras se mantiene; soltar con la barrita a medias = suspender; **reiniciar,
 nunca**.
 
+## La espera del panel, por NIVEL y no por flanco (1.5.97)
+
+**El arreglo de verdad, y es una línea.** `HalDisplay::begin()` instala el *slice hook* que el SDK
+ofrece justo para un anfitrión como éste y que nunca habíamos puesto:
+
+```cpp
+if (BoardConfig::isWS397()) {
+  einkDisplay.setBusyWaitSliceHook([](int8_t, uint8_t) -> bool { return false; });
+}
+```
+
+Con ese puntero no nulo, `EpdBus::waitRefreshComplete()` abandona el camino **por flanco**
+(`attachInterrupt(BUSY, CHANGE)` + 20 ms para verlo; sin flanco, `detachInterrupt` y `return` sin
+esperar nada) y pasa al **polleado**: 20 ms de gracia por NIVEL y después `waitBusy()`, que para
+ActiveHigh es `while (digitalRead(busy) == HIGH)`. **Un nivel no se puede perder**, se pierda el
+flanco por lo que se pierda. Cuesta el ~9 % de energía por refresco que el SDK documenta. Si BUSY
+estuviera muerto, cae de largo igual que hoy —no queda peor— y el lazo corta a los 30 s.
+
+**Por qué el piso de 1.5.95/96 no podía alcanzar, y esto es lo que yo no había visto.** El build es
+`EINK_DISPLAY_SINGLE_BUFFER_MODE=1`, así que `Ssd1677Driver::displayImpl` hace, **adentro** de
+`display.displayBuffer()** y apenas vuelve `refresh()`:
+
+```cpp
+if (prev == nullptr && !async) {
+  setRamArea(bus, 0, 0, _w, _h);
+  writeRam(bus, CMD_WRITE_RAM_BW,  fb, _bufferSize);
+  writeRam(bus, CMD_WRITE_RAM_RED, fb, _bufferSize);
+}
+```
+
+O sea que **el daño ya está hecho antes de que GfxRenderer recupere el control**: cualquier piso
+puesto más afuera llega tarde por diseño. El piso queda igual, pero como lo que de verdad es —el
+instrumento que mide la falla sin cable, y una segunda línea de defensa para no encimar el cuadro
+siguiente—, no como el arreglo.
+
+**Y por qué la mancha es negra y nítida y son exactamente DOS cuadros**: el FAST sale diferencial
+contra RED (`CTRL1_NORMAL`) y el HALF y el FULL salen absolutos (`CTRL1_BYPASS_RED`). La tinta que
+quedó "coincide" con lo que dice RED, así que **no se vuelve a manejar nunca** hasta que cae una
+limpieza. Una sola onda perdida envenena el vidrio hasta el próximo HALF.
+
+**LA CORRECCIÓN QUE ME DEBO, y es la tercera de esta sesión.** En 1.5.95 dije con todas las letras
+que la causa era mía, de la línea de 1.5.93 que destapó el reposo. **Ese mecanismo es real y está
+cerrado, pero NO explica el log del usuario**, y dos verificaciones independientes lo mostraron con
+aritmética: en ese log hay trece refrescos en 28,3 s, uno cada 2,2 s sostenido — el aparato EN USO.
+El ocio nunca llega a los 30 s de `REST_AFTER_MS`, así que el reposo no entró ni una vez, y sin
+embargo los refrescos salen todos cortos. Quedan dos candidatos y **el árbol no alcanza para
+decidir**: (A) el flanco se lo come el light sleep, o (B) BUSY levanta más tarde que los 20 ms de la
+ventana, despierto, en todos los refrescos. El hook arregla los dos. La línea del log los separa: si
+aparece pegada a un `[REST] a reposar…` era A; si aparece sin reposo cerca, era B.
+Y del diff de 1.5.91 a 1.5.94 no sale nada que toque GPIO, interrupciones, frecuencia de CPU ni
+SPI, y el submódulo no se movió: **puede no haber sido un commit**.
+
+**Dos huecos del candado de 1.5.95, encontrados en la misma revisión y cerrados**: `IdleSleep::tick()`
+ahora repregunta `gfxPanelRefreshInFlight()` **pegado** a `esp_light_sleep_start()` (entre la
+consulta de `main.cpp` y el sueño pasan varios ms, con dos lecturas I²C en el medio), y
+`displayGrayBuffer()` —la onda de gris del lector, 366 ms— había quedado sin candado y sin piso.
+
+**El piso ahora mira el pin, no el reloj.** Un número fijo es frágil en las dos direcciones: corto
+deja pasar la cola, largo le cobra a un refresco sano. Se pollea BUSY hasta que baje, con el tope
+por modo como cordura y 3 s de tope duro.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

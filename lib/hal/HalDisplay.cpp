@@ -1,5 +1,6 @@
 #include <HalDisplay.h>
 #include <HalGPIO.h>
+#include <BoardConfig.h>
 
 // Global HalDisplay instance
 HalDisplay display;
@@ -17,6 +18,29 @@ void HalDisplay::begin(bool seamless) {
   }
 
   einkDisplay.begin();
+
+  // LA ESPERA DEL PANEL, POR NIVEL. El SDK ofrece este gancho justo para un
+  // anfitrión como éste y nosotros nunca lo habíamos instalado, así que la
+  // espera caía en el camino por interrupción: attachInterrupt(BUSY, CHANGE) y
+  // 20 ms para ver el flanco de arranque; sin flanco, `detachInterrupt` y
+  // `return` sin esperar la onda. Y lo que pasa apenas vuelve está adentro del
+  // propio driver, ANTES de que nadie más tome el control: reescribe BW y RED
+  // con el panel todavía manejando. Por eso ningún piso de tiempo puesto más
+  // afuera podía taparlo — llegaba tarde por diseño.
+  //
+  // Encima el daño se amplifica: el FAST sale diferencial contra RED
+  // (CTRL1_NORMAL) mientras HALF y FULL salen absolutos (CTRL1_BYPASS_RED), así
+  // que la tinta que quedó "coincide" con RED y no se vuelve a manejar nunca.
+  // De ahí que se vea negra y nítida en vez de gris, que sean exactamente dos
+  // cuadros y no doce capas, y que sólo se limpie cuando cae un HALF o un FULL.
+  //
+  // El gancho devuelve false (no duerme nada por su cuenta): con eso alcanza
+  // para que `busyIdle()` haga el delay(1) y la espera sea por nivel. Cuesta el
+  // ~9 % más de energía por refresco que el SDK documenta, y con el candado del
+  // reposo eso se paga sin discusión.
+  if (BoardConfig::isWS397()) {
+    einkDisplay.setBusyWaitSliceHook([](int8_t, uint8_t) -> bool { return false; });
+  }
 
   if (seamless) {
     // Defuse the SDK's X3 _x3InitialFullSyncsRemaining counter (no-op on X4)
@@ -148,3 +172,7 @@ uint16_t HalDisplay::getDisplayHeight() const { return einkDisplay.getDisplayHei
 uint16_t HalDisplay::getDisplayWidthBytes() const { return einkDisplay.getDisplayWidthBytes(); }
 
 uint32_t HalDisplay::getBufferSize() const { return einkDisplay.getBufferSize(); }
+
+void HalDisplay::setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel)) {
+  einkDisplay.setBusyWaitSliceHook(sliceHook);
+}
