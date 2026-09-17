@@ -26,6 +26,7 @@ import { addListItem, load, mutate, nextId, resolveList, listLabel, whenLabel, p
 import { LANGUAGE_NAME, defaultTranslateTarget, normalizeLang, type Lang } from "./lang";
 import { synthesize } from "./tts";
 import { chatJson, chatText, chatSearch, LlmError } from "./llm";
+import { config } from "./config";
 import { sourcesLine } from "./websearch";
 import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
@@ -203,10 +204,11 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "'Recuerda que', 'ten presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
     "Si está corrigiendo algo que ya sabes de él ('ya no vivo en México', 'ahora trabajo en otro lugar'), también es memory:",
     "escribe el dato NUEVO completo en text y el servidor sustituye el anterior.",
-    "needsWeb va en true SOLO si el usuario PIDIO EXPRESAMENTE que busque en internet",
-    "(busca, busca en internet, revisa en internet, averigua). Que la pregunta sea de actualidad NO es suficiente:",
-    "si no pidió buscar, responde con lo que sabes y aclara que el dato puede estar desactualizado.",
-    "Buscar cuesta dinero y el usuario pidió decidirlo. En todos los demás casos va false.",
+    "needsWeb va en true cuando el usuario PIDE que busque en internet (busca, revisa en internet, averigua) Y TAMBIEN",
+    "cuando la respuesta depende de datos actuales que no puedes saber de memoria: noticias, resultados, precios y cotizaciones,",
+    "quién ocupa un cargo hoy, estrenos, versiones, el clima, cualquier hecho posterior a tu entrenamiento o del que no estés seguro.",
+    "Ante la duda, true: una respuesta inventada es peor que una búsqueda. Para un dato estable de conocimiento general",
+    "(cuánto mide algo, quién escribió un libro, una definición) va false y respondes tú. Para las órdenes (recordatorio, lista, nota, temporizador) siempre false.",
     `'Traduce', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
     "y reply la responde con conocimiento general, de forma breve y directa. Si la frase contiene una acción y una pregunta, guarda la",
     "acción en actions y responde la pregunta en reply. Si es ambiguo entre acción y pregunta, elige task e indícalo.",
@@ -313,7 +315,11 @@ async function classify(acc: number, text: string, lang: Lang, history: Conversa
 // hace falta internet, así que acá se contesta de nuevo con búsqueda (con
 // Anthropic la hace el modelo; con las compatibles busca el servidor). Cuesta
 // una llamada más, por eso solo se hace cuando el modelo lo pidió.
-async function answerWithSearch(acc: number, question: string, lang: Lang): Promise<{ screen: string; spoken: string } | null> {
+// Hasta 1.5.102 el clasificador ponía needsWeb SOLO si el usuario decía "busca"
+// (regla de 1.5.41); el dueño pidió después que busque cuando la respuesta lo
+// necesita ("no buscó en internet la respuesta"), así que ahora también va por
+// actualidad. Apagar la búsqueda entera sigue estando en /board → Ajustes → IA.
+async function answerWithSearch(acc: number, question: string, lang: Lang): Promise<{ screen: string; spoken: string; searched: boolean } | null> {
   try {
     const memories = memoryLines(await load(acc));
     const hoy = new Date().toLocaleDateString("es-MX", { timeZone: timeZone(), day: "2-digit", month: "long", year: "numeric" });
@@ -336,7 +342,8 @@ async function answerWithSearch(acc: number, question: string, lang: Lang): Prom
     // Las fuentes van a la pantalla, no al parlante: nadie quiere escuchar
     // "punto com" al final de cada respuesta.
     const line = r.searched ? sourcesLine(r.sources, lang) : "";
-    return { screen: [spoken, line].filter(Boolean).join("\n\n"), spoken };
+    if (!r.searched) console.warn("voice búsqueda: el modelo no buscó", r.searchNote ? `(${r.searchNote})` : "");
+    return { screen: [spoken, line].filter(Boolean).join("\n\n"), spoken, searched: r.searched };
   } catch (err) {
     console.error("voice búsqueda:", err);
     return null;
@@ -499,11 +506,19 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     }
     // Pregunta de actualidad: se vuelve a contestar con búsqueda.
     let spokenReply = parsed.reply;
-    if (parsed.intent === "question" && parsed.needsWeb && !(parsed.actions ?? []).length) {
+    // `web` sale en la línea de tiempos: sin eso no se distingue "no buscó"
+    // de "buscó y no encontró" de "la búsqueda falló".
+    let web = "no";
+    if (parsed.intent === "question" && parsed.needsWeb && !(parsed.actions ?? []).length && !(await config()).search.enabled) {
+      web = "apagada";
+    } else if (parsed.intent === "question" && parsed.needsWeb && !(parsed.actions ?? []).length) {
       const better = await answerWithSearch(acc, contextualMessage(conversationTurns, text), lang);
       if (better) {
         parsed.reply = better.screen;
         spokenReply = better.spoken;
+        web = better.searched ? "si" : "sin resultados";
+      } else {
+        web = "FALLO";
       }
     }
     const saved = await execute(acc, parsed, text, lang);
@@ -522,7 +537,7 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     // No mas, porque el aparato se guarda el audio ENTERO en memoria antes de
     // reproducirlo (45 s de ADPCM son ~360 KB) y no sabe reproducir mientras baja.
     const ms = { stt: tStt - t0, llm: tLlm - tStt, tts: Date.now() - tLlm, total: Date.now() - t0 };
-    console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total}`);
+    console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total} intent=${parsed.intent} web=${web}`);
     const conversationId = parsed.intent === "question"
       ? rememberConversation(acc, requestedConversationId, text, parsed.reply)
       : "";
