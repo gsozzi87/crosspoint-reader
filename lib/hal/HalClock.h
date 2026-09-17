@@ -14,6 +14,21 @@ class HalClock {
   mutable bool _hasCachedTime = false;
   mutable unsigned long _lastPollMs = 0;
 
+  // Último epoch que el RTC contestó de verdad, y cuándo. El bus de sensores es
+  // UNO SOLO (RTC 0x51, SHTC3 0x70, IMU 0x6B) y el IMU se consulta cada 80 ms,
+  // así que una transacción puede perderse. `getTime()` ya tenía red —se queda
+  // con la última hora buena—, `getEpochUtc()` no tenía ninguna: un choque y
+  // todo lo que la usa (la agenda, el diario de batería, `cp.time()`, la
+  // pantalla de sueño) contestaba "el aparato no está en hora" con el RTC
+  // andando perfecto.
+  mutable time_t _cachedEpoch = 0;
+  mutable unsigned long _cachedEpochMs = 0;
+  // Cuánto se puede estirar ese epoch con `millis()`. Un minuto alcanza de
+  // sobra para tapar un choque de bus y es poco para que el error importe:
+  // más que eso ya no es un choque, es el RTC que dejó de contestar, y eso
+  // hay que decirlo y no disimularlo.
+  static constexpr unsigned long EPOCH_CACHE_MAX_MS = 60000;
+
   static constexpr unsigned long CLOCK_POLL_MS = 10000;  // 10 seconds
 
  public:
