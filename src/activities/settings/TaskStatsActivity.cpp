@@ -203,12 +203,14 @@ void TaskStatsActivity::render(RenderLock&&) {
     if (!d.valid) {
       y = rowAt(y, listui::ROW1_H, {.title = tr(STR_MEMORY_BATTERY_WAIT), .rule = true});
     } else {
-      char title[96];
-      char meta[48];
-      snprintf(title, sizeof(title), "%.1f %%/h  ·  %s %.0f h (%.1f %s)", d.pctPerHour, tr(STR_MEMORY_BATTERY_LEFT),
-               d.hoursLeft, d.hoursLeft / 24.0f, tr(STR_MEMORY_BATTERY_DAYS));
-      snprintf(meta, sizeof(meta), "%s %.1f h", tr(STR_MEMORY_BATTERY_WINDOW), d.hours);
-      y = rowAt(y, listui::ROW1_H, {.title = title, .meta = meta, .rule = true});
+      // Dos renglones: en uno solo, con el metadato a la derecha, "quedan N h"
+      // quedaba cortado y era justo lo único que se venía a leer.
+      char title[64];
+      char detail[64];
+      snprintf(title, sizeof(title), "%s %.0f h (%.1f %s)", tr(STR_MEMORY_BATTERY_LEFT), d.hoursLeft,
+               d.hoursLeft / 24.0f, tr(STR_MEMORY_BATTERY_DAYS));
+      snprintf(detail, sizeof(detail), "%.1f %%/h · %s %.1f h", d.pctPerHour, tr(STR_MEMORY_BATTERY_WINDOW), d.hours);
+      y = rowAt(y, listui::ROW2_H, {.title = title, .detail = detail, .rule = true});
     }
     y += listui::GAP;  // rowAt ya sumó el alto de la fila
   }

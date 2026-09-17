@@ -221,7 +221,15 @@ void CrossPointWebServer::begin() {
   LOG_DBG("WEB", "Web server started on port %d", port);
   // Show the correct IP based on network mode
   const String ipAddr = apMode ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
-  LOG_DBG("WEB", "Access at http://%s/", ipAddr.c_str());
+  if (apMode) {
+    LOG_INF("WEB", "transferencia en http://%s/ (punto de acceso propio)", ipAddr.c_str());
+  } else {
+    // Con la puerta de enlace y la máscara: si el teléfono está en otra subred
+    // (red de invitados, aislamiento de clientes del router), no va a llegar, y
+    // eso se ve acá antes de sospechar del aparato.
+    LOG_INF("WEB", "transferencia en http://%s/ (red %s, mascara %s, puerta %s)", ipAddr.c_str(),
+            WiFi.SSID().c_str(), WiFi.subnetMask().toString().c_str(), WiFi.gatewayIP().toString().c_str());
+  }
   LOG_DBG("WEB", "WebSocket at ws://%s:%d/", ipAddr.c_str(), wsPort);
   LOG_DBG("WEB", "[MEM] Free heap after server.begin(): %d bytes", ESP.getFreeHeap());
 }
@@ -358,6 +366,10 @@ static void sendHtmlContent(WebServer* server, const char* data, size_t len) {
 }
 
 void CrossPointWebServer::handleRoot() const {
+  // Que el log diga si ALGUIEN llegó a la página: "me da una dirección a la que
+  // no hay acceso" puede ser el aparato o el router, y sin esta línea no se
+  // distingue.
+  LOG_INF("WEB", "página pedida desde %s", server->client().remoteIP().toString().c_str());
   sendHtmlContent(server.get(), HomePageHtml, sizeof(HomePageHtml));
   LOG_DBG("WEB", "Served root page");
 }

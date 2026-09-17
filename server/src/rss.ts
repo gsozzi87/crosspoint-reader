@@ -39,7 +39,7 @@ const MAX_ITEMS = 15;
 const MAX_TEXT = 30_000;
 const MAX_DESC = 8_000;              // el <content:encoded> sirve de artículo cuando la página no se puede leer
 
-export type Item = { id: number; title: string; when: string; link: string; desc: string };
+export type Item = { id: number; title: string; when: string; whenAt: number; link: string; desc: string };
 type FeedCache = { at: number; items: Item[]; error?: string };
 // La clave es la URL, NO el id del feed: los ids son de cada cuenta (el feed 5
 // de una casa no es el feed 5 de otra) y con el id de clave una cuenta veía los
@@ -133,14 +133,32 @@ function itemLink(block: string): string {
   return "";
 }
 
-function whenLabel(date: string): string {
-  const t = Date.parse(date);
-  if (Number.isNaN(t)) return "";
-  const d = new Date(t);
-  const now = new Date();
-  const sameDay = d.toDateString() === now.toDateString();
-  const hh = String(d.getHours()).padStart(2, "0"), mm = String(d.getMinutes()).padStart(2, "0");
-  return sameDay ? `${hh}:${mm}` : `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
+// LA HORA VA EN LA ZONA DE LA CUENTA, NO EN LA DEL SERVIDOR. Railway corre en
+// UTC, y `getHours()` daba la hora de Londres en un aparato que está a -6:
+// "las noticias tienen la hora en UTC". La zona sale del lugar del clima de la
+// cuenta (news.ts la pasa) y, sin lugar, de HUB_TZ.
+export const DEFAULT_TZ = process.env.HUB_TZ ?? "America/Argentina/Buenos_Aires";
+
+function localParts(at: number, tz: string): { y: string; mo: string; d: string; hh: string; mm: string } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+  }).formatToParts(new Date(at));
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "00";
+  return { y: get("year"), mo: get("month"), d: get("day"), hh: get("hour"), mm: get("minute") };
+}
+
+export function whenLabel(at: number, tz: string = DEFAULT_TZ): string {
+  if (!at) return "";
+  let a, b;
+  try {
+    a = localParts(at, tz);
+    b = localParts(Date.now(), tz);
+  } catch {
+    a = localParts(at, DEFAULT_TZ);  // una zona inválida guardada no deja Noticias sin hora
+    b = localParts(Date.now(), DEFAULT_TZ);
+  }
+  const sameDay = a.y === b.y && a.mo === b.mo && a.d === b.d;
+  return sameDay ? `${a.hh}:${a.mm}` : `${a.d}/${a.mo}`;
 }
 
 // RSS 2.0 (<item>), Atom (<entry>) y RDF/RSS 1.0 (<item rdf:about=...>), con o
@@ -161,7 +179,8 @@ export function parseFeed(xml: string): Item[] {
     if (!title) title = desc.slice(0, 90);           // los feeds tipo microblog no traen título
     if (!title) continue;
     const date = firstTag(b, ["pubDate", "published", "updated", "dc:date", "date", "issued"]);
-    items.push({ id: ++i, title, when: whenLabel(date), link: itemLink(b), desc: desc.slice(0, MAX_DESC) });
+    const whenAt = Number.isNaN(Date.parse(date)) ? 0 : Date.parse(date);
+    items.push({ id: ++i, title, when: whenLabel(whenAt), whenAt, link: itemLink(b), desc: desc.slice(0, MAX_DESC) });
   }
   return items;
 }

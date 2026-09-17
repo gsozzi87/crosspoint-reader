@@ -45,6 +45,13 @@ constexpr float TAP_FACE_UP_N = 0.3f;
 // creerle al motor de golpes. Azotar el aparato lo dispara igual que un golpe
 // con la yema, y son dos gestos distintos.
 constexpr unsigned long BIG_MOVE_QUIET_MS = 1200;
+// APOYAR EL APARATO O ACOMODARLO EN LA MANO ES UN GOLPE para el motor del chip,
+// y viene siempre pegado a un cambio de posición (inclinar, horizontal, boca
+// arriba). En el log del dueño, cada Hablar que se abrió solo tenía un evento
+// de posición 100-650 ms antes; los dobles a propósito llegan con el aparato
+// ya quieto en la mano. Con esto, un golpe dentro de este plazo después de un
+// evento de posición no es un gesto.
+constexpr unsigned long TAP_AFTER_MOVE_MS = 700;
 constexpr uint8_t TAP_PEAK_WINDOW = 10;  // muestras
 constexpr uint16_t TAP_WINDOW = 25;
 constexpr uint16_t TAP_DTAP_WINDOW = 175;  // 0,7 s a 250 Hz: con 0,5 s la mitad de los dobles salian 'simple'
@@ -166,6 +173,7 @@ void MotionInput::emit(const Event e) {
   pending_ = e;
   lastEvent_ = e;
   lastEventAt_ = now;
+  if (!esDeliberado(e)) lastPositionEventMs_ = now;
   LOG_DBG(TAG, "%s (x=%.2f y=%.2f n=%.2f)", name(e), last_.x, last_.y, last_.n);
 }
 
@@ -276,6 +284,7 @@ void MotionInput::poll() {
         // mismo reseteara el contador se bloquearía solo (pasó en 1.5.58).
         const bool quiet = now - lastBigMoveMs_ >= BIG_MOVE_QUIET_MS;
         const bool rested = now - lastTapEmitMs_ >= TAP_REFRACTORY_MS;
+        const bool recienMovido = lastPositionEventMs_ != 0 && now - lastPositionEventMs_ < TAP_AFTER_MOVE_MS;
         // APOYAR EL APARATO EN LA MESA ES UN GOLPE para el motor del chip (el
         // contacto con la mesa es un impacto seco, y boca abajo son dos: el
         // borde y la cara). El log lo mostro clarito: "golpe: doble" y un
@@ -295,9 +304,9 @@ void MotionInput::poll() {
                   tap, isDouble ? "doble" : "simple", gap);
           return;
         }
-        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s n=%.2f%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple", r.n,
+        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s n=%.2f%s%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple", r.n,
                 quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)",
-                noBocaAbajo ? "" : " (boca abajo: se ignora)");
+                noBocaAbajo ? "" : " (boca abajo: se ignora)", recienMovido ? " (recién movido: se ignora)" : "");
         // SIN `debounced`. Ese antirrebote de 350 ms existe para que los gestos
         // por UMBRAL (inclinar, horizontal, sacudir) no se disparen en cadena
         // entre ellos, y el doble golpe no sale de un umbral: lo detecta el
@@ -305,7 +314,7 @@ void MotionInput::poll() {
         // antirrebote puesto el golpe que venía justo después se descartaba. El
         // doble golpe ya tiene sus dos guardias propias: `rested` (1,5 s entre
         // golpes) y `quiet` (1,2 s después de una sacudida de verdad).
-        if (isDouble && rested && quiet && noBocaAbajo) {
+        if (isDouble && rested && quiet && noBocaAbajo && !recienMovido) {
           lastTapEmitMs_ = now;
           emit(Event::DoubleTap);
           return;

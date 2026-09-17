@@ -28,7 +28,9 @@
 
 namespace {
 constexpr const char* TAG = "VOICE_ACT";
-constexpr uint32_t VOICE_TIMEOUT_MS = 90000;  // Whisper + Claude on one request
+// El servidor contesta en 1,5-5 s (stt+llm+tts, medido en el log); 90 s de tope
+// eran 90 s mirando "pensando" cada vez que una conexión se quedaba muda.
+constexpr uint32_t VOICE_TIMEOUT_MS = 40000;
 // Tope de seguridad por si el audio nunca termina, NO el largo esperado de la
 // lectura: quien decide que termino es !speech.isPlaying(). Con 15 s el modo
 // "leer siempre" cortaba a la mitad cualquier respuesta larga.
