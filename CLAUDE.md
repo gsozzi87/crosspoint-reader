@@ -236,7 +236,8 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   guarda en RTC RAM. GPIO38 no es RTC GPIO, así que **el que despierta sigue siendo OK** (GPIO5), y eso ahora está en
   el perfil de la placa (`InputPins.wakePin`) en vez de escondido en el código.
 - Atajo de voz global: **dos toques de Atrás** abren Hablar desde cualquier pantalla tranquila
-  (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 500 ms). ARRIBA/ABAJO es una palanca física
+  (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 1,2 s). El otro camino, y el que el usuario usa de
+  verdad, es el **doble golpe** sobre la tapa, que anda en cualquier pantalla que no esté ocupada. ARRIBA/ABAJO es una palanca física
   (arriba XOR abajo, nunca las dos) y Atrás mantenido ya sincroniza o actualiza.
   Atrás en el hub no hace nada: el hub es el fondo (antes abría el último libro y no había forma de quedarse).
 - **El movimiento es una entrada más** (`src/input/MotionInput`, singleton `MOTION`, `poll()` cada 80 ms desde el
@@ -1134,6 +1135,30 @@ adversarial sobre el propio diff) y cada hallazgo se verificó contra el árbol 
 contra lo que ya está en el vidrio; `OpdsBookBrowserActivity` pide `preventAutoSleep()` incondicional (es
 upstream); Ajustes → Movimiento a mitad de calibración no deja dormir; la música con repetir no se corta nunca; y
 `msUntilNextAlarm()` hace una lectura I²C del RTC en cada pasada del loop.
+
+## El DOBLE GOLPE que no abría Hablar (1.5.92)
+
+Tres gates, y los tres estaban mal por el mismo motivo: se escribieron pensando en el aparato **apoyado en la
+mesa**, y el doble golpe se da con el aparato **en la mano**.
+
+- **`faceUp` estaba al revés.** Pedía `r.n > 0,3`, o sea la pantalla mirando para arriba, a menos de unos 70° de
+  la horizontal. Sostenido como se lee, la normal queda casi horizontal (`n ≈ 0`) y el gesto se descartaba
+  **siempre**. Lo único que hay que evitar es confundirlo con apoyarlo boca abajo —que es `n` bien NEGATIVA—, así
+  que ahora se pregunta eso: no que mire arriba, sino que **no mire abajo**.
+- **Un evento de posición sin consumir bloqueaba 1,5 s.** `emit()` no pisa lo que ya está pendiente si tiene menos
+  de 1,5 s, e **inclinar** y **horizontal** se emiten solos con sólo mover el aparato — y en el hub NADIE los
+  consume (`checkMotionGestures()` sólo toma sacudir, boca abajo y doble golpe). O sea que levantar el aparato y
+  darle los dos golpecitos, que es exactamente cómo se usa, caía casi siempre adentro de esa ventana. Ahora un
+  gesto **deliberado** (doble golpe, sacudida) le gana a uno de posición: lo que pisa no es de nadie.
+- **El antirrebote genérico de 350 ms frenaba al motor de golpes del chip.** Ese antirrebote existe para que los
+  gestos por UMBRAL no se disparen en cadena entre ellos, y el doble golpe **no sale de un umbral**: lo detecta el
+  chip. Levantar el aparato emite "inclinar", y el golpe que venía justo después se descartaba. Se sacó de ese
+  gate; el doble golpe ya tiene las dos guardias que le corresponden — `rested` (1,5 s entre golpes) y `quiet`
+  (1,2 s después de una sacudida de verdad).
+
+La línea del log (`golpe: st1=… tap=… doble n=…`) lleva ahora la normal medida, que es lo que hacía falta para ver
+cuál de los gates cortaba. Si el motor del chip directamente no contesta, eso se ve en el arranque
+(`golpes: el motor del chip contestó` o el error con el motivo) y en **Ajustes → Movimiento**.
 
 ## El doble Atrás que no abría Hablar (1.5.92)
 

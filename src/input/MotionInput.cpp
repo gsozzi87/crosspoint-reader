@@ -38,7 +38,9 @@ constexpr uint8_t TAP_PRIORITY = 4;  // Z > X > Y: el golpe entra por la tapa
 // haber pasado desde el sacudón que lo acompaña. Un golpe con la yema mueve el
 // acelerómetro bastante más que el ruido de tenerlo en la mano.
 constexpr unsigned long TAP_REFRACTORY_MS = 1500;
-constexpr float TAP_FACE_UP_N = 0.3f;  // normal minima (g) para creerle a un doble golpe
+// Cuán "boca abajo" tiene que estar para que un golpe se dé por "lo apoyaron" y
+// no por un gesto. NO es un mínimo para creerle: ver el comentario del gate.
+constexpr float TAP_FACE_UP_N = 0.3f;
 // Cuanto silencio hace falta despues de un movimiento grande para volver a
 // creerle al motor de golpes. Azotar el aparato lo dispara igual que un golpe
 // con la yema, y son dos gestos distintos.
@@ -142,12 +144,25 @@ void MotionInput::toScreen(const RawSample& raw, Reading& out) const {
   out.valid = true;
 }
 
+// Gestos que la persona HACE a propósito, contra los que sólo describen dónde
+// quedó el aparato. Nadie se da dos golpecitos ni sacude sin querer.
+static bool esDeliberado(const MotionInput::Event e) {
+  return e == MotionInput::Event::DoubleTap || e == MotionInput::Event::Shake;
+}
+
 void MotionInput::emit(const Event e) {
   // Un evento por vez: el que llega pisa al anterior sin consumir sólo si el
   // anterior ya se hizo viejo, así una pantalla que no mira los gestos no deja
   // uno colgado para siempre.
+  //
+  // PERO UN GESTO DELIBERADO LE GANA A UNO DE POSICIÓN. Inclinar y horizontal
+  // se emiten solos con sólo mover el aparato, y en el hub NADIE los consume:
+  // se quedaban pegados en `pending_` bloqueando 1,5 s. O sea que levantar el
+  // aparato (inclinar) y darle los dos golpecitos —que es exactamente cómo se
+  // usa el gesto— caía casi siempre adentro de esa ventana y el doble golpe se
+  // perdía. Lo que se está por tirar ahí no es de nadie: es un "se movió".
   const unsigned long now = millis();
-  if (pending_ != Event::None && now - lastEventAt_ < 1500) return;
+  if (pending_ != Event::None && now - lastEventAt_ < 1500 && !(esDeliberado(e) && !esDeliberado(pending_))) return;
   pending_ = e;
   lastEvent_ = e;
   lastEventAt_ = now;
@@ -256,14 +271,27 @@ void MotionInput::poll() {
         // contacto con la mesa es un impacto seco, y boca abajo son dos: el
         // borde y la cara). El log lo mostro clarito: "golpe: doble" y un
         // segundo despues "boca abajo", y Hablar abierto sin que nadie lo
-        // pidiera. Un doble golpe de verdad se da con la pantalla mirando hacia
-        // arriba (en la mano o en la mesa boca arriba): con la normal hacia
-        // abajo no es un gesto, es que lo apoyaron.
-        const bool faceUp = r.n > TAP_FACE_UP_N;
-        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s%s%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple",
-                debounced ? " (debounce)" : "", quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)",
-                faceUp ? "" : " (no mira arriba: se ignora)");
-        if (isDouble && !debounced && rested && quiet && faceUp) {
+        // pidiera.
+        //
+        // PERO LA CONDICIÓN ESTABA AL REVÉS Y POR ESO EL GESTO NO ANDABA. Pedía
+        // `r.n > 0,3`, o sea la pantalla mirando PARA ARRIBA, a menos de unos
+        // 70° de la horizontal. Y el doble golpe se da con el aparato EN LA
+        // MANO, sostenido como se lee: ahí la normal es casi horizontal (n ≈ 0)
+        // y el gesto se descartaba siempre. Lo único que hay que evitar es
+        // confundirlo con apoyarlo boca abajo, que es `n` bien NEGATIVA. Así
+        // que se pregunta eso: no que mire arriba, sino que no mire abajo.
+        const bool noBocaAbajo = r.n > -TAP_FACE_UP_N;
+        LOG_INF(TAG, "golpe: st1=%d tap=%02X %s n=%.2f%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple", r.n,
+                quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)",
+                noBocaAbajo ? "" : " (boca abajo: se ignora)");
+        // SIN `debounced`. Ese antirrebote de 350 ms existe para que los gestos
+        // por UMBRAL (inclinar, horizontal, sacudir) no se disparen en cadena
+        // entre ellos, y el doble golpe no sale de un umbral: lo detecta el
+        // motor del propio chip. Levantar el aparato emite "inclinar", y con el
+        // antirrebote puesto el golpe que venía justo después se descartaba. El
+        // doble golpe ya tiene sus dos guardias propias: `rested` (1,5 s entre
+        // golpes) y `quiet` (1,2 s después de una sacudida de verdad).
+        if (isDouble && rested && quiet && noBocaAbajo) {
           lastTapEmitMs_ = now;
           emit(Event::DoubleTap);
           return;

@@ -127,6 +127,24 @@ Ahora el atajo **deja rastro en el log pase lo que pase**, así que esto se diag
       `esa pantalla usa Atrás para salir`. Es a propósito: ahí Atrás es el botón de salida.
 - [ ] **Mantener Atrás en el hub (sincronizar) y después tocar UNA vez: NO tiene que abrir Hablar.**
 
+### 5 sexies. El DOBLE GOLPE (1.5.92)
+
+Es el atajo que el usuario usa de verdad, y no andaba. Los tres gates se habían escrito pensando en el aparato
+apoyado en la mesa, y el gesto se da con el aparato en la mano.
+
+- [ ] **Con el aparato en la mano, sostenido como se lee**, dos golpecitos con la yema sobre la tapa abren
+      Hablar. Esto es lo que antes no funcionaba nunca.
+- [ ] Apoyado boca arriba en la mesa también.
+- [ ] **Apoyarlo boca abajo NO tiene que abrir Hablar** (eso es lo que el gate protege de verdad).
+- [ ] Levantar el aparato y darle los dos golpes **enseguida**: tiene que andar igual (antes el "inclinar" de
+      levantarlo bloqueaba el golpe 1,5 s).
+- [ ] Si no anda, mirar el log: `golpe: st1=1 tap=02 doble n=0.15` dice que el chip lo vio y con qué normal.
+      Si dice `simple`, el chip separa mal los dos golpes (hay que ensanchar `TAP_DTAP_WINDOW`).
+      Si NO aparece ninguna línea `golpe:`, el motor del chip no está contestando: mirar el arranque
+      (`golpes: …`) y **Ajustes → Movimiento**, que dice el motivo.
+- [ ] Y antes que nada: **calibrar los ejes en Ajustes → Movimiento**. Sin calibrar, `n` puede ser cualquier eje
+      y el gate de "no boca abajo" mide cualquier cosa.
+
 ---
 
 ## Lo que necesita servidor
