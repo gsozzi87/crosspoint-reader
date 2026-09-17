@@ -1048,6 +1048,34 @@ abre en modo agregar; rotar la borra y eso se dice en el archivo nuevo), y el se
 queda la última subida igual — "viejo" es un diagnóstico, una pantalla en blanco no es ninguno. Se prueba sin
 servidor: **`./test/device_log/run.sh`**.
 
+## Noticias no traía nada, y no era de los diarios (1.5.92)
+
+En `/board` → Ajustes → Noticias, los tres feeds decían lo mismo: **`Invalid IP address: undefined`**. Que los
+TRES fallen igual ya dice que no es ningún diario caído.
+
+El DNS se fija a propósito (`server/src/net.ts`, desde el pin de 1.5.90): se resuelve el nombre, se comprueba
+que la dirección no sea de la red interna de Railway y la conexión se clava a ésa, así un feed no puede
+redirigir a 169.254.169.254. Para eso se le pasa un `lookup` propio a `http.request`. **Pero `http.request` no
+llama a ese lookup como uno lo escribiría: le pasa `{ all: true }` y espera un ARRAY de `{address, family}`.**
+El nuestro devolvía siempre un string suelto, así que el cliente hacía `results.sort(...)` sobre algo que no era
+un array —o leía `results[0].address`, que da `undefined`— y la salida moría **antes de abrir el socket**. Todos
+los feeds, todos los artículos, siempre.
+
+Es un error que no se ve leyendo el código: hay que ejercitarlo. Por eso queda **`./test/net_lookup/run.sh`**,
+que levanta un servidor local y comprueba las dos cosas: que el callback nuevo conecta y que el viejo falla.
+
+De paso, dos cosas que hacían que el síntoma no se pudiera leer:
+- `selectResolvedAddress()` filtraba sólo por "no es red interna", así que una entrada sin dirección pasaba
+  derecho hasta el socket. Ahora se pide `isIP()` primero.
+- "el DNS no devolvió nada" y "resuelve a red interna" eran el mismo mensaje. Son cosas distintas y mandan a
+  buscar el problema a lugares distintos.
+
+**Y lo que hay que mirar antes de creerle a un arreglo del servidor: los commits de 1.5.91 nunca se fusionaron
+a `ws397`.** El firmware sí se publicó (`release.sh` sube el `.bin` al volumen), pero eso **no redespliega el
+servidor**: Railway construye desde su rama. Así que los arreglos de servidor de 1.5.91 —gzip, plazos, la poda
+de tarjetas— no están en producción. Publicar firmware y desplegar servidor son dos cosas distintas y hay que
+hacer las dos.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

@@ -92,7 +92,11 @@ type PublicAddress = { address: string; family: 4 | 6 };
 // que este servidor no soporte no debe invalidar también la IPv4 pública: se
 // elige una única respuesta que ya pase el filtro y la conexión se fija a ésa.
 export function selectResolvedAddress(addresses: PublicAddress[]): PublicAddress | null {
-  return addresses.find((entry) => !isPrivateHost(entry.address)) ?? null;
+  // `isIP` primero: si el resolutor devolvió algo que no es una dirección (una
+  // forma inesperada, una entrada vacía), pasárselo igual al socket termina en
+  // un error del sistema que no dice nada. Mejor descartarla acá.
+  return addresses.find((entry) => typeof entry?.address === "string" && isIP(entry.address) &&
+                                   !isPrivateHost(entry.address)) ?? null;
 }
 
 async function publicResolution(hostname: string): Promise<PublicAddress> {
@@ -100,8 +104,13 @@ async function publicResolution(hostname: string): Promise<PublicAddress> {
   const literalFamily = isIP(hostname);
   if (literalFamily) return { address: hostname, family: literalFamily as 4 | 6 };
   const addresses = await lookup(hostname, { all: true, verbatim: true });
-  const selected = selectResolvedAddress(addresses as PublicAddress[]);
+  const lista = Array.isArray(addresses) ? addresses : [addresses];
+  const selected = selectResolvedAddress(lista as PublicAddress[]);
   if (!selected) {
+    // Se distingue "no resolvió" de "resolvió a red interna": el segundo es la
+    // guardia haciendo su trabajo y el primero es el DNS caído, y confundirlos
+    // manda a buscar el problema al lugar equivocado.
+    if (lista.length === 0) throw new Error(`el DNS no devolvió ninguna dirección para ${hostname}`);
     throw new Error(`el host resuelve a una red interna (${hostname})`);
   }
   return selected;
@@ -197,7 +206,18 @@ function fetchPinned(url: URL, address: PublicAddress, init: RequestInit, timeou
         method: init.method ?? "GET",
         headers,
         servername: url.hostname,
-        lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+        // EL `all` DEL LLAMADOR HAY QUE RESPETARLO. `http.request` no llama a
+        // este lookup como uno lo escribiría: le pasa `{ all: true }` y espera
+        // un ARRAY de `{address, family}`. Devolviéndole un string suelto, el
+        // cliente hace `results.sort(...)` sobre algo que no es un array (o
+        // lee `results[0].address`, que da undefined) y la salida muere antes
+        // de abrir el socket. Eso es lo que se veía en /board → Noticias como
+        // "Invalid IP address: undefined" en TODOS los feeds a la vez: no era
+        // ningún diario caído, era que el aparato nunca llegaba a pedirles nada.
+        lookup: (_hostname, options, callback) =>
+          options?.all
+            ? (callback as (e: null, a: PublicAddress[]) => void)(null, [address])
+            : callback(null, address.address, address.family),
       },
       (incoming) => {
         const responseHeaders = new Headers();
