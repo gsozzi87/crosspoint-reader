@@ -10,7 +10,9 @@
 #include <vector>
 
 #include "activities/Activity.h"
+#include "components/OptionPopup.h"
 #include "util/ButtonNavigator.h"
+#include "util/DictionaryLookup.h"
 
 // El visor de texto largo del aparato. Nació para una definición de
 // diccionario, pero hoy es la pantalla donde se lee TODO lo que no es un libro:
@@ -49,14 +51,79 @@ class DictionaryDefinitionActivity final : public Activity {
   // Atrás MANTENIDO como botón de voz: el que abre el visor (la Biblia) le
   // pasa qué hacer y cómo se llama en la barra de abajo. El visor avisa y se
   // cierra; el dueño decide qué abrir con lo que estaba leyendo.
+  //
+  // Con el menú de OK encendido la etiqueta NO se usa: abajo a la izquierda
+  // vuelve a decir "Atrás" (que es lo que hace un toque) y el menú es el que
+  // muestra lo que se puede hacer. El atajo sigue andando igual.
   void setVoiceHold(const char* label, std::function<void()> fn) {
     voiceHoldLabel = label;
     onVoiceHold = std::move(fn);
   }
 
+  // OK abre un menú, igual que en el lector de CrossPoint ("en la biblia tbn
+  // quiero que se entre al menú apretando el OK"). Lo enciende el que abre el
+  // visor agregando sus entradas; el visor pone SIEMPRE "Buscar una palabra"
+  // adelante, porque el dueño del texto —y de dónde cae cada palabra en la
+  // pantalla— es él y nadie más puede ofrecer el diccionario acá.
+  //
+  // `fn` corre y ENSEGUIDA se cierra el visor, así que lo único que puede hacer
+  // es anotar qué quiere el usuario; abrir la pantalla que sigue es cosa del
+  // dueño, cuando le llegue el resultado. Es el mismo trato que `setVoiceHold`.
+  void addMenuItem(const char* label, std::function<void()> fn);
+
  private:
+  // Modo de la pantalla. `Words` es el cursor de palabras para el diccionario:
+  // el mismo gesto que en el lector (la palanca recorre las palabras de la
+  // página en orden de lectura, OK busca, Atrás vuelve al texto), pero sobre
+  // los renglones que arma este visor, que son los que están en el vidrio.
+  enum class Mode : uint8_t { Read, Words };
+  enum class Popup : uint8_t { None, Busy, Message };
+
+  // Una palabra de la página en pantalla: el tramo de `definition` y dónde cae.
+  struct WordBox {
+    uint32_t start;
+    uint16_t len;
+    int16_t x;
+    int16_t y;
+    int16_t width;
+  };
+
+  // El origen del texto en pantalla. Lo usan el dibujo y el armado de palabras:
+  // si cada uno hiciera su cuenta, el resalte caería en otro lado que la letra.
+  int textLeft() const;
+  int bodyTop() const;
+
+  void openMenu();
+  // Arma las palabras seleccionables de la página que se está mostrando.
+  void buildPageWords();
+  void performLookup();
+  // Copia la palabra elegida a un buffer terminado en NUL (medir y dibujar
+  // piden C-string; `definition` es un solo bloque sin cortes).
+  size_t wordText(const WordBox& w, char* out, size_t cap) const;
+  void drawWordHighlight(int fontId) const;
+
   const char* voiceHoldLabel = nullptr;
   std::function<void()> onVoiceHold;
+  struct MenuItem {
+    std::string label;
+    std::function<void()> fn;
+  };
+  std::vector<MenuItem> menuItems;
+  std::vector<std::string> menuLabels;  // lo que ve el popup, con el diccionario adelante
+  OptionPopup menu;
+  Mode mode = Mode::Read;
+  std::vector<WordBox> pageWords;
+  int wordIndex = 0;
+  // El primer dibujo del cursor va con refresco limpio: lo que hay en el vidrio
+  // salió del pipeline de grises y el cursor dibuja en blanco y negro, así que
+  // un parcial dejaría la mezcla de los dos.
+  bool wordsNeedClean = false;
+  dictlookup::Session dict;
+  Popup popup = Popup::None;
+  StrId popupMsg = StrId::STR_DICT_NOT_FOUND;
+  unsigned long popupTime = 0;
+  // Una entrada del menú ya pidió cerrar: no se repinta nada más encima.
+  bool leaving = false;
   // One wrapped display line: a byte span of `definition`. Wrapping keeps
   // lines under the screen width, so uint16_t length is ample.
   struct Line {

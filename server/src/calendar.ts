@@ -13,8 +13,11 @@
 // Qué sale en el calendario:
 //   1. los eventos de /data/calendar.json (los que se cargan acá),
 //   2. los RECORDATORIOS de store.json (se leen, NO se copian: el dueño sigue
-//      siendo store.ts, y tildarlos sigue yendo por POST /api/hub/done),
-//   3. los ítems de viaje que otro módulo escriba en calendar.json con tripId.
+//      siendo store.ts, y tildarlos sigue yendo por POST /api/hub/done).
+//
+// Viajes salió del producto en 1.5.93 y espejaba sus ítems acá con `tripId`:
+// esos eventos ya no tienen dueño, así que `normalizeCalendar` los descarta al
+// leer. Es de una sola vía a propósito — el viaje que los explicaba no existe.
 //
 // ── Zona horaria ────────────────────────────────────────────────────────────
 // La mitad de los bugs de calendario salen de mezclar fechas con instantes.
@@ -53,8 +56,6 @@ export type CalEvent = {
   place?: string;
   note?: string;
   repeat?: Repeat;
-  tripId?: string;      // lo escribe el módulo de viajes
-  tripDay?: number;
   [extra: string]: unknown;  // lo que agregue otro módulo se conserva tal cual
 };
 
@@ -78,7 +79,7 @@ function localStamp(v: unknown, fallback: string): string {
 
 // Un evento suelto no puede tirar abajo el calendario entero: lo que no tenga
 // forma se descarta y lo demás se conserva (incluidos los campos que agregue
-// otro módulo, como los del viaje).
+// otro módulo).
 function normalizeEvent(raw: unknown, fallbackId: () => number): CalEvent | null {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const r = { ...(raw as Record<string, unknown>) };
@@ -123,6 +124,9 @@ function normalizeCalendar(raw: unknown): CalendarFile {
   };
   const events: CalEvent[] = [];
   for (const e of list) {
+    // Espejo de un viaje (1.5.93): el módulo que los escribía ya no existe, así
+    // que estos eventos no se pueden editar ni borrar desde ningún lado. Se van.
+    if (e && typeof e === "object" && (e as Record<string, unknown>).tripId) continue;
     const ev = normalizeEvent(e, fallbackId);
     if (ev) events.push(ev);
   }
@@ -134,10 +138,8 @@ export async function loadCalendar(accountId: number): Promise<CalendarFile> {
   return normalizeCalendar(await readDoc<unknown>(accountId, "calendar", null));
 }
 
-// Leer-modificar-escribir sin carreras (`mutateDoc` de fsjson): si otro módulo
-// (viajes) escribe el calendario al mismo tiempo, las dos escrituras se ordenan
-// en vez de pisarse. Nunca se cachea en memoria, justamente porque no somos los
-// únicos que lo escriben.
+// Leer-modificar-escribir sin carreras (`mutateDoc` de fsjson): dos escrituras
+// a la vez se ordenan en vez de pisarse. Nunca se cachea en memoria.
 async function mutate<T>(accountId: number, fn: (cal: CalendarFile) => T): Promise<T> {
   return mutateDoc(accountId, "calendar", normalizeCalendar, (cal) => {
     const out = fn(cal);
@@ -155,7 +157,7 @@ function nextEventId(cal: CalendarFile): number {
 export type Occurrence = {
   key: string;           // único por ocurrencia: "ev-12@2026-09-15"
   id: number;
-  kind: "event" | "reminder" | "trip";
+  kind: "event" | "reminder";
   date: string;          // día local "YYYY-MM-DD"
   startAt: string;       // arranque de la SERIE tal como está guardado ("2026-09-15T10:30")
   endAt: string;         // fin de la serie, igual formato
@@ -171,8 +173,6 @@ export type Occurrence = {
   repeatText: string;
   start: number;         // epoch UTC en segundos (00:00 local si es de todo el día)
   end: number;
-  tripId?: string;
-  tripDay?: number;
 };
 
 function timeOf(stamp: string): string {
@@ -194,7 +194,6 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
   const endTime = timeOf(ev.end);
   const rep = normalizeRepeat(ev.repeat);
   const text = repeatText(rep, ev.start, lang);
-  const kind: Occurrence["kind"] = ev.tripId ? "trip" : "event";
   // Se busca desde antes del rango: un evento de cinco días que arrancó el mes
   // pasado tiene que seguir apareciendo en los días que caen adentro.
   const dates = expandRepeat(startDate, rep, addDays(from, -span), to, MAX_OCCURRENCES);
@@ -205,7 +204,7 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
       const ok = push(out, {
         key: `ev-${ev.id}@${date}`,
         id: ev.id,
-        kind,
+        kind: "event",
         date,
         startAt: ev.start,
         endAt: ev.end,
@@ -221,8 +220,6 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
         repeatText: text,
         start: ev.allDay ? startOfLocalDay(date) : localToEpoch(date + (time ? "T" + time : "")),
         end: ev.allDay ? endOfLocalDay(date) : localToEpoch(addDays(base, span) + (endTime ? "T" + endTime : "T23:59")),
-        ...(ev.tripId ? { tripId: String(ev.tripId) } : {}),
-        ...(Number.isFinite(Number(ev.tripDay)) ? { tripDay: Number(ev.tripDay) } : {}),
       });
       if (!ok) return false;
     }

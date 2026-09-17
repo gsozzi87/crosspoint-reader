@@ -16,7 +16,6 @@
 #include "MappedInputManager.h"
 #include "Memory.h"
 #include "SilentRestart.h"
-#include "TripActivity.h"
 #include "activities/ListStyle.h"
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/Selection.h"
@@ -261,10 +260,6 @@ void CalendarActivity::openHomeRow() {
   switch (homeRow) {
     case ROW_TODAY:
       openToday();
-      return;
-    case ROW_TRIPS:
-      startActivityForResult(makeUniqueNoThrow<TripActivity>(renderer, mappedInput),
-                             [this](const ActivityResult&) { requestUpdate(); });
       return;
     default:
       break;
@@ -1242,15 +1237,15 @@ void CalendarActivity::loop() {
   }
 }
 
-// El menú de Mi día: tres filas de dos renglones con lo que hay adentro. Cada
+// El menú de Mi día: dos filas de dos renglones con lo que hay adentro. Cada
 // una en su fila con regla al pie: los marcos de antes eran tres cajas para
 // tres cosas que ya se distinguen por el texto.
 void CalendarActivity::renderHome() {
   const int x = listui::SIDE;
   const int w = listui::contentWidth(renderer);
   const int top = listui::contentTop();
-  const StrId titles[HOME_ROWS] = {StrId::STR_DAY_TODAY, StrId::STR_CAL_TITLE, StrId::STR_DAY_TRIPS};
-  const StrId subs[HOME_ROWS] = {StrId::STR_DAY_TODAY_SUB, StrId::STR_DAY_CALENDAR_SUB, StrId::STR_DAY_TRIPS_SUB};
+  const StrId titles[HOME_ROWS] = {StrId::STR_DAY_TODAY, StrId::STR_CAL_TITLE};
+  const StrId subs[HOME_ROWS] = {StrId::STR_DAY_TODAY_SUB, StrId::STR_DAY_CALENDAR_SUB};
   for (int i = 0; i < HOME_ROWS; ++i) {
     listui::RowSpec spec;
     spec.title = I18N.get(titles[i]);

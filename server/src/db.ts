@@ -15,8 +15,8 @@
 //              token, NUNCA el token
 //   pairings   códigos de 6 dígitos efímeros para vincular un aparato
 //   docs       (account_id, name) -> el MISMO JSON que antes era un archivo:
-//              store.json, calendar.json, trips.json, suggest.json,
-//              hub-settings.json, hub-data.json, attachments/index.json
+//              store.json, calendar.json, suggest.json,
+//              hub-settings.json, hub-data.json
 //   usage      consumo mensual por cuenta (llamadas al LLM y segundos de audio)
 //   server_meta  cositas del operador (hoy: la clave con la que se firman las
 //              cookies de sesión, para que un redeploy no eche a todo el mundo)

@@ -480,9 +480,9 @@ static bool busyRecording() { return VoiceRecorder::anyRecording(); }
 
 static bool isCalmScreen(const char* name) {
   // Pantallas tranquilas: ahi suenan los recordatorios y el temporizador, y
-  // anda el doble Atras para hablar. Calendar y Trip son listas quietas igual
-  // que Agenda, asi que entran (si no, en el calendario no sonaria una alarma).
-  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather", "Calendar", "Trip", "Music"};
+  // anda el doble Atras para hablar. Calendar es una lista quieta igual que
+  // Agenda, asi que entra (si no, en el calendario no sonaria una alarma).
+  static const char* CALM[] = {"Hub", "Home", "Agenda", "Notes", "Settings", "Weather", "Calendar", "Music"};
   for (const char* n : CALM) {
     if (strcmp(name, n) == 0) return true;
   }

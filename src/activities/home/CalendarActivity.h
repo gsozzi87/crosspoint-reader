@@ -12,12 +12,12 @@
 #include "voice/VoiceRecorder.h"
 
 // "Mi día": el mosaico del hub que junta TODO lo que tiene fecha. Adentro hay
-// tres pantallas, elegidas en un menú de tres filas:
-//   Hoy         -> lo del día (agenda y viaje) más las sugerencias de la IA
+// dos pantallas, elegidas en un menú de dos filas:
+//   Hoy         -> lo del día más las sugerencias de la IA
 //   Calendario  -> la cuadrícula del mes y la vista de un día
-//   Viajes      -> TripActivity
-// Antes el calendario y los viajes estaban escondidos como secciones adentro de
-// Recordatorios; ahora son pestaña propia, que es como los pidió el usuario.
+// Antes el calendario estaba escondido como sección adentro de Recordatorios;
+// ahora es pestaña propia, que es como lo pidió el usuario. Viajes era la
+// tercera fila y salió del producto en 1.5.93 (vuelve como app de Lua).
 //
 // Calendario: vista de mes (la cuadrícula de siempre, con un punto y la
 // cantidad en cada día que tiene algo) y vista de día (lo que hay ese día con
@@ -60,14 +60,12 @@ class CalendarActivity final : public Activity {
   void loop() override;
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return state == DICTATING; }
-  bool preventAutoSleep() override {
-    return state == CONNECTING || state == LOADING || state == DICTATING;
-  }
+  bool preventAutoSleep() override { return state == CONNECTING || state == LOADING || state == DICTATING; }
 
   // Fechas, sin depender de la libc: las usa también la edición de
   // recordatorios de AgendaActivity.
-  static const char* monthName(int month);    // 1..12
-  static const char* weekdayName(int dow);    // 0 = lunes .. 6 = domingo
+  static const char* monthName(int month);  // 1..12
+  static const char* weekdayName(int dow);  // 0 = lunes .. 6 = domingo
   static const char* weekdayShort(int dow);
   static int daysInMonth(int year, int month);
   static long daysFromCivil(int year, int month, int day);
@@ -93,9 +91,9 @@ class CalendarActivity final : public Activity {
     std::string title;
     std::string place;
     std::string note;
-    std::string endTime;   // "HH:MM" de fin, vacío si no tiene
-    std::string startAt;   // arranque de la SERIE ("2026-09-15T10:30"): con eso se edita
-    std::string endStamp;  // fin de la serie, mismo formato
+    std::string endTime;    // "HH:MM" de fin, vacío si no tiene
+    std::string startAt;    // arranque de la SERIE ("2026-09-15T10:30"): con eso se edita
+    std::string endStamp;   // fin de la serie, mismo formato
     std::string repeatRaw;  // el objeto `repeat` crudo, tal como vino
   };
 
@@ -105,7 +103,7 @@ class CalendarActivity final : public Activity {
   // Qué se está grabando: el día entero o el título de una actividad.
   enum RecordMode { REC_DAY, REC_TITLE };
   // Filas del menú de entrada.
-  enum HomeRow { ROW_TODAY, ROW_CALENDAR, ROW_TRIPS, HOME_ROWS };
+  enum HomeRow { ROW_TODAY, ROW_CALENDAR, HOME_ROWS };
   // Un renglón de la pantalla Hoy: el texto y con qué fuente se dibuja.
   struct Line {
     std::string text;
@@ -143,7 +141,7 @@ class CalendarActivity final : public Activity {
   bool suggestRefresh = false;  // el próximo pedido es un recálculo pedido con OK
   std::string suggestError;
   std::vector<Line> todayLines;
-  int todayTop = 0;             // primer renglón en pantalla
+  int todayTop = 0;  // primer renglón en pantalla
   int todayPerPage = 1;
 
   void openHomeRow();
@@ -165,9 +163,9 @@ class CalendarActivity final : public Activity {
   VoiceRecorder recorder{45};  // 45 s: lo que lleva enumerar una jornada entera
   RecordMode recordMode = REC_DAY;
   State dictateReturn = DAY;  // a qué pantalla se vuelve cuando termina de grabar
-  Pending afterWifi = NONE;  // qué se estaba por hacer cuando se pidió el WiFi
-  std::string dayNotice;     // lo que contestó el servidor, o por qué no se pudo
-  std::string transcribed;   // lo que se entendió de la última grabación
+  Pending afterWifi = NONE;   // qué se estaba por hacer cuando se pidió el WiFi
+  std::string dayNotice;      // lo que contestó el servidor, o por qué no se pudo
+  std::string transcribed;    // lo que se entendió de la última grabación
   OptionPopup menu;
   bool menuOpen = false;
   std::vector<std::string> menuOptions;

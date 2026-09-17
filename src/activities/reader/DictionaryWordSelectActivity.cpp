@@ -142,77 +142,19 @@ int DictionaryWordSelectActivity::closestInRow(const uint16_t row, const int cen
 
 void DictionaryWordSelectActivity::performLookup() {
   popup = Popup::Busy;
-  if (!dictOpenAttempted) {
-    dictOpenAttempted = true;
-    dictOpenOk = dict.open(SETTINGS.dictionaryName);
-    // needsIndex() opens and validates the .qidx sidecar, so ask it once per
-    // open rather than once per word: the answer only changes when we build
-    // the sidecar ourselves, which is handled below.
-    dictNeedsIndex = dictOpenOk && dict.needsIndex();
-  }
-  popupMsg = dictNeedsIndex ? StrId::STR_DICT_INDEXING : StrId::STR_DICT_LOOKING_UP;
+  popupMsg = dict.busyMessage();
   requestUpdateAndWait();  // paint the page + busy popup before blocking on SD
 
-  bool ok = dictOpenOk;
-  Dictionary::IndexResult indexResult = Dictionary::IndexResult::Ok;
-  if (ok && dictNeedsIndex) {
-    ok = dict.buildIndex(&indexBuildYield, nullptr, &indexResult);
-    dictNeedsIndex = !ok;  // a successful build leaves the sidecar fresh; a failed one retries
-  }
-
-  std::string definition;
-  std::string headword;
-  Dictionary::LookupResult result = Dictionary::LookupResult::NotFound;
-  const bool found = ok && dict.lookup(words[selected].text, definition, headword, &result);
-
-  if (found) {
+  dictlookup::Hit hit = dict.lookup(words[selected].text, &indexBuildYield, nullptr);
+  if (hit.found) {
     popup = Popup::None;
-    startActivityForResult(
-        makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, std::move(headword),
-                                                        std::move(definition), dict.definitionsAreHtml()),
-        [this](const ActivityResult&) { requestUpdate(); });
+    startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(
+                               renderer, mappedInput, std::move(hit.headword), std::move(hit.definition), hit.html),
+                           [this](const ActivityResult&) { requestUpdate(); });
     return;
   }
-  // Name the failure: a genuine miss is "Not found"; a word that WAS found but
-  // couldn't be read is a real error — and we distinguish decompression from a
-  // low-memory allocation from a generic read error.
-  if (!ok) {
-    popup = Popup::Error;
-    // An index build allocates a scan buffer, so it fails the same way lookups
-    // do on a fragmented heap — name that rather than a generic error.
-    switch (indexResult) {
-      case Dictionary::IndexResult::LowMemory:
-        popupMsg = StrId::STR_DICT_LOW_MEMORY;
-        break;
-      case Dictionary::IndexResult::ReadError:
-        popupMsg = StrId::STR_DICT_READ_FAILED;
-        break;
-      case Dictionary::IndexResult::Ok:
-      default:
-        popupMsg = StrId::STR_DICT_ERROR;  // dict.open() failed, not the index
-        break;
-    }
-  } else {
-    switch (result) {
-      case Dictionary::LookupResult::Decompress:
-        popup = Popup::Error;
-        popupMsg = StrId::STR_DICT_DECOMPRESS_ERROR;
-        break;
-      case Dictionary::LookupResult::LowMemory:
-        popup = Popup::Error;
-        popupMsg = StrId::STR_DICT_LOW_MEMORY;
-        break;
-      case Dictionary::LookupResult::ReadError:
-        popup = Popup::Error;
-        popupMsg = StrId::STR_DICT_READ_FAILED;
-        break;
-      case Dictionary::LookupResult::NotFound:
-      default:
-        popup = Popup::NotFound;
-        popupMsg = StrId::STR_DICT_NOT_FOUND;
-        break;
-    }
-  }
+  popup = hit.error ? Popup::Error : Popup::NotFound;
+  popupMsg = hit.message;
   popupTime = millis();
   requestUpdate();
 }

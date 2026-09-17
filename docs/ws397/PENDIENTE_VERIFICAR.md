@@ -3,7 +3,7 @@
 Todo lo que se publicó sin poder probarlo en hardware, con **qué mirar exactamente** y **dónde**. Se va
 tachando a medida que se confirma. Lo que falle vuelve como corrección puntual.
 
-Versión más nueva publicada: **1.5.92**. Sin probar desde **1.5.71**.
+Versión más nueva publicada: **1.5.93**. Sin probar desde **1.5.71**.
 
 ---
 
@@ -66,7 +66,7 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
 
 - [ ] `Ajustes → Pantalla` no muestra un selector de interfaz en la ws397.
 - [ ] En el log, `[UI] Using Lyra theme`.
-- [ ] Hub, listas, agenda, ajustes, noticias, Biblia, viajes y lector: **todas con la misma cara**, sin mezclar
+- [ ] Hub, listas, agenda, ajustes, noticias, Biblia y lector: **todas con la misma cara**, sin mezclar
       tipografías ni formas entre pantallas. Es lo único que hay que mirar: que no quede una pantalla distinta.
 - [ ] Un aparato que venía con Diario o Bento guardados en la tarjeta tiene que pasar a Lyra solo, sin migrar
       nada y sin quedar en un tema que ya no existe.
@@ -147,6 +147,22 @@ apoyado en la mesa, y el gesto se da con el aparato en la mano.
 
 ---
 
+### 5 septies. La Biblia con menú y diccionario (1.5.93)
+
+Leyendo un capítulo (mosaico Biblia → un libro → un capítulo):
+
+- [ ] **OK abre el menú**, igual que en el lector. Cuatro filas: *Buscar una palabra*, *Preguntar sobre este
+      capítulo*, *Buscar por voz* y *Seleccionar capítulo*.
+- [ ] La barra de abajo dice **Atrás** y **Menú** (antes decía "Mantén: preguntar", que contaba lo que hace
+      mantenido y escondía lo que hace tocando). Atrás mantenido 1 s sigue abriendo el menú de voz.
+- [ ] *Buscar una palabra* → el cursor se para sobre una palabra del capítulo, la palanca lo mueve en orden de
+      lectura y **OK muestra la definición** del diccionario que está en `/dictionaries`. Atrás vuelve al texto.
+- [ ] Sin diccionario instalado, esa fila dice *No hay ningún diccionario configurado* y no hace nada más:
+      buscar es el diccionario local y **nunca** se convierte solo en una consulta a la IA.
+- [ ] El resalte cae **exactamente** sobre la palabra, incluso en el renglón que abre un versículo (el número
+      va en chico y negrita y corre el texto a la derecha: ahí es donde se vería un desfasaje).
+- [ ] *Preguntar sobre este capítulo* graba y contesta igual que antes.
+
 ## Lo que necesita servidor
 
 ### 6. Noticias masticadas (1.5.75)
@@ -166,9 +182,15 @@ Cargar dos o tres feeds en `/board` → Ajustes → Noticias, esperar un minuto 
 
 ### 8. La web (1.5.78)
 
-- [ ] Seis pestañas: Hoy · Agenda · Listas · Notas · Viajes · Ajustes.
+- [ ] Cinco pestañas: Hoy · Agenda · Listas · Notas · Ajustes (Viajes salió en 1.5.93).
 - [ ] Ajustes es una pantalla con secciones, no un cajón de filas iguales.
 - [ ] Una dirección vieja guardada en el teléfono (`#mas/…`) sigue llevando a algún lado.
+
+### 8 bis. Viajes salió del producto (1.5.93)
+
+- [ ] "Mi día" tiene **dos** filas: Hoy y Calendario. No hay Viajes.
+- [ ] En `/board`, cinco pestañas y ninguna de Viajes. Una dirección vieja (`#viajes`, `#mas/viajes`) lleva a Hoy.
+- [ ] En el calendario del aparato no aparecen más los ítems que espejaba el viaje.
 
 ---
 

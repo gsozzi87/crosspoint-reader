@@ -20,6 +20,10 @@
 //     sobre este capítulo" (POST /api/bible/ask con el capítulo entero: "no
 //     entendí del versículo 8 al 12", "qué significa esa palabra"). Preguntar
 //     es lo único que necesita conexión sí o sí.
+//
+// Leyendo un capítulo, OK abre el menú igual que en el lector de CrossPoint
+// (1.5.93): buscar una palabra en el diccionario instalado, preguntar sobre el
+// capítulo, buscar por voz y volver a la lista de capítulos.
 class BibleActivity final : public Activity {
  public:
   explicit BibleActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
@@ -47,17 +51,22 @@ class BibleActivity final : public Activity {
   int bookIndex = 0;
   int chapterIndex = 0;  // 0-based
   int wantedVerse = 0;
-  int listTop = 0;  // primera fila visible de la lista
+  int listTop = 0;       // primera fila visible de la lista
   int partialCount = 0;  // parciales desde el último refresco limpio
   ButtonNavigator buttonNavigator;
 
   // 20 s: una cita entra en dos, pero una pregunta sobre el capítulo ("no
   // entendí del versículo 8 al 12, ¿qué quiso decir?") no.
   VoiceRecorder recorder{20};
-  bool asking = false;         // la toma en curso es una pregunta, no una búsqueda
-  bool askAfterViewer = false; // Atrás mantenido dentro del capítulo: al cerrar el visor, menú de voz
-  int shownSecond = -1;        // último segundo pintado del contador de grabación
-  bool forceClean = false;     // pedir un refresco limpio al entrar/salir de la grabación
+  bool asking = false;          // la toma en curso es una pregunta, no una búsqueda
+  bool askAfterViewer = false;  // Atrás mantenido dentro del capítulo: al cerrar el visor, menú de voz
+  // Lo que eligió el usuario en el menú de OK del capítulo. El visor se cierra
+  // enseguida —necesita soltar la pantalla para que grabemos—, así que la
+  // elección se anota acá y se atiende cuando llega el resultado.
+  enum AfterViewer : uint8_t { AFTER_NONE, AFTER_ASK, AFTER_SEARCH };
+  AfterViewer afterViewer = AFTER_NONE;
+  int shownSecond = -1;             // último segundo pintado del contador de grabación
+  bool forceClean = false;          // pedir un refresco limpio al entrar/salir de la grabación
   bool suppressAssetOffer = false;  // este error no se arregla bajando el paquete
   OptionPopup picker;
   std::vector<std::string> pickerOptions;
@@ -80,9 +89,9 @@ class BibleActivity final : public Activity {
   // numerados abajo). Con eso se lee y se busca sin WiFi. Ya NO se baja desde
   // acá: viene en el paquete de contenido (`AssetSyncActivity`), que lo deja en
   // el mismo lugar.
-  int booksOnCard = 0;     // libros ya bajados (se recuenta, no se mira la SD en cada dibujo)
+  int booksOnCard = 0;       // libros ya bajados (se recuenta, no se mira la SD en cada dibujo)
   bool offerAssets = false;  // el error se arregla bajando el paquete: se ofrece ir
-  int searchIndex = 0;     // libro que se está revisando en una búsqueda offline
+  int searchIndex = 0;       // libro que se está revisando en una búsqueda offline
   std::string searchQuery;
   std::vector<std::string> searchWords;  // todas tienen que estar en el versículo
   bool offlineSearch = false;
