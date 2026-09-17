@@ -1636,6 +1636,15 @@ void loop() {
       porQue = "el cable está puesto";
     else if (WiFi.getMode() != WIFI_MODE_NULL)
       porQue = "el WiFi está arriba";
+    else if (gfxPanelRefreshInFlight())
+      // EL CANDADO QUE FALTABA, y el que explica el aparato pintando dos veces.
+      // Durante el light sleep las interrupciones por flanco no se disparan, así
+      // que reposar con una onda en curso se come el flanco de BUSY: la espera
+      // vence sus 20 ms, vuelve sin esperar, y el cuadro siguiente se escribe
+      // encima de uno que el panel todavía está dibujando. Son dos segundos como
+      // mucho, una sola vez por refresco, y es lo que separa una pantalla limpia
+      // de una manchada.
+      porQue = "el panel está refrescando";
     const bool restBlocked = porQue != nullptr;
     {
       static const char* ultimoPorQue = nullptr;

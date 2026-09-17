@@ -70,7 +70,22 @@ bool HalClock::formatTime(char* buf, size_t bufSize, uint8_t utcOffsetQuarterHou
 bool HalClock::getEpochUtc(time_t& out) const {
   if (!_available) return false;
   Rtc::DateTime dt;
-  if (!_sdkRtc.now(dt)) return false;
+  if (!_sdkRtc.now(dt)) {
+    // Un reintento: el choque en el bus compartido es de una transacción, no
+    // del chip. Si la bandera OS está puesta el segundo intento también falla,
+    // que es lo correcto — ahí el RTC de verdad perdió la hora.
+    delay(2);
+    if (!_sdkRtc.now(dt)) {
+      // Todavía nada: estirar el último epoch bueno antes de declarar que el
+      // aparato no está en hora. Decir "no hay reloj" cuando hace un segundo
+      // lo había manda a buscar el problema a la pila y no al bus.
+      if (_cachedEpoch <= 0) return false;
+      const unsigned long elapsed = millis() - _cachedEpochMs;
+      if (elapsed > EPOCH_CACHE_MAX_MS) return false;
+      out = _cachedEpoch + static_cast<time_t>(elapsed / 1000);
+      return true;
+    }
+  }
   struct tm t = {};
   t.tm_year = dt.year - 1900;
   t.tm_mon = dt.month - 1;
@@ -88,6 +103,8 @@ bool HalClock::getEpochUtc(time_t& out) const {
   const unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
   const long days = era * 146097L + static_cast<long>(doe) - 719468L;
   out = static_cast<time_t>(days) * 86400 + dt.hour * 3600L + dt.minute * 60L + dt.second;
+  _cachedEpoch = out;
+  _cachedEpochMs = millis();
   return true;
 }
 
