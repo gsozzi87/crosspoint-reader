@@ -1617,6 +1617,14 @@ IMU y para cualquier otro periférico con estado pegajoso que se lea por sondeo.
 - Ajustes → Memoria: "quedan N h" en dos renglones; en uno, con el metadato a la derecha, se cortaba justo lo
   único que se viene a leer. Biblia: se fue el "En la tarjeta" de cada capítulo ("es irrelevante").
 
+## La barrita de PWR y el "Apagando" encimados (1.5.102)
+
+`drawPowerHoldBanner()` calculaba el alto del cuadro según el texto: "Suelta para suspender · 3 s para apagar"
+son dos renglones y "Apagando..." uno, así que a los 2,3 s el cuadro nuevo salía más chico y más abajo, y como
+el framebuffer conserva lo pintado, el borde y el texto del grande quedaban asomando alrededor del chico. El
+cuadro reserva siempre dos renglones y el texto de uno se centra en el hueco: el segundo cuadro tapa
+exactamente al primero.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

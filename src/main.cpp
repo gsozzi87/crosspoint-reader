@@ -884,13 +884,23 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
     if (renderer.getTextWidth(fontId, lines[i].c_str(), EpdFontFamily::BOLD) > textW) fontId = UI_10_FONT_ID;
   }
   const int lineH = renderer.getLineHeight(fontId);
-  const int boxH = 24 + nLines * (lineH + 4) + 12 + 16 + 24;
+  // EL CUADRO MIDE SIEMPRE LO MISMO. "Suelta para suspender · 3 s para apagar"
+  // son dos renglones y "Apagando..." es uno: con el alto según el texto, el
+  // segundo cuadro salía más chico y más abajo que el primero, y como el
+  // framebuffer conserva lo que se pintó antes, el borde y el texto del cuadro
+  // grande quedaban asomando alrededor del chico ("se superpone la ventana de
+  // la barrita con la de apagando"). Se reserva el alto de dos renglones y el
+  // texto de uno se centra en ese hueco.
+  constexpr int TEXT_LINES = 2;
+  const int textBlockH = TEXT_LINES * (lineH + 4);
+  const int boxH = 24 + textBlockH + 12 + 16 + 24;
   const int y = screenH / 2 - boxH / 2;
 
   renderer.fillRoundedRect(x, y, boxW, boxH, 16, Color::White);
   renderer.drawRoundedRect(x, y, boxW, boxH, 3, 16, true);
+  const int textTop = y + 24 + (textBlockH - nLines * (lineH + 4)) / 2;
   for (int i = 0; i < nLines; i++) {
-    renderer.drawCenteredText(fontId, y + 24 + i * (lineH + 4),
+    renderer.drawCenteredText(fontId, textTop + i * (lineH + 4),
                               renderer.truncatedText(fontId, lines[i].c_str(), textW, EpdFontFamily::BOLD).c_str(),
                               true, EpdFontFamily::BOLD);
   }
@@ -898,7 +908,7 @@ static void drawPowerHoldBanner(const unsigned long held, const bool aboutToSlee
   // Bar: how much is left until sleep.
   const int barX = x + 24;
   const int barW = boxW - 48;
-  const int barY = y + 24 + nLines * (lineH + 4) + 12;
+  const int barY = y + 24 + textBlockH + 12;
   constexpr int barH = 16;
   renderer.drawRect(barX, barY, barW, barH, 2, true);
   // La barra mide lo que falta para apagar DESDE QUE APARECE: con el 0 en cero
