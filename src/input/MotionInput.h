@@ -41,6 +41,9 @@ class MotionInput {
   // Cadencia de consulta. 80 ms es lo más lento que todavía ve una sacudida
   // (que dura ~300 ms) sin gastar batería ni pelearse con el bus I2C.
   static constexpr unsigned long POLL_MS = 80;
+  // Sin sondear tanto tiempo (el loop adentro de un POST), lo que el chip tenga
+  // latcheado es viejo y no es un gesto de nadie.
+  static constexpr unsigned long STALE_GAP_MS = 2000;
 
   // Umbrales de los gestos, en mg / dps / ms. Públicos porque la pantalla de
   // diagnóstico (Ajustes → Movimiento) los muestra como referencia de lectura

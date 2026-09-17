@@ -1569,6 +1569,29 @@ ABAJO (captura de pantalla), y las dos lo dicen en el log.
 conectaba el WiFi: BUSY quedó en alto 30 s (el tope de `waitBusy`). Una vez, sin cable. Si vuelve, mirar si
 coincide con el WiFi levantando.
 
+## Lo que quedó guardado mientras el loop estaba ocupado (1.5.100)
+
+1.5.99 cerró el watchdog (cero `WATCHDOG` en su log, y el toque de PWR suspende), y el mismo log mostró
+otra cosa: *"cuando le pregunto algo se queda pensando un montón de tiempo, cuando sale de eso, se traba"*.
+
+- **El POST de Hablar tardó 90 s dos veces de tres**: `retry 1 after status -1` a los 91 s (el tope), y el
+  reintento salió en 5 y en 30 s con el servidor tardando 1,4-2,6 s (`stt= llm= tts=`). El mismo día, en
+  1.5.98, tres POST de hasta 158 KB salieron en 3-6 s. 1.5.99 no toca la red, y la fusión a `ws397` fue dos
+  horas antes (no es el redeploy). **No se sabe si es el enlace o Railway**, y el log tampoco lo decía:
+  ahora cada intento que falla o pasa de 15 s deja `intento N FALLÓ tras N ms (status, bytes, wifi, rssi,
+  heap)`. Con eso, la próxima vez se distingue.
+- **"Se traba" era la pulsación de PWR guardada.** El dueño apretó PWR durante los 90 s para destrabarlo; el
+  PMIC guardó press+release+LONG+SHORT (`sts2=0F release held=1000 ms long`) y, cuando el loop volvió, la regla
+  nueva de 1.5.99 hizo lo suyo: `PWR soltado a los 1000 ms: se suspende`, justo con la respuesta en pantalla.
+  Un flanco de hace más de 5 s (`STALE_EDGE_MS`) ya no emite ni suelta ni toque; se decodifica y se dice.
+- **"El doble toque quedó sensible de más" es lo mismo con el IMU**: el motor del chip deja el golpe latcheado
+  en STATUS1 hasta que alguien lo lea, y la primera lectura después del POST traía el golpe dado al aparato
+  "colgado" (`[168282] doble golpe` pegado a la respuesta) → Hablar abierto solo. Con más de 2 s sin sondear
+  (`STALE_GAP_MS`) lo que traiga la primera lectura se descarta, y el log lo dice.
+
+Regla: **lo que se latchea mientras el loop no corre es del pasado, no una orden.** Vale para el PMIC, para el
+IMU y para cualquier otro periférico con estado pegajoso que se lea por sondeo.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
