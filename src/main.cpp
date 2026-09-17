@@ -70,6 +70,7 @@
 #include "util/RtcAlarm.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Shtc3.h"
+#include "util/SleepRequest.h"
 #include "util/TempSweep.h"
 #include "voice/VoiceRecorder.h"
 
@@ -1645,6 +1646,17 @@ void loop() {
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   const unsigned long activityDuration = millis() - activityStartTime;
+
+  // Una pantalla que se abrió sola y se resolvió sola pide dormir en vez de
+  // devolver el aparato al hub (ver util/SleepRequest.h). Se atiende ACÁ, con
+  // el loop de la Activity ya terminado, y no adentro de ella: enterDeepSleep()
+  // corre el onExit() de la pantalla de turno y no puede hacerlo desde su
+  // propio loop().
+  if (sleepreq::take()) {
+    LOG_INF("MAIN", "a dormir a pedido de %s", activityManager.currentActivityName());
+    enterDeepSleep();
+    return;  // no se llega: enterDeepSleep termina en esp_deep_sleep_start
+  }
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

@@ -66,6 +66,12 @@ class MotionInput {
   void poll();
 
   bool available() const { return available_; }
+  // La POSICIÓN de ahora, no el gesto: la pantalla del recordatorio la consulta
+  // para no tomar por "lo dieron vuelta" al aparato que ya estaba boca abajo.
+  bool faceDown() const { return faceDown_; }
+  // Ya se leyó al menos una muestra, o sea que `faceDown()` dice algo. Antes de
+  // eso (el primer arranque del loop) la posición todavía no se conoce.
+  bool primed() const { return primed_; }
   // El motor de golpes del chip contestó el diálogo de CTRL9 y la gravedad que
   // se leyó al arrancar era plausible.
   bool tapTrusted() const { return tapTrusted_; }
@@ -142,6 +148,15 @@ class MotionInput {
   // Sacudida: muestras seguidas fuera de 1 g.
   uint8_t shakeHits_ = 0;
   unsigned long shakeFirstAt_ = 0;
+  // LA PRIMERA LECTURA CEBA LAS TRABAS Y NO EMITE NADA. Sin esto, la POSICIÓN
+  // en la que el aparato ya estaba se leía como el GESTO de ponerlo así, y
+  // `faceDown_` arranca en false en cada arranque: un aparato apoyado boca
+  // abajo sobre la mesa disparaba "boca abajo" ~1,1 s después de cada boot.
+  // Eso, con un recordatorio sonando, es posponer solo; con el wake por
+  // temporizador del recordatorio, es posponerse cada diez minutos toda la
+  // noche (pasó, 1.5.91: el aparato amaneció sin batería). Estar boca abajo es
+  // un ESTADO; el gesto es DARLO VUELTA, o sea la transición.
+  bool primed_ = false;
   // Boca abajo: hay que quedarse quieto medio segundo para que cuente.
   bool faceDown_ = false;
   unsigned long faceDownSince_ = 0;

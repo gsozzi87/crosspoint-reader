@@ -6,13 +6,15 @@
 #include <I18n.h>
 #include <Logging.h>
 #include <ServerClient.h>
+
 #include "HubStore.h"
-#include "input/MotionInput.h"
 #include "MappedInputManager.h"
 #include "components/UITheme.h"
-#include "components/themes/BaseTheme.h"
 #include "components/icons/hubWidgetIcons.h"
+#include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "input/MotionInput.h"
+#include "util/SleepRequest.h"
 #include "voice/SpeechCache.h"
 
 namespace {
@@ -23,6 +25,12 @@ constexpr const char* TAG = "REMIND";
 void ReminderAlertActivity::onEnter() {
   Activity::onEnter();
   startedAt = millis();
+  // Si el aparato ya venía boca abajo, el gesto arranca desarmado: lo arma el
+  // "boca arriba" de alguien que lo levanta. Y si el IMU todavía no leyó
+  // ninguna muestra (es lo normal en un arranque por temporizador: esta
+  // pantalla se abre antes de que el loop llegue a MOTION.poll()), tampoco se
+  // arma acá: se decide en el loop con la primera posición conocida.
+  gestureArmed = MOTION.primed() && !MOTION.faceDown();
   // "Reminder: <title>" from the SD (cached at sync), then the beeps.
   const std::string clip = speechcache::clipPath(std::string(tr(STR_HUB_REMINDERS)) + ": " + title);
   spoken = !speech.playFile(clip.c_str());
@@ -40,6 +48,7 @@ void ReminderAlertActivity::onExit() {
 }
 
 void ReminderAlertActivity::done() {
+  attended = true;
   // El dueAt de ESTA ocurrencia, leido ANTES de correr la fecha: viaja como
   // `at` para que un reintento del mismo tilde no le coma otro ciclo.
   time_t at = 0;
@@ -67,10 +76,17 @@ void ReminderAlertActivity::done() {
   leave();
 }
 
-void ReminderAlertActivity::snooze() {
+void ReminderAlertActivity::snooze(const bool byUser) {
+  if (byUser) attended = true;
   time_t now = 0;
   halClock.getEpochUtc(now);
-  HUB_STORE.snoozeReminder(reminderId, now + SNOOZE_S);
+  // El tope se mira ANTES de postergar otra vez: con MAX_SNOOZES ya cumplidas,
+  // esta vez se descarta en vez de correr la alarma diez minutos más.
+  if (HUB_STORE.snoozeCount(reminderId) >= HubStore::MAX_SNOOZES) {
+    giveUp();
+    return;
+  }
+  const int veces = HUB_STORE.snoozeReminder(reminderId, now + SNOOZE_S);
   HUB_STORE.saveToFile();
   std::string body;
   {
@@ -80,18 +96,70 @@ void ReminderAlertActivity::snooze() {
     doc["snooze"] = static_cast<int>(SNOOZE_S);
     serializeJson(doc, body);
   }
-  LOG_INF(TAG, "snooze %d: %s", reminderId, ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/done", body)));
+  LOG_INF(TAG, "snooze %d (%d de %d, %s): %s", reminderId, veces, HubStore::MAX_SNOOZES,
+          byUser ? "a mano" : "sin atender",
+          ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/done", body)));
+  leave();
+}
+
+// Tres postergaciones sin que nadie la diera por hecha: se descarta. Si el
+// recordatorio repite, la ocurrencia de hoy se da por perdida y queda armada la
+// del próximo ciclo; si no repite, se borra. En los dos casos es lo mismo que
+// tildarlo —completeReminder() ya hace exactamente eso—, con la diferencia de
+// que el aparato avisa al servidor que se dio por vencido y no que el usuario
+// lo hizo (`dismissed`), para que la Pizarra pueda decir la verdad.
+void ReminderAlertActivity::giveUp() {
+  time_t at = 0;
+  for (const HubStore::Reminder& r : HUB_STORE.reminders) {
+    if (r.id == reminderId) {
+      at = r.dueAt;
+      break;
+    }
+  }
+  time_t now = 0;
+  halClock.getEpochUtc(now);
+  const bool repite = HUB_STORE.completeReminder(reminderId, now);
+  HUB_STORE.saveToFile();
+  std::string body;
+  {
+    JsonDocument doc;
+    doc["kind"] = "reminder";
+    doc["id"] = reminderId;
+    doc["dismissed"] = true;
+    if (at > 0) doc["at"] = static_cast<int64_t>(at);
+    serializeJson(doc, body);
+  }
+  LOG_INF(TAG, "descartado %d tras %d postergaciones (%s): %s", reminderId, HubStore::MAX_SNOOZES,
+          repite ? "queda el proximo ciclo" : "no repite, se borra",
+          ServerClient::resultName(SERVER_CLIENT.postOrQueue("/api/hub/done", body)));
   leave();
 }
 
 void ReminderAlertActivity::leave() {
   speech.stop();
   beep.stop();
-  if (resultHandler) {
+  // HAY PANTALLA DEBAJO: se vuelve a ella. `checkTimeAlarms()` abre esta
+  // pantalla con pushActivity() desde donde sea que esté el usuario, y eso NO
+  // deja resultHandler, así que hasta acá el `else` mandaba a TODAS al hub: una
+  // alarma que sonaba en Notas o en la agenda te dejaba en el hub al
+  // atenderla. Es el mismo defecto que tenía Hablar y se arregla igual.
+  if (resultHandler || activityManager.hasStackedActivities()) {
     finish();
-  } else {
-    activityManager.goHome();  // launched from the boot path after a timer wake
+    return;
   }
+  // Nada debajo: esto se abrió desde el arranque por el temporizador del
+  // recordatorio, o sea que el aparato se encendió solo para esto. Si además
+  // nadie la atendió, mandarla al hub deja el aparato despierto los diez
+  // minutos del auto-sleep (y el hub encima puede levantar WiFi para
+  // sincronizar) justo para volver a dormirse cuando la alarma vuelve a sonar:
+  // eso es estar encendido el 100 % de la noche, que es como se vació la
+  // batería en 1.5.91.
+  if (!attended) {
+    LOG_INF(TAG, "nadie la atendio y no hay pantalla debajo: a dormir");
+    sleepreq::request();
+    return;
+  }
+  activityManager.goHome();  // launched from the boot path after a timer wake
 }
 
 void ReminderAlertActivity::loop() {
@@ -106,15 +174,38 @@ void ReminderAlertActivity::loop() {
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
-    snooze();
+    snooze(/*byUser=*/true);
     return;
+  }
+  // El gesto se arma cuando se sabe que el aparato NO está boca abajo: o
+  // porque la primera muestra del IMU llegó y lo dice, o porque alguien lo
+  // levantó (FaceUp). Hasta entonces, un "boca abajo" es la mesa, no una mano.
+  if (!gestureArmed) {
+    if (MOTION.take(MotionInput::Event::FaceUp)) {
+      gestureArmed = true;
+    } else if (MOTION.primed() && !MOTION.faceDown()) {
+      gestureArmed = true;
+    } else {
+      // Se descarta el "boca abajo" que pudiera haber quedado pendiente de
+      // antes de armar: si no, se consume recién al armarse y vale igual.
+      MOTION.take(MotionInput::Event::FaceDown);
+    }
   }
   // Darlo vuelta es posponer sin buscar ningún botón: es el gesto de tapar el
   // despertador. Sacudirlo también lo pospone (es "pará"), que es lo primero
-  // que hace cualquiera con un aparato que suena en la mano.
-  if (MOTION.take(MotionInput::Event::FaceDown) || MOTION.take(MotionInput::Event::Shake)) {
+  // que hace cualquiera con un aparato que suena en la mano. La sacudida no
+  // necesita armado: nadie sacude una mesa.
+  if ((gestureArmed && MOTION.take(MotionInput::Event::FaceDown)) || MOTION.take(MotionInput::Event::Shake)) {
     LOG_INF(TAG, "gesto: se pospone el recordatorio");
-    snooze();
+    snooze(/*byUser=*/true);
+    return;
+  }
+  // Se acabó el minuto y nadie contestó: se posterga sola. Dejarla en pantalla
+  // sin postergar deja el recordatorio VENCIDO, y con un vencido el aparato se
+  // despierta cada cinco segundos hasta quedarse sin batería.
+  if (millis() - startedAt > BEEP_MS) {
+    LOG_INF(TAG, "nadie contesto en %lu s", BEEP_MS / 1000);
+    snooze(/*byUser=*/false);
     return;
   }
 }

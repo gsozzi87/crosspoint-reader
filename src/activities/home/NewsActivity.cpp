@@ -66,6 +66,18 @@ void NewsActivity::onExit() {
   }
 }
 
+// POR QUÉ falló, en una línea que se pueda leer en el vidrio. Sin esto un 401
+// —el aparato quedó sin vincular— se mostraba como "No hay fuentes cargadas", y
+// el usuario se iba a buscar el problema a la web, que es el lugar equivocado.
+std::string NewsActivity::describeFailure(const ServerClient::Result r, const int status) {
+  if (r == ServerClient::Result::Ok) return "";
+  if (status == 401 || status == 403) return "el aparato no está vinculado (Ajustes → Sistema → Vincular)";
+  if (status == 404) return "el servidor no tiene esta función (¿versión vieja?)";
+  if (status >= 500) return std::string("el servidor falló (") + std::to_string(status) + ")";
+  if (status > 0) return std::string("el servidor contestó ") + std::to_string(status);
+  return std::string("no se pudo llegar al servidor (") + ServerClient::resultName(r) + ")";
+}
+
 void NewsActivity::fail(StrId why, std::string detail) {
   LOG_ERR(TAG, "%s %s", I18N.get(why), detail.c_str());
   failureId = why;
@@ -127,8 +139,23 @@ bool NewsActivity::loadPack() {
 }
 
 bool NewsActivity::fetchFeeds() {
+  // PRIMERO EL PAQUETE. Es lo que el servidor ya masticó y lo que de verdad se
+  // lee; el camino de abajo (`/api/rss`, crudo y sin modelo) es el respaldo
+  // para una cuenta que todavía no tiene paquete armado.
+  //
+  // Hasta acá esta pantalla NUNCA pedía el paquete: lo bajaba sólo
+  // `HubSyncActivity`. O sea que si la sincronización del hub fallaba —por
+  // ejemplo con el aparato sin vincular—, Noticias podía tener el WiFi arriba,
+  // apretar Actualizar, y seguir sin bajar una sola nota.
+  const int bajadas = newspack::sync(/*budget=*/0);
+  if (bajadas >= 0 && loadPack()) return true;
+
   ServerClient::Response resp;
-  if (SERVER_CLIENT.get("/api/rss", resp) != ServerClient::Result::Ok) return false;
+  const ServerClient::Result r = SERVER_CLIENT.get("/api/rss", resp);
+  if (r != ServerClient::Result::Ok) {
+    lastFailure = describeFailure(r, resp.status);
+    return false;
+  }
   HalFile f;
   if (Storage.openFileForWrite(TAG, CACHE, f)) {
     f.write(reinterpret_cast<const uint8_t*>(resp.body.data()), resp.body.size());
@@ -417,7 +444,9 @@ void NewsActivity::loop() {
         const bool ok = fetchFeeds();
         WiFi.setSleep(true);
         if (!ok) {
-          fail(feeds.empty() ? StrId::STR_NEWS_NO_FEEDS : StrId::STR_ASK_FAILED);
+          // Con un motivo concreto manda el motivo: "no hay fuentes" sólo es
+          // cierto cuando el servidor contestó bien y no trajo ninguna.
+          fail(lastFailure.empty() && feeds.empty() ? StrId::STR_NEWS_NO_FEEDS : StrId::STR_ASK_FAILED, lastFailure);
           break;
         }
         state = FEEDS;

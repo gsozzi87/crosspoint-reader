@@ -8,7 +8,32 @@ std::string str(JsonVariantConst v, const char* key) {
   return std::string(s);
 }
 
+// Cuánta diferencia de vencimiento sigue siendo LA MISMA ocurrencia. El
+// servidor recalcula el `dueAt` del posponer con SU reloj y el aparato con el
+// suyo, así que vuelven unos segundos corridos; más que esto y es otra cosa
+// (la ocurrencia siguiente, o alguien la editó desde la web), y ahí el
+// contador de postergaciones tiene que arrancar de cero.
+constexpr time_t SAME_OCCURRENCE_S = 120;
+
 void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) {
+  // Lo que había antes, para no perder el contador de postergaciones al
+  // sincronizar: el servidor no lo conoce (es del aparato: cuenta repiques que
+  // nadie atendió), así que si no se arrastra acá, una sincronización en el
+  // medio de la racha la reinicia y el tope de MAX_SNOOZES no llega nunca.
+  // Se copian sólo los tres números que hacen falta y NO los recordatorios
+  // enteros: esto corre en la sincronización, con el TLS arriba, que es el peor
+  // momento del heap interno para pedir veinte copias con sus strings.
+  struct Streak {
+    int id;
+    time_t dueAt;
+    int snoozes;
+  };
+  Streak before[HubStore::MAX_REMINDERS];
+  int beforeCount = 0;
+  for (const HubStore::Reminder& r : out) {
+    if (r.snoozes <= 0 || beforeCount >= HubStore::MAX_REMINDERS) continue;
+    before[beforeCount++] = {r.id, r.dueAt, r.snoozes};
+  }
   out.clear();
   for (JsonVariantConst r : doc["reminders"].as<JsonArrayConst>()) {
     if (out.size() >= HubStore::MAX_REMINDERS) break;
@@ -21,6 +46,17 @@ void parseReminders(JsonVariantConst doc, std::vector<HubStore::Reminder>& out) 
     rem.repeat = str(r, "repeat");
     rem.weekday = r["weekday"] | -1;
     rem.interval = r["interval"] | 0;
+    // Del archivo viene en el propio JSON; del servidor no viene y sale del
+    // que había, siempre que siga siendo la misma ocurrencia.
+    rem.snoozes = r["snoozes"] | 0;
+    if (rem.snoozes == 0) {
+      for (int i = 0; i < beforeCount; ++i) {
+        if (before[i].id != rem.id) continue;
+        const time_t d = rem.dueAt > before[i].dueAt ? rem.dueAt - before[i].dueAt : before[i].dueAt - rem.dueAt;
+        if (d <= SAME_OCCURRENCE_S) rem.snoozes = before[i].snoozes;
+        break;
+      }
+    }
     out.push_back(std::move(rem));
   }
 }
@@ -71,6 +107,7 @@ void HubStore::toJson(JsonDocument& doc) const {
     o["repeat"] = r.repeat;
     o["weekday"] = r.weekday;
     o["interval"] = r.interval;
+    o["snoozes"] = r.snoozes;
   }
   JsonArray ls = doc["lists"].to<JsonArray>();
   for (const List& l : lists) {
@@ -334,6 +371,7 @@ bool HubStore::completeReminder(const int id, const time_t now) {
     }
     if (next > 0) {
       r.dueAt = next;
+      r.snoozes = 0;  // ocurrencia nueva, racha nueva
       // `when` viene traducido y armado por el servidor ("hoy 08:00"), asi que
       // aca queda viejo a proposito: no hay forma de rearmarlo sin duplicar el
       // formateo del servidor, y la proxima sincronizacion lo corrige. Lo que
@@ -409,10 +447,21 @@ const HubStore::Reminder* HubStore::dueReminder(const time_t now) const {
   return best;
 }
 
-void HubStore::snoozeReminder(const int id, const time_t until) {
+int HubStore::snoozeReminder(const int id, const time_t until) {
   for (Reminder& r : reminders) {
-    if (r.id == id) r.dueAt = until;
+    if (r.id != id) continue;
+    r.dueAt = until;
+    if (r.snoozes < 1000) ++r.snoozes;  // tope bobo: es un contador, no un acumulador
+    return r.snoozes;
   }
+  return 0;
+}
+
+int HubStore::snoozeCount(const int id) const {
+  for (const Reminder& r : reminders) {
+    if (r.id == id) return r.snoozes;
+  }
+  return 0;
 }
 
 void HubStore::removeNote(const int id) {

@@ -71,12 +71,14 @@ void ServerTestActivity::runChecks() {
   logSent = false;
   logBytes = 0;
   if (auth == ServerClient::Result::Ok) {
-    const std::string tail = devlog::tail(24 * 1024);
-    if (tail.size() >= 64) {
+    size_t mark = 0;
+    const std::string chunk = devlog::unsent(24 * 1024, mark);
+    if (chunk.size() >= 64) {
       ServerClient::Response logResp;
-      logBytes = tail.size();
-      logSent = SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()),
-                                        tail.size(), logResp) == ServerClient::Result::Ok;
+      logBytes = chunk.size();
+      logSent = SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(chunk.data()),
+                                        chunk.size(), logResp) == ServerClient::Result::Ok;
+      if (logSent) devlog::confirmSent(mark);
     }
   }
 

@@ -17,8 +17,8 @@ constexpr const char* TAG = "MOTION";
 // tenemos; el resto es geometría.
 // Los seis que la pantalla de diagnóstico muestra viven en MotionInput.h (en
 // mg / dps / ms): acá se convierten a g, que es la unidad de las cuentas.
-constexpr float TILT_ON = MotionInput::TH_TILT_MG / 1000.0f;  // pasa de acá y es una inclinación
-constexpr float TILT_OFF = 0.25f;   // vuelve de acá y se puede inclinar de nuevo
+constexpr float TILT_ON = MotionInput::TH_TILT_MG / 1000.0f;     // pasa de acá y es una inclinación
+constexpr float TILT_OFF = 0.25f;                                // vuelve de acá y se puede inclinar de nuevo
 constexpr float SHAKE_DEV = MotionInput::TH_SHAKE_MG / 1000.0f;  // desvío de 1 g que cuenta como sacudón
 constexpr float ROTATE_DPS = MotionInput::TH_ROTATE_DPS;
 constexpr float LEVEL_FLAT = MotionInput::TH_LEVEL_MG / 1000.0f;  // x e y por debajo de esto = apoyado
@@ -33,7 +33,7 @@ constexpr uint8_t SHAKE_HITS = 2;
 
 // Parámetros del motor de golpes del chip (hoja de datos 10.2/10.3), pensados
 // para un golpe con la yema sobre la tapa a 250 Hz de muestreo.
-constexpr uint8_t TAP_PRIORITY = 4;      // Z > X > Y: el golpe entra por la tapa
+constexpr uint8_t TAP_PRIORITY = 4;  // Z > X > Y: el golpe entra por la tapa
 // Tiempo muerto entre dos dobles golpes que damos por buenos, y cuánto puede
 // haber pasado desde el sacudón que lo acompaña. Un golpe con la yema mueve el
 // acelerómetro bastante más que el ruido de tenerlo en la mano.
@@ -184,6 +184,20 @@ void MotionInput::poll() {
   lastN_ = r.n;
   last_ = r;
 
+  // La primera muestra sólo CEBA: deja las trabas de posición describiendo
+  // dónde está el aparato y no emite nada. Lo de arriba (stillness_) también
+  // necesita una lectura anterior para valer algo, así que esta muestra no
+  // podría juzgar quietud ni con ganas.
+  if (!primed_) {
+    primed_ = true;
+    faceDown_ = r.n <= FACE_DOWN_N && fabsf(r.x) < FACE_DOWN_SIDE && fabsf(r.y) < FACE_DOWN_SIDE;
+    level_ = r.n > 0.7f && fabsf(r.x) < LEVEL_FLAT && fabsf(r.y) < LEVEL_FLAT;
+    tilted_ = fabsf(r.x) > TILT_OFF || fabsf(r.y) > TILT_OFF;
+    LOG_DBG(TAG, "posicion inicial: %s (x=%.2f y=%.2f n=%.2f)",
+            faceDown_ ? "boca abajo" : (level_ ? "horizontal" : "de canto"), r.x, r.y, r.n);
+    return;
+  }
+
   const bool debounced = now - lastEventAt_ < DEBOUNCE_MS;
 
   // --- 1. Sacudida: lo más urgente, porque es "pará todo" -------------------
@@ -194,7 +208,7 @@ void MotionInput::poll() {
       shakeFirstAt_ = now;
     } else if (++shakeHits_ >= SHAKE_HITS) {
       shakeHits_ = 0;
-      tilted_ = true;  // el sacudón deja el aparato en cualquier posición
+      tilted_ = true;        // el sacudón deja el aparato en cualquier posición
       lastBigMoveMs_ = now;  // esto SÍ es una sacudida: ver el doble golpe
       if (!debounced) {
         emit(Event::Shake);
@@ -326,17 +340,28 @@ MotionInput::Event MotionInput::takeAny() {
 
 const char* MotionInput::name(const Event e) {
   switch (e) {
-    case Event::TiltLeft: return "inclinar izquierda";
-    case Event::TiltRight: return "inclinar derecha";
-    case Event::TiltForward: return "inclinar adelante";
-    case Event::TiltBack: return "inclinar atras";
-    case Event::Shake: return "sacudir";
-    case Event::Rotate: return "girar";
-    case Event::Level: return "horizontal";
-    case Event::FaceDown: return "boca abajo";
-    case Event::FaceUp: return "boca arriba";
-    case Event::DoubleTap: return "doble golpe";
-    case Event::None: break;
+    case Event::TiltLeft:
+      return "inclinar izquierda";
+    case Event::TiltRight:
+      return "inclinar derecha";
+    case Event::TiltForward:
+      return "inclinar adelante";
+    case Event::TiltBack:
+      return "inclinar atras";
+    case Event::Shake:
+      return "sacudir";
+    case Event::Rotate:
+      return "girar";
+    case Event::Level:
+      return "horizontal";
+    case Event::FaceDown:
+      return "boca abajo";
+    case Event::FaceUp:
+      return "boca arriba";
+    case Event::DoubleTap:
+      return "doble golpe";
+    case Event::None:
+      break;
   }
   return "-";
 }

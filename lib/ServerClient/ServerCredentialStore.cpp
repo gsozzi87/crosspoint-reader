@@ -2,6 +2,8 @@
 
 #include <Arduino.h>
 #include <CrossPointOtaConfig.h>
+#include <HalStorage.h>
+#include <Logging.h>
 #include <ObfuscationUtils.h>
 #include <esp_random.h>
 
@@ -81,6 +83,20 @@ std::string ServerCredentialStore::deviceId() {
 
 const std::string& ServerCredentialStore::ensureToken() {
   if (!token.empty()) return token;
+  // SI EL ARCHIVO ESTÁ PERO NO SE PUDO LEER, NO SE ACUÑA NADA. Acuñar es
+  // cambiar la identidad del aparato: hay que volver a vincularlo a mano y,
+  // hasta que alguien lo haga, todo lo que suba va a una cuenta que no es la
+  // suya. Una tarjeta con la FAT dañada (pasó: le sacaron la batería en
+  // caliente) devuelve los JSON vacíos, y el aparato se creía recién salido de
+  // la caja — token nuevo, y de paso el asistente de primeros pasos.
+  //
+  // Un archivo que existe es un aparato que ya tuvo identidad: lo correcto es
+  // quedarse sin token (el servidor contesta 401 y se ve) y esperar a que la
+  // tarjeta se recupere o a que alguien lo vincule de nuevo, no inventar otro.
+  if (Storage.exists(getFilePath())) {
+    LOG_ERR("SRVSTORE", "%s existe pero no trajo token: NO se acuña uno nuevo (tarjeta dañada?)", getFilePath());
+    return token;
+  }
   // 32 bytes del generador de hardware (esp_random se alimenta del ruido de la
   // radio, no de una semilla previsible).
   static const char kHexLower[] = "0123456789abcdef";

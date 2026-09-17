@@ -30,7 +30,18 @@ class HubStore : public PersistableStore<HubStore> {
     std::string repeat;
     int weekday = -1;
     int interval = 0;
+    // Cuántas veces se pospuso ESTA ocurrencia sin que nadie la diera por
+    // hecha. Se persiste porque cada repique es un arranque distinto: el
+    // aparato duerme entre uno y otro y el contador en RAM no llegaría al
+    // segundo. A las MAX_SNOOZES la alarma se descarta (ver completeReminder).
+    int snoozes = 0;
   };
+
+  // Postergaciones seguidas antes de darse por vencido. Tres repiques de diez
+  // minutos son media hora de insistir: pasado eso el que no la atendió no la
+  // va a atender, y seguir es despertar el aparato cada diez minutos para
+  // siempre (1.5.91: una noche entera y la batería en cero).
+  static constexpr int MAX_SNOOZES = 3;
   struct ListItem {
     int id = 0;
     std::string text;
@@ -186,7 +197,11 @@ class HubStore : public PersistableStore<HubStore> {
   time_t nextDueAt(time_t now) const;
   // First reminder whose time has come (dueAt <= now), or nullptr.
   const Reminder* dueReminder(time_t now) const;
-  void snoozeReminder(int id, time_t until);
+  // Posponer: corre el vencimiento y suma uno al contador de la ocurrencia.
+  // Devuelve cuántas van, para que el llamador sepa si tocó el techo.
+  int snoozeReminder(int id, time_t until);
+  // Cuántas veces se pospuso ya esta ocurrencia (0 si el id no está).
+  int snoozeCount(int id) const;
   void removeNote(int id);
   // Borra TODO el contenido que es de una cuenta (recordatorios, listas, notas,
   // eventos, clima, frase, ajustes aplicados). Deja lo que es del aparato:

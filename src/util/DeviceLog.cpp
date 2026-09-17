@@ -11,12 +11,17 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 namespace {
 constexpr const char* DIR = "/.crosspoint";
 constexpr const char* CURRENT = "/.crosspoint/device.log";
 constexpr const char* PREVIOUS = "/.crosspoint/device.prev.log";
+// Hasta dónde se subió ya. Un número decimal y nada más; vive en su propio
+// archivo (y no en hub.json) para que el log se pueda subir aunque la
+// sincronización falle, que es justamente cuando más sirve.
+constexpr const char* MARK = "/.crosspoint/log.sent";
 constexpr size_t HEAD_BYTES = 3 * 1024;  // cabecera de la sesión que se manda siempre (ver tail)
 constexpr size_t MAX_BYTES = 64 * 1024;
 constexpr size_t FLUSH_EVERY = 2 * 1024;
@@ -106,10 +111,10 @@ void writeHeader() {
   char line[160];
   snprintf(line, sizeof(line), "\n=== %s | arranque por %s ===\n", CROSSPOINT_VERSION, wakeReasonName());
   rawLine(line);
-  snprintf(line, sizeof(line), "bateria %u%% | heap %lu KB libre (bloque mayor %lu KB) | psram %lu KB libre\n",
-           static_cast<unsigned>(powerManager.getBatteryPercentage()),
-           static_cast<unsigned long>(ESP.getFreeHeap() / 1024), static_cast<unsigned long>(ESP.getMaxAllocHeap() / 1024),
-           static_cast<unsigned long>(ESP.getFreePsram() / 1024));
+  snprintf(
+      line, sizeof(line), "bateria %u%% | heap %lu KB libre (bloque mayor %lu KB) | psram %lu KB libre\n",
+      static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned long>(ESP.getFreeHeap() / 1024),
+      static_cast<unsigned long>(ESP.getMaxAllocHeap() / 1024), static_cast<unsigned long>(ESP.getFreePsram() / 1024));
   rawLine(line);
 }
 
@@ -141,11 +146,29 @@ void noteClockChange() {
   rawLine(line);
 }
 
+// La marca es un desplazamiento DENTRO de device.log, así que rotar la
+// invalida: el archivo nuevo arranca en cero y una marca vieja apuntaría a la
+// mitad de otra cosa.
+void resetMark() { Storage.remove(MARK); }
+
+size_t readMark() {
+  HalFile f;
+  if (!Storage.openFileForRead("LOG", MARK, f)) return 0;
+  char buf[24] = {0};
+  const int got = f.read(buf, sizeof(buf) - 1);
+  f.close();
+  if (got <= 0) return 0;
+  buf[got] = '\0';
+  const long v = atol(buf);
+  return v > 0 ? static_cast<size_t>(v) : 0;
+}
+
 void openCurrent(const bool append) {
   if (file.isOpen()) file.close();
   if (!append && Storage.exists(CURRENT)) {
     Storage.remove(PREVIOUS);
     Storage.rename(CURRENT, PREVIOUS);
+    resetMark();
   }
   HalFile f;
   if (!Storage.openFileForWrite("LOG", CURRENT, f)) return;
@@ -176,12 +199,24 @@ void emit(const char* line, const bool dedup) {
   rawWrite(line, strlen(line));
   if (written >= MAX_BYTES) {
     flushRepeats();
+    // Lo que se escribió después de la última subida y todavía no viajó se va
+    // con la rotación: queda en el archivo anterior, que nadie sube. Es poco
+    // (hay que llenar 64 KB entre dos sincronizaciones) pero no es cero, así
+    // que se dice en el archivo nuevo en vez de dejar un salto mudo.
+    const size_t sent = readMark();
+    const size_t perdido = written > sent ? written - sent : 0;
     openCurrent(false);
     if (!file.isOpen()) {
       ready = false;  // la SD dejó de aceptar el archivo: dejar de intentarlo en cada línea
       return;
     }
     writeHeader();
+    if (perdido > 0) {
+      char aviso[96];
+      snprintf(aviso, sizeof(aviso), "(el log rotó: %lu bytes no llegaron a subirse)\n",
+               static_cast<unsigned long>(perdido));
+      rawLine(aviso);
+    }
   }
 }
 }  // namespace
@@ -242,6 +277,66 @@ void devlog::close() {
 }
 
 size_t devlog::size() { return written; }
+
+// ─────────────────────────────────────── lo que falta subir
+//
+// EL PROBLEMA QUE ESTO ARREGLA: el aparato mandaba en cada sincronización el
+// final de su log, y el servidor APENDA. O sea que las mismas líneas subían una
+// y otra vez, y en /board/log el usuario veía la misma tanda repetida seis
+// veces con arranques de firmware de hace semanas en el medio. Buscar lo que
+// acababa de pasar era imposible.
+//
+// Ahora se manda sólo lo que se escribió DESPUÉS de la última subida buena. La
+// marca es un desplazamiento en device.log y se guarda en la tarjeta, así que
+// vale entre arranques (el archivo se abre en modo agregar); rotar la borra.
+std::string devlog::unsent(const size_t maxBytes, size_t& mark) {
+  devlog::flush();
+  mark = 0;
+  HalFile f;
+  if (!Storage.openFileForRead("LOG", CURRENT, f)) return "";
+  const size_t n = f.size();
+  mark = n;
+  size_t from = readMark();
+  if (from > n) {
+    // La marca quedó adelante del archivo: rotó sin que nos enteráramos, o lo
+    // vaciaron. Se manda el final y se vuelve a empezar.
+    from = 0;
+  }
+  if (from >= n) {
+    f.close();
+    return "";  // nada nuevo
+  }
+  bool saltado = false;
+  if (n - from > maxBytes) {
+    // Más de lo que entra en una subida: se manda el final. El salto se avisa,
+    // porque si no se lee como si en el medio no hubiera pasado nada.
+    from = n - maxBytes;
+    saltado = true;
+  }
+  const size_t want = n - from;
+  std::string out;
+  out.resize(want);
+  f.seek(from);
+  const int got = f.read(&out[0], want);
+  f.close();
+  if (got <= 0) {
+    mark = 0;
+    return "";
+  }
+  out.resize(got);
+  if (saltado) out.insert(0, "--- (el log creció más de lo que entra en una subida: falta el medio) ---\n");
+  return out;
+}
+
+void devlog::confirmSent(const size_t mark) {
+  if (mark == 0) return;
+  HalFile f;
+  if (!Storage.openFileForWrite("LOG", MARK, f)) return;
+  char buf[24];
+  const int n = snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(mark));
+  if (n > 0) f.write(reinterpret_cast<const uint8_t*>(buf), static_cast<size_t>(n));
+  f.close();
+}
 
 std::string devlog::tail(const size_t maxBytes) {
   devlog::flush();
@@ -314,8 +409,10 @@ std::string devlog::tail(const size_t maxBytes) {
           tailOfPrev.resize(want);
           f.seek(n - want);
           const int got = f.read(&tailOfPrev[0], want);
-          if (got > 0) tailOfPrev.resize(got);
-          else tailOfPrev.clear();
+          if (got > 0)
+            tailOfPrev.resize(got);
+          else
+            tailOfPrev.clear();
         }
         f.close();
       }

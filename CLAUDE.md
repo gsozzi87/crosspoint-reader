@@ -991,6 +991,63 @@ build ya las venía descartando. Es limpieza para que no vuelvan si alguien rege
 de 48; el comentario del manifiesto decía lo contrario y se corrigió). Se dejan porque son un par generado, no una
 función muerta.
 
+## La noche en que se vació la batería (1.5.92)
+
+El aparato quedó en reposo boca abajo sobre la mesa y a la mañana estaba en 0 %. El log lo dijo entero: la
+misma tanda repetida cada diez minutos, toda la noche.
+
+```
+=== 1.5.90-ws397 | arranque por temporizador === bateria 6%
+[1110] [MOTION] boca abajo
+[1112] [REMIND] gesto: se pospone el recordatorio
+[2324] [RTCAL] alarma armada para ... 20:10:00 UTC
+```
+
+- **ESTAR boca abajo no es DARLO VUELTA.** `MotionInput::faceDown_` arranca en false en cada arranque, así que
+  la primera lectura de un aparato apoyado sobre la tapa se leía como la transición y emitía el gesto ~1,1 s
+  después del boot. Con un recordatorio sonando, eso es posponerlo solo. Ahora **la primera muestra sólo CEBA**
+  las trabas de posición (`faceDown_`, `level_`, `tilted_`) y no emite nada, y la pantalla del recordatorio
+  además exige ver un "boca arriba" antes de aceptar el gesto. Vale para todos los gestos de POSICIÓN: la
+  posición en la que el aparato ya estaba nunca es un gesto.
+- **Una alarma que nadie atiende era un ciclo infinito, y eso existía desde siempre.** A los 60 s dejaba de
+  pitar pero **no se posponía**, así que el recordatorio seguía vencido; con un vencido `nextWakeInstant()`
+  devuelve "ahora", el deep sleep se arma al piso de 5 s y el aparato se despierta a repetir. Ahora a los 60 s
+  **se posterga sola** y hay un **tope de 3 postergaciones** (`HubStore::MAX_SNOOZES`, contador persistido en
+  `hub.json` porque cada repique es un arranque distinto): a la cuarta se **descarta** — si el recordatorio
+  repite, la ocurrencia de hoy se pierde y queda armada la próxima; si no repite, se borra. Son cuatro repiques
+  en media hora y se acabó. El aviso al servidor lleva `dismissed: true` para que "hecho" y "me cansé de sonar"
+  no se confundan.
+- **Volver al hub después de una alarma que nadie atendió cuesta diez minutos de aparato encendido.** El hub
+  puede levantar WiFi para sincronizar y, sobre todo, el auto-sleep recién corta a los diez minutos — justo
+  cuando la alarma vuelve a sonar. O sea el 100 % de la noche despierto. `src/util/SleepRequest.h` deja que una
+  pantalla que se abrió sola y se resolvió sola **pida dormir**; lo atiende el loop de `main.cpp`, que es el
+  único que puede llamar a `enterDeepSleep()` con el aparato consistente.
+- **Y de paso: la alarma volvía al hub desde CUALQUIER lado.** `checkTimeAlarms()` la abre con `pushActivity()`,
+  que no deja `resultHandler`, así que el `else` de `leave()` mandaba a todas al hub: una alarma que sonaba en
+  Notas o en la agenda te dejaba en el hub al atenderla. Es el mismo defecto que tenía Hablar en 1.5.70 y se
+  arregla igual, preguntando por `hasStackedActivities()`.
+
+**La tarjeta dañada hacía que el aparato se creyera nuevo.** Al tirón de batería le siguió un arranque con el
+asistente de primeros pasos y un token nuevo. Los dos salen de la misma confusión: `loadFromFile()` devuelve
+false igual si el archivo NO ESTÁ que si está y no parsea, y un JSON ilegible se lee como store vacío.
+
+- `ensureToken()` acuñaba identidad nueva con sólo ver el token vacío. Acuñar **cambia la identidad del
+  aparato**: hay que volver a vincularlo a mano y, hasta que alguien lo haga, lo que suba va a otra cuenta.
+  Ahora, si `/.crosspoint/server.json` **existe**, no se acuña nada: se queda sin token (el servidor contesta
+  401, que se ve) y espera. Perder el token no pierde datos —son de la CUENTA— pero inventarlo sí confunde.
+- `SetupActivity::pending()` preguntaba "¿sincronizó alguna vez?" y "¿hay redes?", que se contestan con lo que
+  se pudo LEER y no con lo que hay. Ahora, si `hub.json` o `wifi.json` **existen**, el aparato tuvo una vida
+  antes aunque hoy no se los pueda leer.
+
+**El log subía siempre lo mismo.** El aparato mandaba el final de su log en cada sincronización y el servidor
+**apenda**, así que `/board/log` era la misma tanda repetida seis veces con arranques de firmware de hace
+semanas en el medio; buscar lo de recién era imposible. Ahora el aparato sube **sólo lo nuevo** desde la última
+subida confirmada (marca de bytes en `/.crosspoint/log.sent`, que vale entre arranques porque el archivo se
+abre en modo agregar; rotar la borra y eso se dice en el archivo nuevo), y el servidor **poda lo guardado a
+24 h** con los sellos ISO que ya escribía. La poda nunca deja la página vacía: si nada entra en la ventana,
+queda la última subida igual — "viejo" es un diagnóstico, una pantalla en blanco no es ninguno. Se prueba sin
+servidor: **`./test/device_log/run.sh`**.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

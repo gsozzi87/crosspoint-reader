@@ -3,7 +3,7 @@
 Todo lo que se publicó sin poder probarlo en hardware, con **qué mirar exactamente** y **dónde**. Se va
 tachando a medida que se confirma. Lo que falle vuelve como corrección puntual.
 
-Versión más nueva publicada: **1.5.81**. Sin probar desde **1.5.71**.
+Versión más nueva publicada: **1.5.92**. Sin probar desde **1.5.71**.
 
 ---
 
@@ -41,8 +41,8 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
       siempre y nunca bajaba).
 - [ ] Poner un recordatorio para **dentro de varias horas**, dejarlo dormir y confirmar que suena.
 - [ ] **Pausar una canción** y dejarlo: tiene que dormirse igual (antes quedaba despierto para siempre).
-- [ ] Una alarma que **nadie atiende**: a los 60 s deja de sonar y el aparato se duerme (antes se comía la
-      batería hasta la mañana).
+- [ ] Una alarma que **nadie atiende**: a los 60 s deja de sonar, **se posterga sola** y el aparato se duerme
+      **sin pasar por el hub** (en el log: `nadie contesto en 60 s` y `nadie la atendio ...: a dormir`).
 - [ ] Con un recordatorio **vencido** y el lector abierto, que no entre y salga del reposo sin parar.
 
 ---
@@ -70,6 +70,33 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
       tipografías ni formas entre pantallas. Es lo único que hay que mirar: que no quede una pantalla distinta.
 - [ ] Un aparato que venía con Diario o Bento guardados en la tarjeta tiene que pasar a Lyra solo, sin migrar
       nada y sin quedar en un tema que ya no existe.
+
+### 5 bis. La alarma y la batería (1.5.92)
+
+Esto es lo que se acaba de arreglar y lo que más importa mirar, porque es lo que vació la batería.
+
+- [ ] **Dejarlo apoyado boca abajo con un recordatorio programado.** Tiene que sonar y **no** posponerse solo.
+      En el log NO puede aparecer `[MOTION] boca abajo` seguido de `[REMIND] gesto: se pospone` a los ~1,1 s de
+      cada arranque. Lo que sí tiene que aparecer una vez por arranque es `posicion inicial: boca abajo`.
+- [ ] **El gesto sigue andando a mano**: con el aparato boca arriba y la alarma sonando, darlo vuelta la
+      posterga. (Levantarlo primero y después darlo vuelta también.)
+- [ ] **El tope**: un recordatorio que nadie atiende suena **cuatro veces en media hora** (a los 0, 10, 20 y
+      30 minutos) y después se descarta. En el log: tres `snooze N de 3 (sin atender)` y un
+      `descartado ... tras 3 postergaciones`.
+- [ ] Si el recordatorio **repite**, al descartarse queda armada la ocurrencia siguiente (mañana), no
+      desaparece. Si **no repite**, se borra.
+- [ ] **Entre repique y repique el aparato NO tiene que despertarse cada cinco segundos.** El log tiene que
+      mostrar diez minutos limpios entre un `arranque por temporizador` y el siguiente.
+- [ ] Una alarma que suena **desde Notas o la agenda**: al atenderla vuelve a esa pantalla, no al hub.
+- [ ] Y el número que cierra todo: **dejarlo una noche entera y mirar el porcentaje a la mañana**
+      (`Ajustes → Sistema → Memoria` da el %/h).
+
+### 5 ter. El log (1.5.92)
+
+- [ ] `/board/log` tiene que mostrar **una sola** copia de cada cosa, en orden, y **nada de más de un día**.
+      Si aparecen dos veces las mismas líneas, la marca de subida no se está guardando.
+- [ ] Sincronizar dos veces seguidas sin hacer nada en el medio: la segunda **no** sube nada
+      (`log upload` no aparece, o aparece con muy pocos bytes).
 
 ---
 

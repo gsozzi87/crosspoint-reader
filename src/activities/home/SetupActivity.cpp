@@ -2,6 +2,7 @@
 
 #include <BoardConfig.h>
 #include <GfxRenderer.h>
+#include <HalStorage.h>
 
 #include <algorithm>
 
@@ -39,6 +40,14 @@ bool SetupActivity::pending() {
   // actualizarse: si hay una red cargada o alguna vez sincronizó, está en uso.
   if (HUB_STORE.hasSynced()) return false;
   if (WIFI_STORE.getCredentialCount() > 0) return false;
+  // Y LAS DOS PREGUNTAS DE ARRIBA SE CONTESTAN CON LO QUE SE PUDO LEER, que no
+  // es lo mismo que con lo que hay. Un JSON que existe pero no parsea (una
+  // tarjeta con la FAT dañada: pasó, le sacaron la batería en caliente) se lee
+  // como store vacío, o sea "nunca sincronizó" y "no hay redes", y el aparato
+  // se creía recién salido de la caja. Que el ARCHIVO exista ya dice que este
+  // aparato tuvo una vida antes, aunque hoy no se pueda leer.
+  if (Storage.exists(HubStore::getFilePath())) return false;
+  if (Storage.exists(WifiCredentialStore::getFilePath())) return false;
   return true;
 }
 
