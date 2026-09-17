@@ -24,6 +24,8 @@ constexpr uint32_t TIMEOUT_MS = 20000;
 constexpr int ATTEMPTS = 3;
 constexpr uint32_t BACKOFF_MS[ATTEMPTS - 1] = {500, 1500};
 
+constexpr unsigned long SLOW_MS = 15000;  // más que esto se anota aunque haya salido bien
+
 bool retryable(int status) { return status < 0 || status == 429 || (status >= 500 && status <= 599); }
 
 std::string joinUrl(const std::string& base, const std::string& path) {
@@ -170,7 +172,19 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
       delay(BACKOFF_MS[attempt - 1]);
       if (!networkUp()) return Result::NoNetwork;
     }
+    const unsigned long t0 = millis();
     result = requestOnce(method, url, body, auth, requestId, out, timeoutMs);
+    const unsigned long took = millis() - t0;
+    // UN INTENTO QUE FALLA O TARDA TIENE QUE DECIR CUÁNTO Y EN QUÉ ESTADO. Un
+    // "retry 1 after status -1" a secas no distingue un servidor caído de un
+    // WiFi que se cayó en el medio ni de un enlace que gotea: el dueño esperó
+    // 90 s mirando "pensando" y el log no tenía con qué explicarlo.
+    if (out.status < 0 || took >= SLOW_MS) {
+      LOG_ERR(TAG, "%s %s: intento %d %s tras %lu ms (status %d, %u bytes subidos, wifi=%s rssi=%d dBm, heap %u KB)",
+              method, path.c_str(), attempt + 1, out.status < 0 ? "FALLÓ" : "lento", took, out.status,
+              (unsigned)(body && body->data ? body->len : 0), networkUp() ? "arriba" : "CAÍDO", (int)WiFi.RSSI(),
+              (unsigned)(ESP.getFreeHeap() / 1024));
+    }
     if (!retryable(out.status)) break;
   }
   if (result != Result::Ok) {

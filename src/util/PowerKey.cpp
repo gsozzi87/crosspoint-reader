@@ -52,6 +52,7 @@ constexpr unsigned long I2C_RETRY_MS = 100;       // after a failed bus transact
 constexpr unsigned long IRQ_LEVEL_MS = 1000;      // the LONG threshold programmed above
 constexpr unsigned long UNCONFIRMED_MAX_MS = 1500;  // a real press shows LONG by then
 constexpr unsigned long STALE_PRESS_MS = 12000;   // the PMIC hard-cuts at 10 s: longer = missed release
+constexpr unsigned long STALE_EDGE_MS = 5000;     // an edge older than this was latched while the loop was busy
 
 // Learned edge polarity survives deep sleep (a chip reset with RTC RAM intact)
 // so the first press after a wake is decoded at once. Lost with the rails,
@@ -377,7 +378,16 @@ void PowerKey::decode(const uint8_t s2, const unsigned long now, const unsigned 
   // (folloup: a hold can latch both), so only the edges end a long press.
   const bool sht = (s2 & BIT_SHORT) && !lng && !longSeen_;
   // The edge instant from the ISR, when it is recent enough to be this event.
-  const unsigned long at = (edgeAt != 0 && now - edgeAt < 5000) ? edgeAt : now;
+  const unsigned long at = (edgeAt != 0 && now - edgeAt < STALE_EDGE_MS) ? edgeAt : now;
+  // UNA PULSACIÓN VIEJA NO ES UNA ORDEN. Si el flanco es de hace más de 5 s, el
+  // loop estuvo ocupado (un POST de 90 s, un render largo) y el PMIC guardó
+  // todo —press, release, LONG, SHORT, típico `sts2=0F`— hasta que alguien lo
+  // leyó. El dueño apretó PWR para "destrabar" el aparato colgado en Hablar, y
+  // 90 s después, cuando por fin llegó la respuesta, el aparato se SUSPENDIÓ con
+  // esa pulsación guardada: "cuando sale de eso, se traba". Se decodifica igual
+  // (el estado tiene que quedar consistente) pero no se emite ni la suelta ni
+  // el toque, y se dice.
+  const bool stale = edgeAt != 0 && now - edgeAt >= STALE_EDGE_MS;
 
   // Learn the polarity where the read is unambiguous: SHORT rides with the
   // release edge, so the other edge is the press.
@@ -434,10 +444,15 @@ void PowerKey::decode(const uint8_t s2, const unsigned long now, const unsigned 
   if (release && pressed_) {
     pressed_ = false;
     heldMs_ = at - pressStartMs_;  // modular: the anchor may sit before millis() wrapped
-    if (!holdConsumed_ && heldMs_ < SHORT_PRESS_MAX_MS) shortPress_ = true;
-    releasePending_ = true;
-    LOG_INF(TAG, "sts2=%02X release held=%lu ms%s%s", s2, heldMs_, shortPress_ ? " short" : "",
-            longSeen_ ? " long" : "");
+    if (stale) {
+      LOG_INF(TAG, "sts2=%02X release held=%lu ms: la pulsación es de hace %lu ms, con el loop ocupado; no cuenta", s2,
+              heldMs_, now - edgeAt);
+    } else {
+      if (!holdConsumed_ && heldMs_ < SHORT_PRESS_MAX_MS) shortPress_ = true;
+      releasePending_ = true;
+      LOG_INF(TAG, "sts2=%02X release held=%lu ms%s%s", s2, heldMs_, shortPress_ ? " short" : "",
+              longSeen_ ? " long" : "");
+    }
     holdConsumed_ = false;
     longSeen_ = false;
     confirmed_ = false;

@@ -176,6 +176,15 @@ void MotionInput::poll() {
   if (!available_ || (!HUB_STORE.motionGestures && !diagnostics_)) return;
   const unsigned long now = millis();
   if (now - lastPollMs_ < POLL_MS) return;
+  // UN GOLPE DADO MIENTRAS EL LOOP ESTABA OCUPADO NO ES UN GESTO. El motor del
+  // chip deja el golpe latcheado en STATUS1 hasta que alguien lo lea; si el
+  // loop estuvo 90 s adentro de un POST, la primera lectura de después trae el
+  // golpe que el dueño le dio al aparato "colgado" para ver si reaccionaba, y
+  // Hablar se abría solo justo cuando llegaba la respuesta ("el doble toque
+  // quedó sensible de más"). Con un hueco largo entre sondeos, lo que traiga la
+  // primera lectura se descarta.
+  const unsigned long gap = now - lastPollMs_;
+  const bool staleWindow = lastPollMs_ != 0 && gap >= STALE_GAP_MS;
   lastPollMs_ = now;
 
   // El chip pudo quedar apagado por el camino del giro para pasar página
@@ -281,6 +290,11 @@ void MotionInput::poll() {
         // confundirlo con apoyarlo boca abajo, que es `n` bien NEGATIVA. Así
         // que se pregunta eso: no que mire arriba, sino que no mire abajo.
         const bool noBocaAbajo = r.n > -TAP_FACE_UP_N;
+        if (staleWindow) {
+          LOG_INF(TAG, "golpe: st1=%d tap=%02X %s, latcheado durante %lu ms de loop ocupado: se descarta", tapped ? 1 : 0,
+                  tap, isDouble ? "doble" : "simple", gap);
+          return;
+        }
         LOG_INF(TAG, "golpe: st1=%d tap=%02X %s n=%.2f%s%s%s", tapped ? 1 : 0, tap, isDouble ? "doble" : "simple", r.n,
                 quiet ? "" : " (sacudida reciente)", rested ? "" : " (refractario)",
                 noBocaAbajo ? "" : " (boca abajo: se ignora)");
