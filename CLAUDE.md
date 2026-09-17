@@ -1382,6 +1382,49 @@ el servidor los apendaba: el blob tenía bloques de 1.5.85, 1.5.90 y 1.5.91 mezc
 aparato ya corría 1.5.94. Antes de deducir de un log, mirar el encabezado de arranque de CADA
 bloque — y si hay dudas, vaciarlo desde `/board/log` y sincronizar una vez.
 
+## El piso quedaba corto, y el log no avisaba de nada (1.5.96)
+
+Dos cosas, y la segunda importa más que la primera.
+
+**EL PISO DE 1.5.95 SE QUEDABA CORTO, por dos motivos a la vez y los dos míos.** Lo medido
+(582/1793/2191) se cuenta desde ANTES de escribir el framebuffer, y la onda recién arranca DESPUÉS,
+con `MASTER_ACTIVATION`: la escritura son unos 90 ms, así que un piso de 550 contado desde el mismo
+lugar le deja a la onda 460 cuando necesita ~490. Y encima los había recortado por debajo de lo
+medido "para no alargar una espera sana". Recorte sobre recorte: el cuadro siguiente seguía cayendo
+sobre la cola de la onda y la mancha seguía. Ahora son **dos números distintos**: uno DETECTA
+(550/1700/2100, justo por debajo de lo medido, así que un refresco sano nunca lo cruza y no paga
+nada) y otro ESPERA (700/1950/2350, con margen de sobra, y sólo lo paga el refresco que ya venía
+roto).
+
+**Y el número que teníamos para diagnosticar estaba mintiendo.** `commit()` recibía el tiempo de
+ANTES del piso, así que Ajustes → Memoria → Panel decía "FULL 116 ms" cuando el refresco de verdad
+había durado dos segundos — mintiendo justo hacia el lado que hacía parecer que el arreglo no hacía
+nada. Ahora se commitea el tiempo real.
+
+**EL LOG TIENE QUE DETECTAR, NO EL USUARIO.** El dueño lo dijo con todas las letras: *"quisiera que
+el log detecte estas cosas y no tener que estar diciéndote todo"*, y tenía razón — estaba haciendo
+él el trabajo del aparato. El caso que lo disparó: apretó PWR en el hub y **el aparato se reinició**,
+y en el log no había una sola línea al respecto. Motivo: la cabecera decía "arranque por boton",
+que sale de `wakeReasonName()` — la causa de DESPERTAR del deep sleep. Un pánico, un watchdog o un
+brownout quedaban anotados igual que si el usuario lo hubiera prendido a propósito. **Son dos
+preguntas distintas y sólo se contestaba una.**
+
+Ahora la cabecera lleva las dos (`arranque por … | reset: …`) con `esp_reset_reason()` en
+castellano, y cuando el reset NO es uno de los tres normales —encendido en frío, sueño profundo,
+reinicio pedido por software— sale una línea gritada:
+
+    !!! OJO: el aparato NO se apagó solo — se cayó por CAÍDA DE TENSIÓN (brownout). Esto no es normal.
+
+Regla que sale de acá, y vale para todo lo demás: **si el usuario tuvo que contarme un síntoma que
+el aparato podía haber detectado solo, el bug no es sólo el síntoma — es también que el log no lo
+dijo.** Las dos cosas se arreglan juntas.
+
+**Sin resolver todavía**: por qué PWR reinicia en vez de mostrar la barrita. La línea nueva del
+arranque lo va a nombrar la próxima vez que pase; hasta entonces no hay con qué, y no se adivina.
+Lo que el dueño quiere de ese botón está escrito y no se negocia: apretar y soltar = suspender; la
+barrita sólo carga mientras se mantiene; soltar con la barrita a medias = suspender; **reiniciar,
+nunca**.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
