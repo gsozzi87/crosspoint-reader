@@ -382,7 +382,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
               SERVER_STORE.setToken(v);
               SERVER_STORE.saveToFile();
             },
-            "srvToken", StrId::STR_SERVER),
+            "srvToken", StrId::STR_SERVER)
+            .withSecret(),
 
         // --- KOReader Sync (web-only, uses KOReaderCredentialStore) ---
         SettingInfo::DynamicString(
@@ -398,7 +399,8 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
               KOREADER_STORE.setCredentials(KOREADER_STORE.getUsername(), v);
               KOREADER_STORE.saveToFile();
             },
-            "koPassword", StrId::STR_KOREADER_SYNC),
+            "koPassword", StrId::STR_KOREADER_SYNC)
+            .withSecret(),
         SettingInfo::DynamicString(
             StrId::STR_SYNC_SERVER_URL, [] { return KOREADER_STORE.getServerUrl(); },
             [](const std::string& v) {
@@ -544,7 +546,7 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                                     s.nameId == StrId::STR_SLEEP_COVER_FILTER ||
                                     s.nameId == StrId::STR_QUICK_RESUME_TIMEOUT ||
                                     s.nameId == StrId::STR_SUNLIGHT_FADING_FIX ||
-                                    // Y el selector de interfaz: la WS397 tiene UN tema, Lyra.
+                                    // Y el selector de interfaz: la ws397 tiene UN tema, Diario.
                                     // Hubo tres (Diario, Bento, Lyra) y elegir no servía de nada:
                                     // `listui` sólo miraba las cuatro CARAS del tema, así que entre
                                     // Bento y Lyra la única diferencia era el renglón de detalle.

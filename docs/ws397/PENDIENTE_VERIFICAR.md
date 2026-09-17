@@ -3,7 +3,7 @@
 Todo lo que se publicó sin poder probarlo en hardware, con **qué mirar exactamente** y **dónde**. Se va
 tachando a medida que se confirma. Lo que falle vuelve como corrección puntual.
 
-Versión más nueva publicada: **1.5.81**. Sin probar desde **1.5.71**.
+Versión más nueva publicada: **1.5.92**. Sin probar desde **1.5.71**.
 
 ---
 
@@ -41,8 +41,8 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
       siempre y nunca bajaba).
 - [ ] Poner un recordatorio para **dentro de varias horas**, dejarlo dormir y confirmar que suena.
 - [ ] **Pausar una canción** y dejarlo: tiene que dormirse igual (antes quedaba despierto para siempre).
-- [ ] Una alarma que **nadie atiende**: a los 60 s deja de sonar y el aparato se duerme (antes se comía la
-      batería hasta la mañana).
+- [ ] Una alarma que **nadie atiende**: a los 60 s deja de sonar, **se posterga sola** y el aparato se duerme
+      **sin pasar por el hub** (en el log: `nadie contesto en 60 s` y `nadie la atendio ...: a dormir`).
 - [ ] Con un recordatorio **vencido** y el lector abierto, que no entre y salga del reposo sin parar.
 
 ---
@@ -62,12 +62,88 @@ Y estos cinco casos, que son los defectos que encontró la revisión adversarial
 - [ ] Se llena **pareja** de vacía a llena entre 1,2 s y 3 s, sin los dos escalones de antes.
 - [ ] Soltar a mitad de camino suspende.
 
-### 5. Tema único (1.5.89)
+### 5. Interfaz unificada: Lyra y nada más (1.5.91)
 
-- [ ] `Ajustes → Pantalla` no muestra un selector de interfaz en WS397.
-- [ ] Hub, listas, agenda, ajustes, noticias y lector usan Lyra sin mezclar tipografías.
+- [ ] `Ajustes → Pantalla` no muestra un selector de interfaz en la ws397.
 - [ ] En el log, `[UI] Using Lyra theme`.
-- [ ] Que el cambio se note en el **hub y la agenda**, no sólo en el lector.
+- [ ] Hub, listas, agenda, ajustes, noticias, Biblia, viajes y lector: **todas con la misma cara**, sin mezclar
+      tipografías ni formas entre pantallas. Es lo único que hay que mirar: que no quede una pantalla distinta.
+- [ ] Un aparato que venía con Diario o Bento guardados en la tarjeta tiene que pasar a Lyra solo, sin migrar
+      nada y sin quedar en un tema que ya no existe.
+
+### 5 bis. La alarma y la batería (1.5.92)
+
+Esto es lo que se acaba de arreglar y lo que más importa mirar, porque es lo que vació la batería.
+
+- [ ] **Dejarlo apoyado boca abajo con un recordatorio programado.** Tiene que sonar y **no** posponerse solo.
+      En el log NO puede aparecer `[MOTION] boca abajo` seguido de `[REMIND] gesto: se pospone` a los ~1,1 s de
+      cada arranque. Lo que sí tiene que aparecer una vez por arranque es `posicion inicial: boca abajo`.
+- [ ] **El gesto sigue andando a mano**: con el aparato boca arriba y la alarma sonando, darlo vuelta la
+      posterga. (Levantarlo primero y después darlo vuelta también.)
+- [ ] **El tope**: un recordatorio que nadie atiende suena **cuatro veces en media hora** (a los 0, 10, 20 y
+      30 minutos) y después se descarta. En el log: tres `snooze N de 3 (sin atender)` y un
+      `descartado ... tras 3 postergaciones`.
+- [ ] Si el recordatorio **repite**, al descartarse queda armada la ocurrencia siguiente (mañana), no
+      desaparece. Si **no repite**, se borra.
+- [ ] **Entre repique y repique el aparato NO tiene que despertarse cada cinco segundos.** El log tiene que
+      mostrar diez minutos limpios entre un `arranque por temporizador` y el siguiente.
+- [ ] Una alarma que suena **desde Notas o la agenda**: al atenderla vuelve a esa pantalla, no al hub.
+- [ ] Y el número que cierra todo: **dejarlo una noche entera y mirar el porcentaje a la mañana**
+      (`Ajustes → Sistema → Memoria` da el %/h).
+
+### 5 ter. El log (1.5.92)
+
+- [ ] `/board/log` tiene que mostrar **una sola** copia de cada cosa, en orden, y **nada de más de un día**.
+      Si aparecen dos veces las mismas líneas, la marca de subida no se está guardando.
+- [ ] Sincronizar dos veces seguidas sin hacer nada en el medio: la segunda **no** sube nada, y
+      `Ajustes → Sistema → Prueba de servidor` dice "Log enviado (ya estaba al día)" y **no** "no se pudo".
+- [ ] **El log ahora acumula entre arranques** (antes `openFileForWrite` lo truncaba en cada uno): dormir,
+      despertar y sincronizar tiene que dejar en `/board/log` el arranque viejo Y el nuevo, uno debajo del otro.
+
+### 5 quáter. Lo que salió de la revisión adversarial (1.5.92)
+
+- [ ] **Clave del WiFi por el teléfono**: dejar esa pantalla abierta diez minutos sin cargar nada. Tiene que
+      bajar el punto de acceso sola y volver a la lista de redes (`el teléfono no cargó la clave en 10 min`).
+- [ ] **Un recordatorio que vence durante el reposo**, con el aparato dado vuelta DESPUÉS de entrar al reposo:
+      no se puede auto-postergar. En el log tiene que verse `posicion inicial:` otra vez al reencender el IMU.
+- [ ] **El descarte llega al servidor**: después de las cuatro sonadas, en `/board` → Agenda el recordatorio de
+      hoy tiene que quedar cerrado y **no volver** en la sincronización siguiente.
+- [ ] **Un diario que nadie atiende no se corre de hora**: al día siguiente tiene que sonar a la hora original,
+      no media hora más tarde.
+- [ ] **Vincular funciona aunque el aparato haya quedado sin token** (`el aparato no tenía token: se acuña uno`).
+- [ ] Y el de siempre, ahora que la red de seguridad del reposo puede dispararse: dejarlo con algo que bloquee
+      el reposo y confirmar que a la media hora se duerme igual y lo dice en el log.
+
+### 5 quinquies. El doble Atrás (1.5.92)
+
+Ahora el atajo **deja rastro en el log pase lo que pase**, así que esto se diagnostica solo.
+
+- [ ] Desde el hub, dos toques de Atrás: abre Hablar. En el log,
+      `doble Atrás (N ms) desde Hub: se abre Hablar`.
+- [ ] Si NO abre, mirar el número: `Atrás: N ms desde el anterior, fuera de la ventana de 1200` quiere decir
+      que los toques van demasiado separados (y con cuánto, para saber a cuánto hay que subir la ventana).
+- [ ] Desde Notas o la agenda (el primer toque sale al hub, el segundo abre Hablar).
+- [ ] Desde Noticias o la Biblia **no** tiene que abrir, y el log tiene que decir
+      `esa pantalla usa Atrás para salir`. Es a propósito: ahí Atrás es el botón de salida.
+- [ ] **Mantener Atrás en el hub (sincronizar) y después tocar UNA vez: NO tiene que abrir Hablar.**
+
+### 5 sexies. El DOBLE GOLPE (1.5.92)
+
+Es el atajo que el usuario usa de verdad, y no andaba. Los tres gates se habían escrito pensando en el aparato
+apoyado en la mesa, y el gesto se da con el aparato en la mano.
+
+- [ ] **Con el aparato en la mano, sostenido como se lee**, dos golpecitos con la yema sobre la tapa abren
+      Hablar. Esto es lo que antes no funcionaba nunca.
+- [ ] Apoyado boca arriba en la mesa también.
+- [ ] **Apoyarlo boca abajo NO tiene que abrir Hablar** (eso es lo que el gate protege de verdad).
+- [ ] Levantar el aparato y darle los dos golpes **enseguida**: tiene que andar igual (antes el "inclinar" de
+      levantarlo bloqueaba el golpe 1,5 s).
+- [ ] Si no anda, mirar el log: `golpe: st1=1 tap=02 doble n=0.15` dice que el chip lo vio y con qué normal.
+      Si dice `simple`, el chip separa mal los dos golpes (hay que ensanchar `TAP_DTAP_WINDOW`).
+      Si NO aparece ninguna línea `golpe:`, el motor del chip no está contestando: mirar el arranque
+      (`golpes: …`) y **Ajustes → Movimiento**, que dice el motivo.
+- [ ] Y antes que nada: **calibrar los ejes en Ajustes → Movimiento**. Sin calibrar, `n` puede ser cualquier eje
+      y el gate de "no boca abajo" mide cualquier cosa.
 
 ---
 

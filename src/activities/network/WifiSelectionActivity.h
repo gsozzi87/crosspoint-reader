@@ -1,18 +1,16 @@
 #pragma once
 
+#include <DNSServer.h>
+
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include <DNSServer.h>
-
-#include <memory>
-
 #include "activities/Activity.h"
-#include "network/CrossPointWebServer.h"
 #include "components/UiAppHost.h"
+#include "network/CrossPointWebServer.h"
 #include "util/ButtonNavigator.h"
 
 struct Rect;
@@ -113,7 +111,16 @@ class WifiSelectionActivity final : public Activity, private UiAppHost {
   std::unique_ptr<CrossPointWebServer> phoneServer;
   std::unique_ptr<DNSServer> phoneDns;
   unsigned long phonePollAt = 0;
+  unsigned long phoneStartedAt = 0;
   size_t phoneCredsBefore = 0;
+  // CUÁNTO SE ESPERA AL TELÉFONO. Sin plazo, este estado deja el punto de
+  // acceso transmitiendo, el servidor web atendiendo y el loop girando sin
+  // `delay()` —o sea CPU al 100 %— POR SIEMPRE, y encima con `preventAutoSleep()`
+  // puesto, así que ni el auto-sleep de los diez minutos lo levanta. Es el
+  // consumidor individual más grande del firmware, y está en el paso 2 del
+  // asistente de primer arranque: alcanza con distraerse. `UsbDriveActivity` ya
+  // tenía su equivalente (HOST_WAIT_TIMEOUT_MS); acá faltaba.
+  static constexpr unsigned long PHONE_ENTRY_TIMEOUT_MS = 10 * 60 * 1000;
   void startPhoneEntry();
   void stopPhoneEntry();
   void pumpPhoneEntry();

@@ -403,12 +403,17 @@ bool fetchClip(const std::string& text, const std::string& path) {
 // The log goes up with the sync so a problem that happened away from the
 // cable can be read at /board later.
 static void uploadLog() {
-  const std::string tail = devlog::tail(24 * 1024);
-  if (tail.size() < 64) return;
+  // Sólo lo nuevo. Antes se mandaba el final entero en cada sincronización y el
+  // servidor apenda, así que /board/log era la misma tanda repetida con
+  // arranques de firmware viejos en el medio.
+  size_t mark = 0;
+  const std::string chunk = devlog::unsent(24 * 1024, mark);
+  if (chunk.size() < 64) return;
   ServerClient::Response resp;
   const ServerClient::Result r = SERVER_CLIENT.postBytes(
-      "/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()), tail.size(), resp);
-  LOG_INF(TAG, "log upload: %s (%u bytes)", ServerClient::resultName(r), (unsigned)tail.size());
+      "/api/log", "text/plain", reinterpret_cast<const uint8_t*>(chunk.data()), chunk.size(), resp);
+  if (r == ServerClient::Result::Ok) devlog::confirmSent(mark);
+  LOG_INF(TAG, "log upload: %s (%u bytes)", ServerClient::resultName(r), (unsigned)chunk.size());
 }
 
 void HubSyncActivity::cacheSpokenNotices() {

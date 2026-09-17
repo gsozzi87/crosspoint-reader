@@ -23,7 +23,12 @@ void event(const char* tag, const char* fmt, ...) __attribute__((format(printf, 
 // Cierra el log: después de esto no se escribe más (la SD se desmonta antes de
 // dormir y escribir sobre un filesystem desmontado se pierde en silencio).
 void close();
-// Whole log (current + previous), capped at maxBytes from the end.
-std::string tail(size_t maxBytes = 32 * 1024);
+// Lo que se escribió después de la última subida confirmada, como mucho
+// `maxBytes` (y si hay más, el final). `mark` sale con la marca a confirmar.
+// Devuelve vacío cuando no hay nada nuevo, que es lo normal y correcto: el
+// servidor guarda lo de antes, no hay por qué repetírselo.
+std::string unsent(size_t maxBytes, size_t& mark);
+// Se subió bien: de acá en adelante es lo nuevo.
+void confirmSent(size_t mark);
 size_t size();
 }  // namespace devlog

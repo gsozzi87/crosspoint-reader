@@ -29,4 +29,10 @@ size_t memUsed();
 void armStepLimit(lua_State* L, int steps);
 void clearStepLimit(lua_State* L);
 
+// True si la app se pasó del tope de instrucciones en esta sesión. A partir de
+// ahí el intérprete queda condenado a propósito (el asignador no le da más
+// memoria), porque un `pcall` se come el error y si no la app no termina nunca.
+// El llamador lo mira para no seguir corriendo callbacks de una app muerta.
+bool hardStopped();
+
 }  // namespace luasandbox

@@ -913,6 +913,7 @@ void WifiSelectionActivity::startPhoneEntry() {
   state = WifiSelectionState::PHONE_ENTRY;
   phoneCredsBefore = WIFI_STORE.getCredentialCount();
   phonePollAt = millis();
+  phoneStartedAt = millis();
   LOG_INF("WiFi", "clave por el teléfono: punto de acceso para %s",
           selectedSSID.empty() ? "(red oculta)" : selectedSSID.c_str());
 
@@ -967,11 +968,25 @@ void WifiSelectionActivity::stopPhoneEntry() {
   }
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
+  phoneStartedAt = 0;
   delay(100);
 }
 
 void WifiSelectionActivity::pumpPhoneEntry() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
+    stopPhoneEntry();
+    state = WifiSelectionState::NETWORK_LIST;
+    requestUpdate();
+    return;
+  }
+  // Se esperó bastante: se baja el punto de acceso y se vuelve a la lista. Lo
+  // que estaba abierto no era una pantalla esperando, era la radio
+  // transmitiendo y el loop a pleno con el reposo bloqueado (ver
+  // PHONE_ENTRY_TIMEOUT_MS). Volver a la lista deja el aparato dormible otra
+  // vez y el usuario lo reintenta cuando quiera.
+  if (phoneStartedAt != 0 && millis() - phoneStartedAt >= PHONE_ENTRY_TIMEOUT_MS) {
+    LOG_INF("WiFi", "el teléfono no cargó la clave en %lu min: se baja el punto de acceso",
+            PHONE_ENTRY_TIMEOUT_MS / 60000);
     stopPhoneEntry();
     state = WifiSelectionState::NETWORK_LIST;
     requestUpdate();

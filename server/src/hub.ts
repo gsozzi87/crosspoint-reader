@@ -438,13 +438,21 @@ hub.post("/done", async (c) => {
   // `at` = el dueAt (epoch UTC) de la ocurrencia que se está tildando. Lo manda
   // el aparato para que un reintento del mismo tilde no le coma otro ciclo a un
   // recordatorio con repetición; sin él todo sigue igual que antes.
-  let body: { kind?: string; id?: number; snooze?: number; at?: number };
+  // `dismissed` = el aparato se dio por vencido: sonó tres veces, nadie la
+  // atendió y la descartó. Hace lo mismo que un tilde (la ocurrencia de hoy se
+  // cierra; si repite queda la próxima), pero se anota distinto: "hecho" y "me
+  // cansé de sonar" no son lo mismo y el día que la Pizarra lo muestre tiene
+  // que poder distinguirlos.
+  let body: { kind?: string; id?: number; snooze?: number; at?: number; dismissed?: boolean };
   body = await readBody(c);
   const id = Number(body.id);
   if (!Number.isFinite(id) || (body.kind !== "reminder" && body.kind !== "item")) {
     return c.json({ ok: false, error: "kind (reminder|item) and id required" }, 400);
   }
   const at = Number(body.at) > 0 ? Math.floor(Number(body.at)) : 0;
-  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0, at);
-  return c.json({ ok: true, found });
+  const dismissed = body.dismissed === true;
+  if (dismissed) console.log(`recordatorio ${id} descartado por el aparato (sonó y nadie lo atendió)`);
+  const found = await markDone(accountOf(c), body.kind, id, Number(body.snooze) > 0 ? Number(body.snooze) : 0, at,
+                               dismissed);
+  return c.json({ ok: true, found, dismissed });
 });

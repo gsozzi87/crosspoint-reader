@@ -30,7 +30,26 @@ class HubStore : public PersistableStore<HubStore> {
     std::string repeat;
     int weekday = -1;
     int interval = 0;
+    // Cuántas veces se pospuso ESTA ocurrencia sin que nadie la diera por
+    // hecha. Se persiste porque cada repique es un arranque distinto: el
+    // aparato duerme entre uno y otro y el contador en RAM no llegaría al
+    // segundo. A las MAX_SNOOZES la alarma se descarta (ver completeReminder).
+    int snoozes = 0;
+    // El vencimiento ORIGINAL de esta ocurrencia, antes de la primera
+    // postergación (0 = no se postergó). La repetición se calcula desde acá y
+    // no desde el `dueAt` corrido: si no, un diario a las 08:00 que nadie
+    // atiende cuatro veces queda armado mañana a las 08:30, pasado a las 09:00,
+    // y en una semana se corrió cuatro horas y media. El servidor lo corrige en
+    // la próxima sincronización, pero sin WiFi no hay próxima sincronización, y
+    // la caché existe justamente para ese caso.
+    time_t baseDueAt = 0;
   };
+
+  // Postergaciones seguidas antes de darse por vencido. Tres repiques de diez
+  // minutos son media hora de insistir: pasado eso el que no la atendió no la
+  // va a atender, y seguir es despertar el aparato cada diez minutos para
+  // siempre (1.5.91: una noche entera y la batería en cero).
+  static constexpr int MAX_SNOOZES = 3;
   struct ListItem {
     int id = 0;
     std::string text;
@@ -56,45 +75,45 @@ class HubStore : public PersistableStore<HubStore> {
   static constexpr int MAX_ITEMS = 30;
   static constexpr int MAX_NOTES = 20;
 
-  time_t syncedAt = 0;       // UTC epoch of the last successful sync (0 = never)
-  time_t lastAttemptAt = 0;  // UTC epoch of the last attempt, successful or not (1 = attempted, no clock)
-  std::string weatherLine;   // "Nublado · 18°"
-  std::string weatherDetail; // "Máx 22° · Mín 11° · Humedad 60 %"
+  time_t syncedAt = 0;          // UTC epoch of the last successful sync (0 = never)
+  time_t lastAttemptAt = 0;     // UTC epoch of the last attempt, successful or not (1 = attempted, no clock)
+  std::string weatherLine;      // "Nublado · 18°"
+  std::string weatherDetail;    // "Máx 22° · Mín 11° · Humedad 60 %"
   bool weatherNoPlace = false;  // el servidor no tiene lugar cargado: hay que ponerlo en /board
   std::string weatherError;     // motivo que manda el servidor cuando el clima falló (Open-Meteo caído, 429...)
-  std::string reminderTitle;  // = reminders[0], kept for the widget
+  std::string reminderTitle;    // = reminders[0], kept for the widget
   std::string reminderWhen;
   std::vector<Reminder> reminders;
   std::vector<List> lists;
   std::vector<Note> notes;
   std::vector<Event> events;
   std::string quote;
-  std::string verseRef;   // verse of the day (Bible), shown alternating with the quote
+  std::string verseRef;  // verse of the day (Bible), shown alternating with the quote
   std::string verseText;
   std::string translatorLang;  // the other side of the translator ("en", ...), remembered
-  int bibleBook = 0;     // last place read in the Bible (book index, chapter 1-based)
+  int bibleBook = 0;           // last place read in the Bible (book index, chapter 1-based)
   int bibleChapter = 0;
   int musicVolume = 70;  // MP3 player volume, 0-100
   // Ultima carpeta de musica abierta. Sin esto habia que entrar a la carpeta a
   // mano CADA vez, aunque hubiera una sola: el reproductor abria siempre la
   // lista de carpetas y no se acordaba de nada.
   std::string musicFolder;
-  std::string wallpaperName;  // nombre para mostrar en la lista
   // Temporizador / pomodoro / cronómetro: sobreviven al sueño (el aparato se
   // despierta para el temporizador) y se ven en el hub. Salir con Atrás NO los
   // cancela: siguen corriendo hasta que suenan o se cancelan con Atrás largo.
-  time_t timerEndAt = 0;   // epoch UTC en que suena, 0 = no hay cuenta regresiva corriendo
-  int timerTotal = 0;      // segundos del tramo, para la línea de progreso
-  uint8_t timerMode = 0;   // 0 cuenta regresiva, 1 pomodoro trabajo, 2 pomodoro descanso
-  int timerPausedLeft = 0; // segundos que quedaban al pausar (0 = no hay nada pausado)
-  uint8_t timerRound = 1;  // ronda del pomodoro, para no volver a "Ronda 1" al retomar
+  time_t timerEndAt = 0;        // epoch UTC en que suena, 0 = no hay cuenta regresiva corriendo
+  int timerTotal = 0;           // segundos del tramo, para la línea de progreso
+  uint8_t timerMode = 0;        // 0 cuenta regresiva, 1 pomodoro trabajo, 2 pomodoro descanso
+  int timerPausedLeft = 0;      // segundos que quedaban al pausar (0 = no hay nada pausado)
+  uint8_t timerRound = 1;       // ronda del pomodoro, para no volver a "Ronda 1" al retomar
   time_t stopwatchStartAt = 0;  // epoch UTC del arranque del tramo actual del cronómetro (0 = no corre)
   int stopwatchAccumS = 0;      // segundos acumulados de tramos anteriores del cronómetro
   bool timerRunning() const { return timerEndAt > 0; }
   bool timerPaused() const { return timerEndAt == 0 && timerPausedLeft > 0; }
   bool stopwatchActive() const { return stopwatchStartAt > 0 || stopwatchAccumS > 0; }
   long stopwatchElapsed(time_t now) const {
-    return stopwatchAccumS + (stopwatchStartAt > 0 && now > stopwatchStartAt ? static_cast<long>(now - stopwatchStartAt) : 0);
+    return stopwatchAccumS +
+           (stopwatchStartAt > 0 && now > stopwatchStartAt ? static_cast<long>(now - stopwatchStartAt) : 0);
   }
   // Algo que mostrar en el hub (temporizador corriendo, pausado o cronómetro).
   bool timeActive() const { return timerRunning() || timerPaused() || stopwatchActive(); }
@@ -130,7 +149,7 @@ class HubStore : public PersistableStore<HubStore> {
     int8_t normalSign = 1;   // +1 si boca arriba da positivo en ese eje
     uint8_t xAxis = 0;       // eje del chip que va hacia la derecha de la pantalla
     int8_t xSign = 1;
-    uint8_t yAxis = 1;       // eje del chip que va hacia el usuario
+    uint8_t yAxis = 1;  // eje del chip que va hacia el usuario
     int8_t ySign = 1;
     bool calibrated = false;
   };
@@ -158,8 +177,8 @@ class HubStore : public PersistableStore<HubStore> {
   // asistente volvía a empezar (o no volvía nunca, porque a esa altura ya hay
   // red cargada y el aparato deja de parecer nuevo).
   uint8_t setupStep = 0;
-  std::string uiLang;          // idioma pedido desde la web ("es", "en", ...); lo aplica HubSyncActivity
-  std::string ttsVoice;        // voz de Piper del servidor: entra en el nombre de los clips cacheados
+  std::string uiLang;    // idioma pedido desde la web ("es", "en", ...); lo aplica HubSyncActivity
+  std::string ttsVoice;  // voz de Piper del servidor: entra en el nombre de los clips cacheados
   const char* speakParam() const { return speakMode == 0 ? "none" : speakMode == 2 ? "all" : "short"; }
 
   static const char* getFilePath() { return "/.crosspoint/hub.json"; }
@@ -186,7 +205,11 @@ class HubStore : public PersistableStore<HubStore> {
   time_t nextDueAt(time_t now) const;
   // First reminder whose time has come (dueAt <= now), or nullptr.
   const Reminder* dueReminder(time_t now) const;
-  void snoozeReminder(int id, time_t until);
+  // Posponer: corre el vencimiento y suma uno al contador de la ocurrencia.
+  // Devuelve cuántas van, para que el llamador sepa si tocó el techo.
+  int snoozeReminder(int id, time_t until);
+  // Cuántas veces se pospuso ya esta ocurrencia (0 si el id no está).
+  int snoozeCount(int id) const;
   void removeNote(int id);
   // Borra TODO el contenido que es de una cuenta (recordatorios, listas, notas,
   // eventos, clima, frase, ajustes aplicados). Deja lo que es del aparato:

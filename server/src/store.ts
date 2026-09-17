@@ -31,6 +31,10 @@ export type Reminder = {
   repeat: Repeat;
   done: boolean;
   createdAt: string;
+  // Cuándo el APARATO se dio por vencido con esta ocurrencia: sonó tres veces y
+  // nadie la atendió. Es distinto de `done`, que quiere decir que alguien la
+  // hizo, y por eso se anota aparte en vez de perderse en un console.log.
+  dismissedAt?: string;
 };
 export type Item = { id: number; text: string; done: boolean; dueDate: string | null; createdAt: string };
 export type Note = { id: number; text: string; createdAt: string };

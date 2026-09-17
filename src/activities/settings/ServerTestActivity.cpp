@@ -69,14 +69,18 @@ void ServerTestActivity::runChecks() {
   // 4. Y el log se sube AHORA, no dentro de seis horas: es lo que permite
   // reproducir un problema y leerlo en /board/log al toque.
   logSent = false;
+  logNothingNew = false;
   logBytes = 0;
   if (auth == ServerClient::Result::Ok) {
-    const std::string tail = devlog::tail(24 * 1024);
-    if (tail.size() >= 64) {
+    size_t mark = 0;
+    const std::string chunk = devlog::unsent(24 * 1024, mark);
+    logNothingNew = chunk.size() < 64;
+    if (chunk.size() >= 64) {
       ServerClient::Response logResp;
-      logBytes = tail.size();
-      logSent = SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(tail.data()),
-                                        tail.size(), logResp) == ServerClient::Result::Ok;
+      logBytes = chunk.size();
+      logSent = SERVER_CLIENT.postBytes("/api/log", "text/plain", reinterpret_cast<const uint8_t*>(chunk.data()),
+                                        chunk.size(), logResp) == ServerClient::Result::Ok;
+      if (logSent) devlog::confirmSent(mark);
     }
   }
 
@@ -166,6 +170,9 @@ void ServerTestActivity::render(RenderLock&&) {
       y += 30;
       if (logSent) {
         snprintf(line, sizeof(line), "%s (%u KB)", tr(STR_SERVER_LOG_SENT), (unsigned)(logBytes / 1024));
+        renderer.drawCenteredText(UI_10_FONT_ID, y, line);
+      } else if (logNothingNew) {
+        snprintf(line, sizeof(line), "%s (%s)", tr(STR_SERVER_LOG_SENT), tr(STR_SERVER_LOG_UP_TO_DATE));
         renderer.drawCenteredText(UI_10_FONT_ID, y, line);
       } else if (auth == ServerClient::Result::Ok) {
         renderer.drawCenteredText(UI_10_FONT_ID, y, tr(STR_SERVER_LOG_FAILED));

@@ -12,7 +12,6 @@
 #include "MappedInputManager.h"
 #include "RecentBooksStore.h"
 #include "components/themes/BaseTheme.h"
-#include "components/themes/diario/DiarioTheme.h"
 #include "components/themes/lyra/Lyra3CoversTheme.h"
 #include "components/themes/lyra/LyraTheme.h"
 #include "components/themes/roundedraff/RoundedRaffTheme.h"
@@ -23,9 +22,15 @@ UITheme::UITheme() { setTheme(wantedTheme()); }
 
 // El resto de las placas sigue con el selector de siempre sobre `uiTheme`.
 CrossPointSettings::UI_THEME UITheme::wantedTheme() {
-  // La WS397 usa Lyra en toda la interfaz. Se fuerza acá para que una tarjeta
-  // que conserve otro valor de una versión anterior no mezcle métricas,
-  // tipografías ni componentes entre pantallas.
+  // La ws397 usa Lyra en TODA la interfaz y no se elige. Va fijo acá y no en el
+  // valor guardado para que una tarjeta que venga con otro número puesto de una
+  // versión anterior no mezcle métricas, tipografías ni componentes entre
+  // pantallas. La fila STR_UI_THEME está escondida en esta placa, así que este
+  // es el único lugar que lo decide.
+  //
+  // Diario se borró en 1.5.91: hubo un momento en que la placa iba a tener su
+  // propio tema y terminó siendo una cosa más para mantener y probar. Un solo
+  // tema, unificado, y listo.
   if (BoardConfig::isWS397()) return CrossPointSettings::UI_THEME::LYRA;
   return static_cast<CrossPointSettings::UI_THEME>(SETTINGS.uiTheme);
 }
@@ -36,7 +41,6 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
   static const BaseTheme classic;
   static const LyraTheme lyra;
   static const RoundedRaffTheme roundedRaff;
-  static const DiarioTheme diario;
   static const Lyra3CoversTheme lyra3Covers;
   switch (type) {
     case CrossPointSettings::UI_THEME::CLASSIC:
@@ -53,11 +57,6 @@ void UITheme::setTheme(CrossPointSettings::UI_THEME type) {
       LOG_DBG("UI", "Using RoundedRaff theme");
       currentTheme = &roundedRaff;
       currentMetrics = &RoundedRaffMetrics::values;
-      break;
-    case CrossPointSettings::UI_THEME::DIARIO:
-      LOG_DBG("UI", "Using Diario theme");
-      currentTheme = &diario;
-      currentMetrics = &DiarioMetrics::values;
       break;
     case CrossPointSettings::UI_THEME::LYRA_3_COVERS:
       LOG_DBG("UI", "Using Lyra 3 Covers theme");

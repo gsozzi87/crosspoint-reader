@@ -70,6 +70,7 @@
 #include "util/RtcAlarm.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Shtc3.h"
+#include "util/SleepRequest.h"
 #include "util/TempSweep.h"
 #include "voice/VoiceRecorder.h"
 
@@ -205,6 +206,13 @@ EpdFont ui12BoldFont(&ubuntu_12_bold);
 EpdFontFamily ui12FontFamily(&ui12RegularFont, &ui12BoldFont);
 
 // Definitions for SilentRestart.h. RTC_NOINIT survives ESP.restart() but not power loss.
+// Cuántos arranques por temporizador seguidos encontraron el RTC mudo. Va en
+// RTC RAM porque cada reintento es un arranque distinto: en una variable normal
+// el contador nace en cero cada vez y el tope no existiría. `RTC_DATA_ATTR` (y
+// no NOINIT) porque acá sí conviene que un encendido en frío lo ponga en cero.
+RTC_DATA_ATTR int clocklessRetries;
+constexpr int MAX_CLOCKLESS_RETRIES = 5;
+
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
@@ -443,7 +451,19 @@ static void sleepNow() {
 // arranque después de dormir, así que un temporizador vencido en Notas, Agenda o
 // Ajustes no sonaba nunca. Se dispara sobre las pantallas tranquilas; el lector y
 // las que usan red o audio se dejan en paz (ahí manda el wake por deep sleep).
-constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atrás
+// Ventana del doble toque de Atrás. Eran 500 ms, que es la medida de un doble
+// clic de mouse — y esto no es un mouse: es un botón físico en un aparato de
+// tinta que NO da ninguna señal entre un toque y el otro. El que lo prueba
+// toca, no ve pasar nada, y recién ahí toca de nuevo: eso son 700 u 800 ms
+// tranquilamente. Y si el primer toque cambió de pantalla (en Notas o en la
+// agenda, Atrás sale), en el medio hay un cambio de Activity que toma el
+// candado del render. 1,2 s es un gesto que se puede hacer a propósito y sigue
+// lejos de dos Atrás separados de verdad.
+constexpr unsigned long DOUBLE_BACK_MS = 1200;
+// A partir de acá Atrás fue MANTENIDO, no tocado: es el gesto de sincronizar en
+// el hub y el de abrir el menú del ítem en las listas. Por debajo del umbral más
+// chico de esos dos (1 s), así que ningún gesto largo se cuela como toque.
+constexpr unsigned long LONG_BACK_MS = 600;
 // Media hora de ocio sin poder reposar ni una vez: algo lo está bloqueando y en
 // "siempre encendido" nadie más va a mandar a dormir. Ver la red de seguridad
 // en el loop.
@@ -474,18 +494,59 @@ static bool isCalmScreen(const char* name) {
 // mantenido ya sincroniza o actualiza según la pantalla; el doble toque es lo
 // único que queda libre. Desde cualquier pantalla: el primer toque vuelve al
 // hub y el segundo abre Hablar (en el hub, Atrás no hace nada).
+// ESTO SE DIAGNOSTICA DESDE EL LOG O NO SE DIAGNOSTICA. El atajo o abre Hablar
+// o no hace nada, y "no hace nada" tiene cuatro causas distintas que desde el
+// vidrio son idénticas: los toques llegaron demasiado separados, la pantalla no
+// está en la lista de las tranquilas, hay una grabación abierta, o el segundo
+// toque no se vio. Antes no se anotaba ninguna: sólo salía una línea cuando
+// funcionaba, que es justo cuando no hace falta. Ahora cada toque deja su
+// renglón con el número, así el aparato dice cuál de las cuatro es.
 static void checkVoiceShortcut() {
   static unsigned long lastBackRelease = 0;
+  static unsigned long backPressedAt = 0;
+  if (mappedInputManager.wasPressed(MappedInputManager::Button::Back)) backPressedAt = millis();
   if (!mappedInputManager.wasReleased(MappedInputManager::Button::Back)) return;
   const unsigned long now = millis();
-  const bool isDouble = lastBackRelease != 0 && now - lastBackRelease <= DOUBLE_BACK_MS;
+  // UNA PULSACIÓN LARGA NO ES UN TOQUE. `wasLongPressed()` marca la suelta como
+  // suprimida, pero `wasReleased()` NO mira esa marca (sólo la mira
+  // `consumeSuppressedRelease()`, que usa el camino del botón de despertar), así
+  // que mantener Atrás —que en el hub sincroniza y en las listas abre el menú
+  // del ítem— llegaba acá como un toque igual: sincronizar y después tocar una
+  // sola vez abría Hablar sin que nadie lo pidiera.
+  const unsigned long held = backPressedAt != 0 ? now - backPressedAt : 0;
+  backPressedAt = 0;
+  if (held > LONG_BACK_MS) {
+    lastBackRelease = 0;
+    LOG_DBG("MAIN", "Atrás mantenido %lu ms: no cuenta para el atajo de voz", held);
+    return;
+  }
+  const unsigned long gap = lastBackRelease != 0 ? now - lastBackRelease : 0;
+  const bool isDouble = lastBackRelease != 0 && gap <= DOUBLE_BACK_MS;
   lastBackRelease = isDouble ? 0 : now;  // el segundo toque cierra la ventana
-  if (!isDouble) return;
-  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
-  if (busyRecording()) return;
+  if (!isDouble) {
+    if (gap > 0) {
+      LOG_INF("MAIN", "Atrás: %lu ms desde el anterior, fuera de la ventana de %lu", gap, DOUBLE_BACK_MS);
+    } else {
+      LOG_DBG("MAIN", "Atrás: primer toque, se abre la ventana del atajo de voz");
+    }
+    return;
+  }
   const char* name = activityManager.currentActivityName();
-  if (!isCalmScreen(name)) return;
-  LOG_INF("MAIN", "PTT shortcut from %s", name);
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) {
+    LOG_INF("MAIN", "doble Atrás (%lu ms) en %s: el lector no lo usa", gap, name);
+    return;
+  }
+  if (busyRecording()) {
+    LOG_INF("MAIN", "doble Atrás (%lu ms): ya hay una grabación abierta", gap);
+    return;
+  }
+  if (!isCalmScreen(name)) {
+    // A propósito: acá Atrás es el botón con el que cada app sale, y robárselo
+    // dejaría pantallas de las que no se puede salir. Pero que se sepa.
+    LOG_INF("MAIN", "doble Atrás (%lu ms) en %s: esa pantalla usa Atrás para salir", gap, name);
+    return;
+  }
+  LOG_INF("MAIN", "doble Atrás (%lu ms) desde %s: se abre Hablar", gap, name);
   activityManager.pushActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInputManager));
 }
 
@@ -527,14 +588,20 @@ static bool checkTimeAlarms() {
       return false;
     }
     LOG_INF("MAIN", "suena el temporizador desde %s", activityManager.currentActivityName());
-    activityManager.pushActivity(
-        makeUniqueNoThrow<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true));
+    // Si no hay heap, `makeUniqueNoThrow` devuelve nullptr y `pushActivity` no
+    // hace nada: decir que sí igual deja al llamador contándolo como actividad
+    // y el aparato reintentando cada cinco segundos sin dormir nunca.
+    auto timer = makeUniqueNoThrow<TimerActivity>(renderer, mappedInputManager, 0, /*resumeFired=*/true);
+    if (!timer) return false;
+    activityManager.pushActivity(std::move(timer));
     return true;
   }
   if (const HubStore::Reminder* due = HUB_STORE.dueReminder(now)) {
     LOG_INF("MAIN", "suena el recordatorio %d desde %s", due->id, activityManager.currentActivityName());
-    activityManager.pushActivity(
-        makeUniqueNoThrow<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when));
+    auto alerta =
+        makeUniqueNoThrow<ReminderAlertActivity>(renderer, mappedInputManager, due->id, due->title, due->when);
+    if (!alerta) return false;
+    activityManager.pushActivity(std::move(alerta));
     return true;
   }
   return false;
@@ -1181,13 +1248,27 @@ void setup() {
       if (!haveClock) delay(20);
     }
     if (haveClock) {
+      clocklessRetries = 0;  // el reloj contestó: la racha se corta
       dueReminder = HUB_STORE.dueReminder(nowEpoch + 30);
       timerFired = HUB_STORE.timerEndAt > 0 && HUB_STORE.timerEndAt <= nowEpoch + 30;
     } else if (isReminderWake) {
       // Despertó por el timer y el RTC no contestó: reintentar en un minuto en
       // vez de dormir sin nada armado (quedaría mudo para siempre).
-      LOG_ERR("MAIN", "timer wake without a clock: retrying in 60 s");
-      esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+      // CON TOPE. Sin tope, un RTC mudo (pila agotada, el PCF85063 que no
+      // contesta) deja el aparato arrancando cada 60 s PARA SIEMPRE: sesenta
+      // arranques por hora, cada uno pagando el montaje de la tarjeta, los
+      // `loadFromFile` y el arranque de los periféricos. Es el peor patrón de
+      // consumo que hay y no se recupera solo. Pasado el tope se duerme sin
+      // timer y espera el botón: el recordatorio se pierde, pero sin reloj ya
+      // estaba perdido, y al menos queda batería para que alguien lo prenda.
+      if (++clocklessRetries > MAX_CLOCKLESS_RETRIES) {
+        LOG_ERR("MAIN", "timer wake without a clock %d times: giving up, only the button wakes now",
+                clocklessRetries - 1);
+      } else {
+        LOG_ERR("MAIN", "timer wake without a clock (%d/%d): retrying in 60 s", clocklessRetries,
+                MAX_CLOCKLESS_RETRIES);
+        esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+      }
       // Se apagan a mano los mismos consumidores que apaga sleepNow(): este
       // camino NO pasa por ahí, y si el RTC sigue mudo el aparato se queda en
       // un ciclo de arranque-dormir cada 60 s con el QMI8658 a 250 Hz.
@@ -1425,7 +1506,13 @@ void loop() {
       RTC_ALARM.clearFlag();
       RTC_ALARM.disarm();  // se re-arma sola con el próximo vencimiento
       LOG_INF("MAIN", "alarma del RTC: venció");
-      lastActivityTime = millis();
+      // Y NO se reinicia el contador de ocio: esto no lo hizo una persona, lo
+      // hizo el propio firmware. `clearFlag()` y `disarm()` no comprueban la
+      // escritura, así que un bus que lee bien pero no escribe deja AF puesta y
+      // `fired()` en true PARA SIEMPRE: con el reinicio acá, el contador de ocio
+      // se rearmaba cada cinco segundos y el aparato no volvía a dormir nunca —
+      // 40 mA hasta agotar la batería. Lo que sigue (checkTimeAlarms) sí cuenta
+      // como actividad, pero sólo si de verdad puso una alarma en pantalla.
     }
     if (checkTimeAlarms()) {
       lastActivityTime = millis();
@@ -1531,8 +1618,19 @@ void loop() {
     // Cubre lo que el auto-sleep no puede cubrir: una Activity que pide
     // "no duermas" para siempre (OpdsBookBrowserActivity lo hace) congela el
     // contador de ocio y con él el auto-sleep de los diez minutos.
+    //
+    // LA COMPUERTA TAMBIÉN TIENE QUE MEDIR CONTRA `lastUserInputTime`. Medía
+    // contra `lastActivityTime`, que unas líneas más arriba —en ESTA misma
+    // pasada del loop— lo reinician `preventAutoSleep()`, la música y PWR. O
+    // sea que cuando el reposo estaba bloqueado POR alguna de esas tres, la
+    // compuerta valía ~0 ms, nunca abría, y `restBlockedSince` se reiniciaba en
+    // el `else`: la red no armaba jamás. Y los únicos bloqueos que SÍ la abrían
+    // (WiFi arriba, skipLoopDelay) ya los agarra el auto-sleep de los diez
+    // minutos, o sea antes. Era código muerto, y justo para el caso que dice
+    // cubrir. Los dos plazos miden lo mismo ahora: lo último que hizo una
+    // persona.
     static unsigned long restBlockedSince = 0;
-    if (restBlocked && !cablePuesto && millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS) {
+    if (restBlocked && !cablePuesto && millis() - lastUserInputTime >= IdleSleep::REST_AFTER_MS) {
       if (restBlockedSince == 0) restBlockedSince = millis();
       if (millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS &&
           millis() - lastUserInputTime >= REST_BLOCKED_GIVE_UP_MS) {
@@ -1645,6 +1743,17 @@ void loop() {
   const unsigned long activityStartTime = millis();
   activityManager.loop();
   const unsigned long activityDuration = millis() - activityStartTime;
+
+  // Una pantalla que se abrió sola y se resolvió sola pide dormir en vez de
+  // devolver el aparato al hub (ver util/SleepRequest.h). Se atiende ACÁ, con
+  // el loop de la Activity ya terminado, y no adentro de ella: enterDeepSleep()
+  // corre el onExit() de la pantalla de turno y no puede hacerlo desde su
+  // propio loop().
+  if (sleepreq::take()) {
+    LOG_INF("MAIN", "a dormir a pedido de %s", activityManager.currentActivityName());
+    enterDeepSleep();
+    return;  // no se llega: enterDeepSleep termina en esp_deep_sleep_start
+  }
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

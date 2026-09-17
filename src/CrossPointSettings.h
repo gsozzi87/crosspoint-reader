@@ -167,14 +167,11 @@ class CrossPointSettings : public PersistableStore<CrossPointSettings> {
 
   // UI Theme
   // OJO: lo que se persiste es el NÚMERO. Nunca renumerar los que quedan: el
-// clamp de carga manda al default cualquier valor fuera de rango, así que
-// BORRAR del final es seguro y RENUMERAR le cambia el tema a quien ya eligió.
-// Bento (era el 5) se fue en 1.5.86: la ws397 quedó con un solo tema y ninguna
-// otra placa lo ofrecía. Se borra desde el FINAL, que es lo único que se puede
-// hacer sin renumerar: lo que se persiste es el número, así que mover CLASSIC,
-// LYRA, LYRA_3_COVERS, ROUNDEDRAFF o DIARIO le cambiaría el tema a quien ya
-// eligió en las otras placas.
-enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3, DIARIO = 4 };
+  // clamp de carga manda al default cualquier valor fuera de rango, así que
+  // BORRAR DEL FINAL es seguro y RENUMERAR le cambia el tema a quien ya eligió
+  // en las otras placas. Así salieron los dos que se fueron: Bento (era el 5)
+  // en 1.5.86 y Diario (era el 4) en 1.5.91, los dos últimos en su momento.
+  enum UI_THEME { CLASSIC = 0, LYRA = 1, LYRA_3_COVERS = 2, ROUNDEDRAFF = 3 };
 
   // Image rendering in EPUB reader
   enum IMAGE_RENDERING { IMAGES_DISPLAY = 0, IMAGES_PLACEHOLDER = 1, IMAGES_SUPPRESS = 2, IMAGE_RENDERING_COUNT };

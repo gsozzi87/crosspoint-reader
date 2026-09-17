@@ -52,6 +52,15 @@ class ServerCredentialStore : public PersistableStore<ServerCredentialStore> {
   // pierde datos: los datos son de la CUENTA, así que se vuelve a vincular con
   // el código de seis dígitos y listo.
   const std::string& ensureToken();
+
+  // Acuñar A PEDIDO, aunque `ensureToken()` se haya negado. Es la salida del
+  // callejón: si la tarjeta se dañó y server.json existe pero no se puede leer,
+  // el arranque NO acuña (cambiar la identidad solo es peor que no tenerla),
+  // pero el que entra a Ajustes -> Vincular con mi cuenta está diciendo
+  // explícitamente "dale identidad nueva a este aparato y lo vinculo de nuevo".
+  // Sin esto el aparato quedaba sin token, sin poder acuñar y sin poder
+  // vincularse: el servidor rechaza un token vacío y no hay forma de salir.
+  const std::string& mintToken();
 };
 
 #define SERVER_STORE ServerCredentialStore::getInstance()

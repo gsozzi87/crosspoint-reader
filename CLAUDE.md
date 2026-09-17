@@ -236,7 +236,8 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   guarda en RTC RAM. GPIO38 no es RTC GPIO, así que **el que despierta sigue siendo OK** (GPIO5), y eso ahora está en
   el perfil de la placa (`InputPins.wakePin`) en vez de escondido en el código.
 - Atajo de voz global: **dos toques de Atrás** abren Hablar desde cualquier pantalla tranquila
-  (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 500 ms). ARRIBA/ABAJO es una palanca física
+  (`checkVoiceShortcut()` en el loop de `main.cpp`, ventana de 1,2 s). El otro camino, y el que el usuario usa de
+  verdad, es el **doble golpe** sobre la tapa, que anda en cualquier pantalla que no esté ocupada. ARRIBA/ABAJO es una palanca física
   (arriba XOR abajo, nunca las dos) y Atrás mantenido ya sincroniza o actualiza.
   Atrás en el hub no hace nada: el hub es el fondo (antes abría el último libro y no había forma de quedarse).
 - **El movimiento es una entrada más** (`src/input/MotionInput`, singleton `MOTION`, `poll()` cada 80 ms desde el
@@ -422,21 +423,19 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `sectionTitleFont`, `sectionDatumFont`; 0 = el default de siempre) y son **funciones**, no constantes, porque el
   tema se cambia en caliente.
   La geometría (margen de 24 px, grilla de 8) NO se movió al tema a propósito: es del sistema visual, no del tema.
-- **Diario** (`src/components/themes/diario/DiarioTheme.h`) es el tema de fábrica de la ws397: serif para lo que se
-  lee, la sans chica para etiquetas y datos, filete de 3 px al pie del cabezal. Hereda de Lyra y sólo pisa lo que
-  hace al carácter.
-- **La ws397 tiene UN tema y no se elige: Diario (1.5.86).** Hubo un selector propio con Diario, Bento y Lyra
-  sobre un campo aparte (`uiThemeWs397`), y elegir no servía de nada: hasta 1.5.82 `listui` sólo miraba las cuatro
-  CARAS del tema, así que entre Bento y Lyra la única diferencia era el renglón de detalle. Eso se arregló —ahora
-  también manda la forma— pero la conclusión del usuario fue la correcta igual ("el cambio de interfaz es una
-  verga… dejamos DIARIO"): tres temas son tres cosas que mantener y probar para que el aparato se vea de tres
-  maneras parecidas.
-  `UITheme::wantedTheme()` devuelve Diario **fijo** en esta placa —y no el valor guardado— para que el aparato que
-  venía con Bento o Lyra puestos también pase a Diario sin migrar nada. La fila salió de Ajustes, el campo
-  `uiThemeWs397` se borró y `BentoTheme` también. `BENTO` se sacó del enum `UI_THEME` porque era el ÚLTIMO valor:
-  mover cualquier otro renumeraría y le cambiaría el tema a quien ya eligió en las otras placas, donde el selector
-  de cuatro sigue igual.
-  **Lyra NO se puede borrar**: `DiarioTheme` hereda de `LyraTheme` y `DiarioMetrics` parte de `LyraMetrics`.
+- **La ws397 tiene UN tema y no se elige: Lyra (1.5.91).** Hubo un momento en que la placa iba a tener su propio
+  tema (Diario) y un selector propio con Diario, Bento y Lyra, y elegir no servía de nada: hasta 1.5.82 `listui`
+  sólo miraba las cuatro CARAS del tema, así que entre Bento y Lyra la única diferencia era el renglón de detalle.
+  Eso se arregló —ahora también manda la forma— pero la conclusión del usuario fue la correcta igual ("el cambio de
+  interfaz es una verga"): un tema es una cosa para mantener y probar, y tres son tres. La decisión final es **una
+  sola interfaz, unificada, Lyra en todas las pantallas**.
+  `UITheme::wantedTheme()` devuelve Lyra **fijo** en esta placa —y no el valor guardado— para que una tarjeta que
+  venga con otro número puesto no mezcle métricas ni tipografías entre pantallas. La fila `STR_UI_THEME` está
+  escondida en la ws397; las otras placas siguen con su selector.
+  **Se borraron los dos temas propios**: `BentoTheme` en 1.5.86 y `DiarioTheme` en 1.5.91, con sus métricas, su
+  directorio, su clave `STR_THEME_DIARIO` y su valor del enum. `BENTO` (5) y `DIARIO` (4) eran el ÚLTIMO valor de
+  `UI_THEME` cuando se sacaron, así que ninguno renumeró a los de arriba: lo que se persiste es el NÚMERO, y mover
+  cualquier otro le cambiaría el tema a quien ya eligió en las otras placas. Borrar del final es lo único seguro.
   Ojo: **Riel y Estación siguen siendo maquetas, no código** (`docs/ws397/maquetas/`).
 - **El sistema visual está en `docs/ws397/DISENO.md`** (salió de un panel de tres propuestas con maquetas y tres
   jueces). Regla número uno: **nunca hay letras sobre trama**. El resalte (`src/components/Selection.h`,
@@ -572,8 +571,12 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **El cajón** (`src/lua/LuaSandbox.cpp`): están `math`, `string`, `table`, `utf8`, `coroutine` y la base; NO
   están `io`, `os`, `package`, `debug`, `require`, `load`, `loadstring`, `dofile`, `loadfile` ni `string.dump`
   (los `.c` de esas bibliotecas ni se copiaron a `lib/Lua`). Topes: 192 KB de memoria desde PSRAM, 400.000
-  instrucciones por llamada (un `while true do end` termina en error de la app, no en un aparato colgado) y
-  32 KB de stack en un worker de `runBounded`.
+  instrucciones por llamada, 64 KB de tamaño de archivo y 32 KB de stack en un worker de `runBounded`.
+  El tope de instrucciones corta de verdad **incluso si la app se come el error con `pcall`**: el error de la
+  guardia es un error de Lua común y `pcall` lo atrapaba, así que hasta 1.5.90 un bucle envuelto en `pcall` no
+  terminaba nunca y —como `runBounded` espera con `portMAX_DELAY`— colgaba el loop de Arduino, no la app. Ahora
+  pasarse del tope CONDENA al intérprete: el asignador deja de dar memoria y Lua no puede ni armar el objeto de
+  error ni entrar a un `pcall`. Ver `stepHook` en `LuaSandbox.cpp`.
 - Está separado de `LuaApp` justamente para poder probarlo sin placa: **`./test/lua_sandbox/run.sh`** verifica de
   escritorio que lo que tiene que estar está, que lo que no, no, que la guardia corta un bucle infinito sin tocar
   uno normal, que el techo de memoria aguanta y que las apps de ejemplo corren sus callbacks sin error.
@@ -723,8 +726,8 @@ cable. No se toca sin poder probar en hardware.
 - **Los juegos compilados y las tarjetas se fueron.** El mosaico Juegos abre DIRECTO las apps en Lua ("la pestaña
   juegos es sólo para LUA… quita apps lua de ahí, va a ser lua en general"). Las tarjetas alcanzaron a tener
   mosaico propio y duraron una versión: "tarjetas afuera, se va, luego lo hacemos en LUA". El hub volvió a trece
-  mosaicos. En el servidor el catálogo (`CARDS`) y el dibujante siguen en `assets.ts`, pero `CARDS_IN_PACK = false`:
-  el paquete de contenido NO manda más ni los BMP ni los dos audios por tarjeta.
+  mosaicos. En el servidor el catálogo (`CARDS`) y el dibujante quedaron en `assets.ts` apagados por
+  `CARDS_IN_PACK = false` hasta que **se borraron enteros en 1.5.91**.
 - **Guiones de partición de palabras**: `-DHYPH_PRODUCT_LANGS=1` deja sólo los seis idiomas del producto y saca
   fi/it/pl/sv/uk (−63,5 KB). El flash está en 87 %. El que sobra es el alemán, 201 KB él solo; las fuentes son
   1994 KB. Lua no es la palanca para el flash: son las fuentes y los guiones.
@@ -807,7 +810,7 @@ cable. No se toca sin poder probar en hardware.
   que llaman a `row()` tiene que cambiar su cuenta de posiciones.
   `headerUnderlineSize` se usa como SÍ o NO y no como grosor: allá arriba es el filete del cabezal de pantalla, y
   traerlo tal cual dejaría cada división de sección con una barra de 3 px, que a esta escala es una mancha.
-  Y Diario pasó a `listRowRadius = 0`: hereda de Lyra, que trae 6, y el lenguaje impreso va con esquinas vivas.
+  (Diario también ponía `listRowRadius = 0`, pero el tema se borró en 1.5.91: la placa va con Lyra y nada más.)
 - **Ajustes → Sistema → Memoria pintaba las filas encima del título.** `visible()` deja pasar la fila que cruza
   el borde de arriba —tiene que hacerlo, o la lista saltaría de a bloques enteros—, así que esa fila sobresalía
   sobre el cabezal. Ahora el cabezal se dibuja **al final**, sobre una banda tapada en blanco, y lo mismo abajo
@@ -916,8 +919,8 @@ Y la caza de huérfanos —la parte que el usuario pidió— encontró **dos cos
   sea fuera del `try` del handler, así que ni siquiera se veía como error. `node --check` pasaba igual. Restaurados.
 - **Las tarjetas se seguían mandando.** `CARDS_IN_PACK = false` (1.5.65) apagó la GENERACIÓN, pero el manifiesto
   se sirve desde el índice **persistido**, así que un servidor que ya las había armado las anunciaba para siempre:
-  en el aparato del usuario eso eran **787 archivos** en el manifiesto. Ahora `loadIndex()` poda las entradas de
-  tipo `cards`.
+  en el aparato del usuario eso eran **787 archivos** en el manifiesto. `loadIndex()` las poda. (Esa poda filtraba
+  por `kind`, que dejaba pasar los 480 audios; se completó en 1.5.91, cuando además se borró `cards.ts` entero.)
 - **"Menú de pulsación larga" estaba escondido con una premisa que había dejado de ser cierta.** Se escondió en
   1.5.38 porque con OK = confirm + power la rama no se disparaba nunca; en 1.5.47 el encendido pasó al PMIC y en
   1.5.49 se sacó el `if (WS397) return 0;`. O sea que desde 1.5.49 la rama funciona **pero el ajuste que la
@@ -930,6 +933,255 @@ Y la caza de huérfanos —la parte que el usuario pidió— encontró **dos cos
 archivo de ajustes y al `/api/settings`. El campo queda en el default del struct y no hay puerta para moverlo. Por
 eso cada entrada de esa lista tiene que decir por qué el default es el valor correcto — y hay que volver a mirarla
 cuando cambia el motivo.
+
+## Auditoría de la cabeza sin revisar (1.5.91)
+
+Cuatro fusiones (1.5.87 a 1.5.90) habían entrado sin que las mirara nadie: 121 archivos, ~1600 líneas. Se
+auditaron con quince agentes en paralelo y cada hallazgo se verificó adversarialmente contra el árbol antes de
+creerle: **118 hallazgos, 28 confirmados, 48 refutados, 42 sin verificar** (se acabó el límite de sesión). Lo que
+salió:
+
+- **El token se podía LEER otra vez, y no por un archivo.** En 1.5.85 se tapó `/download`; la puerta de al lado
+  quedó abierta. `getSettingsList()` tiene dos entradas `DynamicString` cuyos getters devuelven
+  `SERVER_STORE.getToken()` y `KOREADER_STORE.getPassword()`, y `handleGetSettings()` las emitía como
+  `doc["value"]`. `GET /api/settings` **no pide credencial**, así que sobre el punto de acceso ABIERTO de "clave
+  por el teléfono" alcanzaba un `curl` desde la vereda. Ahora hay una marca `secret` en `SettingInfo`: el valor se
+  ESCRIBE pero no se LEE (viaja `hasValue` y el valor vacío, la misma regla que ya cumple el servidor de Railway
+  con las claves de IA). Como la página sólo manda las claves que cambiaron, no tocar el campo no lo borra.
+- **DECISIÓN DEL DUEÑO: `POST /api/settings` queda SIN credencial, a propósito.** Sí, eso significa que un vecino
+  en el punto de acceso abierto puede escribir `srvUrl` y `srvToken` y apuntar el aparato a su propio servidor.
+  Se deja así porque ese endpoint ES la forma de cargar la clave del WiFi desde el teléfono y de configurar el
+  servidor desde la web, y cerrarlo sacaría las dos cosas. **No cerrarlo sin preguntar**: ya está evaluado.
+- **El arreglo de 1.5.85 era sólo de lectura.** `/upload`, `/mkdir` y el subidor por WebSocket nunca llamaron a
+  ninguna guardia: se podía escribir dentro de `/.crosspoint`, que es peor que leer — plantando ahí un
+  `server-queue.json` armado a mano, el aparato manda esos POST **firmados con su Bearer** en la próxima
+  sincronización — y en un aparato nuevo hasta se podía CREAR el directorio.
+- **La regla de rutas protegidas estaba escrita DOS veces** (`CrossPointWebServer.cpp` y `WebDAVHandler.cpp`) y
+  las copias se fueron separando: por eso 1.5.85 arregló una sola. Vive en **`src/network/ProtectedPaths.h`** y la
+  usan las dos. De paso tapa el **alias 8.3 de FAT**, que esquivaba el filtro por nombre (`.crosspoint` tiene
+  nombre corto `CROSSP~1`, que no empieza con punto). Un `libro~1.epub` de verdad no cae: el 8.3 no llega a cuatro
+  letras de extensión.
+- **La guardia de Lua no servía contra `pcall`.** `stepHook` tira un error de Lua común y `pcall` está en la base,
+  así que `while true do pcall(function() while true do end end) end` se lo comía en cada vuelta. Y como
+  `runBounded` espera al worker con `portMAX_DELAY`, el que se colgaba no era la app: era el loop de Arduino, sin
+  recordatorios, sin reposo y sin salida salvo cortar la corriente. La promesa escrita acá valía sólo para el caso
+  ingenuo. Se cierra por donde Lua no puede seguir: pasarse del tope **condena al intérprete** y el asignador deja
+  de dar memoria, así que no puede ni armar el objeto de error ni entrar a un `pcall`. Va en dos tiempos para no
+  perder el mensaje entendible en el caso normal. `lua_close` también arma la guardia: corre los finalizadores
+  `__gc` —código de la app— desde el loop de Arduino, o sea que un `__gc` infinito colgaba el aparato justo en la
+  puerta de salida.
+- **Noticias perdió dos cosas al pasar de `fetch()` a un cliente propio** (el pin de DNS de 1.5.90): la
+  descompresión **gzip**, que el `fetch` global hacía gratis y sin la cual un feed comprimido llega como bytes
+  crudos y el parser no encuentra nada; y el **plazo**, porque `request.setTimeout` es INACTIVIDAD del socket —un
+  servidor que gotea lo resetea para siempre— y la resolución de nombres no tenía ninguno.
+- **Las tarjetas se seguían mandando a medias.** La poda de 1.5.86 filtraba por `kind !== "cards"`, pero los DOS
+  audios de cada tarjeta viven bajo `sounds/<lang>/<id>` con kind `"sounds"`: se iban los 240 BMP y quedaban los
+  480 audios anunciados para siempre. **La mitad de un arreglo es peor que ninguno, porque parece hecho.**
+- **`.ws397-build` decía 89 con el header en 90.** Es el único archivo que lee la aritmética de `release.sh`, así
+  que el próximo release publicaba un binario DISTINTO bajo el número 1.5.90 — que ningún aparato que ya lo
+  tuviera habría instalado nunca (la comparación es `major.minor.patch` estricta).
+
+Y la limpieza que pidió el dueño, de lo que ya estaba afuera del producto: `GameUi.{h,cpp}` (253 líneas de los
+juegos compilados), `gen_game_icons.py`, `search24.h`, los íconos de Fotos y del Conversor, `HubStore::wallpaperName`,
+**197 claves de traducción × 7 idiomas**, `server/src/cards.ts` entero con todo su dibujante de emojis de Noto
+(`assets.ts` pasó de 694 a 424 líneas), `photosDir()`/`PHOTOS_DIR`, un import muerto y el CSS de la grilla de fotos.
+Ojo con el número de las claves: la tabla de strings bajó 29 KB pero **el binario sólo bajó 644 bytes**, porque el
+build ya las venía descartando. Es limpieza para que no vuelvan si alguien regenera sin `--strip-unused`, no flash.
+
+**Lo que NO se tocó y hay que saberlo**: los 14 íconos de 64 px de `hubIcons.h` no los usa nadie (`TILES[]` usa los
+de 48; el comentario del manifiesto decía lo contrario y se corrigió). Se dejan porque son un par generado, no una
+función muerta.
+
+## La noche en que se vació la batería (1.5.92)
+
+El aparato quedó en reposo boca abajo sobre la mesa y a la mañana estaba en 0 %. El log lo dijo entero: la
+misma tanda repetida cada diez minutos, toda la noche.
+
+```
+=== 1.5.90-ws397 | arranque por temporizador === bateria 6%
+[1110] [MOTION] boca abajo
+[1112] [REMIND] gesto: se pospone el recordatorio
+[2324] [RTCAL] alarma armada para ... 20:10:00 UTC
+```
+
+- **ESTAR boca abajo no es DARLO VUELTA.** `MotionInput::faceDown_` arranca en false en cada arranque, así que
+  la primera lectura de un aparato apoyado sobre la tapa se leía como la transición y emitía el gesto ~1,1 s
+  después del boot. Con un recordatorio sonando, eso es posponerlo solo. Ahora **la primera muestra sólo CEBA**
+  las trabas de posición (`faceDown_`, `level_`, `tilted_`) y no emite nada, y la pantalla del recordatorio
+  además exige ver un "boca arriba" antes de aceptar el gesto. Vale para todos los gestos de POSICIÓN: la
+  posición en la que el aparato ya estaba nunca es un gesto.
+- **Una alarma que nadie atiende era un ciclo infinito, y eso existía desde siempre.** A los 60 s dejaba de
+  pitar pero **no se posponía**, así que el recordatorio seguía vencido; con un vencido `nextWakeInstant()`
+  devuelve "ahora", el deep sleep se arma al piso de 5 s y el aparato se despierta a repetir. Ahora a los 60 s
+  **se posterga sola** y hay un **tope de 3 postergaciones** (`HubStore::MAX_SNOOZES`, contador persistido en
+  `hub.json` porque cada repique es un arranque distinto): a la cuarta se **descarta** — si el recordatorio
+  repite, la ocurrencia de hoy se pierde y queda armada la próxima; si no repite, se borra. Son cuatro repiques
+  en media hora y se acabó. El aviso al servidor lleva `dismissed: true` para que "hecho" y "me cansé de sonar"
+  no se confundan.
+- **Volver al hub después de una alarma que nadie atendió cuesta diez minutos de aparato encendido.** El hub
+  puede levantar WiFi para sincronizar y, sobre todo, el auto-sleep recién corta a los diez minutos — justo
+  cuando la alarma vuelve a sonar. O sea el 100 % de la noche despierto. `src/util/SleepRequest.h` deja que una
+  pantalla que se abrió sola y se resolvió sola **pida dormir**; lo atiende el loop de `main.cpp`, que es el
+  único que puede llamar a `enterDeepSleep()` con el aparato consistente.
+- **Y de paso: la alarma volvía al hub desde CUALQUIER lado.** `checkTimeAlarms()` la abre con `pushActivity()`,
+  que no deja `resultHandler`, así que el `else` de `leave()` mandaba a todas al hub: una alarma que sonaba en
+  Notas o en la agenda te dejaba en el hub al atenderla. Es el mismo defecto que tenía Hablar en 1.5.70 y se
+  arregla igual, preguntando por `hasStackedActivities()`.
+
+**La tarjeta dañada hacía que el aparato se creyera nuevo.** Al tirón de batería le siguió un arranque con el
+asistente de primeros pasos y un token nuevo. Los dos salen de la misma confusión: `loadFromFile()` devuelve
+false igual si el archivo NO ESTÁ que si está y no parsea, y un JSON ilegible se lee como store vacío.
+
+- `ensureToken()` acuñaba identidad nueva con sólo ver el token vacío. Acuñar **cambia la identidad del
+  aparato**: hay que volver a vincularlo a mano y, hasta que alguien lo haga, lo que suba va a otra cuenta.
+  Ahora, si `/.crosspoint/server.json` **existe**, no se acuña nada: se queda sin token (el servidor contesta
+  401, que se ve) y espera. Perder el token no pierde datos —son de la CUENTA— pero inventarlo sí confunde.
+- `SetupActivity::pending()` preguntaba "¿sincronizó alguna vez?" y "¿hay redes?", que se contestan con lo que
+  se pudo LEER y no con lo que hay. Ahora, si `hub.json` o `wifi.json` **existen**, el aparato tuvo una vida
+  antes aunque hoy no se los pueda leer.
+
+**El log subía siempre lo mismo.** El aparato mandaba el final de su log en cada sincronización y el servidor
+**apenda**, así que `/board/log` era la misma tanda repetida seis veces con arranques de firmware de hace
+semanas en el medio; buscar lo de recién era imposible. Ahora el aparato sube **sólo lo nuevo** desde la última
+subida confirmada (marca de bytes en `/.crosspoint/log.sent`, que vale entre arranques porque el archivo se
+abre en modo agregar; rotar la borra y eso se dice en el archivo nuevo), y el servidor **poda lo guardado a
+24 h** con los sellos ISO que ya escribía. La poda nunca deja la página vacía: si nada entra en la ventana,
+queda la última subida igual — "viejo" es un diagnóstico, una pantalla en blanco no es ninguno. Se prueba sin
+servidor: **`./test/device_log/run.sh`**.
+
+## Noticias no traía nada, y no era de los diarios (1.5.92)
+
+En `/board` → Ajustes → Noticias, los tres feeds decían lo mismo: **`Invalid IP address: undefined`**. Que los
+TRES fallen igual ya dice que no es ningún diario caído.
+
+El DNS se fija a propósito (`server/src/net.ts`, desde el pin de 1.5.90): se resuelve el nombre, se comprueba
+que la dirección no sea de la red interna de Railway y la conexión se clava a ésa, así un feed no puede
+redirigir a 169.254.169.254. Para eso se le pasa un `lookup` propio a `http.request`. **Pero `http.request` no
+llama a ese lookup como uno lo escribiría: le pasa `{ all: true }` y espera un ARRAY de `{address, family}`.**
+El nuestro devolvía siempre un string suelto, así que el cliente hacía `results.sort(...)` sobre algo que no era
+un array —o leía `results[0].address`, que da `undefined`— y la salida moría **antes de abrir el socket**. Todos
+los feeds, todos los artículos, siempre.
+
+Es un error que no se ve leyendo el código: hay que ejercitarlo. Por eso queda **`./test/net_lookup/run.sh`**,
+que levanta un servidor local y comprueba las dos cosas: que el callback nuevo conecta y que el viejo falla.
+
+De paso, dos cosas que hacían que el síntoma no se pudiera leer:
+- `selectResolvedAddress()` filtraba sólo por "no es red interna", así que una entrada sin dirección pasaba
+  derecho hasta el socket. Ahora se pide `isIP()` primero.
+- "el DNS no devolvió nada" y "resuelve a red interna" eran el mismo mensaje. Son cosas distintas y mandan a
+  buscar el problema a lugares distintos.
+
+**Y lo que hay que mirar antes de creerle a un arreglo del servidor: los commits de 1.5.91 nunca se fusionaron
+a `ws397`.** El firmware sí se publicó (`release.sh` sube el `.bin` al volumen), pero eso **no redespliega el
+servidor**: Railway construye desde su rama. Así que los arreglos de servidor de 1.5.91 —gzip, plazos, la poda
+de tarjetas— no están en producción. Publicar firmware y desplegar servidor son dos cosas distintas y hay que
+hacer las dos.
+
+## Lo que encontró la revisión adversarial de 1.5.92
+
+Los arreglos de arriba se mandaron a revisar por afuera (un agente sobre los caminos de energía, otro
+adversarial sobre el propio diff) y cada hallazgo se verificó contra el árbol antes de creerle. Salieron
+**dos arreglos a medias míos** y **cuatro defectos de fondo que venían de antes**:
+
+- **EL LOG SE BORRABA EN CADA ARRANQUE, y ése era el problema de verdad.** `openFileForWrite()` del SDK abre
+  con `O_TRUNC`, así que el `if (append) f.seek(f.size())` de `devlog::begin()` era un no-op sobre un archivo
+  que ya estaba en cero. O sea que `device.log` nunca acumuló nada entre arranques, y lo que quedaba para subir
+  era casi siempre `device.prev.log` —viejo y que no cambia—, que se comía el presupuesto de 24 KB. De ahí las
+  mismas tandas repetidas con firmware de hace semanas. El arreglo de 1.5.55 (mandar CURRENT antes que PREVIOUS)
+  atacó el orden, que era la mitad. Ahora se abre con `Storage.open(CURRENT, O_RDWR | O_CREAT)`, que sí agrega.
+- **La red de seguridad del reposo no podía dispararse NUNCA.** La compuerta medía `lastActivityTime`, que unas
+  líneas más arriba —en la misma pasada del loop— reinician `preventAutoSleep()`, la música y PWR. O sea que
+  cuando el reposo estaba bloqueado POR alguna de esas tres, la compuerta valía ~0 ms y `restBlockedSince` se
+  reiniciaba: código muerto, y justo para el caso que dice cubrir. Los dos plazos miden ahora `lastUserInputTime`.
+- **"Clave del WiFi por el teléfono" no tenía plazo.** Ese estado levanta el punto de acceso, atiende un servidor
+  web y pide `skipLoopDelay()` + `preventAutoSleep()`: radio transmitiendo y CPU al 100 % sin que el auto-sleep
+  pueda intervenir. Y está en el paso 2 del asistente de primer arranque, o sea que alcanza con distraerse. Diez
+  minutos y se baja, como ya hacía `UsbDriveActivity` con su `HOST_WAIT_TIMEOUT_MS`.
+- **Sin reloj, posponer escribía `dueAt = 600`** (enero de 1970, o sea vencido para siempre): el retorno de
+  `getEpochUtc()` se ignoraba. Con eso `nextWakeInstant()` devuelve "ahora", el deep sleep se arma al piso de 5 s
+  y el aparato arranca en bucle — y el tope de postergaciones no lo corta, porque `giveUp()` reinicia la racha.
+  Ahora sin reloj no se toca el `dueAt`.
+- **El descarte no llegaba al servidor.** `at` es la guardia antirreplay de `markDone`, y después de tres
+  postergaciones no puede coincidir nunca: el `dueAt` del aparato es "ahora + 600" con segundos y el del servidor
+  está truncado al minuto y corrido por el desfase de reloj que el firmware tolera hasta 120 s **sin corregir**.
+  El descarte se perdía entero y la sincronización siguiente resucitaba la alarma. El `dismissed` ya no manda
+  `at`: su idempotencia sale del ESTADO (sólo se cierra lo que sigue vencido), que es cierto aunque los relojes
+  no coincidan. Y queda anotado en `dismissedAt`, que antes era un `console.log` y se perdía.
+- **El mismo desfase rompía el contador de postergaciones**: la ventana de "misma ocurrencia" eran 120 s, menos
+  que el error que el propio sistema tolera. Son 15 minutos, que separan holgadamente una postergación (10 min)
+  de la ocurrencia siguiente (24 h en la repetición más corta).
+- **Cebar la posición del IMU no alcanzaba con hacerlo al arrancar**: el reposo apaga el acelerómetro, así que la
+  primera lectura al volver se juzgaba como transición contra trabas de hace horas. Un recordatorio que vence
+  durante el reposo se auto-postergaba igual. Ahora se ceba también al reencender el chip.
+- **`RTC_ALARM.fired()` contaba como actividad del usuario.** `clearFlag()` no comprueba la escritura, así que un
+  bus que lee bien pero no escribe deja AF puesta y `fired()` en true para siempre: el contador de ocio se
+  rearmaba cada cinco segundos y el aparato no volvía a dormir nunca.
+- **"Timer wake sin reloj" reintentaba cada 60 s sin tope**: con la pila del RTC agotada, sesenta arranques por
+  hora para siempre. Cinco intentos (contador en RTC RAM) y después se espera el botón.
+- **Mi guardia del asistente lo mataba en un aparato REALMENTE nuevo.** "Existe hub.json → no es nuevo" es falso:
+  apagar con PWR en la pantalla de idioma pasa por `powerOffNow()`, que hace `HUB_STORE.saveToFile()`. La
+  pregunta correcta es "existe y NO se pudo leer". De paso: `WIFI_STORE` no lo carga nadie en el arranque, así
+  que esa guardia leía cero siempre y no guardaba nada.
+- **`ensureToken()` dejaba un callejón sin salida**: sin token, el servidor rechaza el vacío y vincular tampoco
+  se podía. Ajustes → Vincular llama ahora a `mintToken()`, que acuña igual — porque ahí sí hay alguien
+  pidiéndolo, que es exactamente lo que faltaba.
+- Y lo chico: la marca del log confirmaba `n` aunque `read()` devolviera menos (se perdían bytes en silencio);
+  la prueba de servidor decía "no se pudo enviar el log" cuando simplemente no había nada nuevo; la repetición se
+  calculaba desde el `dueAt` ya postergado, así que un diario sin WiFi se corría media hora por día
+  (`baseDueAt`); una sacudida dada ANTES de que la alarma existiera se consumía como respuesta a la alarma; y
+  `devlog::tail()` quedó sin llamadores y se borró.
+
+**Queda sin hacer y anotado**: el fondo de pantalla se repinta con un FULL (2190 ms) en cada sueño sin comparar
+contra lo que ya está en el vidrio; `OpdsBookBrowserActivity` pide `preventAutoSleep()` incondicional (es
+upstream); Ajustes → Movimiento a mitad de calibración no deja dormir; la música con repetir no se corta nunca; y
+`msUntilNextAlarm()` hace una lectura I²C del RTC en cada pasada del loop.
+
+## El DOBLE GOLPE que no abría Hablar (1.5.92)
+
+Tres gates, y los tres estaban mal por el mismo motivo: se escribieron pensando en el aparato **apoyado en la
+mesa**, y el doble golpe se da con el aparato **en la mano**.
+
+- **`faceUp` estaba al revés.** Pedía `r.n > 0,3`, o sea la pantalla mirando para arriba, a menos de unos 70° de
+  la horizontal. Sostenido como se lee, la normal queda casi horizontal (`n ≈ 0`) y el gesto se descartaba
+  **siempre**. Lo único que hay que evitar es confundirlo con apoyarlo boca abajo —que es `n` bien NEGATIVA—, así
+  que ahora se pregunta eso: no que mire arriba, sino que **no mire abajo**.
+- **Un evento de posición sin consumir bloqueaba 1,5 s.** `emit()` no pisa lo que ya está pendiente si tiene menos
+  de 1,5 s, e **inclinar** y **horizontal** se emiten solos con sólo mover el aparato — y en el hub NADIE los
+  consume (`checkMotionGestures()` sólo toma sacudir, boca abajo y doble golpe). O sea que levantar el aparato y
+  darle los dos golpecitos, que es exactamente cómo se usa, caía casi siempre adentro de esa ventana. Ahora un
+  gesto **deliberado** (doble golpe, sacudida) le gana a uno de posición: lo que pisa no es de nadie.
+- **El antirrebote genérico de 350 ms frenaba al motor de golpes del chip.** Ese antirrebote existe para que los
+  gestos por UMBRAL no se disparen en cadena entre ellos, y el doble golpe **no sale de un umbral**: lo detecta el
+  chip. Levantar el aparato emite "inclinar", y el golpe que venía justo después se descartaba. Se sacó de ese
+  gate; el doble golpe ya tiene las dos guardias que le corresponden — `rested` (1,5 s entre golpes) y `quiet`
+  (1,2 s después de una sacudida de verdad).
+
+La línea del log (`golpe: st1=… tap=… doble n=…`) lleva ahora la normal medida, que es lo que hacía falta para ver
+cuál de los gates cortaba. Si el motor del chip directamente no contesta, eso se ve en el arranque
+(`golpes: el motor del chip contestó` o el error con el motivo) y en **Ajustes → Movimiento**.
+
+## El doble Atrás que no abría Hablar (1.5.92)
+
+Dos defectos, y el segundo explica por qué el primero no se podía diagnosticar.
+
+- **La ventana eran 500 ms, que es la medida de un doble clic de MOUSE.** Esto no es un mouse: es un botón
+  físico en un aparato de tinta que **no da ninguna señal entre un toque y el otro**. El que lo prueba toca, no
+  ve pasar nada, y recién ahí toca de nuevo — eso son 700 u 800 ms tranquilamente. Y si el primer toque cambió
+  de pantalla (en Notas o en la agenda, Atrás sale), en el medio hay un cambio de Activity que toma el candado
+  del render. Son **1,2 s**, que sigue lejos de dos Atrás separados de verdad.
+- **Una pulsación LARGA de Atrás contaba como toque.** `wasLongPressed()` marca la suelta como suprimida, pero
+  `wasReleased()` **no mira esa marca** (la única que la mira es `consumeSuppressedRelease()`, que usa el camino
+  del botón de despertar). Así que mantener Atrás —que en el hub sincroniza y en las listas abre el menú del
+  ítem— llegaba igual como un toque: sincronizar y después tocar una sola vez abría Hablar sin que nadie lo
+  pidiera. Ahora un Atrás de más de 600 ms no cuenta y además cierra la ventana.
+- **Y el atajo ahora dice por qué no disparó.** Era una función que sólo dejaba una línea en el log cuando
+  FUNCIONABA, o sea justo cuando no hace falta: las cuatro causas de "no pasó nada" (toques demasiado separados,
+  pantalla que usa Atrás para salir, grabación abierta, lector) eran idénticas desde el vidrio. Cada una deja su
+  renglón con el número de milisegundos.
+
+Recordar que la lista de pantallas tranquilas (`isCalmScreen`) sigue valiendo **a propósito**: en Noticias, la
+Biblia, el Traductor o una app de Lua, Atrás es el botón con el que se sale, y robárselo dejaría pantallas sin
+salida. Ahí el log lo dice en vez de no hacer nada en silencio.
 
 ## Roadmap acordado
 

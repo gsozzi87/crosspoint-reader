@@ -195,9 +195,10 @@ void SettingsActivity::rebuildSettingsLists() {
     }
     // MODO DE ENERGIA: en esta placa no se elige. Elegir entre "ahorro" y
     // "normal" era pedirle al usuario que decidiera algo que no puede evaluar
-    // —la diferencia son cinco minutos de espera antes de dormir— y la respuesta
-    // correcta es siempre la misma. Queda fijo en ahorro (5 min) y el ajuste no
-    // se muestra. En las demás placas sigue igual.
+    // —la diferencia son unos minutos de espera antes de dormir— y la respuesta
+    // correcta es siempre la misma. Queda fijo en los diez minutos de
+    // `WS397_SLEEP_TIMEOUT_MINUTES` y el ajuste no se muestra. En las demás
+    // placas sigue igual.
     if (!isWs397) {
       systemSettings.push_back(SettingInfo::DynamicEnum(
           StrId::STR_POWER_MODE, {StrId::STR_POWER_SAVER, StrId::STR_POWER_NORMAL, StrId::STR_POWER_ALWAYS_ON},
@@ -211,10 +212,14 @@ void SettingsActivity::rebuildSettingsLists() {
                                                         : CrossPointSettings::SLEEP_TIMEOUT_NEVER_MINUTES;
             SETTINGS.saveToFile();
           }));
-    } else if (SETTINGS.sleepTimeoutMinutes != 5) {
-      SETTINGS.sleepTimeoutMinutes = 5;
-      SETTINGS.saveToFile();
     }
+    // Y acá NO se fuerza nada. Había un `else` que ponía `sleepTimeoutMinutes`
+    // en 5 y lo guardaba, con el comentario diciendo "queda fijo en ahorro
+    // (5 min)". Las dos cosas eran falsas: en esta placa
+    // `getSleepTimeoutMs()` ni mira ese campo —devuelve
+    // WS397_SLEEP_TIMEOUT_MINUTES, que son DIEZ—, y como la fila está escondida
+    // el campo tampoco se persiste. Era una escritura a la tarjeta que no
+    // cambiaba nada y un comentario que decía la mitad del número real.
     // La contracara de src/TaskConfig.h: acá se ve cuánto stack usó de verdad
     // cada tarea contra lo que tiene declarado, y cómo va el heap interno.
     systemSettings.push_back(SettingInfo::Action(StrId::STR_SETTING_MEMORY, SettingAction::Memory));

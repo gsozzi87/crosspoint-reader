@@ -1,6 +1,7 @@
 #pragma once
 
 #include <I18n.h>
+#include <ServerClient.h>
 
 #include <string>
 #include <vector>
@@ -57,6 +58,9 @@ class NewsActivity final : public Activity {
   bool wifiActivated = false;
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
+  // Por qué falló la última llamada al servidor, en una línea legible. Vacío =
+  // el servidor contestó bien (y entonces "no hay fuentes" sí es la verdad).
+  std::string lastFailure;
 
   // --- El artículo abierto y su lectura en voz alta -------------------------
   // Un cuerpo más corto que esto no es una noticia: tiene el tamaño de los
@@ -76,7 +80,7 @@ class NewsActivity final : public Activity {
   // El ADPCM del trozo que suena se guarda para poder reanudarlo: el reproductor
   // no sabe pausar, así que "seguir" vuelve a poner el trozo desde el principio.
   std::string clip;
-  std::string nextClip;   // el del trozo siguiente, pedido mientras suena este
+  std::string nextClip;  // el del trozo siguiente, pedido mientras suena este
   int nextClipIndex = -1;
   unsigned long speakStartedAt = 0;
   std::string notice;  // por qué no se puede leer (sin WiFi, sin voz)
@@ -84,6 +88,7 @@ class NewsActivity final : public Activity {
   bool loadPack();
   bool loadCache();
   bool fetchFeeds();
+  static std::string describeFailure(ServerClient::Result r, int status);
   std::string articlePath(int feed, int item) const;
   bool readArticle(const std::string& path, std::string& title, std::string& text);
   bool fetchArticle(int feed, int item, std::string& title, std::string& text);

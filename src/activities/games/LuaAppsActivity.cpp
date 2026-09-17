@@ -224,5 +224,11 @@ void LuaAppsActivity::render(RenderLock&&) {
   } else {
     renderList();
   }
-  renderer.displayBuffer(HalDisplay::HALF_REFRESH);
+  // PARCIAL, como todas nuestras listas. Acá había un HALF_REFRESH fijo, o sea
+  // que CADA movimiento de la palanca pagaba una onda de ~1,8 s con su
+  // parpadeo: la lista de apps era la única pantalla del aparato que hacía eso,
+  // y encima al volver de una app (que sí es un cuadro distinto) se sumaba otro.
+  // La cadencia de limpiezas la decide el coordinador del panel — un completo
+  // cada doce parciales — y no cada pantalla por su cuenta; para eso existe.
+  renderer.displayBuffer();
 }

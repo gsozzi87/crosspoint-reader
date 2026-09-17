@@ -11,6 +11,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { Readable } from "node:stream";
+import { createBrotliDecompress, createGunzip, createInflate } from "node:zlib";
 import type { Context } from "hono";
 import type { AppEnv } from "./tenant";
 import { bodyLimit } from "hono/body-limit";
@@ -91,7 +92,11 @@ type PublicAddress = { address: string; family: 4 | 6 };
 // que este servidor no soporte no debe invalidar también la IPv4 pública: se
 // elige una única respuesta que ya pase el filtro y la conexión se fija a ésa.
 export function selectResolvedAddress(addresses: PublicAddress[]): PublicAddress | null {
-  return addresses.find((entry) => !isPrivateHost(entry.address)) ?? null;
+  // `isIP` primero: si el resolutor devolvió algo que no es una dirección (una
+  // forma inesperada, una entrada vacía), pasárselo igual al socket termina en
+  // un error del sistema que no dice nada. Mejor descartarla acá.
+  return addresses.find((entry) => typeof entry?.address === "string" && isIP(entry.address) &&
+                                   !isPrivateHost(entry.address)) ?? null;
 }
 
 async function publicResolution(hostname: string): Promise<PublicAddress> {
@@ -99,8 +104,13 @@ async function publicResolution(hostname: string): Promise<PublicAddress> {
   const literalFamily = isIP(hostname);
   if (literalFamily) return { address: hostname, family: literalFamily as 4 | 6 };
   const addresses = await lookup(hostname, { all: true, verbatim: true });
-  const selected = selectResolvedAddress(addresses as PublicAddress[]);
+  const lista = Array.isArray(addresses) ? addresses : [addresses];
+  const selected = selectResolvedAddress(lista as PublicAddress[]);
   if (!selected) {
+    // Se distingue "no resolvió" de "resolvió a red interna": el segundo es la
+    // guardia haciendo su trabajo y el primero es el DNS caído, y confundirlos
+    // manda a buscar el problema al lugar equivocado.
+    if (lista.length === 0) throw new Error(`el DNS no devolvió ninguna dirección para ${hostname}`);
     throw new Error(`el host resuelve a una red interna (${hostname})`);
   }
   return selected;
@@ -147,16 +157,67 @@ export const FEED_ACCEPT =
 // Connect to the exact address that was validated above. Calling global
 // fetch() here would resolve the hostname a second time, leaving a DNS
 // rebinding window between the safety check and the actual connection.
+// `http.request` NO descomprime: eso lo hacía el fetch global, y al pasar a un
+// cliente propio se perdió en silencio. Un feed servido con `Content-Encoding:
+// gzip` llegaba como bytes crudos y el parser de XML no encontraba nada — o sea
+// Noticias vacío, sin un error que lo explicara. Se pide la compresión
+// explícitamente (ahorra banda, que en Railway se paga) y se deshace acá.
+function decompressed(incoming: NodeJS.ReadableStream, encoding: string | undefined): NodeJS.ReadableStream {
+  switch ((encoding ?? "").trim().toLowerCase()) {
+    case "gzip":
+    case "x-gzip":
+      return incoming.pipe(createGunzip());
+    case "deflate":
+      return incoming.pipe(createInflate());
+    case "br":
+      return incoming.pipe(createBrotliDecompress());
+    default:
+      return incoming;
+  }
+}
+
+// Le pone plazo a una promesa que no lo trae. La promesa original sigue
+// corriendo (no hay forma de cancelar un `lookup`), pero el que espera se va.
+function withDeadline<T>(promise: Promise<T>, ms: number, what: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`tiempo de espera agotado en la ${what}`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 function fetchPinned(url: URL, address: PublicAddress, init: RequestInit, timeoutMs: number): Promise<Response> {
   return new Promise((resolve, reject) => {
     const headers = Object.fromEntries(new Headers(init.headers).entries());
+    if (!Object.keys(headers).some((h) => h.toLowerCase() === "accept-encoding")) {
+      headers["accept-encoding"] = "gzip, deflate, br";
+    }
     const request = (url.protocol === "https:" ? httpsRequest : httpRequest)(
       url,
       {
         method: init.method ?? "GET",
         headers,
         servername: url.hostname,
-        lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
+        // EL `all` DEL LLAMADOR HAY QUE RESPETARLO. `http.request` no llama a
+        // este lookup como uno lo escribiría: le pasa `{ all: true }` y espera
+        // un ARRAY de `{address, family}`. Devolviéndole un string suelto, el
+        // cliente hace `results.sort(...)` sobre algo que no es un array (o
+        // lee `results[0].address`, que da undefined) y la salida muere antes
+        // de abrir el socket. Eso es lo que se veía en /board → Noticias como
+        // "Invalid IP address: undefined" en TODOS los feeds a la vez: no era
+        // ningún diario caído, era que el aparato nunca llegaba a pedirles nada.
+        lookup: (_hostname, options, callback) =>
+          options?.all
+            ? (callback as (e: null, a: PublicAddress[]) => void)(null, [address])
+            : callback(null, address.address, address.family),
       },
       (incoming) => {
         const responseHeaders = new Headers();
@@ -165,8 +226,16 @@ function fetchPinned(url: URL, address: PublicAddress, init: RequestInit, timeou
         }
         const status = incoming.statusCode ?? 502;
         const noBody = (init.method ?? "GET") === "HEAD" || status === 204 || status === 205 || status === 304;
+        const encoding = incoming.headers["content-encoding"];
+        const body = noBody ? null : decompressed(incoming, Array.isArray(encoding) ? encoding[0] : encoding);
+        if (body !== incoming) {
+          // Después de descomprimir, los dos headers que describían el cuerpo
+          // comprimido pasan a ser mentira.
+          responseHeaders.delete("content-encoding");
+          responseHeaders.delete("content-length");
+        }
         resolve(
-          new Response(noBody ? null : (Readable.toWeb(incoming) as unknown as ReadableStream), {
+          new Response(noBody ? null : (Readable.toWeb(body as Readable) as unknown as ReadableStream), {
             status,
             statusText: incoming.statusMessage,
             headers: responseHeaders,
@@ -201,12 +270,20 @@ export async function safeFetchAt(
 ): Promise<{ res: Response; url: string }> {
   const timeoutMs = opts.timeoutMs ?? 10_000;
   const maxHops = opts.maxHops ?? 5;
+  // `request.setTimeout` es INACTIVIDAD del socket, no plazo: un servidor que
+  // gotea un byte cada nueve segundos lo resetea para siempre, y la resolución
+  // de nombres no tiene ningún tope. Con el fetch global esto no pasaba porque
+  // `AbortSignal.timeout` era un plazo de verdad. Se rearma acá y se reparte
+  // entre TODOS los saltos, que si no cada redirección estrenaba el reloj.
+  const deadline = Date.now() + timeoutMs;
+  const left = () => Math.max(1, deadline - Date.now());
   let url = raw;
   for (let hop = 0; hop <= maxHops; hop++) {
+    if (Date.now() >= deadline) throw new Error("tiempo de espera agotado");
     const check = checkUrl(url, { allowHttp: true });
     if (!check.ok) throw new Error(check.error);
-    const address = await publicResolution(check.url.hostname);
-    const res = await fetchPinned(check.url, address, init, timeoutMs);
+    const address = await withDeadline(publicResolution(check.url.hostname), left(), "resolución de nombre");
+    const res = await fetchPinned(check.url, address, init, left());
     if (res.status < 300 || res.status > 399) return { res, url: check.url.toString() };
     const next = res.headers.get("location");
     if (!next) return { res, url: check.url.toString() };

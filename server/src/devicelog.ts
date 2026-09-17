@@ -9,6 +9,41 @@ import { accountOf, type AppEnv } from "./tenant";
 // El log es POR CUENTA y nunca se mezcla: adentro están los nombres de las
 // redes WiFi de la casa y todo lo que se dicta por voz.
 const MAX_BYTES = 512 * 1024;
+// Cuánto se guarda. El aparato manda sólo lo nuevo desde 1.5.92, así que esto
+// es historia de verdad y no la misma tanda repetida — pero historia de hace
+// una semana, con tres versiones de firmware adentro, no sirve para diagnosticar
+// lo de anoche: tapa lo que importa. Un día es lo que se pide ("no más de 24 hs").
+const KEEP_MS = 24 * 60 * 60 * 1000;
+
+const STAMP = /^===== (\d{4}-\d{2}-\d{2}T[^ ]+) =====$/;
+
+// Poda por los sellos que escribe cada subida. Todo lo que está DEBAJO de un
+// sello pertenece a esa subida, así que se corta en el primer sello que entra en
+// la ventana y se tira lo de arriba.
+//
+// DOS CASOS BORDE QUE IMPORTAN, los dos del lado de no dejar al usuario sin nada:
+//  - ningún sello cae en la ventana (el aparato no sincroniza hace tres días):
+//    se deja LA ÚLTIMA subida igual. Ahí la página muestra algo viejo, sí, pero
+//    "viejo" es un diagnóstico y una pantalla vacía no es ninguno;
+//  - no hay sellos (formato inesperado, o el archivo se escribió a mano): se
+//    devuelve tal cual. Borrar a ciegas el log del usuario es peor que guardarlo
+//    de más.
+export function prune(text: string, nowMs: number, keepMs = KEEP_MS): string {
+  const lines = text.split("\n");
+  let cut = -1;
+  let last = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const m = STAMP.exec(lines[i]);
+    if (!m) continue;
+    const t = Date.parse(m[1]);
+    if (!Number.isFinite(t)) continue;
+    last = i;
+    if (cut < 0 && nowMs - t <= keepMs) cut = i;  // el primero que entra: de acá abajo se conserva
+  }
+  if (cut < 0) cut = last;   // nada dentro de la ventana: queda la última subida
+  if (cut <= 0) return text;  // sin sellos, o ya empieza dentro de la ventana
+  return lines.slice(cut).join("\n");
+}
 
 export const deviceLog = new Hono<AppEnv>();
 
@@ -22,6 +57,7 @@ export async function logMeta(accountId: number): Promise<{ at: string; bytes: n
   } catch {
     return { at: "", bytes: 0, firmware: "", wake: "" };
   }
+  text = prune(text, Date.now());
   const stamps = text.match(/===== (\d{4}-\d{2}-\d{2}T[^ ]+) =====/g) ?? [];
   const at = stamps.length ? stamps[stamps.length - 1].slice(6, -6) : "";
   const boots = [...text.matchAll(/=== (\d+\.\d+\.\d+[^ |]*) \| arranque por ([^=]+?) ===/g)];
@@ -32,10 +68,13 @@ export async function logMeta(accountId: number): Promise<{ at: string; bytes: n
 deviceLog.get("/meta", async (c) => c.json({ ok: true, ...(await logMeta(accountOf(c))) }));
 
 // GET /api/log (con el Bearer del aparato): el texto del log, para la página.
+// Se poda también acá, y no sólo al subir: si el aparato dejó de sincronizar
+// (que es justo cuando uno abre esta página), lo guardado sigue siendo lo de
+// hace días y la promesa de "24 horas" no la cumpliría nadie.
 deviceLog.get("/", async (c) => {
   let text = "";
   try {
-    text = await readFile(deviceLogFile(accountOf(c)), "utf8");
+    text = prune(await readFile(deviceLogFile(accountOf(c)), "utf8"), Date.now());
   } catch {
     text = "(todavía no subió ningún log; sincronizá el hub)";
   }
@@ -53,8 +92,9 @@ deviceLog.post("/", async (c) => {
     try {
       previous = await readFile(FILE, "utf8");
     } catch {}
-    const stamp = `\n===== ${new Date().toISOString()} =====\n`;
-    let out = previous + stamp + text.slice(-MAX_BYTES);
+    const now = Date.now();
+    const stamp = `\n===== ${new Date(now).toISOString()} =====\n`;
+    let out = prune(previous, now) + stamp + text.slice(-MAX_BYTES);
     if (out.length > MAX_BYTES) out = out.slice(-MAX_BYTES);
     await writeAtomicNow(FILE, out);
     return out.length;

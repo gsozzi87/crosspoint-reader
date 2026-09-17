@@ -33,7 +33,15 @@ void DevicePairActivity::onEnter() {
   }
   // El token se genera solo la primera vez; de acá en más el aparato ya tiene
   // identidad aunque nadie haya tocado nada.
-  SERVER_STORE.ensureToken();
+  // `mintToken()` y no `ensureToken()`: entrar acá ES la decisión de darle
+  // identidad al aparato. `ensureToken()` se niega a acuñar cuando server.json
+  // existe pero no se pudo leer (tarjeta dañada), y con razón — pero entonces
+  // el aparato quedaba sin token, el servidor rechaza el token vacío y no había
+  // forma de salir. Acá sí hay alguien pidiéndolo.
+  if (!SERVER_STORE.hasToken()) {
+    LOG_INF(TAG, "el aparato no tenía token: se acuña uno para vincular");
+    SERVER_STORE.mintToken();
+  }
   wifiWasUp = WiFi.status() == WL_CONNECTED;
   beginConnect();
 }
