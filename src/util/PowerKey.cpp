@@ -1,5 +1,8 @@
 #include "PowerKey.h"
 
+#include <driver/gpio.h>
+#include <soc/gpio_struct.h>
+
 #include <BoardConfig.h>
 #include <Logging.h>
 #include <Wire.h>
@@ -60,7 +63,30 @@ RTC_NOINIT_ATTR uint32_t s_edgeMemory;
 // time is recorded here (no I2C in an ISR); pump() picks it up as the true
 // press/release instant when the loop is late (a refresh, a screenshot).
 volatile unsigned long s_edgeAtMs = 0;
-void IRAM_ATTR onIrqFalling() { s_edgeAtMs = millis(); }
+volatile int8_t s_irqPin = -1;
+// Cuántas veces la ISR se encontró el pin configurado POR NIVEL. Tiene que ser
+// cero: si no lo es, alguien armó el pin para despertar (LOW_LEVEL) sin soltar
+// esta ISR primero, y sin esta guardia el aparato se colgaba en el watchdog de
+// interrupciones (1.5.93 a 1.5.98). pump() lo dice en el log.
+volatile uint32_t s_levelFixes = 0;
+
+// Tipo de interrupción del pin, leído del registro (bits 7-9 de GPIO_PINn_REG).
+inline bool IRAM_ATTR pinIsLevelTriggered(const int8_t pin) {
+  const uint32_t t = GPIO.pin[pin].int_type;
+  return t == GPIO_INTR_LOW_LEVEL || t == GPIO_INTR_HIGH_LEVEL;
+}
+
+void IRAM_ATTR onIrqFalling() {
+  s_edgeAtMs = millis();
+  // RED DE SEGURIDAD: una ISR de flanco sobre un pin por nivel es un bucle sin
+  // salida (la línea sigue en bajo y la interrupción vuelve a entrar apenas
+  // sale). No se puede levantar la línea desde acá —eso es I2C—, así que se
+  // cambia el pin a flanco en el acto y se cuenta, para que el log lo diga.
+  if (s_irqPin >= 0 && pinIsLevelTriggered(s_irqPin)) {
+    GPIO.pin[s_irqPin].int_type = GPIO_INTR_NEGEDGE;
+    ++s_levelFixes;
+  }
+}
 
 const char* edgeName(uint8_t bit) { return bit == 0x01 ? "POSITIVE(bit0)" : bit == 0x02 ? "NEGATIVE(bit1)" : "unknown"; }
 }  // namespace
@@ -175,13 +201,16 @@ void PowerKey::begin() {
   }
 
   s_edgeAtMs = 0;
+  s_irqPin = irqPin_;
   attachInterrupt(digitalPinToInterrupt(irqPin_), onIrqFalling, FALLING);
+  irqPaused_ = false;
 
   pressed_ = false;
   confirmed_ = false;
   longSeen_ = false;
   holdConsumed_ = false;
   shortPress_ = false;
+  releasePending_ = false;
   pressStartMs_ = 0;
   heldMs_ = 0;
   lastPollMs_ = millis();
@@ -231,9 +260,48 @@ void PowerKey::learnPressEdge(uint8_t edgeBit, const char* how) {
   LOG_INF(TAG, "press edge = %s (learned: %s)", edgeName(edgeBit), how);
 }
 
+void PowerKey::pauseIrq() {
+  if (!available_ || irqPaused_) return;
+  // detachInterrupt deja el pin sin ISR, sin interrupción habilitada y con tipo
+  // DISABLE: recién ahí es seguro que el reposo lo arme por nivel.
+  detachInterrupt(digitalPinToInterrupt(irqPin_));
+  irqPaused_ = true;
+}
+
+void PowerKey::resumeIrq() {
+  if (!available_ || !irqPaused_) return;
+  // Si la línea ya está en bajo, el despertar fue por PWR y el flanco pasó
+  // mientras la ISR no estaba: se anota ahora, que es lo más cerca que hay.
+  if (digitalRead(irqPin_) == LOW) s_edgeAtMs = millis();
+  // attachInterrupt escribe el tipo (flanco de bajada) antes de habilitar la
+  // interrupción, así que nunca hay un instante con ISR y nivel a la vez.
+  attachInterrupt(digitalPinToInterrupt(irqPin_), onIrqFalling, FALLING);
+  irqPaused_ = false;
+  if (pinIsLevelTriggered(irqPin_) || GPIO.pin[irqPin_].int_ena == 0) {
+    LOG_ERR(TAG, "GPIO%d quedó mal tras el reposo (tipo=%u int_ena=%u): la ISR no protege", irqPin_,
+            (unsigned)GPIO.pin[irqPin_].int_type, (unsigned)GPIO.pin[irqPin_].int_ena);
+  }
+}
+
 void PowerKey::pump() {
   if (!available_) return;
   const unsigned long now = millis();
+
+  // Lo que la ISR tuvo que arreglar sola se dice acá, que es donde hay log.
+  static uint32_t levelFixesSaid = 0;
+  if (s_levelFixes != levelFixesSaid) {
+    levelFixesSaid = s_levelFixes;
+    LOG_ERR(TAG, "GPIO%d estaba armado POR NIVEL con la ISR de PWR enganchada (van %lu): la ISR lo pasó a flanco. "
+            "Sin esto, apretar PWR colgaba el aparato en el watchdog de interrupciones",
+            irqPin_, (unsigned long)levelFixesSaid);
+  }
+  // Y si nadie apretó todavía, la misma comprobación desde el loop: un pin por
+  // nivel con la ISR puesta es una bomba armada, no un estado que esperar.
+  if (!irqPaused_ && pinIsLevelTriggered(irqPin_) && GPIO.pin[irqPin_].int_ena != 0) {
+    gpio_set_intr_type(static_cast<gpio_num_t>(irqPin_), GPIO_INTR_NEGEDGE);
+    LOG_ERR(TAG, "GPIO%d quedó armado POR NIVEL con la ISR de PWR enganchada: se restaura a flanco. "
+            "Alguien armó el pin para despertar sin pauseIrq()", irqPin_);
+  }
 
   // A confirmed press that outlives the PMIC's own 10 s hard cut cannot be a
   // real hold: a release edge went missing. Drop it rather than sleep on it.
@@ -367,6 +435,7 @@ void PowerKey::decode(const uint8_t s2, const unsigned long now, const unsigned 
     pressed_ = false;
     heldMs_ = at - pressStartMs_;  // modular: the anchor may sit before millis() wrapped
     if (!holdConsumed_ && heldMs_ < SHORT_PRESS_MAX_MS) shortPress_ = true;
+    releasePending_ = true;
     LOG_INF(TAG, "sts2=%02X release held=%lu ms%s%s", s2, heldMs_, shortPress_ ? " short" : "",
             longSeen_ ? " long" : "");
     holdConsumed_ = false;
@@ -386,5 +455,12 @@ unsigned long PowerKey::heldMs() const {
 bool PowerKey::tookShortPress() {
   const bool took = shortPress_;
   shortPress_ = false;
+  releasePending_ = false;  // a dropped tap has no release either
+  return took;
+}
+
+bool PowerKey::tookRelease() {
+  const bool took = releasePending_;
+  releasePending_ = false;
   return took;
 }

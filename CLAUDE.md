@@ -698,7 +698,10 @@ cable. No se toca sin poder probar en hardware.
   controles a nadie: ahora anda en cualquier pantalla que no esté ocupada. El **doble Atrás** sigue atado a la
   lista blanca a propósito: ahí Atrás es un botón que cada app usa para salir.
 
-## PWR hace UNA sola cosa: mantenerlo (1.5.59)
+## PWR hace UNA sola cosa: mantenerlo (1.5.59) — SUPERADO en 1.5.99
+
+**Desde 1.5.99 apretar y soltar = suspender**, a cualquier largo antes de los 3 s (ver "PWR colgaba el aparato
+desde el primer reposo"). Lo de abajo queda como historia de por qué el toque corto "no hacía nada".
 
 - Antes de **1,2 s**: nada. **No hay toque corto y no hay menú de pantalla** — se sacó en 1.5.59
   ("el menú al presionar PWR no lo quiero más, sólo la barrita que carga").
@@ -1520,6 +1523,51 @@ el log detecte estas cosas y no tener que estar diciéndote todo"*. La cabecera 
 `esp_reset_reason()` convirtió "se reinicia y se traba, no sé por qué" en una causa con nombre, a la
 primera, sin cable y sin que él tuviera que reproducir nada. **Cuando un síntoma cuesta tres vueltas
 de adivinanzas, el arreglo que hay que hacer primero es el que lo vuelve visible.**
+
+## PWR colgaba el aparato desde el primer reposo, y 1.5.98 era la mitad (1.5.99)
+
+Después de 1.5.98 el log siguió llenándose de `reset: WATCHDOG de interrupciones` y el dueño lo resumió:
+*"pésimo comportamiento de los botones, mismo error, todo mal"*. Esta vez no se adivinó: se desensambló.
+
+**La causa, verificada en el binario de IDF (`libesp_driver_gpio.a`)**: `gpio_wakeup_enable(pin, LOW_LEVEL)`
+—lo que arma cada pin de despertar del reposo— **escribe el TIPO de interrupción del pin** (bits 7-9 de
+`GPIO_PINn_REG`, `and 0xfffffc7f` / `or tipo<<7`), y `gpio_wakeup_disable` **sólo apaga el bit de despertar**
+(`and 0xfffffbff`): el tipo queda en NIVEL para siempre. A los cuatro botones no les importa, no tienen ISR.
+Pero **GPIO38 es la IRQ del PMIC y tiene la ISR de flanco de `PowerKey` con la interrupción habilitada**
+(`attachInterrupt(FALLING)`). O sea que desde el PRIMER reposo, cada pulsación de PWR —y el propio despertar
+por PWR— era una interrupción por nivel entrando sin parar: la ISR no puede levantar la línea (eso es I2C
+desde el loop, que no llega nunca) y a los 300 ms salta el watchdog. Existía desde 1.5.93, que es cuando el
+reposo empezó a entrar de verdad: **el dueño tenía razón con "antes de la 93 esto no pasaba"**, y el
+arreglo de 1.5.93 estaba bien — destapó esto, igual que destapó lo del panel.
+
+Lo de 1.5.98 (armar sin dormir) era cierto pero era la mitad: cerraba el caso "sin reposo" y dejaba abierto
+el caso "después del reposo", que es el de todos los días.
+
+- `PowerKey::pauseIrq()` (detach) **antes** de armar y `resumeIrq()` (attach, que restaura el flanco) en
+  `disarmWakeSources()`, o sea en TODA salida del reposo. Además `armWakeSources()` **se niega a armar por nivel
+  cualquier pin con `int_ena != 0`**, sea de quien sea, y lo dice: la próxima ISR sobre un botón no repite esto.
+- **Dos redes de seguridad que se anotan en el log**: la propia ISR, si se encuentra el pin por nivel, lo pasa a
+  flanco en el acto y cuenta (`GPIO38 estaba armado POR NIVEL con la ISR de PWR enganchada (van N)`), y
+  `pump()` hace la misma comprobación desde el loop. Si alguna vez sale esa línea, alguien armó GPIO38 sin
+  `pauseIrq()`.
+
+**Y por qué el log no lo decía: el final del log no sobrevivía al cuelgue.** Se bajaba a la tarjeta cada 2 KB y
+nada más, así que el watchdog se llevaba hasta 2 KB de líneas. "La última línea antes del reinicio" era la
+última que había llegado a la tarjeta, con decenas de segundos y un reposo entero en el medio — por eso los
+crashes parecían pegados a `Entering activity: Voice` o a un golpe del IMU y no a PWR, y por eso las siete
+cabeceras seguidas de 1.5.97 no tenían nada adentro. Ahora `devlog::tick()` baja lo pendiente a los 250 ms de
+quietud, cada 1,5 s si no para de escribir, y en el acto si la línea es `[ERR]`. **Antes de leer "qué pasó justo
+antes" en un log, saber cuánto del final se perdió.**
+
+**La regla de PWR, ahora sí como la escribió el dueño en 1.5.96**: apretar y soltar = suspender, dure lo que
+dure; la barrita (desde 1,2 s) sólo dice cuánto falta para apagar; soltar con ella a medias suspende igual;
+3 s = apagado. Hasta 1.5.98 un toque de menos de 1,2 s "no hacía nada", regla de 1.5.59 de cuando el toque
+abría un menú que ya no existe. Se ignoran la pulsación que lo encendió (`BOOT_KEY_IGNORE_MS`) y la que viene con
+ABAJO (captura de pantalla), y las dos lo dicen en el log.
+
+**Sin explicar y anotado**: en un arranque de 1.5.98 hay un `refresh FAST hint=ui 30043ms` mientras se
+conectaba el WiFi: BUSY quedó en alto 30 s (el tope de `waitBusy`). Una vez, sin cable. Si vuelve, mirar si
+coincide con el WiFi levantando.
 
 ## Roadmap acordado
 

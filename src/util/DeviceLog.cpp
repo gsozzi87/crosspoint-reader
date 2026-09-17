@@ -49,15 +49,35 @@ unsigned long lastClockPollMs = 0;
 bool clockPolled = false;
 bool wifiNoted = false;
 
+// EL FINAL DEL LOG TIENE QUE SOBREVIVIR A UN CUELGUE. Hasta 1.5.98 se bajaba a la
+// tarjeta cada 2 KB y nada más, así que un watchdog se llevaba hasta 2 KB de
+// las líneas anteriores: en 1.5.97/98 se diagnosticó el cuelgue de PWR mirando
+// "la última línea antes del reinicio", y esa línea era la última que había
+// llegado a la tarjeta, no la última que pasó — con decenas de segundos y un
+// reposo entero en el medio. Ahora, además del tope de bytes, se baja cuando
+// pasó un rato desde la última línea (tick(), desde el loop) y en el acto si la
+// línea es un error. Cuesta un sync de la FAT (~1-3 ms) por ráfaga, no por línea.
+unsigned long lastWriteMs = 0;
+unsigned long lastFlushMs = 0;
+constexpr unsigned long QUIET_FLUSH_MS = 250;   // sin líneas nuevas hace tanto: bajar lo que haya
+constexpr unsigned long STREAM_FLUSH_MS = 1500;  // con líneas sin parar: bajar igual cada tanto
+
+void syncNow() {
+  file.flush();
+  sinceFlush = 0;
+  lastFlushMs = millis();
+}
+
 void rawWrite(const char* text, const size_t len) {
   if (!file.isOpen() || len == 0) return;
   file.write(reinterpret_cast<const uint8_t*>(text), len);
   written += len;
   sinceFlush += len;
-  if (sinceFlush >= FLUSH_EVERY) {
-    file.flush();
-    sinceFlush = 0;
-  }
+  const unsigned long now = millis();
+  lastWriteMs = now;
+  const char* err = len > 8 ? strstr(text, "[ERR]") : nullptr;
+  const bool isError = err != nullptr && err - text < 24;  // sólo el nivel, no un "[ERR]" citado adentro
+  if (sinceFlush >= FLUSH_EVERY || isError || now - lastFlushMs >= STREAM_FLUSH_MS) syncNow();
 }
 
 void rawLine(const char* text) { rawWrite(text, strlen(text)); }
@@ -333,8 +353,15 @@ void devlog::event(const char* tag, const char* fmt, ...) {
 void devlog::flush() {
   if (!ready || !file.isOpen()) return;
   flushRepeats();
-  file.flush();
-  sinceFlush = 0;
+  syncNow();
+}
+
+void devlog::tick() {
+  if (!ready || !file.isOpen() || inWrite || sinceFlush == 0) return;
+  if (millis() - lastWriteMs < QUIET_FLUSH_MS) return;
+  // Sin flushRepeats(): una tanda de repetidos que sigue abierta se cierra sola
+  // cuando llegue una línea distinta; acá sólo se baja lo ya escrito.
+  syncNow();
 }
 
 void devlog::close() {

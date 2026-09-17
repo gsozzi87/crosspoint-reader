@@ -96,8 +96,7 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 //   llegar a los 3 s ..... APAGA (el PMIC corta los rieles)
 // Suspender pasa al SOLTAR y no al cruzar el umbral: si durmiera a los 1,2 s
 // con el botón abajo, nunca se podría llegar a los 3.
-constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;                 // aparece la barrita
-constexpr unsigned long POWER_HOLD_SLEEP_MS = POWER_HOLD_ACTION_MS;  // soltar acá o después: suspende
+constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // aparece la barrita (cuánto falta para apagar)
 constexpr unsigned long POWER_HOLD_WARN_MS = 2300;                   // el cartel pasa a "Apagando..."
 // Cada cuánto se repinta la barrita. El panel no tiene refresco por región expuesto
 // (FreeInkDisplay::displayWindow existe pero está marcado EXPERIMENTAL y no sube ni a
@@ -960,20 +959,33 @@ static bool handlePowerHold(const bool gateOpen) {
     return bannerStage != 0;
   }
 
-  // El toque corto ya no hace nada (el menú de pantalla se sacó), pero el flag
-  // es un latch: se vacía acá para que no quede colgado esperando a alguien.
-  POWER_KEY.tookShortPress();
-  if (bannerStage == 0) return false;
-  const unsigned long lastHold = held;  // heldMs() guarda el largo del hold que terminó
+  // SOLTÓ. La regla del dueño, escrita en 1.5.96 y que hasta acá no se cumplía:
+  // APRETAR Y SOLTAR = SUSPENDER, dure lo que dure la pulsación antes de los 3 s
+  // de apagado. La barrita no es un umbral: sólo dice cuánto falta para apagar,
+  // y soltar con ella a medias suspende igual. Hasta 1.5.98 un toque de menos
+  // de 1,2 s "no hacía nada" —una regla de 1.5.59, de cuando el toque corto
+  // abría un menú que ya no existe— y el dueño lo veía como que el botón no
+  // andaba.
+  const bool released = POWER_KEY.tookRelease();
+  POWER_KEY.tookShortPress();  // latch viejo: se vacía para que no quede colgado
+  const bool hadBanner = bannerStage != 0;
   bannerStage = 0;
-  if (lastHold >= POWER_HOLD_SLEEP_MS) {
-    LOG_DBG("MAIN", "PWR soltado a los %lu ms: a dormir", lastHold);
-    enterDeepSleep();
-    return true;  // no se llega: enterDeepSleep termina en esp_deep_sleep_start
+  if (!released) return false;
+  const unsigned long lastHold = held;  // heldMs() guarda el largo del hold que terminó
+  if (POWER_KEY.pressStartMs() < BOOT_KEY_IGNORE_MS) {
+    LOG_INF("MAIN", "PWR soltado a los %lu ms: era la pulsación que lo encendió, se ignora", lastHold);
+    if (hadBanner) activityManager.requestUpdate();
+    return false;
   }
-  // Soltado antes de 1,2 s: no pasa nada, la barrita se va.
-  activityManager.requestUpdate();
-  return true;
+  if (!gateOpen || gpio.isPressed(HalGPIO::BTN_DOWN)) {
+    LOG_INF("MAIN", "PWR soltado a los %lu ms pero ignorado: gate=%d abajo=%d", lastHold, gateOpen ? 1 : 0,
+            gpio.isPressed(HalGPIO::BTN_DOWN) ? 1 : 0);
+    if (hadBanner) activityManager.requestUpdate();
+    return false;
+  }
+  LOG_INF("MAIN", "PWR soltado a los %lu ms: se suspende", lastHold);
+  enterDeepSleep();
+  return true;  // no se llega: enterDeepSleep termina en esp_deep_sleep_start
 }
 
 // El MENÚ DE PANTALLA se sacó: PWR hace una sola cosa, mantenerlo. Con él se
@@ -1423,6 +1435,7 @@ void loop() {
   MOTION.poll();       // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
   shtc3::tick();       // temperatura de adentro, en dos tiempos y sin bloquear
   batterylog::tick();  // el diario de la batería, una línea cada diez minutos
+  devlog::tick();      // que lo último escrito llegue a la tarjeta antes de un cuelgue
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
@@ -1748,7 +1761,7 @@ void loop() {
   const bool powerGateOpen = powerReleasedSinceWake && millis() >= allowSleepAt;
 
   if (usePowerHoldTiers()) {
-    // ws397: PWR mantenido = barrita; soltar suspende, llegar a los 3 s apaga.
+    // ws397: apretar y soltar = suspender; mantenido = barrita; a los 3 s apaga.
     if (handlePowerHold(powerGateOpen)) {
       delay(10);  // banner on screen: no need to spin
       return;

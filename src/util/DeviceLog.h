@@ -16,6 +16,7 @@ namespace devlog {
 void begin();                  // opens the file, writes the session header
 void write(const char* line);  // called by Logging for every line
 void flush();                  // called before sleeping / rebooting
+void tick();                   // loop(): flush cuando hubo quietud tras la última línea
 // Anota un evento propio (arranque de una pantalla, resultado de una llamada al
 // servidor, un error con contexto). Sale con el prefijo "* " y NO se deduplica:
 // es lo que se quiere ver entero aunque se repita.
