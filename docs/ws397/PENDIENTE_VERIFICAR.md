@@ -114,6 +114,19 @@ Esto es lo que se acaba de arreglar y lo que más importa mirar, porque es lo qu
 - [ ] Y el de siempre, ahora que la red de seguridad del reposo puede dispararse: dejarlo con algo que bloquee
       el reposo y confirmar que a la media hora se duerme igual y lo dice en el log.
 
+### 5 quinquies. El doble Atrás (1.5.92)
+
+Ahora el atajo **deja rastro en el log pase lo que pase**, así que esto se diagnostica solo.
+
+- [ ] Desde el hub, dos toques de Atrás: abre Hablar. En el log,
+      `doble Atrás (N ms) desde Hub: se abre Hablar`.
+- [ ] Si NO abre, mirar el número: `Atrás: N ms desde el anterior, fuera de la ventana de 1200` quiere decir
+      que los toques van demasiado separados (y con cuánto, para saber a cuánto hay que subir la ventana).
+- [ ] Desde Notas o la agenda (el primer toque sale al hub, el segundo abre Hablar).
+- [ ] Desde Noticias o la Biblia **no** tiene que abrir, y el log tiene que decir
+      `esa pantalla usa Atrás para salir`. Es a propósito: ahí Atrás es el botón de salida.
+- [ ] **Mantener Atrás en el hub (sincronizar) y después tocar UNA vez: NO tiene que abrir Hablar.**
+
 ---
 
 ## Lo que necesita servidor

@@ -451,7 +451,19 @@ static void sleepNow() {
 // arranque después de dormir, así que un temporizador vencido en Notas, Agenda o
 // Ajustes no sonaba nunca. Se dispara sobre las pantallas tranquilas; el lector y
 // las que usan red o audio se dejan en paz (ahí manda el wake por deep sleep).
-constexpr unsigned long DOUBLE_BACK_MS = 500;  // ventana del doble toque de Atrás
+// Ventana del doble toque de Atrás. Eran 500 ms, que es la medida de un doble
+// clic de mouse — y esto no es un mouse: es un botón físico en un aparato de
+// tinta que NO da ninguna señal entre un toque y el otro. El que lo prueba
+// toca, no ve pasar nada, y recién ahí toca de nuevo: eso son 700 u 800 ms
+// tranquilamente. Y si el primer toque cambió de pantalla (en Notas o en la
+// agenda, Atrás sale), en el medio hay un cambio de Activity que toma el
+// candado del render. 1,2 s es un gesto que se puede hacer a propósito y sigue
+// lejos de dos Atrás separados de verdad.
+constexpr unsigned long DOUBLE_BACK_MS = 1200;
+// A partir de acá Atrás fue MANTENIDO, no tocado: es el gesto de sincronizar en
+// el hub y el de abrir el menú del ítem en las listas. Por debajo del umbral más
+// chico de esos dos (1 s), así que ningún gesto largo se cuela como toque.
+constexpr unsigned long LONG_BACK_MS = 600;
 // Media hora de ocio sin poder reposar ni una vez: algo lo está bloqueando y en
 // "siempre encendido" nadie más va a mandar a dormir. Ver la red de seguridad
 // en el loop.
@@ -482,18 +494,59 @@ static bool isCalmScreen(const char* name) {
 // mantenido ya sincroniza o actualiza según la pantalla; el doble toque es lo
 // único que queda libre. Desde cualquier pantalla: el primer toque vuelve al
 // hub y el segundo abre Hablar (en el hub, Atrás no hace nada).
+// ESTO SE DIAGNOSTICA DESDE EL LOG O NO SE DIAGNOSTICA. El atajo o abre Hablar
+// o no hace nada, y "no hace nada" tiene cuatro causas distintas que desde el
+// vidrio son idénticas: los toques llegaron demasiado separados, la pantalla no
+// está en la lista de las tranquilas, hay una grabación abierta, o el segundo
+// toque no se vio. Antes no se anotaba ninguna: sólo salía una línea cuando
+// funcionaba, que es justo cuando no hace falta. Ahora cada toque deja su
+// renglón con el número, así el aparato dice cuál de las cuatro es.
 static void checkVoiceShortcut() {
   static unsigned long lastBackRelease = 0;
+  static unsigned long backPressedAt = 0;
+  if (mappedInputManager.wasPressed(MappedInputManager::Button::Back)) backPressedAt = millis();
   if (!mappedInputManager.wasReleased(MappedInputManager::Button::Back)) return;
   const unsigned long now = millis();
-  const bool isDouble = lastBackRelease != 0 && now - lastBackRelease <= DOUBLE_BACK_MS;
+  // UNA PULSACIÓN LARGA NO ES UN TOQUE. `wasLongPressed()` marca la suelta como
+  // suprimida, pero `wasReleased()` NO mira esa marca (sólo la mira
+  // `consumeSuppressedRelease()`, que usa el camino del botón de despertar), así
+  // que mantener Atrás —que en el hub sincroniza y en las listas abre el menú
+  // del ítem— llegaba acá como un toque igual: sincronizar y después tocar una
+  // sola vez abría Hablar sin que nadie lo pidiera.
+  const unsigned long held = backPressedAt != 0 ? now - backPressedAt : 0;
+  backPressedAt = 0;
+  if (held > LONG_BACK_MS) {
+    lastBackRelease = 0;
+    LOG_DBG("MAIN", "Atrás mantenido %lu ms: no cuenta para el atajo de voz", held);
+    return;
+  }
+  const unsigned long gap = lastBackRelease != 0 ? now - lastBackRelease : 0;
+  const bool isDouble = lastBackRelease != 0 && gap <= DOUBLE_BACK_MS;
   lastBackRelease = isDouble ? 0 : now;  // el segundo toque cierra la ventana
-  if (!isDouble) return;
-  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return;
-  if (busyRecording()) return;
+  if (!isDouble) {
+    if (gap > 0) {
+      LOG_INF("MAIN", "Atrás: %lu ms desde el anterior, fuera de la ventana de %lu", gap, DOUBLE_BACK_MS);
+    } else {
+      LOG_DBG("MAIN", "Atrás: primer toque, se abre la ventana del atajo de voz");
+    }
+    return;
+  }
   const char* name = activityManager.currentActivityName();
-  if (!isCalmScreen(name)) return;
-  LOG_INF("MAIN", "PTT shortcut from %s", name);
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) {
+    LOG_INF("MAIN", "doble Atrás (%lu ms) en %s: el lector no lo usa", gap, name);
+    return;
+  }
+  if (busyRecording()) {
+    LOG_INF("MAIN", "doble Atrás (%lu ms): ya hay una grabación abierta", gap);
+    return;
+  }
+  if (!isCalmScreen(name)) {
+    // A propósito: acá Atrás es el botón con el que cada app sale, y robárselo
+    // dejaría pantallas de las que no se puede salir. Pero que se sepa.
+    LOG_INF("MAIN", "doble Atrás (%lu ms) en %s: esa pantalla usa Atrás para salir", gap, name);
+    return;
+  }
+  LOG_INF("MAIN", "doble Atrás (%lu ms) desde %s: se abre Hablar", gap, name);
   activityManager.pushActivity(makeUniqueNoThrow<VoiceActivity>(renderer, mappedInputManager));
 }
 

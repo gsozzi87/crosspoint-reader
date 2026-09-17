@@ -1135,6 +1135,29 @@ contra lo que ya está en el vidrio; `OpdsBookBrowserActivity` pide `preventAuto
 upstream); Ajustes → Movimiento a mitad de calibración no deja dormir; la música con repetir no se corta nunca; y
 `msUntilNextAlarm()` hace una lectura I²C del RTC en cada pasada del loop.
 
+## El doble Atrás que no abría Hablar (1.5.92)
+
+Dos defectos, y el segundo explica por qué el primero no se podía diagnosticar.
+
+- **La ventana eran 500 ms, que es la medida de un doble clic de MOUSE.** Esto no es un mouse: es un botón
+  físico en un aparato de tinta que **no da ninguna señal entre un toque y el otro**. El que lo prueba toca, no
+  ve pasar nada, y recién ahí toca de nuevo — eso son 700 u 800 ms tranquilamente. Y si el primer toque cambió
+  de pantalla (en Notas o en la agenda, Atrás sale), en el medio hay un cambio de Activity que toma el candado
+  del render. Son **1,2 s**, que sigue lejos de dos Atrás separados de verdad.
+- **Una pulsación LARGA de Atrás contaba como toque.** `wasLongPressed()` marca la suelta como suprimida, pero
+  `wasReleased()` **no mira esa marca** (la única que la mira es `consumeSuppressedRelease()`, que usa el camino
+  del botón de despertar). Así que mantener Atrás —que en el hub sincroniza y en las listas abre el menú del
+  ítem— llegaba igual como un toque: sincronizar y después tocar una sola vez abría Hablar sin que nadie lo
+  pidiera. Ahora un Atrás de más de 600 ms no cuenta y además cierra la ventana.
+- **Y el atajo ahora dice por qué no disparó.** Era una función que sólo dejaba una línea en el log cuando
+  FUNCIONABA, o sea justo cuando no hace falta: las cuatro causas de "no pasó nada" (toques demasiado separados,
+  pantalla que usa Atrás para salir, grabación abierta, lector) eran idénticas desde el vidrio. Cada una deja su
+  renglón con el número de milisegundos.
+
+Recordar que la lista de pantallas tranquilas (`isCalmScreen`) sigue valiendo **a propósito**: en Noticias, la
+Biblia, el Traductor o una app de Lua, Atrás es el botón con el que se sale, y robárselo dejaría pantallas sin
+salida. Ahí el log lo dice en vez de no hacer nada en silencio.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
