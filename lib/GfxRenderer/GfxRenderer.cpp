@@ -1711,7 +1711,23 @@ HalDisplay::RefreshMode GfxRenderer::applyPromotedRefresh(const HalDisplay::Refr
 HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refreshMode,
                                                    const PanelRefreshCoordinator::Hint hint) const {
   auto elapsed = millis() - start_ms;
-  LOG_DBG("GFX", "Time = %lu ms from clearScreen to displayBuffer", elapsed);
+  // SÓLO LOS PICOS. Esta línea salía en CADA pintada y era, junto con la del
+  // refresco, más de la mitad del log de 24 KB que se sube al servidor: leer
+  // ahí lo que acababa de pasar era imposible. Dibujar una pantalla cuesta
+  // 40-90 ms y eso no es noticia; un pico de 1,4 s sí, y es lo único que se
+  // busca cuando se abre este log. Se cuentan las normales y se dicen de a
+  // tandas, así el número no se pierde.
+  {
+    static constexpr unsigned long SLOW_DRAW_MS = 150;
+    static uint32_t normales = 0;
+    if (elapsed >= SLOW_DRAW_MS) {
+      LOG_DBG("GFX", "dibujo lento: %lu ms de clearScreen a displayBuffer (%lu normales antes)", elapsed,
+              (unsigned long)normales);
+      normales = 0;
+    } else if (++normales % 200 == 0) {
+      LOG_DBG("GFX", "%lu dibujos por debajo de %lu ms", (unsigned long)normales, SLOW_DRAW_MS);
+    }
+  }
   // A promoted mode is consumed BEFORE the coordinator plans, so a HALF/FULL
   // handed over by a closing overlay is never skipped as "identical".
   refreshMode = applyPromotedRefresh(refreshMode);
@@ -1725,8 +1741,7 @@ HalDisplay::RefreshMode GfxRenderer::displayBuffer(HalDisplay::RefreshMode refre
   }
   const unsigned long tPanel = millis();
   display.displayBuffer(p.mode, fadingFix);
-  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false,
-                  static_cast<uint32_t>(millis() - tPanel));
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(millis() - tPanel));
   return p.mode;
 }
 
@@ -1744,8 +1759,7 @@ HalDisplay::RefreshMode GfxRenderer::displayBufferAsync(HalDisplay::RefreshMode 
         refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/false, /*allowSkip=*/false);
     const unsigned long tPanel = millis();
     display.displayBuffer(p.mode, fadingFix);
-    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false,
-                    static_cast<uint32_t>(millis() - tPanel));
+    refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(millis() - tPanel));
     return p.mode;
   }
   const PanelRefreshCoordinator::Plan p = refresh_.plan(frameBuffer, refreshMode, hint, inverted, /*async=*/true);
@@ -2269,8 +2283,7 @@ HalDisplay::RefreshMode GfxRenderer::displayGrayscaleBase(const HalDisplay::Refr
       refresh_.plan(frameBuffer, fallback, hint, inverted, /*async=*/false, /*allowSkip=*/false);
   const unsigned long tPanel = millis();
   display.displayGrayscaleBase(p.mode, fadingFix);
-  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false,
-                  static_cast<uint32_t>(millis() - tPanel));
+  refresh_.commit(frameBuffer, p.mode, hint, inverted, /*async=*/false, static_cast<uint32_t>(millis() - tPanel));
   return p.mode;
 }
 

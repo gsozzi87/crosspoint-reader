@@ -1,6 +1,7 @@
 #include "BatteryLog.h"
 
 #include <BatteryMonitor.h>
+#include <HalClock.h>
 #include <HalStorage.h>
 #include <Logging.h>
 
@@ -8,8 +9,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
-
-#include <HalClock.h>
 
 namespace batterylog {
 namespace {
@@ -80,7 +79,10 @@ void append(const Row& r) {
 
 void sampleNow(const char* why) {
   time_t now = 0;
-  if (!halClock.getEpochUtc(now) || now <= 0) return;  // sin hora no hay pendiente posible
+  // `> 0` NO alcanza para decir "hay hora": el PCF85063 sin pila arranca en
+  // 2000-01-01 y eso pasa esa prueba. Una sola muestra con esa fecha entre las
+  // buenas hace una ventana de veinticinco años (ver credibleEpoch).
+  if (!halClock.getEpochUtc(now) || !batterylog::credibleEpoch(now)) return;
   static const BatteryMonitor battery;
   uint16_t pct = 0;
   if (!battery.readPercentageChecked(pct)) return;

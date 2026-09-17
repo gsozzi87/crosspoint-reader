@@ -565,16 +565,26 @@ static bool isAlarmSilentScreen(const char* name) {
   return false;
 }
 
+// ¿Una alarma vencida sonaría AHORA, en la pantalla de turno? Son las mismas
+// preguntas con las que abre `checkTimeAlarms()`, sacadas aparte porque el
+// reposo necesita la respuesta: si acá no va a sonar, tener algo vencido no
+// tiene por qué impedir reposar (ver el tope en el loop).
+static bool alarmWouldRingHere() {
+  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;
+  if (busyRecording()) return false;
+  if (activityManager.preventAutoSleep()) return false;
+  return !isAlarmSilentScreen(activityManager.currentActivityName());
+}
+
 // Devuelve true cuando puso una alarma en pantalla: el llamador tiene que
 // tratar eso como actividad, o el reposo se lo lleva puesto antes de pintarlo.
 static bool checkTimeAlarms() {
-  if (activityManager.isReaderActivity() || activityManager.requiresExclusiveStorageLoop()) return false;
-  if (busyRecording()) return false;
-  // preventAutoSleep() es "esta pantalla esta ocupada AHORA": red arriba,
-  // hablando, descargando. Es el mismo criterio con el que el reposo decide no
-  // dormir, asi que sirve igual para no pisar una transferencia a medio camino.
-  if (activityManager.preventAutoSleep()) return false;
-  if (isAlarmSilentScreen(activityManager.currentActivityName())) return false;
+  // Las cuatro guardias viven en `alarmWouldRingHere()`, que también consulta el
+  // reposo: si estuvieran escritas dos veces, se separarían (ya pasó con las
+  // rutas protegidas en 1.5.91) y el reposo decidiría con un criterio distinto
+  // del que de verdad hace sonar la alarma. `preventAutoSleep()` es "esta
+  // pantalla está ocupada AHORA": red arriba, hablando, descargando.
+  if (!alarmWouldRingHere()) return false;
   time_t now = 0;
   if (!halClock.getEpochUtc(now)) return false;
   if (HUB_STORE.timerRunning() && HUB_STORE.timerEndAt <= now) {
@@ -1606,9 +1616,40 @@ void loop() {
       LOG_INF("MAIN", "cable %s (vbus=%d cargando=%d)", cablePuesto ? "puesto" : "sacado",
               POWER_KEY.vbusPresent() ? 1 : 0, gpio.isUsbConnected() ? 1 : 0);
     }
-    const bool restBlocked = activityManager.preventAutoSleep() || activityManager.skipLoopDelay() ||
-                             MUSIC.isSounding() || busyRecording() || POWER_KEY.pressed() || cablePuesto ||
-                             WiFi.getMode() != WIFI_MODE_NULL;
+    // EL REPOSO TIENE QUE DECIR POR QUÉ NO ENTRA. De las razones por las que no
+    // reposa, una sola dejaba rastro (el rechazo del kernel): el bloqueo y el
+    // tope diminuto no decían nada, así que "el reposo nunca entró" era un
+    // síntoma sin ninguna línea en el log detrás. Se anota el motivo, y sólo
+    // cuando CAMBIA: es una condición que se evalúa cien veces por segundo.
+    const char* porQue = nullptr;
+    if (activityManager.preventAutoSleep())
+      porQue = "la pantalla está ocupada";
+    else if (activityManager.skipLoopDelay())
+      porQue = "la pantalla corre sin pausa";
+    else if (MUSIC.isSounding())
+      porQue = "está sonando la música";
+    else if (busyRecording())
+      porQue = "el micrófono está abierto";
+    else if (POWER_KEY.pressed())
+      porQue = "PWR está apretado";
+    else if (cablePuesto)
+      porQue = "el cable está puesto";
+    else if (WiFi.getMode() != WIFI_MODE_NULL)
+      porQue = "el WiFi está arriba";
+    const bool restBlocked = porQue != nullptr;
+    {
+      static const char* ultimoPorQue = nullptr;
+      // Sólo interesa mientras el aparato está ocioso: bloquearlo mientras
+      // alguien lo usa es lo normal y llenaría el log.
+      const bool ocioso = millis() - lastActivityTime >= IdleSleep::REST_AFTER_MS;
+      if (ocioso && porQue != ultimoPorQue) {
+        ultimoPorQue = porQue;
+        if (porQue)
+          LOG_INF("MAIN", "el reposo no entra: %s", porQue);
+        else
+          LOG_INF("MAIN", "ya nada bloquea el reposo");
+      }
+    }
     // Red de seguridad. Hasta 1.5.71 sólo corría con el tiempo en "nunca"
     // (sleepTimeoutMs == 0); con el valor forzado de la ws397 eso ya no puede
     // pasar, así que quedaría muerta justo cuando más hace falta. Ahora mide
@@ -1650,6 +1691,16 @@ void loop() {
     // corre. Hasta 1.5.71 el ciclo de 2 s del acelerómetro devolvía el control
     // todo el tiempo y lo tapaba; al sacar ese sondeo quedó a la vista.
     unsigned long cap = msUntilNextAlarm();
+    // UN VENCIDO QUE ESTA PANTALLA NO VA A ATENDER NO PUEDE APAGAR EL REPOSO.
+    // `msUntilNextAlarm()` devuelve 1 ms cuando hay algo vencido, y con un tope
+    // de 1 ms `IdleSleep::tick()` no reposa (MIN_REST_MS son 500). Eso está bien
+    // mientras la alarma esté por sonar — pero el lector está excluido A
+    // PROPÓSITO de `checkTimeAlarms()`, así que un recordatorio que venció
+    // leyendo deja el tope en 1 ms PARA SIEMPRE y el aparato se queda a 40 mA
+    // sin reposar nunca, hasta el auto-sleep de los diez minutos. Y vuelve a
+    // pasar con cada repique. Si la pantalla de turno no lo va a atender,
+    // reposar no lo hace más tarde de lo que ya está: el tope no aplica.
+    if (cap > 0 && cap < IdleSleep::MIN_REST_MS && !alarmWouldRingHere()) cap = 0;
     if (sleepTimeoutMs > 0) {
       const unsigned long ocio = millis() - lastActivityTime;
       const unsigned long faltaParaDormir = sleepTimeoutMs > ocio ? sleepTimeoutMs - ocio : 1;

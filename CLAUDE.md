@@ -1186,6 +1186,46 @@ Recordar que la lista de pantallas tranquilas (`isCalmScreen`) sigue valiendo **
 Biblia, el Traductor o una app de Lua, Atrás es el botón con el que se sale, y robárselo dejaría pantallas sin
 salida. Ahí el log lo dice en vez de no hacer nada en silencio.
 
+## Lo que el aparato encontró en 1.5.92 (arreglado en 1.5.93)
+
+- **La batería medía "desde el origen de los tiempos".** `analyze()` toma la ventana más larga hacia atrás que
+  sea una descarga limpia, pero **no miraba las FECHAS**. Una sola muestra anotada con el reloj sin poner en hora
+  —1970, o el **2000-01-01 con el que arranca el PCF85063 sin pila**, que pasa cualquier prueba de `> 0`— estira
+  la ventana veinticinco o cincuenta y seis años: la pendiente se va a cero y la autonomía, a siglos. Ahora se
+  exige fecha creíble (`credibleEpoch`, el mismo umbral de 2024 que usa el TLS) tanto al ANOTAR como al medir, la
+  ventana se corta si la fecha va hacia adelante mirando hacia atrás (alguien puso el reloj en hora en el medio) y
+  hay tope de dos semanas: una ventana más larga no es una descarga, es el aparato apagado. Ocho casos nuevos en
+  **`./test/battery_drain/run.sh`** (25 en total).
+- **EL REPOSO NO DECÍA NUNCA POR QUÉ NO ENTRABA.** De las cuatro razones por las que no reposa, sólo una dejaba
+  rastro (el rechazo del kernel): el bloqueo y el tope diminuto devolvían `NotSlept` en silencio. O sea que "el
+  reposo nunca entró" era un síntoma sin una sola línea detrás. Ahora se anota cuál de las siete cosas lo bloquea
+  (`el reposo no entra: el cable está puesto`), y sólo cuando CAMBIA y sólo con el aparato ocioso.
+- **Y había un bloqueo de verdad: un vencido que la pantalla de turno no va a atender apagaba el reposo.**
+  `msUntilNextAlarm()` devuelve 1 ms cuando hay algo vencido y con ese tope `IdleSleep::tick()` no reposa
+  (`MIN_REST_MS` son 500). Está bien mientras la alarma esté por sonar — pero **el lector está excluido a
+  propósito** de `checkTimeAlarms()`, así que un recordatorio que vence leyendo dejaba el tope en 1 ms PARA
+  SIEMPRE: 40 mA sin reposar hasta el auto-sleep, y de nuevo con cada repique. Ahora, si la pantalla de turno no
+  lo va a atender, el vencido no cuenta para el tope: reposar no lo hace más tarde de lo que ya está. Las cuatro
+  guardias viven en **`alarmWouldRingHere()`**, que consultan el reposo Y `checkTimeAlarms()`: escritas dos veces
+  se habrían separado, como pasó con las rutas protegidas en 1.5.91.
+- **El medidor de OK mantenido salió de Ajustes → Sistema → Memoria.** Existía para contestar sin cable si el
+  evento de pulsación larga llegaba (hasta 1.5.46 no llegaba nunca y nadie lo había vuelto a probar). Ya está
+  contestado y el marcador del lector anda: era diagnóstico ocupando una pantalla que se mira por otra cosa. Se
+  fueron con él sus cuatro claves × 7 idiomas.
+- **Una línea por pintada llenaba el log.** `Time = NN ms from clearScreen to displayBuffer` salía en CADA
+  pantalla dibujada y, con la del refresco, era más de la mitad de los 24 KB: leer ahí lo que acababa de pasar era
+  imposible. Dibujar cuesta 40-90 ms y eso no es noticia; **un pico de 1,4 s sí** (los hay, en Ajustes), y es lo
+  único que se busca al abrir este log. Ahora sale sólo por encima de 150 ms, y las normales se cuentan de a
+  tandas para que el número no se pierda.
+
+**Lo que el log confirmó y no hay que volver a discutir**: el gate del doble golpe estaba rechazando dobles de
+verdad. La línea `golpe: st1=1 tap=B2 doble (no mira arriba: se ignora)` es exactamente eso, y un minuto antes
+está la misma con el aparato en otra posición abriendo Hablar. El arreglo de 1.5.92 tiene evidencia.
+
+**Sin explicar todavía**: `[DREG] No /.dictionaries directory on SD card` sale una vez por entrada a Ajustes pese
+a que la guardia de una-vez-por-arranque está puesta desde 1.5.83 y es un `static bool` común. Es una línea DBG,
+no rompe nada, pero **la guardia no está haciendo lo que dice** y eso hay que mirarlo con el aparato delante.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
