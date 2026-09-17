@@ -27,15 +27,13 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `HUB_LAT`, `HUB_LON`, `HUB_TZ` | Respaldo del clima mientras no se elija lugar por voz desde el aparato. |
 | `HUB_LANG` | Idioma cuyo Piper se precalienta al arrancar (default `es`). `TTS_ENABLED=0` apaga la voz. |
 | `HUB_ICS_URL` | Calendario(s) ICS para la agenda del hub (URL secreta iCal de Google, Apple, Outlook...), separados por coma. |
-| `TRIPS_FILE`, `ATTACHMENTS_DIR` | Dónde viven los viajes y los adjuntos (defaults `/data/trips.json` y `/data/attachments`). |
 | `ASSETS_DIR` | Dónde se guarda el paquete de contenido (default `/data/assets`). `ASSETS_BUILD=0` no lo genera al arrancar. |
-| `NOTO_EMOJI_REF` | Rama o tag de [noto-emoji](https://github.com/googlefonts/noto-emoji) de donde salen los dibujos de las tarjetas (default `main`). |
 | `STT_MIN_SECONDS`, `STT_MIN_PEAK`, `STT_MIN_RMS` | Mínimos de audio para considerar que alguien habló (defaults `0.4`, `350`, `90`). Dependen de la ganancia del micrófono. |
 | `DATABASE_URL` | **Enciende el modo multiusuario** (Postgres). Sin ella, todo sigue como siempre: archivos en `/data` y un solo `DEVICE_TOKEN`. |
 | `ADMIN_EMAIL` | Correo de la cuenta de administrador que se crea al migrar, y la única que puede tocar la pestaña IA. |
 | `SESSION_SECRET` | Clave con la que se firman las cookies de sesión. Si no está, se genera una y se guarda en la base. |
 | `MONTHLY_LLM_CALLS`, `MONTHLY_STT_SECONDS` | Topes mensuales por cuenta. Sin poner = sin tope. |
-| `ACCOUNTS_DIR` | Dónde viven las fotos, los adjuntos y el log de las cuentas nuevas (default `/data/accounts`). |
+| `ACCOUNTS_DIR` | Dónde vive el log de las cuentas nuevas (default `/data/accounts`). |
 
 ## Rutas
 
@@ -44,10 +42,9 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /firmware/latest` | aparato (sin token) | JSON con forma de release de GitHub: `tag_name`, `assets[firmware-ws397.bin]`. |
 | `GET /firmware/firmware-ws397.bin` | aparato | El binario. |
 | `PUT /firmware` | `release.sh` (Bearer `OTA_TOKEN`, `X-Version`) | Sube un binario nuevo. |
-| `GET /board` | teléfono | La app del teléfono (`public/board/`): Hoy, Agenda, Listas, Notas y Más (fotos, noticias, viajes, memoria, ajustes, aparatos, IA, contenido, log). Pide el token del aparato una vez, o correo y contraseña con base de datos. |
+| `GET /board` | teléfono | La app del teléfono (`public/board/`): Hoy, Agenda, Listas, Notas y Ajustes (noticias, memoria, aparatos y, en Avanzado, IA, contenido y log). Pide el token del aparato una vez, o correo y contraseña con base de datos. |
 | `GET /api/board/state` | página web | TODO el estado de la cuenta en una respuesta: recordatorios (pendientes y hechos), listas enteras, notas, memoria, feeds, ajustes, lugar y clima, estado del aparato (última sincronización, firmware, último log) y consumo del mes. La web lo vuelve a pedir después de cada cambio. |
 | `POST /api/board/{reminder,item,note,memory,feed}` | página web | Altas y **ediciones** (con `id`): texto, hecho/deshecho de un ítem, nombre de un feed. |
-| `GET /api/photos/preview?id=`, `GET /api/attachment/preview?id=&page=` | página web | La foto o la página del adjunto en PNG, tal como la va a pintar el aparato. |
 | `GET /api/log/meta` | página web | Última subida del log, versión de firmware y motivo del último arranque, sin bajar el log. |
 | `GET /api/ping` | aparato | Prueba del token. |
 | `POST /api/ask` | aparato | Pregunta sobre el libro (`text`) o general (sin `text`). `lang` = idioma de la UI. |
@@ -71,11 +68,6 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /api/calendar/repeat?...` | web | La repetición en una línea, para mostrarla mientras se edita. |
 | `POST /api/hub/done` | aparato | `{kind: "reminder"\|"item", id, snooze?}` marca hecho o pospone (también desde la cola offline). |
 | `POST /api/hub/edit` | aparato | Mover, poner fecha o borrar un ítem de lista; borrar una nota. |
-| `GET /api/trips?lang=xx`, `GET /api/trip?id=` | aparato | Viajes: la lista, y un viaje entero con sus días, sus ítems y sus adjuntos. |
-| `POST /api/trip*` | aparato / web | Crear y editar viaje, día, ítem, lista de para llevar y adjuntos colgados. |
-| `GET /api/attachment?id=&page=` | aparato | Una página del adjunto ya convertida: BMP de 2 bpp de 480x800 (96 KB), igual que las fotos. |
-| `GET /api/attachment/info?id=` | aparato / web | Qué se extrajo del adjunto: campos, códigos y páginas. |
-| `POST /api/board/attachment?trip=` | teléfono | Sube el PDF del vuelo o del hotel tal como llegó; el servidor lo convierte y contesta qué encontró. |
 | `GET /api/assets/manifest?lang=xx` | aparato | Paquete de contenido: todo lo descargable con su tamaño y su sha. |
 | `GET /api/assets/file?id=` | aparato | Un archivo del paquete, con `Range` para reanudar. |
 | `GET /api/assets/status`, `POST /api/assets/build` | web | Cómo va la generación del paquete y cómo forzarla. |
@@ -209,7 +201,7 @@ POST /api/calendar/dictate            (Bearer del aparato)
 - `end` = `start` salvo que el modelo haya entendido una hora de fin ("de 8 a 9", "hasta las 10").
 - Cada actividad se guarda como un `CalEvent` de `calendar.ts` con las mismas funciones que el resto
   (`mutate` + `nextEventId`): un solo leer-modificar-escribir para todas, porque el archivo lo escribe
-  también el módulo de viajes y una escritura por renglón es una carrera por renglón.
+  también otro módulo y una escritura por renglón es una carrera por renglón.
 - Tope de 40 actividades por dictado y 4.000 caracteres de texto.
 - `reply` es una frase corta en el idioma pedido, para leerla por el parlante; la arma el servidor con
   una plantilla (incluidos los plurales del ruso), no el modelo: es una línea con un número y no vale
@@ -347,18 +339,19 @@ El clasificador (`voice.ts`) entiende las repeticiones al dictar: "los lunes y m
 { "version": 1,
   "events": [ { "id": 12, "start": "2026-09-15T10:30", "end": "2026-09-15T11:30",
                 "allDay": false, "title": "Dentista", "place": "…", "note": "…",
-                "repeat": { "kind": "monthly" }, "tripId": "trip-7", "tripDay": 1 } ] }
+                "repeat": { "kind": "monthly" } } ] }
 ```
 
 Se lee y se escribe con `writeJsonAtomic`/`readJsonSafe`/`serialize` de `fsjson.ts` (nunca a mano):
 cada modificación es un leer-modificar-escribir **adentro de la misma cola** que usan las escrituras
-atómicas, así el módulo de viajes y este pueden escribir el archivo sin pisarse, y el archivo nunca
-se cachea en memoria por lo mismo. Los campos que escriba otro módulo (vuelos, adjuntos, lo que sea)
+atómicas, así dos escrituras a la vez se ordenan en vez de pisarse, y el archivo nunca
+se cachea en memoria por lo mismo. Los campos que escriba otro módulo
 se conservan tal cual; un evento con forma rara se descarta y los demás siguen.
 
 Qué sale en el calendario: los eventos de `calendar.json`, los **recordatorios de `store.json`
 proyectados** (se leen, no se copian: el dueño sigue siendo `store.ts` y se tildan con
-`POST /api/hub/done`) y los ítems de viaje (los eventos con `tripId`).
+`POST /api/hub/done`). Los eventos con `tripId` —el espejo del viaje, que salió en 1.5.93— se
+descartan al leer: ya no hay quien los edite ni los borre.
 
 | Ruta | Qué devuelve |
 |---|---|
@@ -369,10 +362,10 @@ proyectados** (se leen, no se copian: el dueño sigue siendo `store.ts` y se til
 | `GET /api/calendar/repeat?kind=&days=&interval=&until=&date=&lang=` | `{ok, repeat, text, first}`: la repetición en una línea y el primer día que corresponde. Lo usa `/board` para mostrar el texto **mientras se edita**. |
 
 Cada ocurrencia (el firmware lee de acá `date`, `time`, `title` y `place`) trae:
-`key` (única, `ev-12@2026-09-15`), `id`, `kind` (`event`/`reminder`/`trip`),
-`date`, `time`, `endTime`, `allDay`, `days` y `dayIndex` (un viaje de cuatro días sale los cuatro
+`key` (única, `ev-12@2026-09-15`), `id`, `kind` (`event`/`reminder`),
+`date`, `time`, `endTime`, `allDay`, `days` y `dayIndex` (un evento de cuatro días sale los cuatro
 días, numerado), `startAt`/`endAt` (el arranque de la **serie**, para editarla), `title`, `place`,
-`note`, `repeat`, `repeatText`, `start`/`end` en epoch UTC y `tripId`/`tripDay` si es de un viaje.
+`note`, `repeat`, `repeatText` y `start`/`end` en epoch UTC.
 
 ### Zona horaria (dónde estaban los bugs)
 
@@ -404,105 +397,20 @@ elegible de una lista. El texto de la repetición se ve **mientras se edita** y 
 (`GET /api/calendar/repeat`), o sea que es exactamente el mismo que después muestra el aparato. Los
 recordatorios de la pestaña Pizarra usan los mismos controles y se pueden editar con "Editar".
 
-## Viajes y adjuntos (`src/trips.ts`, `src/attachments.ts`)
+## Viajes: salió del producto (1.5.93)
 
-Lo que pidió el usuario: *"para un viaje quiero poder ver en el calendario qué voy a ir haciendo por día
-y poder acceder por ejemplo a los QR de los vuelos o los datos de una reserva o los pdf del hotel"* y
-*"ir viendo en mi viaje a qué hora tomar el tren, a qué hora entrar al hotel, a qué hora son las entradas
-al Vaticano"*.
+Viajes fue una pestaña propia de `/board` y un mosaico adentro de "Mi día", con sus papeles adjuntos
+(el PDF del vuelo pasado a bitmaps, el código de barras leído y vuelto a generar limpio). **Se borró
+entero**: `src/trips.ts`, `src/attachments.ts` y `src/deviceBmp.ts`, las rutas `/api/trips`, `/api/trip*`,
+`/api/attachment*`, `/api/board/attachment` y `/api/suggest/trip`, la pestaña de la web y la pantalla del
+aparato. Vuelve como app de Lua, que es donde el usuario lo quiere.
 
-### El modelo (`/data/trips.json`)
+Con eso se fueron cuatro dependencias nativas que **solo** usaban los adjuntos: `sharp`, `mupdf`,
+`bwip-js` y `zxing-wasm`. Si alguna vez vuelven los adjuntos, vuelven con ellas.
 
-```jsonc
-{ "version": 1, "trips": [{
-  "id": "...", "name": "Roma", "place": "Roma", "start": "2026-10-12", "end": "2026-10-16",
-  "days": [{ "date": "2026-10-13", "note": "", "items": [
-      { "id": "...", "at": "09:30", "title": "Tren a Termini", "kind": "train",
-        "place": "Fiumicino", "note": "", "attachmentIds": ["..."] }] }],
-  "packing": [{ "id": "...", "text": "Adaptador de enchufe", "done": false }],
-  "docs": ["..."]                                  // adjuntos que no cuelgan de ningún ítem
-}]}
-```
-
-`kind` es uno de `flight`, `train`, `hotel`, `ticket`, `meal`, `visit`, `other`; el nombre en los seis
-idiomas lo devuelve el servidor en `kindLabel`. Los días se arman solos entre `start` y `end` y cambiar
-las fechas **no borra** lo que ya estaba cargado (lo que queda afuera del rango se arrastra al final).
-Todas las escrituras pasan por `serialize()` de `fsjson.ts` con lectura y escritura adentro de la misma
-cola: dos pedidos a la vez se ordenan en vez de pisarse.
-
-### Cómo se ve en el calendario
-
-La fuente de verdad de un viaje es **siempre** `trips.json`. `calendar.ts` muestra como `kind: "trip"`
-cualquier evento con `tripId`, así que `syncCalendar()` espeja los ítems adentro de `/data/calendar.json`
-(mismo `serialize()` que usa `calendar.ts`, o sea que las dos escrituras se ordenan): el espejo se rehace
-entero en cada cambio del viaje y nunca se edita a mano. Cada evento espejado lleva `tripId`, `tripDay`
-(qué día del viaje es, 1 = el primero), `tripItem` y `tripKind`. `POST /api/trip/sync` lo reescribe si
-alguien tocó el calendario por afuera. Quien prefiera leer los ítems sin pasar por el archivo tiene
-`tripCalendarEvents(from?, to?)`, que los devuelve calculados.
-
-### Adjuntos: del PDF del correo a algo que el aparato pinte
-
-El aparato tiene e-ink de 480x800 en 4 grises y **no sabe leer PDF**, así que todo el trabajo es del
-servidor. Un adjunto se procesa **una sola vez** al subirlo y queda guardado en
-`/data/attachments/<id>/pN.bmp` (más `index.json` con lo que se extrajo).
-
-1. **Rasterizado**: `mupdf` (wasm, sin dependencias nativas ni fuentes del sistema) abre el PDF, saca el
-   texto y rasteriza cada página. La página se recorta a la caja del contenido (un pase de embarque son
-   cuatro líneas arriba y medio A4 en blanco: recortando el margen el texto entra casi al doble) y se
-   convierte con el mismo `toDeviceBmp` de `photos.ts`: 480x800, 4 grises, Floyd-Steinberg, BMP de 2 bpp.
-2. **Códigos**: `zxing-wasm` busca códigos a 200 dpi y, si no encuentra ninguno, a 400.
-3. **Los códigos se vuelven a generar, no se escalan**. Un pase de embarque casi nunca trae un QR: trae
-   un **PDF417** (IATA BCBP) o un **Aztec** con módulos de menos de un milímetro, y escalar esa imagen a
-   480 px de ancho deja un borrón que el lector del mostrador no engancha. Con el texto que devolvió
-   zxing, `bwip-js` lo dibuja de nuevo en blanco y negro puro, sin grises ni suavizado, lo más grande que
-   entre; después **se vuelve a decodificar el bitmap final** y solo si el texto coincide se marca
-   `verified: true`. Se prefiere la forma y la orientación de siempre mientras el módulo quede en 3 px o
-   más (0,5 mm en esta pantalla, de sobra para cualquier lector); recién si no entra se prueba girado 90°
-   o con menos columnas.
-4. **Si no se puede decodificar**, se recorta la región del código a máxima resolución, se baja con
-   vecino más cercano (sin suavizado) y se umbraliza a blanco y negro: queda `copy: true` con
-   `warn` diciendo que **puede no escanear y hay que llevar el original**. Eso se ve en `/board` al subir
-   el archivo, que es cuando todavía se puede hacer algo, y no en la fila del mostrador.
-5. **Datos útiles** (`extracted` y `fields`): el PDF417 de un pase es de ancho fijo (BCBP), así que
-   `parseBcbp()` saca pasajero, vuelo, trayecto, fecha, asiento, reserva y secuencia sin adivinar nada
-   (y si los campos no tienen la pinta que manda la norma, no dice nada en vez de escupir basura). Del
-   texto salen puerta, terminal, horas de embarque, salida, llegada, check-in y check-out, habitación,
-   coche y dirección. **Sin LLM**: son una docena de expresiones regulares, y tiene que andar aunque no
-   haya proveedor de IA cargado.
-
-Las páginas quedan ordenadas con **los códigos primero** (es lo que se busca corriendo en el aeropuerto)
-y después las páginas del documento; `pageList` dice cuál es cuál.
-
-### Límites
-
-| Qué | Cuánto | Por qué |
-|---|---:|---|
-| Tamaño de una página servida | **96.070 bytes** (480x800 a 2 bpp) | El aparato no soporta `Range` y baja el archivo entero con tope de 512 KB. |
-| Páginas por adjunto | 12 | Un itinerario de 40 páginas no sirve en e-ink y cada página ocupa 96 KB del volumen. |
-| Subida | 20 MB | Un PDF de reserva con fotos entra holgado. |
-| Adjuntos guardados | 200 | Se avisa y no se borra nada del usuario en silencio. |
-| Píxeles al rasterizar | 14 M | Para no reventar la memoria con un A3 a 400 dpi. |
-
-Borrar un viaje borra sus adjuntos (si no, quedan 96 KB por página tirados en el volumen) y le saca los
-eventos al calendario.
-
-### Qué librería se eligió y cuál no
-
-- **`mupdf`** para rasterizar y sacar el texto: es wasm, anda en Bun sin nada instalado y trae las fuentes
-  base adentro. `pdfjs-dist` y `unpdf` necesitan un canvas nativo (`@napi-rs/canvas`) para rasterizar, que
-  es una dependencia binaria más en la imagen de Railway: descartados.
-- **`zxing-wasm`** para decodificar: lee PDF417, Aztec, QR, DataMatrix y los lineales, y trae el `.wasm`
-  adentro del paquete (se carga con `wasmBinary` y no se lo baja de ningún CDN en cada arranque).
-  Ojo: hay que **aplanar sobre blanco** antes de decodificar, porque un PNG con transparencia le llega
-  como una mancha negra y no lee nada.
-- **`bwip-js`** para volver a generar: hace PDF417, Aztec, QR y Code128 con la misma API.
-
-### `/board` → Viajes
-
-Crear el viaje con sus fechas, ver los días, agregar cosas a cada día con hora y tipo, subir los papeles
-(eligiendo si son del viaje o de un ítem) y ver ahí mismo qué se extrajo y si el código quedó verificado
-o es una copia, y la lista de para llevar. Todo lo de la pestaña usa `data-act` que empiezan con `trip-`
-y su propio delegador, así no se pisa con el resto de la página.
+Lo que el viaje espejaba en `/data/calendar.json` (eventos con `tripId`) ya no tiene dueño: nadie los
+puede editar ni borrar, así que `normalizeCalendar()` los **descarta al leer**. Es de una sola vía a
+propósito.
 
 ## Paquete de contenido descargable (`/api/assets/*`)
 
@@ -548,43 +456,6 @@ Solo, sin ningún paso a mano:
 - Todo queda en `ASSETS_DIR` (el volumen) con un índice `index-<lang>.json`, así que un redeploy no
   vuelve a generar nada. La primera corrida tarda unos minutos por los 480 clips de Piper; los 240
   dibujos salen en 7 s y los 66 libros en unos segundos.
-
-### Los dibujos son de 4 grises, no de blanco y negro
-
-La pantalla del aparato pinta **cuatro grises** y las fotos ya se ven así (`toDeviceBmp` en `photos.ts`);
-las tarjetas se hacían en 1 bpp por costumbre, no por necesidad. Ahora salen del mismo pipeline, en tres
-pasos que importan los tres:
-
-1. el emoji se rasteriza **con transparencia**, para saber qué píxel es figura y cuál es fondo;
-2. el tono de la figura se estira a `[0, 190]` (percentiles 2/98). Sin esto, un emoji amarillo o blanco
-   —la luna, la estrella, la banana, el vaso de leche— queda del color del papel y **desaparece**;
-3. Floyd-Steinberg a los cuatro niveles y BMP de 2 bpp, igual que las fotos.
-
-Comparado renderizando el catálogo entero y mirándolo (tal cual / escala fija / normalizado): el
-normalizado es el único que deja legibles la luna y el vaso de leche.
-
-> **Falta del lado del firmware**: `CardsActivity::drawCard` dibuja el BMP con un `drawBitmap` común, y
-> en modo `BW` el SDK pinta de negro **todo** lo que no sea blanco puro (`val < 3`), así que un BMP de 4
-> grises sale como una mancha. Hay que dibujar la tarjeta con el pipeline de gris del SDK, que ya está
-> escrito y probado en `PhotosActivity::drawFullScreenPhoto` (base BW + pasada `GRAYSCALE_LSB` + pasada
-> `GRAYSCALE_MSB` + `displayGrayBuffer`). Hasta que eso esté, el aparato muestra la silueta del dibujo.
->
-> **Y una de la web**: `GET /api/assets/status` ahora devuelve `art` (`noto/<ref>/4gray-v1`) además del
-> viejo `lucide`, que se mantiene solo para que la tarjeta de `/board` no diga "undefined". Cuando esa
-> página muestre `Dibujos: <art>` en vez de `Lucide <...>` (`board.ts`), el campo `lucide` se saca.
-
-### Las palabras van en español neutro
-
-Regla fija, escrita también arriba de `src/cards.ts` para que no se vuelva a colar un regionalismo: lo
-que ve el usuario se entiende en toda Hispanoamérica y en España, y **si una palabra no tiene una
-variante clara y neutra se saca y se pone otra** (son tarjetas para un bebé, sobran los sustantivos
-fáciles). Ya resueltos: *remera* → **camiseta**, *frutilla* → **fresa**, *ananá* → **piña**, *palta* →
-**aguacate**, *colectivo* → **autobús**, *anteojos* → **gafas**, *media* → **calcetín**, *torta* →
-**pastel**, *celular* → **teléfono**, *ordenador* → **computadora**, *mamadera* → **biberón**,
-*sillón* → **sofá**, *cacahuete* → **maní**, y *auto* para el carro/coche. Las que no tenían arreglo
-—durazno/melocotón, papa/patata, palomitas/pochoclo, zumo/jugo, manteca/mantequilla, lavarropas/lavadora,
-heladera/refrigerador— se cambiaron por otra tarjeta. El inglés va en **americano** (cookie, candy,
-truck, pants).
 
 Se dispara al arrancar el servidor (5 s después, para no pelear con el arranque) y cuando llega un
 pedido de manifiesto si falta algo, con un repaso como mucho cada 10 minutos.
@@ -653,7 +524,7 @@ ignora.
 ```
 
 **El dibujo** es un **BMP de 2 bpp** con paleta de cuatro grises (0, 85, 170, 255), filas de abajo hacia
-arriba y padding a 4 bytes — el mismo formato que ya usan las fotos y los adjuntos, o sea lo que el
+arriba y padding a 4 bytes — o sea lo que el
 `Bitmap` de `lib/GfxRenderer` ya sabe leer, sin ningún formato propio. 320x320 = 70 bytes de cabecera +
 80 por fila = 25.670 bytes.
 
@@ -755,20 +626,17 @@ Cada archivo JSON de hoy pasa a ser una fila `docs(account_id, name)` con **el m
 |---|---|
 | `/data/store.json` | `docs(1, "store")` |
 | `/data/calendar.json` | `docs(1, "calendar")` |
-| `/data/trips.json` | `docs(1, "trips")` |
 | `/data/suggest.json` | `docs(1, "suggest")` |
 | `/data/hub-settings.json` | `docs(1, "hub-settings")` |
 | `/data/hub-data.json` | `docs(1, "hub-data")` |
-| `/data/attachments/index.json` | `docs(1, "attachments")` |
 
-Por eso `store.ts`, `calendar.ts`, `trips.ts` y compañía **no cambiaron su lógica**: cambió de dónde leen y
+Por eso `store.ts`, `calendar.ts` y compañía **no cambiaron su lógica**: cambió de dónde leen y
 escriben. Las tablas son `accounts`, `devices`, `pairings`, `docs`, `usage` y `server_meta`; se crean solas al
 arrancar con `CREATE TABLE IF NOT EXISTS` (no hay herramienta de migraciones).
 
 Lo que **no** es JSON sigue siendo archivo, pero por cuenta: la cuenta 1 (la que ya venía andando) se queda en
-`/data/photos`, `/data/attachments` y `/data/device.log`, y las cuentas nuevas van a
-`/data/accounts/<id>/photos`, `/attachments` y `/device.log`. El `id` que llega por la URL se limpia a `[a-z0-9]`
-y el de la cuenta es un número, así que ninguna ruta puede salirse de su directorio.
+`/data/device.log` y las cuentas nuevas van a `/data/accounts/<id>/device.log`. El id de la cuenta es un
+número, así que ninguna ruta puede salirse de su directorio.
 
 `writeDoc` es un `INSERT ... ON CONFLICT DO UPDATE` y `mutateDoc` es una transacción con un candado de Postgres
 por `(cuenta, documento)` (`pg_advisory_xact_lock`) más `SELECT ... FOR UPDATE`: eso ordena a dos pedidos a la
@@ -852,8 +720,8 @@ contestan **429** con el mensaje ya traducido al idioma del pedido y `code: "quo
 /api/ask   /api/voice   /api/transcribe   /api/translate
 ```
 
-**Todo lo demás sigue andando**: hub, calendario, recordatorios, listas, notas, biblia offline, música, fotos,
-noticias y viajes. Pasarse de preguntas no convierte el aparato en un ladrillo.
+**Todo lo demás sigue andando**: hub, calendario, recordatorios, listas, notas, biblia offline, música y
+noticias. Pasarse de preguntas no convierte el aparato en un ladrillo.
 
 ### Dos cosas que eran del operador y ahora se aíslan
 
@@ -887,8 +755,8 @@ suelta a un `Map` **con tope** por cuenta: con 1000 aparatos, un `Map` sin lími
    `${{Postgres.DATABASE_URL}}`, más `ADMIN_EMAIL` y `SESSION_SECRET` (una cadena larga al azar).
 3. Redeploy. En el log aparece la contraseña provisoria del admin **una sola vez**: entrar a `/board`, cambiarla
    desde Aparatos, y de ahí en más cada usuario se crea su cuenta y vincula su aparato con el código.
-4. El volumen en `/data` **sigue haciendo falta**: ahí viven el firmware, el paquete de contenido, la caché de la
-   Biblia, las fotos y los adjuntos.
+4. El volumen en `/data` **sigue haciendo falta**: ahí viven el firmware, el paquete de contenido y la caché de
+   la Biblia.
 
 Para volver atrás alcanza con sacar `DATABASE_URL`: los archivos originales de `/data` siguen ahí (la migración
 los copia, no los borra), así que el servidor vuelve al modo de un solo usuario con los datos que tenía el día que

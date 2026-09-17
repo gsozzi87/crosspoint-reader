@@ -272,7 +272,6 @@ label.inline { display: flex; align-items: center; gap: 10px; min-height: 44px; 
 .menu .chev { color: var(--muted); }
 
 /* ── Fotos ────────────────────────────────────────────────────────────── */
-.preview { width: 100%; max-height: 60vh; object-fit: contain; border-radius: 10px; background: #fff; display: block; margin: 0 0 10px; }
 
 /* ── Tablas (IA) ──────────────────────────────────────────────────────── */
 table.t { width: 100%; border-collapse: collapse; font-size: 13px; }

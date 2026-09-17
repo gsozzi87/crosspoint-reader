@@ -21,7 +21,6 @@
 //   POST /api/board/note     {id?, text}
 //   POST /api/board/memory   {id?, text}
 //   POST /api/board/feed     {name, url} crea · {id, name} renombra
-//   POST /api/board/attachment?trip=&name=   (multipart o cuerpo crudo: PDF del vuelo, del hotel...)
 //   GET  /api/board/extra    -> {feeds, memories, settings, lists} (lo usa el firmware viejo; queda)
 //   POST /api/board/settings {lang, speak, uiSound, musicVolume, translatorLang}
 //   (tildar y borrar: POST /api/hub/done, POST /api/hub/edit)
@@ -38,7 +37,6 @@ import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSear
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
-import { boardAttachment } from "./attachments";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
 import { clampNote } from "./notes";
 
@@ -171,11 +169,6 @@ boardApi.post("/feed/test", async (c) => {
   const r = await checkFeed(feed.url);
   return c.json({ ok: true, name: feed.name, ...r });
 });
-
-// Adjuntos de los viajes (attachments.ts): el PDF entra tal como salió del mail
-// y sale convertido a bitmaps que el aparato pinta, con el código de barras
-// vuelto a generar limpio.
-boardApi.route("/attachment", boardAttachment);
 
 boardApi.get("/extra", async (c) => {
   const acc = accountOf(c);

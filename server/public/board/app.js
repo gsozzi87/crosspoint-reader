@@ -5,9 +5,11 @@
 // entero y se repinta: así nunca queda una parte vieja y otra nueva en la
 // misma pantalla, que era la queja de la página anterior.
 //
-// Pantallas (barra de abajo): Hoy · Agenda · Listas · Notas · Más.
-// Debajo de Más: Fotos, Noticias, Viajes, Memoria, Ajustes, Aparatos, IA,
-// Contenido, Log y Cuenta.
+// Pantallas (barra de abajo): Hoy · Agenda · Listas · Notas · Ajustes.
+// Debajo de Ajustes: Noticias, Memoria, Aparatos y, en Avanzado, IA, Contenido
+// y Log. Viajes tenía pestaña propia y salió del producto en 1.5.93 (vuelve
+// como app de Lua); con él se fueron los papeles adjuntos, que no los usaba
+// nadie más.
 //
 // Todo lo que se edita se edita en una "hoja" que sube desde abajo (sheet):
 // tocar una fila la abre con todos los campos y el botón de borrar.
@@ -22,7 +24,6 @@ const CAL = {};      // caché del calendario por mes: "2026-09" -> {days, event
 const DAY = {};      // caché del día: "2026-09-12" -> items
 let calMonth = "";   // mes visible "YYYY-MM"
 let calSel = "";     // día elegido "YYYY-MM-DD"
-let tripCache = {};  // id -> viaje entero
 let rssCache = null;
 let newsPack = null; // estado del paquete masticado que descarga el aparato
 
@@ -423,18 +424,18 @@ function calendarView() {
 
   const items = m.events.filter((e) => e.date === calSel);
   html += '<div class="card"><h2><span class="grow">' + fmtDayLong(calSel) + '</span><button class="ghost small" data-act="ev-new" data-date="' + calSel + '">+ Evento</button></h2><ul class="rows">';
-  if (!items.length) html += '<li class="empty">Nada agendado. Salen los eventos, los recordatorios con hora y los días de viaje.</li>';
+  if (!items.length) html += '<li class="empty">Nada agendado. Salen los eventos y los recordatorios con hora.</li>';
   for (const o of items) html += occurrenceRow(o);
   html += "</ul></div>";
   return html;
 }
 
 function occurrenceRow(o) {
-  const icon = o.kind === "reminder" ? "⏰" : o.kind === "trip" ? "✈️" : "📅";
+  const icon = o.kind === "reminder" ? "⏰" : "📅";
   const when = o.allDay ? (o.days > 1 ? "día " + o.dayIndex + " de " + o.days : "todo el día") : o.time + (o.endTime && o.endTime !== o.time ? "–" + o.endTime : "");
   const sub = [when, o.place, o.repeat && o.repeat.kind !== "none" ? o.repeatText : ""].filter(Boolean).join(" · ");
-  const act = o.kind === "reminder" ? "rem-open" : o.kind === "trip" ? "trip-go" : "ev-open";
-  const extra = o.kind === "trip" ? ' data-trip="' + attr(o.tripId || "") + '"' : ' data-key="' + attr(o.key) + '"';
+  const act = o.kind === "reminder" ? "rem-open" : "ev-open";
+  const extra = ' data-key="' + attr(o.key) + '"';
   return '<li><span class="kind">' + icon + '</span><div class="body" data-act="' + act + '" data-id="' + o.id + '"' + extra + '><span class="title">' + esc(o.title) + '</span><span class="sub">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
 }
 
@@ -943,224 +944,6 @@ async function copyText(text) {
   toast("Copiado");
 }
 
-// ── Viajes ──────────────────────────────────────────────────────────────────
-const TRIP_KINDS = [["flight", "Vuelo", "✈️"], ["train", "Tren", "🚆"], ["hotel", "Hotel", "🏨"], ["ticket", "Entrada", "🎟"], ["meal", "Comida", "🍽"], ["visit", "Visita", "📍"], ["other", "Otro", "•"]];
-function kindIcon(k) { const f = TRIP_KINDS.find((x) => x[0] === k); return f ? f[2] : "•"; }
-let trips = null;
-
-async function loadTrips() { trips = (await api("/api/trips?lang=es")).trips; return trips; }
-async function loadTrip(id) { const r = await api("/api/trip?id=" + encodeURIComponent(id) + "&lang=es"); tripCache[id] = r.trip; return r.trip; }
-function forgetTrips() { trips = null; tripCache = {}; clearCal(); }
-
-function viajesView() {
-  if (!trips) { loadTrips().then(render).catch((e) => toast(e.message)); return '<p class="loading">Cargando…</p>'; }
-  let html = '<div class="card"><h2>Viajes</h2><p class="hint">Un viaje son sus días, lo que se hace cada día con su hora, y los papeles (el PDF del vuelo, la reserva). Todo aparece también en el calendario del aparato.</p><ul class="rows">';
-  if (!trips.length) html += '<li class="empty">Todavía no hay viajes. Con el + de abajo creas uno.</li>';
-  for (const t of trips) {
-    const state = t.state === "now" ? "en curso" : t.state === "past" ? "pasado" : "";
-    html += '<li><span class="kind">✈️</span><div class="body" data-act="trip-go" data-trip="' + attr(t.id) + '"><span class="title">' + esc(t.name) + '</span><span class="sub">' + esc([t.when, t.place, t.items + " cosas", state].filter(Boolean).join(" · ")) + "</span></div><span class=\"chev\">›</span></li>";
-  }
-  return html + "</ul></div>";
-}
-
-function tripEditor(t) {
-  const isNew = !t;
-  openSheet(isNew ? "Viaje nuevo" : "Viaje",
-    field("Nombre", input("name", t ? t.name : "", 'autofocus maxlength="80" placeholder="Roma"')) +
-    field("Lugar", input("place", t ? t.place : "", 'maxlength="80"')) +
-    '<div class="two">' + field("Ida", input("start", t ? t.start : "", 'type="date"')) + field("Vuelta", input("end", t ? t.end : "", 'type="date"')) + "</div>",
-    {
-      save: async (root) => {
-        const body = { id: t ? t.id : undefined, name: val(root, "name").trim(), place: val(root, "place").trim(), start: val(root, "start"), end: val(root, "end") };
-        if (!body.name || !body.start || !body.end) { sheetStatus("Faltan el nombre o las fechas", "bad"); return false; }
-        busy(true);
-        try {
-          const r = await api("/api/trip", body);
-          forgetTrips();
-          location.hash = "#viajes/" + r.id;
-          toast("Guardado");
-          return true;
-        } catch (e) { sheetStatus(e.message, "bad"); return false; } finally { busy(false); }
-      },
-      del: isNew ? null : async () => {
-        if (!sure("¿Borrar el viaje «" + t.name + "» con sus días y sus papeles?")) return false;
-        await api("/api/trip/delete", { id: t.id });
-        forgetTrips();
-        location.hash = "#viajes";
-        toast("Borrado");
-        return true;
-      },
-    });
-}
-
-function attRow(a, ctx) {
-  const bits = [];
-  if (a.codes && a.codes.length) { const c = a.codes[0]; bits.push(c.copy ? "código copiado (puede no escanear)" : c.format + (c.verified ? " verificado" : "")); }
-  bits.push(a.pages + (a.pages === 1 ? " página" : " páginas"));
-  for (const f of (a.fields || []).slice(0, 3)) bits.push(f.label + ": " + f.value);
-  return '<li><span class="kind">📄</span><div class="body" data-act="att-open" data-id="' + attr(a.id) + '" data-date="' + attr(ctx.date || "") + '" data-item="' + attr(ctx.itemId || "") + '"><span class="title">' + esc(a.name) + '</span><span class="sub">' + esc(bits.join(" · ")) + (a.warn ? " · " + esc(a.warn) : "") + "</span></div><span class=\"chev\">›</span></li>";
-}
-
-function tripView(id) {
-  const t = tripCache[id];
-  if (!t) { loadTrip(id).then(render).catch((e) => { toast(e.message); location.hash = "#viajes"; }); return '<p class="loading">Cargando…</p>'; }
-  let html = '<div class="card"><h2><span class="grow">' + esc(t.name) + '</span><button class="ghost small" data-act="trip-edit">Editar</button></h2><p class="muted">' + esc([t.when, t.place].filter(Boolean).join(" · ")) + "</p></div>";
-  for (const d of t.days) {
-    html += '<div class="card"><h2><span class="grow">' + esc(d.label) + '</span><button class="ghost small" data-act="titem-new" data-date="' + d.date + '">+</button></h2>';
-    if (d.note) html += '<p class="hint">' + esc(d.note) + "</p>";
-    html += '<ul class="rows">';
-    if (!d.items.length) html += '<li class="empty">Nada cargado. <button class="link small" data-act="tday-note" data-date="' + d.date + '">Nota del día</button></li>';
-    for (const it of d.items) {
-      const sub = [it.at, it.kindLabel, it.place, it.attachments.length ? it.attachments.length + " papel" + (it.attachments.length === 1 ? "" : "es") : ""].filter(Boolean).join(" · ");
-      html += '<li><span class="kind">' + kindIcon(it.kind) + '</span><div class="body" data-act="titem-open" data-date="' + d.date + '" data-id="' + attr(it.id) + '"><span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
-    }
-    html += "</ul></div>";
-  }
-  const targets = [["", "Papeles del viaje (sin ítem)"]];
-  for (const d of t.days) for (const it of d.items) targets.push([d.date + "|" + it.id, fmtDay(d.date) + " · " + it.title]);
-  html += '<div class="card"><h2>Papeles</h2><p class="hint">Sube el PDF del vuelo, la reserva o la entrada tal como llegó al correo. El servidor lo convierte a páginas que el aparato pinta y vuelve a generar el código de barras limpio para que escanee.</p>' +
-    field("Colgar de", select("attTarget", targets, "", 'id="attTarget"')) +
-    '<input type="file" id="attFile" accept="application/pdf,image/*" hidden><button class="wide ghost" data-act="att-pick">Subir un archivo</button><p class="muted" id="attStatus" style="margin-top:8px"></p>' +
-    '<ul class="rows">' + (t.docs.length ? t.docs.map((a) => attRow(a, {})).join("") : '<li class="empty">Sin papeles sueltos.</li>') + "</ul></div>";
-  html += '<div class="card"><h2>Para llevar</h2><form class="addbar" data-form="pack-add" data-trip="' + attr(t.id) + '"><input name="text" placeholder="Cargador, pasaporte…" maxlength="120" autocomplete="off"><button>Agregar</button></form><ul class="rows">';
-  if (!t.packing.length) html += '<li class="empty">Nada anotado.</li>';
-  for (const p of t.packing) html += '<li class="' + (p.done ? "done" : "") + '"><button class="tick' + (p.done ? " on" : "") + '" data-act="pack-tick" data-id="' + attr(p.id) + '" data-done="' + (p.done ? 1 : 0) + '"><i></i></button><div class="body" data-act="pack-open" data-id="' + attr(p.id) + '"><span class="title">' + esc(p.text) + "</span></div><span class=\"chev\">›</span></li>";
-  html += "</ul></div>";
-  html += '<div class="card"><h2><span class="grow">Sugerencias</span><button class="ghost small" data-act="trip-suggest">Pedir</button></h2><div id="tripSuggest" class="muted">Qué visitar cerca, cuánto se tarda entre los lugares y qué falta en la lista. Usa el modelo y busca en internet: cuenta contra el tope diario.</div></div>';
-  return html;
-}
-
-function tripItemEditor(t, date, it) {
-  const isNew = !it;
-  openSheet(isNew ? "Agregar el " + fmtDay(date) : "Ítem del " + fmtDay(date),
-    field("Qué", input("title", it ? it.title : "", 'autofocus maxlength="120" placeholder="Tren a Termini"')) +
-    '<div class="two">' + field("Hora", input("at", it ? it.at : "", 'type="time"')) + field("Tipo", select("kind", TRIP_KINDS.map((k) => [k[0], k[1]]), it ? it.kind : "other")) + "</div>" +
-    field("Día", input("date", date, 'type="date"')) +
-    field("Dónde", input("place", it ? it.place : "", 'maxlength="100"')) +
-    field("Nota", '<textarea name="note" maxlength="400" style="min-height:60px">' + esc(it ? it.note : "") + "</textarea>") +
-    (it && it.attachments.length ? '<p class="muted" style="margin:0 0 4px 2px;font-size:13px">Papeles</p><ul class="rows">' + it.attachments.map((a) => attRow(a, { date, itemId: it.id })).join("") + "</ul>" : ""),
-    {
-      save: async (root) => {
-        const body = { tripId: t.id, id: it ? it.id : undefined, date: val(root, "date"), at: val(root, "at"), kind: val(root, "kind"), title: val(root, "title").trim(), place: val(root, "place"), note: val(root, "note") };
-        if (!body.title) { sheetStatus("Falta el título", "bad"); return false; }
-        busy(true);
-        try {
-          if (it && body.date !== date) {
-            // Cambió de día: se crea en el nuevo y se borra del viejo (los papeles se vuelven a colgar).
-            const r = await api("/api/trip/day/item", Object.assign({}, body, { id: undefined, attachmentIds: it.attachmentIds }));
-            await api("/api/trip/day/item/delete", { tripId: t.id, date, id: it.id });
-            void r;
-          } else await api("/api/trip/day/item", body);
-          forgetTrips();
-          render();
-          toast("Guardado");
-          return true;
-        } catch (e) { sheetStatus(e.message, "bad"); return false; } finally { busy(false); }
-      },
-      del: isNew ? null : async () => {
-        if (!sure("¿Borrar «" + it.title + "»?")) return false;
-        await api("/api/trip/day/item/delete", { tripId: t.id, date, id: it.id });
-        forgetTrips(); render(); toast("Borrado");
-        return true;
-      },
-    });
-}
-
-function dayNoteEditor(t, date) {
-  const d = t.days.find((x) => x.date === date) || { note: "" };
-  openSheet("Nota del " + fmtDay(date), '<textarea name="note" autofocus maxlength="300" style="min-height:80px" placeholder="Día libre, hay que estar 2 h antes…">' + esc(d.note) + "</textarea>", {
-    save: async (root) => {
-      await api("/api/trip/day", { tripId: t.id, date, note: val(root, "note") });
-      forgetTrips(); render();
-      return true;
-    },
-  });
-}
-
-function packEditor(t, p) {
-  openSheet("Para llevar", field("Cosa", input("text", p.text, 'autofocus maxlength="120"')) + '<label class="inline"><input type="checkbox" name="done" ' + (p.done ? "checked" : "") + "> Ya está</label>", {
-    save: async (root) => {
-      await api("/api/trip/packing", { tripId: t.id, id: p.id, text: val(root, "text").trim(), done: val(root, "done") });
-      forgetTrips(); render();
-      return true;
-    },
-    del: async () => {
-      await api("/api/trip/packing", { tripId: t.id, id: p.id, action: "delete" });
-      forgetTrips(); render();
-      return true;
-    },
-  });
-}
-
-async function attachmentSheet(t, id, ctx) {
-  let a = null;
-  try { a = (await api("/api/attachment/info?id=" + encodeURIComponent(id))).attachment; } catch (e) { toast(e.message); return; }
-  const key = "a:" + a.id + ":0";
-  let html = '<img class="preview" data-blob="' + key + '" src="' + attSrc(a.id, 0, key) + '" alt="">';
-  if (a.pages > 1) html += '<div class="chips">' + Array.from({ length: a.pages }, (_, i) => '<button type="button" class="chip' + (i ? "" : " on") + '" data-act="att-page" data-id="' + attr(a.id) + '" data-page="' + i + '">Página ' + (i + 1) + "</button>").join("") + "</div>";
-  if (a.codes.length) html += '<p class="muted">' + a.codes.map((c) => (c.copy ? "Código copiado de la imagen: PUEDE NO ESCANEAR, lleva el original" : "Código " + c.format + (c.verified ? " leído y vuelto a generar (verificado)" : " leído"))).join(" · ") + "</p>";
-  if (a.warn) html += '<p class="warn">' + esc(a.warn) + "</p>";
-  if (a.fields.length) html += '<ul class="rows">' + a.fields.map((f) => '<li style="min-height:36px"><div class="body"><span class="sub">' + esc(f.label) + '</span><span class="title">' + esc(f.value) + "</span></div></li>").join("") + "</ul>";
-  html += '<p class="muted" style="margin-top:8px">' + esc(a.name) + " · " + kb(a.bytes) + " · " + a.pages + " página" + (a.pages === 1 ? "" : "s") + "</p>";
-  if (ctx.itemId) html += '<button class="ghost wide" data-act="att-unattach" data-id="' + attr(a.id) + '" data-date="' + attr(ctx.date) + '" data-item="' + attr(ctx.itemId) + '">Descolgar de este ítem</button>';
-  openSheet("Papel", html, {
-    del: async () => {
-      if (!sure("¿Borrar el papel «" + a.name + "» con todas sus páginas?")) return false;
-      await api("/api/attachment/delete", { id: a.id });
-      forgetTrips(); render(); toast("Borrado");
-      return true;
-    },
-  });
-}
-
-// Las imágenes se bajan con fetch + Authorization y se muestran como blob: el
-// token nunca va en una URL.
-//
-// Esto NO era de las fotos. El commit que las sacó (1.5.74) se llevó puestos
-// `blobCache` y `loadBlob` creyendo que sí, y desde entonces la vista previa de
-// los papeles de un viaje tiraba `ReferenceError: blobCache is not defined`. No
-// se veía como un error: la excepción cae adentro de una promesa sin await, o
-// sea fuera del try del handler, así que tocar un adjunto simplemente no hacía
-// nada. Es el mismo descuido que borró la ruta /api/log en ese mismo commit.
-const blobCache = {};
-
-async function loadBlob(url, key) {
-  if (blobCache[key] === "loading") return;
-  blobCache[key] = "loading";
-  try {
-    const r = await fetch(url, { headers: authHeaders(), credentials: "same-origin" });
-    if (!r.ok) throw new Error("http " + r.status);
-    blobCache[key] = URL.createObjectURL(await r.blob());
-    qsa(document, "img[data-blob='" + key + "']").forEach((img) => { img.src = blobCache[key]; });
-  } catch (e) { delete blobCache[key]; }
-}
-
-function attSrc(id, page, key) {
-  if (blobCache[key] && blobCache[key] !== "loading") return blobCache[key];
-  loadBlob("/api/attachment/preview?id=" + encodeURIComponent(id) + "&page=" + page, key);
-  return "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
-}
-
-async function uploadAttachment(t, file) {
-  const st = $("attStatus");
-  st.textContent = "Subiendo " + file.name + " (" + kb(file.size) + "). Se convierte en el servidor: puede tardar unos segundos.";
-  const form = new FormData();
-  form.append("file", file);
-  try {
-    const j = await api("/api/board/attachment?trip=" + encodeURIComponent(t.id), form);
-    const a = j.attachment;
-    const target = $("attTarget").value;
-    if (target) { const [date, itemId] = target.split("|"); await api("/api/trip/attach", { tripId: t.id, date, itemId, attachmentId: a.id }); }
-    else await api("/api/trip/attach", { tripId: t.id, attachmentId: a.id });
-    const lines = [a.pages + " página" + (a.pages === 1 ? "" : "s") + " para el aparato"];
-    if (a.codes.length) { const c = a.codes[0]; lines.push(c.copy ? "El código no se pudo leer: va como copia y PUEDE NO ESCANEAR" : "Código " + c.format + (c.verified ? " verificado" : "")); }
-    else if (a.warn) lines.push(a.warn);
-    forgetTrips();
-    render();
-    toast(lines.join(" · "), 5000);
-  } catch (e) { st.textContent = "No se pudo subir: " + e.message; }
-}
-
 // ── Agregar rápido (el +) ───────────────────────────────────────────────────
 function quickAdd(kind) {
   const KINDS = [["reminder", "Recordatorio"], ["task", "Tarea"], ["shop", "Compra"], ["note", "Nota"], ["event", "Evento"]];
@@ -1196,7 +979,7 @@ function quickAdd(kind) {
 function parts() { return (location.hash.replace(/^#/, "") || "hoy").split("/"); }
 function screenId() { return parts()[0]; }
 
-const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", noticias: "Noticias", viajes: "Viajes", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
+const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", noticias: "Noticias", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
 
 function render() {
   if (!entered || !S) return;
@@ -1215,10 +998,6 @@ function render() {
     }
     else if (p[0] === "listas") html = listsView();
     else if (p[0] === "notas") html = notesView();
-    else if (p[0] === "viajes") {
-      if (p[1]) { back = "#viajes"; title = (tripCache[p[1]] && tripCache[p[1]].name) || "Viaje"; html = tripView(p[1]); }
-      else html = viajesView();
-    }
     else if (p[0] === "ajustes") {
       if (!p[1]) { html = ajustesIndexView(); fab = false; }
       else {
@@ -1234,16 +1013,14 @@ function render() {
         else html = '<p class="loading">No existe esa pantalla.</p>';
       }
     }
-    // Las direcciones viejas (#mas/...) siguen andando: alguien puede tener una
-    // guardada en la pantalla de inicio del teléfono.
+    // Las direcciones viejas siguen andando: alguien puede tener una guardada en
+    // la pantalla de inicio del teléfono. Las de Viajes ya no llevan a ninguna
+    // pantalla, así que caen en Hoy en vez de dejar la página en blanco.
     else if (p[0] === "mas") {
-      const dest = p[1] === "viajes" ? "#viajes" + (p[2] ? "/" + p[2] : "")
-                 : p[1] === "ajustes" ? "#ajustes"
-                 : p[1] ? "#ajustes/" + p[1]
-                 : "#ajustes";
-      location.hash = dest;
+      location.hash = p[1] === "viajes" ? "#hoy" : p[1] && p[1] !== "ajustes" ? "#ajustes/" + p[1] : "#ajustes";
       return;
     }
+    else if (p[0] === "viajes") { location.hash = "#hoy"; return; }
     else { location.hash = "#hoy"; return; }
   } catch (e) {
     console.error(e);
@@ -1255,8 +1032,6 @@ function render() {
   $("backBtn").dataset.to = back || "";
   $("fab").hidden = !fab;
   qsa(document, ".nav a").forEach((a) => a.classList.toggle("on", a.dataset.nav === p[0]));
-  // Las imágenes que ya se bajaron
-  qsa(main, "img[data-blob]").forEach((img) => { const b = blobCache[img.dataset.blob]; if (b && b !== "loading") img.src = b; });
   if (p[0] === "ajustes" && p[1] === "log" && logText && logText !== "loading") { const box = $("logBox"); if (box) box.scrollTop = box.scrollHeight; }
 }
 
@@ -1266,8 +1041,6 @@ document.addEventListener("click", async (ev) => {
   if (!b) return;
   const act = b.dataset.act;
   const d = b.dataset;
-  const tripId = parts()[0] === "viajes" ? parts()[1] : "";
-  const trip = tripId ? tripCache[tripId] : null;
   try {
     switch (act) {
       case "sheet-close": closeSheet(); break;
@@ -1312,7 +1085,6 @@ document.addEventListener("click", async (ev) => {
         if (o) eventEditor(o);
         break;
       }
-      case "trip-go": location.hash = "#viajes/" + d.trip; break;
 
       // Listas
       case "list-seg": localStorage.setItem("listSeg", d.key); render(); break;
@@ -1392,35 +1164,6 @@ document.addEventListener("click", async (ev) => {
       case "log-copy": await copyText(logText || ""); break;
       case "log-clear": if (sure("¿Vaciar el log del aparato?")) { await apiText("/api/log", "DELETE"); logText = null; await loadState(); render(); } break;
 
-      // Viajes
-      case "trip-edit": tripEditor(trip); break;
-      case "titem-new": tripItemEditor(trip, d.date, null); break;
-      case "titem-open": { const day = trip.days.find((x) => x.date === d.date); const it = day && day.items.find((i) => i.id === d.id); if (it) tripItemEditor(trip, d.date, it); break; }
-      case "tday-note": dayNoteEditor(trip, d.date); break;
-      case "pack-tick": await api("/api/trip/packing", { tripId: trip.id, id: d.id, done: d.done !== "1" }); forgetTrips(); render(); break;
-      case "pack-open": { const p = trip.packing.find((x) => x.id === d.id); if (p) packEditor(trip, p); break; }
-      case "att-pick": $("attFile").click(); break;
-      case "att-open": attachmentSheet(trip, d.id, { date: d.date, itemId: d.item }); break;
-      case "att-page": {
-        qsa($("sheet"), ".chip[data-page]").forEach((c) => c.classList.toggle("on", c === b));
-        const key = "a:" + d.id + ":" + d.page;
-        const img = qs($("sheet"), "img.preview");
-        img.dataset.blob = key;
-        img.src = attSrc(d.id, Number(d.page), key);
-        break;
-      }
-      case "att-unattach": await api("/api/trip/attach", { tripId: trip.id, date: d.date, itemId: d.item, attachmentId: d.id, action: "remove" }); forgetTrips(); closeSheet(); render(); toast("Descolgado"); break;
-      case "trip-suggest": {
-        const box = $("tripSuggest");
-        box.textContent = "Pensando… (puede tardar medio minuto)";
-        try {
-          const r = await api("/api/suggest/trip?id=" + encodeURIComponent(trip.id) + "&lang=es");
-          box.innerHTML = "<ul class='rows'>" + (r.lines || []).map((l) => "<li style='min-height:0;padding:6px 0'><div class='body'>" + esc(l) + "</div></li>").join("") + "</ul>" +
-            (r.packing && r.packing.length ? "<p class='hint'>Falta llevar: " + esc(r.packing.join(", ")) + "</p>" : "") +
-            (r.sources && r.sources.length ? "<p class='hint'>Fuentes: " + r.sources.map((s) => "<a href='" + attr(s.url) + "' target='_blank' rel='noopener'>" + esc(s.title || s.url) + "</a>").join(" · ") + "</p>" : "");
-        } catch (e) { box.textContent = "No se pudo: " + e.message; }
-        break;
-      }
       default: break;
     }
   } catch (e) {
@@ -1434,7 +1177,6 @@ document.addEventListener("submit", async (ev) => {
   if (!f) return;
   ev.preventDefault();
   const kind = f.dataset.form;
-  const tripId = parts()[1] === "viajes" ? parts()[2] : "";
   try {
     if (kind === "item-add") {
       const text = f.text.value.trim();
@@ -1483,13 +1225,7 @@ document.addEventListener("submit", async (ev) => {
       await api("/api/board/config", { deviceToken: v });
       cfg = null; render();
       toast("Token guardado");
-    } else if (kind === "pack-add") {
-      const text = f.text.value.trim();
-      if (!text) return;
-      await api("/api/trip/packing", { tripId: f.dataset.trip, text });
-      forgetTrips(); render();
     }
-    void tripId;
   } catch (e) {
     if (!/^No se pudo/.test(String(e.message))) toast("No se pudo: " + e.message, 3500);
   }
@@ -1497,7 +1233,6 @@ document.addEventListener("submit", async (ev) => {
 
 document.addEventListener("change", (ev) => {
   const t = ev.target;
-  if (t.id === "attFile" && t.files[0]) { const trip = tripCache[parts()[2]]; if (trip) uploadAttachment(trip, t.files[0]); }
   if (t.name === "musicVolume") { const out = qs(t.closest("form"), ".volOut"); if (out) out.textContent = t.value + " %"; }
   if (t.name === "preset" && cfg) onPresetChange(t.closest("form"));
 });
@@ -1509,15 +1244,13 @@ document.addEventListener("input", (ev) => {
 $("sheetBg").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && sheetOpts) closeSheet(); });
 $("backBtn").addEventListener("click", () => { location.hash = $("backBtn").dataset.to || "#ajustes"; });
-$("reloadBtn").addEventListener("click", () => { clearCal(); trips = null; tripCache = {}; rssCache = null; refresh(); });
+$("reloadBtn").addEventListener("click", () => { clearCal(); rssCache = null; refresh(); });
 $("fab").addEventListener("click", () => {
   const p = parts();
   if (p[0] === "listas") quickAdd(listSeg() === "Compras" ? "shop" : "task");
   else if (p[0] === "notas") noteEditor(null);
   else if (p[0] === "agenda" && p[1] === "cal") eventEditor(null, calSel || todayIso());
   else if (p[0] === "agenda") reminderEditor(null);
-  else if (p[0] === "viajes" && p[1]) { const t = tripCache[p[1]]; if (t) tripItemEditor(t, t.days[0] ? t.days[0].date : t.start, null); }
-  else if (p[0] === "viajes") tripEditor(null);
   else quickAdd("reminder");
 });
 window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });

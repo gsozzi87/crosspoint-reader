@@ -405,6 +405,12 @@ void BibleActivity::showChapter(const std::string& text) {
   // mantenido dentro del capítulo abre el menú de voz con ese capítulo cargado,
   // y la barra de abajo lo dice.
   viewer->setVoiceHold(tr(STR_BIBLE_HOLD_ASK), [this] { askAfterViewer = true; });
+  // Y OK abre el menú, como en el lector ("todo igual que el crosspoint"). El
+  // visor pone "Buscar una palabra" solo —es el dueño del texto— y acá van las
+  // tres que son de la Biblia.
+  viewer->addMenuItem(tr(STR_BIBLE_MENU_ASK), [this] { afterViewer = AFTER_ASK; });
+  viewer->addMenuItem(tr(STR_BIBLE_MENU_SEARCH), [this] { afterViewer = AFTER_SEARCH; });
+  viewer->addMenuItem(tr(STR_SELECT_CHAPTER), nullptr);
   startActivityForResult(std::move(viewer), [this](const ActivityResult&) {
     state = CHAPTERS;
     if (askAfterViewer) {
@@ -412,6 +418,13 @@ void BibleActivity::showChapter(const std::string& text) {
       openVoiceMenu();
       return;
     }
+    if (afterViewer != AFTER_NONE) {
+      const bool ask = afterViewer == AFTER_ASK;
+      afterViewer = AFTER_NONE;
+      startVoice(ask);
+      return;
+    }
+    forceClean = true;  // el visor deja su página entera en el vidrio
     requestUpdate();
   });
 }

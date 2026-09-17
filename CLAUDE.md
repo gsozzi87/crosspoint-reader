@@ -270,11 +270,11 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **La web se hizo de nuevo (servidor, después de 1.5.68)** ("super chafa… la web tiene que hacerse prácticamente de nuevo"). Vive en
   `server/public/board/` (`index.html`, `app.js`, `style.css`) como archivos estáticos que sirve `board.ts`; ya NO es
   un template literal adentro del `.ts` (el Dockerfile copia `public/`). Es una app de teléfono: barra de abajo con
-  **Hoy · Agenda · Listas · Notas · Viajes · Ajustes** (seis desde 1.5.78; antes eran cinco y la quinta, "Más", era
-  un cajón con diez filas iguales adentro), un `+` flotante para agregar rápido, y todo se edita en una hoja que
-  sube desde abajo al tocar la fila (todos los campos + Borrar). Modo oscuro por `prefers-color-scheme`.
-  **Viajes subió al primer nivel** porque es lo único con contenido propio que se usa seguido, y **Ajustes dejó de
-  ser un cajón**: arriba lo del aparato (idioma, voz, sonidos, volumen, clima) que es lo que se toca, después
+  **Hoy · Agenda · Listas · Notas · Ajustes** (fueron seis entre 1.5.78 y 1.5.92, con Viajes; antes eran cinco y la
+  quinta, "Más", era un cajón con diez filas iguales adentro), un `+` flotante para agregar rápido, y todo se edita
+  en una hoja que sube desde abajo al tocar la fila (todos los campos + Borrar). Modo oscuro por
+  `prefers-color-scheme`.
+  **Ajustes dejó de ser un cajón**: arriba lo del aparato (idioma, voz, sonidos, volumen, clima) que es lo que se toca, después
   Noticias, Memoria y Aparatos, y abajo un bloque **Avanzado** con IA, Contenido y Log. Las direcciones viejas
   (`#mas/...`) **siguen andando**: redirigen, porque alguien puede tener una guardada en la pantalla de inicio del
   teléfono. Y `/board/` con barra final daba **404** — que es justo como la escribe a mano el que la teclea —, así
@@ -333,7 +333,7 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **Sincronización oportunista (1.5.76, `src/sync/Sync`)**: si la red ya está arriba por CUALQUIER motivo, el loop
   aprovecha para subir lo pendiente y bajar lo que cambió. Antes la única sincronización de verdad era
   `HubSyncActivity` y sólo se abría desde el hub; trece o catorce Activities levantan WiFi (Hablar, Noticias, la
-  Biblia, el Clima, los Viajes, el Traductor, Preguntarle al libro, Vincular) y ninguna bajaba nada de paso.
+  Biblia, el Clima, el Traductor, Preguntarle al libro, Vincular) y ninguna bajaba nada de paso.
   Tres guardias, y las tres hacen falta:
   1. **La pantalla tiene que estar desocupada** (`!preventAutoSleep()`): casi toda Activity de red lo pide MIENTRAS
      trabaja, así que la guardia espera sola a que termine y usa la ventana en la que la red sigue arriba y ya no
@@ -379,10 +379,12 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `prepareForDeepSleep()` desmonte la tarjeta). Se pinta **una sola vez** y con FULL: antes se pagaban DOS pantallas
   completas (la de sueño del SDK y encima la foto), y ahora `goToSleep()` acepta `render=false` para no pintar la
   primera. De paso el cuadro de Quick Resume queda siendo la pantalla anterior, que es lo que corresponde.
-  El dibujante de BMP a pantalla completa NO era de las fotos (lo usan los adjuntos de los viajes): vive en
-  `src/util/FullScreenBmp`. En el servidor pasó lo mismo con `toDeviceBmp`/`bmpToPng`, que están en
-  `server/src/deviceBmp.ts`; `sharp` **no** se puede sacar del Docker porque lo usan los adjuntos y el paquete de
-  contenido.
+  El dibujante de BMP a pantalla completa (`src/util/FullScreenBmp`) no era de las fotos: era de los adjuntos de
+  los viajes, y **se borró con ellos en 1.5.93**, igual que `server/src/deviceBmp.ts` (`toDeviceBmp`/`bmpToPng`) y
+  las cuatro dependencias nativas que solo usaban los adjuntos (`sharp`, `mupdf`, `bwip-js`, `zxing-wasm`). La
+  línea de arriba decía que `sharp` no se podía sacar "porque lo usan los adjuntos y el paquete de contenido":
+  el paquete de contenido **no** lo usaba — `assets.ts` dibuja solo —, así que con los adjuntos afuera no queda
+  nadie.
 - Conversor de unidades — **salió del hub**; lo que sigue describe cómo estaba hecho, por si vuelve.
   (`UnitsActivity`, 1.5.48): **la cuenta es toda del aparato**; lo único
   que necesita servidor es pasar la voz a texto. Siete familias — longitud, peso, temperatura, volumen, superficie,
@@ -417,7 +419,7 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   guarda como nota).
 - **El tema manda en NUESTRAS pantallas desde 1.5.77, y antes no.** Existía `UITheme` con cuatro temas (Clásico,
   Lyra, Lyra Extendido, RoundedRaff) y el default era Lyra — de ahí el `[UI] Using Lyra theme` del log —, pero el
-  hub, la agenda, las notas, las noticias, la Biblia y los viajes dibujan con `src/activities/ListStyle.h`, que
+  hub, la agenda, las notas, las noticias y la Biblia dibujan con `src/activities/ListStyle.h`, que
   tenía las caras **fijas**. O sea que cambiar de tema cambiaba el lector y dejaba igual justo donde el usuario
   pasa el tiempo. Ahora `listui` pide las cuatro caras al tema (`listTitleFont`, `listDetailFont`,
   `sectionTitleFont`, `sectionDatumFont`; 0 = el default de siempre) y son **funciones**, no constantes, porque el
@@ -448,7 +450,7 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   `src/activities/ListStyle.h` (namespace `listui`: margen de 24 px, grilla de 8, fila de dos renglones
   título UI_12 + detalle UI_10, metadato a la derecha, casilla de 18x18, encabezado UI_14 con regla, paginador
   "Página 2 de 5") y `src/activities/games/GameUi.{h,cpp}` para los juegos. Pasaron por ahí: hub, Recordatorios,
-  Notas, Noticias, Fotos, Viajes, Mi día, Música, visores, diálogos y popups, Ajustes → Movimiento y los doce juegos.
+  Notas, Noticias, Mi día, Música, visores, diálogos y popups, Ajustes → Movimiento y los doce juegos.
   Se fueron las pastillas negras macizas con texto blanco (pestañas, distintivos, cartas emparejadas) y los
   paginadores "1/12" en una esquina.
 - **Escala tipográfica**: `SevenSegment` para los números grandes, **UI_14** (Ubuntu 14 bold, nueva en 1.5.48) para
@@ -1185,6 +1187,92 @@ Dos defectos, y el segundo explica por qué el primero no se podía diagnosticar
 Recordar que la lista de pantallas tranquilas (`isCalmScreen`) sigue valiendo **a propósito**: en Noticias, la
 Biblia, el Traductor o una app de Lua, Atrás es el botón con el que se sale, y robárselo dejaría pantallas sin
 salida. Ahí el log lo dice en vez de no hacer nada en silencio.
+
+## Lo que el aparato encontró en 1.5.92 (arreglado en 1.5.93)
+
+- **La batería medía "desde el origen de los tiempos".** `analyze()` toma la ventana más larga hacia atrás que
+  sea una descarga limpia, pero **no miraba las FECHAS**. Una sola muestra anotada con el reloj sin poner en hora
+  —1970, o el **2000-01-01 con el que arranca el PCF85063 sin pila**, que pasa cualquier prueba de `> 0`— estira
+  la ventana veinticinco o cincuenta y seis años: la pendiente se va a cero y la autonomía, a siglos. Ahora se
+  exige fecha creíble (`credibleEpoch`, el mismo umbral de 2024 que usa el TLS) tanto al ANOTAR como al medir, la
+  ventana se corta si la fecha va hacia adelante mirando hacia atrás (alguien puso el reloj en hora en el medio) y
+  hay tope de dos semanas: una ventana más larga no es una descarga, es el aparato apagado. Ocho casos nuevos en
+  **`./test/battery_drain/run.sh`** (25 en total).
+- **EL REPOSO NO DECÍA NUNCA POR QUÉ NO ENTRABA.** De las cuatro razones por las que no reposa, sólo una dejaba
+  rastro (el rechazo del kernel): el bloqueo y el tope diminuto devolvían `NotSlept` en silencio. O sea que "el
+  reposo nunca entró" era un síntoma sin una sola línea detrás. Ahora se anota cuál de las siete cosas lo bloquea
+  (`el reposo no entra: el cable está puesto`), y sólo cuando CAMBIA y sólo con el aparato ocioso.
+- **Y había un bloqueo de verdad: un vencido que la pantalla de turno no va a atender apagaba el reposo.**
+  `msUntilNextAlarm()` devuelve 1 ms cuando hay algo vencido y con ese tope `IdleSleep::tick()` no reposa
+  (`MIN_REST_MS` son 500). Está bien mientras la alarma esté por sonar — pero **el lector está excluido a
+  propósito** de `checkTimeAlarms()`, así que un recordatorio que vence leyendo dejaba el tope en 1 ms PARA
+  SIEMPRE: 40 mA sin reposar hasta el auto-sleep, y de nuevo con cada repique. Ahora, si la pantalla de turno no
+  lo va a atender, el vencido no cuenta para el tope: reposar no lo hace más tarde de lo que ya está. Las cuatro
+  guardias viven en **`alarmWouldRingHere()`**, que consultan el reposo Y `checkTimeAlarms()`: escritas dos veces
+  se habrían separado, como pasó con las rutas protegidas en 1.5.91.
+- **El medidor de OK mantenido salió de Ajustes → Sistema → Memoria.** Existía para contestar sin cable si el
+  evento de pulsación larga llegaba (hasta 1.5.46 no llegaba nunca y nadie lo había vuelto a probar). Ya está
+  contestado y el marcador del lector anda: era diagnóstico ocupando una pantalla que se mira por otra cosa. Se
+  fueron con él sus cuatro claves × 7 idiomas.
+- **Una línea por pintada llenaba el log.** `Time = NN ms from clearScreen to displayBuffer` salía en CADA
+  pantalla dibujada y, con la del refresco, era más de la mitad de los 24 KB: leer ahí lo que acababa de pasar era
+  imposible. Dibujar cuesta 40-90 ms y eso no es noticia; **un pico de 1,4 s sí** (los hay, en Ajustes), y es lo
+  único que se busca al abrir este log. Ahora sale sólo por encima de 150 ms, y las normales se cuentan de a
+  tandas para que el número no se pierda.
+
+**Lo que el log confirmó y no hay que volver a discutir**: el gate del doble golpe estaba rechazando dobles de
+verdad. La línea `golpe: st1=1 tap=B2 doble (no mira arriba: se ignora)` es exactamente eso, y un minuto antes
+está la misma con el aparato en otra posición abriendo Hablar. El arreglo de 1.5.92 tiene evidencia.
+
+**Sin explicar todavía**: `[DREG] No /.dictionaries directory on SD card` sale una vez por entrada a Ajustes pese
+a que la guardia de una-vez-por-arranque está puesta desde 1.5.83 y es un `static bool` común. Es una línea DBG,
+no rompe nada, pero **la guardia no está haciendo lo que dice** y eso hay que mirarlo con el aparato delante.
+
+## La Biblia con menú, y Viajes afuera (1.5.93)
+
+**La Biblia se lee como un libro, así que tiene que tener el menú de un libro.** Leyendo un capítulo, **OK abre
+el menú** igual que en el lector de CrossPoint: *Buscar una palabra*, *Preguntar sobre este capítulo*, *Buscar
+por voz* y *Seleccionar capítulo*. Antes lo único que había era Atrás mantenido, y la barra de abajo mostraba
+"Mantén: preguntar" **en el lugar de "Atrás"**: contaba lo que hace mantenido y escondía lo que hace tocando.
+
+- El menú vive en `DictionaryDefinitionActivity`, que es el visor de TODO lo que no es un libro (la respuesta de
+  Preguntarle al libro, la de Hablar, una nota, un capítulo). El que lo abre agrega sus entradas con
+  `addMenuItem()`; sin entradas, OK no hace nada y la pantalla se comporta como siempre.
+- **"Buscar una palabra" la pone el visor solo**, y tiene que ser así: el único que sabe dónde cayó cada palabra
+  en el vidrio es el que dibujó los renglones. El cursor recorre las palabras de la página EN PANTALLA en orden
+  de lectura y sale de los mismos `lines` y las mismas medidas que `drawBody` — si fueran dos maquetaciones, el
+  resalte caería en otro lado que la letra. El renglón que abre un versículo es donde se vería: el número va en
+  SMALL negrita y corre el texto a la derecha, así que el cursor arranca de `penX`, no del margen.
+- El cursor dibuja **sin la pasada de grises**: cada movimiento pagaría los 160 ms de los dos planos para
+  suavizar un texto que ya se leyó. Entrar y salir del cursor sí piden refresco limpio, porque lo que hay en el
+  vidrio salió del pipeline de grises y el cursor es blanco y negro.
+- **La lógica del diccionario estaba por duplicarse y se sacó a `src/util/DictionaryLookup.h`** (`dictlookup`):
+  abrir el diccionario elegido, armarle el `.qidx` la primera vez y traducir cada modo de falla a su cartel eran
+  cuarenta líneas adentro de `DictionaryWordSelectActivity`. Ahora las usan las dos pantallas. Dos copias de una
+  regla se separan solas: ya pasó con las rutas protegidas en 1.5.91.
+- Sin diccionario instalado la fila lo dice (`STR_DICT_NO_DICT_SET`) y no pasa nada más. **Buscar significa
+  diccionario local** y nunca se convierte solo en una consulta a la IA: para eso está *Preguntar*.
+
+**Viajes salió del producto, entero.** Decisión del usuario: *"viajes sale de 'mi día', sale del firmware por
+completo y de la web"*, y vuelve como app de Lua más adelante.
+
+- Firmware: `TripActivity.{h,cpp}`, la tercera fila de "Mi día" (`ROW_TRIPS`), "Trip" de la lista de pantallas
+  tranquilas de `main.cpp` y **17 claves de traducción × 7 idiomas**.
+- Servidor: `src/trips.ts`, `src/attachments.ts` y `src/deviceBmp.ts`; las rutas `/api/trips`, `/api/trip*`,
+  `/api/attachment*`, `/api/board/attachment` y `/api/suggest/trip`; el documento `trips` y el `attachments` de
+  `fsjson.ts` con su `attachmentsDir()`.
+- Web: la pestaña Viajes (**cinco** pestañas otra vez) con todo su editor, los adjuntos y su vista previa.
+  `#viajes` y `#mas/viajes` redirigen a Hoy: alguien puede tener la dirección guardada en el teléfono.
+- **Y los huérfanos que deja, que es donde está el pedo de siempre**: `src/util/FullScreenBmp` (el dibujante de
+  BMP a pantalla completa) no lo usaba nadie más — CLAUDE.md decía que era de los adjuntos y tenía razón—;
+  `deviceBmp.ts` tampoco; y con ellos se van **cuatro dependencias nativas** que solo estaban por los adjuntos:
+  `sharp`, `mupdf`, `bwip-js` y `zxing-wasm`. La línea que decía que `sharp` no se podía sacar "porque lo usan
+  los adjuntos y el paquete de contenido" era falsa en la segunda mitad: `assets.ts` dibuja solo. **Hay que
+  regenerar `bun.lock`**, o el `bun install --frozen-lockfile` del Dockerfile falla.
+- El viaje **espejaba sus ítems en `/data/calendar.json`** como eventos con `tripId`. Esos eventos ya no tienen
+  dueño —nadie los puede editar ni borrar—, así que `normalizeCalendar()` los descarta al leer. Es de una sola
+  vía a propósito: el viaje que los explicaba no existe.
+- De paso se fue `STR_AGENDA_EMPTY`, que no lo usaba nadie desde que existe `STR_AGENDA_EMPTY_VOICE`.
 
 ## Roadmap acordado
 

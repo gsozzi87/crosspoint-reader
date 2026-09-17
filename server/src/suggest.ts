@@ -1,15 +1,14 @@
-// Sugerencias del día y del viaje, con IA.
+// Sugerencias del día, con IA.
 //
 // La idea del usuario, textual: "quiero sugerencias con IA, que vea por donde
 // ando y me sugiera adónde visitar, en qué horarios, o cosas que me falten
-// llevar" y "ir viendo en mi viaje a qué hora tomar el tren, a qué hora entrar
-// al hotel, a qué hora son las entradas al Vaticano, cuánto tengo que ir de un
-// lugar a otro".
+// llevar".
 //
 //   GET /api/suggest/day?date=YYYY-MM-DD&lang=xx[&refresh=1]
 //       -> { ok, date, at, ageS, stale, searched, lines:[...], text, sources:[{title,url}] }
-//   GET /api/suggest/trip?id=&lang=xx[&refresh=1]
-//       -> { ok, id, at, ageS, stale, searched, lines:[...], packing:[...], text, sources }
+//
+// Viajes salió del producto en 1.5.93 (vuelve como app de Lua), y con él la
+// sugerencia del viaje y la búsqueda web que solo se encendía ahí.
 //
 // PLATA. Cada sugerencia con búsqueda web cuesta (con Anthropic, USD 0,01 por
 // búsqueda, más que la respuesta entera), así que:
@@ -22,17 +21,15 @@
 //   - hay un tope diario de generaciones (SUGGEST_MAX_PER_DAY, 10 por default).
 //     Pasado el tope se devuelve lo último que haya, marcado `stale`, y si no
 //     hay nada, un error claro;
-//   - la búsqueda web solo se enciende cuando hace falta de verdad: en el viaje
-//     (horarios de museos, cuánto se tarda de un lugar a otro) y en el día
-//     solo si ese día cae adentro de un viaje. Un día común en casa se contesta
-//     con la agenda y el clima que ya tenemos, sin gastar una búsqueda.
+//   - la búsqueda web quedó APAGADA: era para el viaje (horarios de museos,
+//     cuánto se tarda de un lugar a otro). Un día común en casa se contesta con
+//     la agenda y el clima que ya tenemos, sin gastar una búsqueda.
 import { Hono } from "hono";
 import { mutateDoc, readDoc } from "./fsjson";
 import { accountOf, type AppEnv } from "./tenant";
 import { chatSearch, LlmError, type Source } from "./llm";
 import { normalizeLang, LANGUAGE_NAME, type Lang } from "./lang";
 import { occurrencesBetween } from "./calendar";
-import { getTrip, tripOnDate, kindLabel, type Trip } from "./trips";
 import { hubDiagnostics } from "./hub";
 import { load as loadStore, memoryLines, todayLocal, pendingReminders } from "./store";
 import { addUsage } from "./usage";
@@ -74,8 +71,7 @@ async function loadAll(accountId: number): Promise<Store> {
   return shape(await readDoc<unknown>(accountId, "suggest", null));
 }
 
-// Leer y escribir sin carreras: dos pedidos a la vez no se pisan (mismo patrón
-// que trips.ts).
+// Leer y escribir sin carreras: dos pedidos a la vez no se pisan.
 function update<T>(accountId: number, fn: (store: Store) => T | Promise<T>): Promise<T> {
   return mutateDoc(accountId, "suggest", shape, fn);
 }
@@ -100,25 +96,6 @@ async function remember(accountId: number, entry: Suggestion): Promise<void> {
       keys.sort((a, b) => (store.entries[a].at ?? 0) - (store.entries[b].at ?? 0));
       for (const k of keys.slice(0, keys.length - 40)) delete store.entries[k];
     }
-  });
-}
-
-// Las sugerencias de un viaje que ya no existe. Sin esto, borrar un viaje en la
-// web lo deja vivo acá para siempre: la clave es `trip:<id>:...` y el archivo
-// guarda las 40 más nuevas, así que la del viaje borrado sobrevive semanas y el
-// aparato la sigue mostrando ("reconoce un viaje que ya no existe").
-export async function forgetTrip(accountId: number, tripId: string): Promise<number> {
-  if (!tripId) return 0;
-  const prefixes = [`trip:${tripId}:`, `:${tripId}`];
-  return update(accountId, (store) => {
-    let n = 0;
-    for (const k of Object.keys(store.entries)) {
-      if (k.startsWith(prefixes[0]) || k.endsWith(prefixes[1])) {
-        delete store.entries[k];
-        n++;
-      }
-    }
-    return n;
   });
 }
 
@@ -197,8 +174,8 @@ function systemPrompt(lang: Lang): string {
   ].join("\n");
 }
 
-// La agenda del día en texto, tal como la ve el calendario (incluye lo que el
-// viaje espeja ahí y los recordatorios con fecha).
+// La agenda del día en texto, tal como la ve el calendario (incluye los
+// recordatorios con fecha).
 async function agendaText(accountId: number, date: string, lang: Lang): Promise<string> {
   const { items } = await occurrencesBetween(accountId, date, date, lang);
   if (!items.length) return "(no hay nada agendado)";
@@ -206,25 +183,6 @@ async function agendaText(accountId: number, date: string, lang: Lang): Promise<
     .slice(0, 20)
     .map((o) => `- ${o.allDay ? "todo el día" : o.time} ${o.title}${o.place ? ` (${o.place})` : ""}`)
     .join("\n");
-}
-
-function tripText(trip: Trip, lang: Lang, fromDate?: string): string {
-  const out: string[] = [`Viaje: ${trip.name}${trip.place ? ` — ${trip.place}` : ""} (${trip.start} a ${trip.end})`];
-  const days = fromDate ? trip.days.filter((d) => d.date >= fromDate).slice(0, 8) : trip.days.slice(0, 12);
-  for (const day of days) {
-    out.push(`${day.date}${day.note ? ` — ${day.note}` : ""}`);
-    if (!day.items.length) out.push("  (sin nada cargado)");
-    for (const item of day.items.slice(0, 12)) {
-      out.push(
-        `  - ${item.at ?? "s/hora"} ${item.title} [${kindLabel(item.kind, lang)}]` +
-          `${item.place ? ` en ${item.place}` : ""}${item.note ? ` — ${item.note}` : ""}`,
-      );
-    }
-  }
-  const left = trip.packing.filter((p) => !p.done).map((p) => p.text);
-  const done = trip.packing.filter((p) => p.done).map((p) => p.text);
-  out.push(`Cosas para llevar ya anotadas (no las repitas): ${[...left, ...done].join(", ") || "(ninguna)"}`);
-  return out.join("\n");
 }
 
 // Clima y lugar salen del hub: es el mismo que ve el usuario en la pantalla.
@@ -344,56 +302,18 @@ suggest.get("/day", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
   const date = /^\d{4}-\d{2}-\d{2}$/.test(c.req.query("date") ?? "") ? (c.req.query("date") as string) : todayLocal();
   const refresh = c.req.query("refresh") === "1";
-  const trip = await tripOnDate(acc, date);
   const user = [
     `Fecha: ${date}${date === todayLocal() ? " (hoy)" : ""}`,
     await placeAndWeather(acc),
     `Agenda del día:\n${await agendaText(acc, date, lang)}`,
     await pendingText(acc),
-    trip ? `Ese día está de viaje:\n${tripText(trip, lang, date)}` : "",
-    trip
-      ? "Sugiere qué visitar cerca y a qué hora, cuánto se tarda entre los lugares del día y qué conviene tener listo."
-      : "Sugiere cómo ordenar el día, a qué hora conviene salir para cada cosa y qué falta preparar.",
+    "Sugiere cómo ordenar el día, a qué hora conviene salir para cada cosa y qué falta preparar.",
   ]
     .filter(Boolean)
     .join("\n\n");
-  // Solo se busca en internet si ese día está de viaje: ahí es donde los datos
-  // de ahora (horarios, trayectos) valen lo que cuestan.
-  const r = await serve(
-    { accountId: acc, key: `day:${date}:${lang}${trip ? `:${trip.id}` : ""}`, lang, user, search: trip ? "force" : "off" },
-    refresh,
-    { date, trip: trip?.id ?? "" },
-  );
-  return c.json(r.body, r.status);
-});
-
-// Sugerencias de un viaje: qué visitar cerca y en qué horario, y qué falta en
-// la lista de cosas para llevar según el destino, las fechas y lo que ya anotó.
-suggest.get("/trip", async (c) => {
-  const acc = accountOf(c);
-  const lang = normalizeLang(c.req.query("lang"));
-  const id = (c.req.query("id") ?? "").toString();
-  const refresh = c.req.query("refresh") === "1";
-  // Con id vacio `getTrip` devuelve el PRIMER viaje, que para /api/trip esta
-  // bien (es lo que pide el aparato cuando todavia no eligio) pero aca era el
-  // bug: un id borrado llegaba vacio y el servidor contestaba con otro viaje
-  // como si fuera el pedido, ademas de gastar modelo en algo que nadie pidio.
-  const trip = id ? await getTrip(acc, id) : null;
-  if (!trip) return c.json({ ok: false, error: "not found" }, 404);
-  const today = todayLocal();
-  const user = [
-    `Hoy es ${today}.`,
-    tripText(trip, lang, today <= trip.start ? undefined : today),
-    "Sugiere qué visitar cerca de los lugares del viaje y en qué horario conviene ir,",
-    "cuánto se tarda de un lugar al siguiente y qué conviene reservar antes.",
-    "En FALTA pon SOLO cosas que hay que llevar y todavía no están anotadas,",
-    "pensando en el destino, la época del año, el clima, cuántos días dura y qué tipo de actividades hay.",
-  ].join("\n\n");
-  const r = await serve(
-    { accountId: acc, key: `trip:${trip.id}:${lang}:${today}`, lang, user, search: "force" },
-    refresh,
-    { id: trip.id, name: trip.name },
-  );
+  // Sin búsqueda web: se contesta con la agenda, el clima y lo pendiente, que
+  // es lo que ya tenemos.
+  const r = await serve({ accountId: acc, key: `day:${date}:${lang}`, lang, user, search: "off" }, refresh, { date });
   return c.json(r.body, r.status);
 });
 

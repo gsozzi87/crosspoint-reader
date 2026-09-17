@@ -88,26 +88,6 @@ void TaskStatsActivity::loop() {
     return;
   }
 
-  // El medidor de OK mantenido. Se mira `isPressed` y no `wasReleased` a
-  // propósito: `wasLongPressed()` se come la soltada siguiente
-  // (`suppressNextRelease`), así que si el evento llega, el release nunca
-  // aparece y el medidor se quedaría esperando para siempre.
-  const bool down = mappedInput.isPressed(MappedInputManager::Button::Confirm);
-  if (down) {
-    // getHeldTime() es de "cualquier botón", no por botón: acá vale porque la
-    // pantalla no usa ningún otro y lo único apretado es OK.
-    okHoldMs = mappedInput.getHeldTime();
-    if (mappedInput.wasLongPressed(MappedInputManager::Button::Confirm, OK_HOLD_TEST_MS)) okFired = true;
-  } else if (okDown) {
-    lastOkHoldMs = okHoldMs;
-    lastOkFired = okFired;
-    sawOkHold = true;
-    okFired = false;
-    okHoldMs = 0;
-    requestUpdate();  // se soltó: hay resultado nuevo que mostrar
-  }
-  okDown = down;
-
   // La palanca corre la pantalla. Se hace antes del repintado automático para
   // que un movimiento se vea al toque y no después de los dos segundos.
   const int maxScroll = std::max(0, contentH - (listui::contentBottom(renderer) - viewTopY(renderer)));
@@ -233,20 +213,6 @@ void TaskStatsActivity::render(RenderLock&&) {
     y += listui::GAP;  // rowAt ya sumó el alto de la fila
   }
 
-  // --- OK mantenido -------------------------------------------------------
-  y = header(y, tr(STR_MEMORY_OK_HOLD), nullptr);
-  if (!sawOkHold) {
-    y = rowAt(y, listui::ROW1_H, {.title = tr(STR_MEMORY_OK_HOLD_HINT), .rule = true});
-  } else {
-    char meta[32];
-    snprintf(meta, sizeof(meta), "%lu ms", lastOkHoldMs);
-    // tr() es una macro que antepone StrId::, así que el ternario va afuera.
-    const char* veredicto =
-        lastOkFired ? tr(STR_MEMORY_EVENT_ARRIVED) : tr(STR_MEMORY_EVENT_LOST);
-    y = rowAt(y, listui::ROW1_H, {.title = veredicto, .meta = meta, .rule = true});
-  }
-  y += listui::GAP;  // rowAt ya sumó el alto de la fila
-
   // --- Reposo -------------------------------------------------------------
   y = header(y, tr(STR_MEMORY_REST), nullptr);
   if (IDLE_SLEEP.cycles() == 0) {
@@ -301,8 +267,8 @@ void TaskStatsActivity::render(RenderLock&&) {
   contentH = y - viewTop;
 
   const bool hayMas = contentH > (viewBottom - viewTop);
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", hayMas ? tr(STR_DIR_UP) : "",
-                                            hayMas ? tr(STR_DIR_DOWN) : "");
+  const auto labels =
+      mappedInput.mapLabels(tr(STR_BACK), "", hayMas ? tr(STR_DIR_UP) : "", hayMas ? tr(STR_DIR_DOWN) : "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
   painted = now;

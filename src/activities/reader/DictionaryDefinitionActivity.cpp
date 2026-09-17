@@ -3,8 +3,12 @@
 #include <FontCacheManager.h>
 #include <GfxRenderer.h>
 #include <I18n.h>
+#include <Memory.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 
@@ -49,6 +53,29 @@ constexpr uint16_t MAX_VERSE_DIGITS = 3;
 // reader and word-select. Bigger definitions take the span-based plain-text
 // path, which holds no per-page copies.
 constexpr size_t MAX_STYLED_HTML_BYTES = 16 * 1024;
+
+// Cuánto queda el cartel de "no se encontró" / "no hay diccionario".
+constexpr unsigned long POPUP_MS = 1500;
+
+// Una palabra es elegible si tiene un alfanumérico ASCII o un codepoint fuera
+// de U+2000-U+206F (guiones, viñetas y demás puntuación que aparece suelta no
+// son palabras). Misma regla que el cursor del lector, acotada por largo
+// porque acá el texto es un bloque sin cortes.
+bool isSelectableToken(const char* text, const size_t len) {
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(text);
+  for (size_t i = 0; i < len; i++) {
+    if (p[i] < 0x80) {
+      if (std::isalnum(p[i])) return true;
+    } else if (p[i] == 0xE2 && i + 2 < len && (p[i + 1] == 0x80 || p[i + 1] == 0x81)) {
+      i += 2;  // codepoint de General Punctuation: se saltea entero
+    } else {
+      return true;
+    }
+  }
+  return false;
+}
+
+void indexBuildYield(void*) { vTaskDelay(1); }
 
 }  // namespace
 
@@ -114,9 +141,7 @@ int DictionaryDefinitionActivity::pagerTop() const {
   return renderer.getScreenHeight() - hints - metrics.verticalSpacing - renderer.getLineHeight(UI_10_FONT_ID);
 }
 
-int DictionaryDefinitionActivity::footerHeight() const {
-  return renderer.getScreenHeight() - pagerTop() + PAGER_GAP;
-}
+int DictionaryDefinitionActivity::footerHeight() const { return renderer.getScreenHeight() - pagerTop() + PAGER_GAP; }
 
 DictionaryDefinitionActivity::BodyArea DictionaryDefinitionActivity::bodyArea() const {
   const auto& metrics = UITheme::getInstance().getMetrics();
@@ -182,7 +207,7 @@ void DictionaryDefinitionActivity::wrapText() {
   uint32_t lineStart = 0;
   uint32_t lineEnd = 0;  // one past the last token byte on the current line
   int lineWidth = 0;
-  uint16_t verseLen = 0;      // número de versículo del renglón que se está armando
+  uint16_t verseLen = 0;       // número de versículo del renglón que se está armando
   bool paragraphStart = true;  // el próximo token abre un versículo
 
   const auto flushLine = [&](uint32_t nextStart) {
@@ -289,16 +314,248 @@ void DictionaryDefinitionActivity::wrapText() {
   currentPage = 0;
 }
 
+int DictionaryDefinitionActivity::textLeft() const {
+  const auto orientation = renderer.getOrientation();
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const int gutter = orientation == GfxRenderer::Orientation::LandscapeClockwise ? metrics.sideButtonHintsWidth : 0;
+  return gutter + SIDE_PADDING;
+}
+
+int DictionaryDefinitionActivity::bodyTop() const {
+  const auto& metrics = UITheme::getInstance().getMetrics();
+  const bool isInverted = renderer.getOrientation() == GfxRenderer::Orientation::PortraitInverted;
+  return (isInverted ? metrics.buttonHintsHeight : 0) + headerHeight();
+}
+
+void DictionaryDefinitionActivity::addMenuItem(const char* label, std::function<void()> fn) {
+  menuItems.push_back({label ? label : "", std::move(fn)});
+}
+
+// El menú de OK. "Buscar una palabra" va primero y siempre: es lo que el visor
+// puede ofrecer por sí mismo, porque es el único que sabe dónde cayó cada
+// palabra en el vidrio.
+void DictionaryDefinitionActivity::openMenu() {
+  menuLabels.clear();
+  menuLabels.reserve(menuItems.size() + 1);
+  menuLabels.push_back(tr(STR_DICT_LOOKUP_WORD));
+  for (const MenuItem& item : menuItems) menuLabels.push_back(item.label);
+  menu.show(StrId::STR_TEXT_MENU_TITLE, menuLabels, 0, [this](const int idx) {
+    if (idx == 0) {
+      // Buscar significa diccionario local y nunca se convierte en una consulta
+      // a la IA sin avisar: si no hay diccionario se dice, igual que el lector.
+      if (!dictlookup::available()) {
+        popup = Popup::Message;
+        popupMsg = StrId::STR_DICT_NO_DICT_SET;
+        popupTime = millis();
+        requestUpdate();
+        return;
+      }
+      buildPageWords();
+      if (pageWords.empty()) {
+        popup = Popup::Message;
+        popupMsg = StrId::STR_DICT_NOT_FOUND;
+        popupTime = millis();
+        requestUpdate();
+        return;
+      }
+      mode = Mode::Words;
+      wordIndex = 0;
+      wordsNeedClean = true;
+      requestUpdate();
+      return;
+    }
+    const size_t at = static_cast<size_t>(idx) - 1;
+    if (at < menuItems.size() && menuItems[at].fn) menuItems[at].fn();
+    leaving = true;
+    finish();
+  });
+  requestUpdate();
+}
+
+// Las palabras de la página que está EN EL VIDRIO, con la posición en la que se
+// dibujaron. Sale de los mismos renglones y las mismas medidas que drawBody, no
+// de una segunda maquetación: si fueran dos cuentas, el resalte caería en otro
+// lado que la letra.
+void DictionaryDefinitionActivity::buildPageWords() {
+  pageWords.clear();
+  wordIndex = 0;
+  // Camino HTML (una definición del diccionario compuesta con el motor del
+  // lector): ahí el texto vive en las Pages y no en `lines`. Buscar una palabra
+  // adentro de una definición tampoco es lo que nadie pide.
+  if (!pages.empty() || lines.empty()) return;
+
+  const int fontId = SETTINGS.getReaderFontId();
+  const int spaceWidth = renderer.getSpaceWidth(fontId, EpdFontFamily::REGULAR);
+  const int x0 = textLeft();
+  const int y0 = bodyTop();
+  const char* text = definition.c_str();
+  const int firstLine = currentPage * linesPerPage;
+  const int lastLine = std::min(firstLine + linesPerPage, static_cast<int>(lines.size()));
+
+  for (int i = firstLine; i < lastLine; i++) {
+    // Lo que se dibuja de un renglón está topeado en MAX_LINE_BYTES (drawBody
+    // copia a un buffer de ese tamaño), así que más allá de ahí no hay nada en
+    // pantalla que elegir.
+    const size_t len = std::min(static_cast<size_t>(lines[i].len), MAX_LINE_BYTES);
+    if (len == 0) continue;
+    const uint32_t base = lines[i].start;
+    const int y = y0 + (i - firstLine) * lineStep;
+
+    size_t offset = 0;
+    int penX = x0;
+    if (lines[i].verseLen > 0 && lines[i].verseLen < len) {
+      char number[MAX_VERSE_DIGITS + 1];
+      memcpy(number, text + base, lines[i].verseLen);
+      number[lines[i].verseLen] = '\0';
+      penX += renderer.getTextAdvanceX(SMALL_FONT_ID, number, EpdFontFamily::BOLD) + spaceWidth;
+      offset = lines[i].verseLen;
+      while (offset < len && (text[base + offset] == ' ' || text[base + offset] == '\t')) offset++;
+    }
+
+    size_t at = offset;
+    while (at < len) {
+      while (at < len && (text[base + at] == ' ' || text[base + at] == '\t')) at++;
+      if (at >= len) break;
+      const size_t tokenStart = at;
+      while (at < len && text[base + at] != ' ' && text[base + at] != '\t') at++;
+      const size_t tokenLen = at - tokenStart;
+      if (!isSelectableToken(text + base + tokenStart, tokenLen)) continue;
+      // El resto del renglón se dibuja de un tirón desde penX, así que cada
+      // palabra cae en penX más el ancho de lo que va antes (espacios incluidos).
+      const int before = measureSpan(fontId, text + base + offset, tokenStart - offset, EpdFontFamily::REGULAR);
+      const int width = measureSpan(fontId, text + base + tokenStart, tokenLen, EpdFontFamily::REGULAR);
+      pageWords.push_back({static_cast<uint32_t>(base + tokenStart), static_cast<uint16_t>(tokenLen),
+                           static_cast<int16_t>(penX + before), static_cast<int16_t>(y), static_cast<int16_t>(width)});
+    }
+  }
+}
+
+size_t DictionaryDefinitionActivity::wordText(const WordBox& w, char* out, const size_t cap) const {
+  const size_t len = std::min(static_cast<size_t>(w.len), cap - 1);
+  memcpy(out, definition.c_str() + w.start, len);
+  out[len] = '\0';
+  return len;
+}
+
+void DictionaryDefinitionActivity::performLookup() {
+  if (pageWords.empty() || wordIndex >= static_cast<int>(pageWords.size())) return;
+  char word[96];
+  if (wordText(pageWords[wordIndex], word, sizeof(word)) == 0) return;
+
+  popup = Popup::Busy;
+  popupMsg = dict.busyMessage();
+  requestUpdateAndWait();  // que el cartel esté en el vidrio antes de bloquear en la SD
+
+  dictlookup::Hit hit = dict.lookup(word, &indexBuildYield, nullptr);
+  if (hit.found) {
+    popup = Popup::None;
+    startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(
+                               renderer, mappedInput, std::move(hit.headword), std::move(hit.definition), hit.html),
+                           [this](const ActivityResult&) {
+                             partialCount = GrayText::PARTIALS_BEFORE_CLEAN - 1;
+                             wordsNeedClean = true;  // la definición dejó su página entera en el vidrio
+                             requestUpdate();
+                           });
+    return;
+  }
+  popup = Popup::Message;
+  popupMsg = hit.message;
+  popupTime = millis();
+  requestUpdate();
+}
+
+// El resalte de la palabra elegida: caja negra y la palabra en blanco, igual
+// que el cursor del lector. Acá no hay trama de por medio, así que la regla de
+// "nunca letras sobre trama" se respeta sola.
+void DictionaryDefinitionActivity::drawWordHighlight(const int fontId) const {
+  if (pageWords.empty() || wordIndex >= static_cast<int>(pageWords.size())) return;
+  const WordBox& w = pageWords[wordIndex];
+  char word[96];
+  const size_t len = std::min(static_cast<size_t>(w.len), sizeof(word) - 1);
+  memcpy(word, definition.c_str() + w.start, len);
+  word[len] = '\0';
+  int hx = w.x - 2;
+  int hy = w.y - 2;
+  int hw = w.width + 4;
+  int hh = renderer.getLineHeight(fontId) + 4;
+  if (hx < 0) {
+    hw += hx;
+    hx = 0;
+  }
+  if (hy < 0) {
+    hh += hy;
+    hy = 0;
+  }
+  renderer.fillRect(hx, hy, hw, hh, true);
+  renderer.drawText(fontId, w.x, w.y, word, false);
+}
+
 void DictionaryDefinitionActivity::loop() {
+  if (leaving) return;
+
+  // El cartel de "no se encontró" se va solo; mientras está, nada más responde.
+  if (popup == Popup::Message) {
+    if (millis() - popupTime >= POPUP_MS) {
+      popup = Popup::None;
+      requestUpdate();
+    }
+    return;
+  }
+
+  if (menu.isActive()) {
+    menu.handleInput(mappedInput, [this] { requestUpdate(); });
+    // Atrás en el menú lo cierra y no hace nada más: hay que volver a pintar la
+    // página, que quedó tapada por el diálogo.
+    if (!menu.isActive() && !leaving && popup == Popup::None && mode == Mode::Read) requestUpdate();
+    return;
+  }
+
+  // Cursor de palabras (diccionario): la palanca recorre las palabras de la
+  // página en orden de lectura, OK busca y Atrás vuelve al texto.
+  if (mode == Mode::Words) {
+    if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+      mode = Mode::Read;
+      pageWords.clear();
+      partialCount = GrayText::PARTIALS_BEFORE_CLEAN - 1;  // sacar el resalte pide un refresco limpio
+      requestUpdate();
+      return;
+    }
+    if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+      performLookup();
+      return;
+    }
+    const int last = static_cast<int>(pageWords.size()) - 1;
+    buttonNavigator.onNext([&] {
+      if (wordIndex < last) {
+        wordIndex++;
+        requestUpdate();
+      }
+    });
+    buttonNavigator.onPrevious([&] {
+      if (wordIndex > 0) {
+        wordIndex--;
+        requestUpdate();
+      }
+    });
+    return;
+  }
+
   // Atrás mantenido (1 s) = voz, si el dueño lo pidió. Va ANTES de la suelta
   // corta: la misma pulsación termina soltando, y esa suelta ya no es "cerrar".
   if (onVoiceHold && mappedInput.wasLongPressed(MappedInputManager::Button::Back, 1000)) {
     onVoiceHold();
+    leaving = true;
     finish();
     return;
   }
   if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    leaving = true;
     finish();
+    return;
+  }
+  // OK abre el menú, igual que en el lector de CrossPoint.
+  if (!menuItems.empty() && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+    openMenu();
     return;
   }
 
@@ -410,10 +667,40 @@ void DictionaryDefinitionActivity::render(RenderLock&&) {
   // lo que explica la barra; el folio "2 / 5" en una esquina no lo entendía nadie.
   listui::pager(renderer, x, pagerTop(), w, currentPage + 1, totalPages);
 
-  const auto labels = mappedInput.mapLabels(voiceHoldLabel ? voiceHoldLabel : tr(STR_BACK), "",
-                                            (currentPage > 0 ? tr(STR_DIR_UP) : ""),
-                                            (currentPage + 1 < totalPages ? tr(STR_DIR_DOWN) : ""));
+  if (mode == Mode::Words) {
+    drawWordHighlight(fontId);
+    const auto wordLabels =
+        mappedInput.mapLabels(tr(STR_BACK), tr(STR_LOOKUP), (wordIndex > 0 ? tr(STR_DIR_UP) : ""),
+                              (wordIndex + 1 < static_cast<int>(pageWords.size()) ? tr(STR_DIR_DOWN) : ""));
+    GUI.drawButtonHints(renderer, wordLabels.btn1, wordLabels.btn2, wordLabels.btn3, wordLabels.btn4);
+    if (menu.processRender(renderer, mappedInput)) return;
+    if (popup != Popup::None) {
+      GUI.drawPopup(renderer, I18N.get(popupMsg));  // dibuja y refresca él
+      return;
+    }
+    // Sin la pasada de grises: el cursor se mueve palabra por palabra y cada
+    // movimiento pagaría los 160 ms de los dos planos para suavizar un texto
+    // que ya se leyó. Al volver al texto se pide un refresco limpio.
+    const bool clean = wordsNeedClean;
+    wordsNeedClean = false;
+    renderer.displayBuffer(clean ? HalDisplay::HALF_REFRESH : HalDisplay::FAST_REFRESH);
+    return;
+  }
+
+  // Con el menú de OK encendido, abajo a la izquierda dice "Atrás" (que es lo
+  // que hace un toque) y a la derecha el menú: la etiqueta del atajo de voz
+  // dejaba a la vista lo que hace MANTENIDO y escondía lo que hace tocando.
+  const bool hasMenu = !menuItems.empty();
+  const char* backLabel = hasMenu || !voiceHoldLabel ? tr(STR_BACK) : voiceHoldLabel;
+  const auto labels =
+      mappedInput.mapLabels(backLabel, hasMenu ? tr(STR_TEXT_MENU_TITLE) : "", (currentPage > 0 ? tr(STR_DIR_UP) : ""),
+                            (currentPage + 1 < totalPages ? tr(STR_DIR_DOWN) : ""));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+  if (menu.processRender(renderer, mappedInput)) return;
+  if (popup != Popup::None) {
+    GUI.drawPopup(renderer, I18N.get(popupMsg));
+    return;
+  }
   // Esta pantalla es para leer (capítulos de la Biblia, respuestas, noticias),
   // así que el texto sale por el pipeline de grises igual que en el lector: la
   // base en blanco y negro y encima las dos pasadas de suavizado. Solo se

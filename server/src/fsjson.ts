@@ -10,7 +10,7 @@
 //
 // Además, acá está la ÚNICA bifurcación entre el modo de siempre (archivos) y
 // el modo multiusuario (Postgres): `readDoc` / `writeDoc` / `mutateDoc`. Los
-// módulos de datos (store, calendar, trips, suggest, hub) reciben un
+// módulos de datos (store, calendar, suggest, hub) reciben un
 // `accountId` y llaman a estas tres; no saben ni les importa dónde termina el
 // JSON. Sin `DATABASE_URL` el `accountId` se ignora y todo va a los mismos
 // archivos de /data que hasta hoy.
@@ -78,23 +78,17 @@ export async function readJsonSafe<T>(path: string, fallback: T): Promise<T> {
 export type DocName =
   | "store"
   | "calendar"
-  | "trips"
   | "suggest"
   | "hub-settings"
   | "hub-data"
-  | "attachments"
   | "news";
-
-const ATTACHMENTS_DIR = process.env.ATTACHMENTS_DIR ?? "/data/attachments";
 
 const LEGACY_FILE: Record<DocName, string> = {
   store: process.env.STORE_FILE ?? "/data/store.json",
   calendar: process.env.CALENDAR_FILE ?? "/data/calendar.json",
-  trips: process.env.TRIPS_FILE ?? "/data/trips.json",
   suggest: process.env.SUGGEST_FILE ?? "/data/suggest.json",
   "hub-settings": process.env.HUB_SETTINGS_FILE ?? "/data/hub-settings.json",
   "hub-data": process.env.HUB_DATA_FILE ?? "/data/hub-data.json",
-  attachments: `${ATTACHMENTS_DIR}/index.json`,
   news: process.env.NEWS_FILE ?? "/data/news.json",
 };
 
@@ -141,18 +135,15 @@ export async function mutateDoc<D, R>(
 
 // ─────────────────────────────────────── archivos por cuenta
 
-// Fotos, adjuntos y el log del aparato no son JSON: son archivos. La cuenta 1
-// (la que ya venía andando) se queda en las rutas de siempre para no tener que
-// mover nada; las cuentas nuevas viven bajo /data/accounts/<id>/.
+// El log del aparato no es JSON: es un archivo. La cuenta 1 (la que ya venía
+// andando) se queda en la ruta de siempre para no tener que mover nada; las
+// cuentas nuevas viven bajo /data/accounts/<id>/.
 // El accountId es un número, así que ninguna ruta puede escaparse del directorio.
-// `PHOTOS_DIR` y `photosDir()` se borraron en 1.5.91: las fotos salieron del
-// producto en 1.5.74 y estos dos quedaron colgando desde entonces.
+// `PHOTOS_DIR`/`photosDir()` se borraron en 1.5.91 (las fotos salieron en
+// 1.5.74) y `ATTACHMENTS_DIR`/`attachmentsDir()` en 1.5.93, con los viajes: el
+// que los usaba era el único que había.
 const DEVICE_LOG_FILE = process.env.DEVICE_LOG_FILE ?? "/data/device.log";
 const ACCOUNTS_DIR = process.env.ACCOUNTS_DIR ?? "/data/accounts";
-
-export function attachmentsDir(accountId: number): string {
-  return accountId === DEFAULT_ACCOUNT ? ATTACHMENTS_DIR : `${ACCOUNTS_DIR}/${accountId | 0}/attachments`;
-}
 
 export function deviceLogFile(accountId: number): string {
   return accountId === DEFAULT_ACCOUNT ? DEVICE_LOG_FILE : `${ACCOUNTS_DIR}/${accountId | 0}/device.log`;

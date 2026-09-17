@@ -28,9 +28,25 @@ void check(const bool ok, const char* what) {
 
 bool near(const float a, const float b, const float tol = 0.05f) { return std::fabs(a - b) <= tol; }
 
+// `t` es un desplazamiento en segundos desde una fecha CREÍBLE, no un epoch
+// absoluto: desde 1.5.93 `analyze()` descarta las muestras con fecha anterior a
+// 2024 (ver credibleEpoch), así que escribir los casos sobre el epoch 0 medía el
+// rechazo en vez de la cuenta.
+constexpr time_t BASE = batterylog::EPOCH_2024 + 400L * 24 * 3600;  // principios de 2025
+
 Sample s(const time_t t, const int pct, const bool charging = false) {
   Sample x;
-  x.epoch = t;
+  x.epoch = BASE + t;
+  x.pct = pct;
+  x.mv = 3700;
+  x.charging = charging;
+  return x;
+}
+
+// Una muestra con la fecha TAL CUAL, para los casos de reloj roto.
+Sample raw(const time_t epoch, const int pct, const bool charging = false) {
+  Sample x;
+  x.epoch = epoch;
   x.pct = pct;
   x.mv = 3700;
   x.charging = charging;
@@ -60,8 +76,8 @@ int main() {
   {
     // Lo enchufaron en el medio: la ventana tiene que cortar DESPUÉS de eso y
     // medir sólo la descarga limpia del final, no los dos tramos juntos.
-    const Drain d = batterylog::analyze({s(0, 90), s(1 * H, 60), s(2 * H, 100, /*charging=*/true),
-                                         s(3 * H, 100), s(13 * H, 90)});
+    const Drain d =
+        batterylog::analyze({s(0, 90), s(1 * H, 60), s(2 * H, 100, /*charging=*/true), s(3 * H, 100), s(13 * H, 90)});
     check(d.valid, "después de una carga se sigue midiendo");
     check(near(d.hours, 10.0f), "pero sólo el tramo de después (10 h, no 13)");
     check(near(d.pctPerHour, 1.0f), "y da 1,0 %/h, no la mezcla de los dos");
@@ -86,6 +102,34 @@ int main() {
     check(near(d.pctPerHour, 0.375f, 0.01f), "0,375 %/h");
     check(d.hoursLeft > 190 && d.hoursLeft < 210, "y proyecta unos ocho días de autonomía");
   }
+
+  printf("-- fechas que no son fechas (lo que se veía como \"desde el origen de los tiempos\") --\n");
+  {
+    // El caso real: el aparato anotó una muestra con el RTC sin poner en hora
+    // (1970) y después, ya en hora, siguió anotando. La ventana salía de
+    // cincuenta y seis años, la pendiente daba cero y la autonomía, siglos.
+    const Drain d = batterylog::analyze({raw(0, 100), s(0, 90), s(10 * H, 80)});
+    check(d.valid, "con una muestra de 1970 en el medio igual se mide");
+    check(near(d.hours, 10.0f), "...y la ventana son las diez horas buenas, no cincuenta y seis años");
+    check(near(d.pctPerHour, 1.0f), "...con la pendiente de verdad");
+  }
+  {
+    // El PCF85063 sin pila arranca en 2000-01-01, que pasa cualquier prueba de
+    // "> 0" y es justo la que había.
+    const time_t Y2K = 946684800;
+    const Drain d = batterylog::analyze({raw(Y2K, 100), s(0, 90), s(10 * H, 80)});
+    check(near(d.hours, 10.0f), "y lo mismo con el 2000-01-01 del RTC sin pila");
+  }
+  check(!batterylog::analyze({raw(0, 100), raw(10 * H, 90)}).valid, "si TODAS las fechas son de 1970 no se mide nada");
+  {
+    // Alguien puso el reloj en hora en el medio: mirando hacia atrás la fecha
+    // sube en vez de bajar, y de ahí para atrás ya no se puede comparar.
+    const Drain d = batterylog::analyze({s(50 * H, 100), s(0, 95), s(10 * H, 85)});
+    check(d.valid, "con el reloj corregido en el medio igual se mide");
+    check(near(d.hours, 10.0f), "...sobre el tramo posterior a la corrección");
+  }
+  check(!batterylog::analyze({s(0, 100), s(30L * 24 * H, 60)}).valid,
+        "un mes de ventana no es una descarga: es el aparato apagado");
 
   printf("\n%s (%d fallas)\n", failures == 0 ? "TODO BIEN" : "HAY FALLAS", failures);
   return failures == 0 ? 0 : 1;

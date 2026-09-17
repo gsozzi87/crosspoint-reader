@@ -48,15 +48,30 @@ struct Sample {
 // Lo que se pudo medir del archivo.
 struct Drain {
   bool valid = false;
-  float pctPerHour = 0;   // cuánto cae por hora, en puntos de porcentaje
-  float hours = 0;        // qué tan larga es la ventana que se usó
+  float pctPerHour = 0;  // cuánto cae por hora, en puntos de porcentaje
+  float hours = 0;       // qué tan larga es la ventana que se usó
   int fromPct = 0, toPct = 0;
-  float hoursLeft = 0;    // cuánto falta hasta 0 % al ritmo actual
+  float hoursLeft = 0;  // cuánto falta hasta 0 % al ritmo actual
 };
 
 // Un tramo más corto que esto no dice nada: el medidor tiene 1 % de resolución
 // (15 mAh en una batería de 1500) y en diez minutos eso es puro redondeo.
 constexpr double MIN_WINDOW_S = 600;
+
+// Desde cuándo una fecha es creíble. El RTC devuelve cosas con `> 0` que no son
+// una fecha: sin pila, el PCF85063 arranca en 2000-01-01, y el reloj del sistema
+// en 1970. Una sola muestra con una de esas fechas mezclada con las buenas hace
+// una ventana de veinte o cincuenta años — que es lo que se veía en
+// Ajustes → Memoria como una medición "desde el origen de los tiempos", con la
+// pendiente en cero y una autonomía de siglos. Es el mismo umbral que usa
+// `ServerClient::ensureClockForTls()` para decidir si le cree al reloj.
+constexpr time_t EPOCH_2024 = 1704067200;  // 2024-01-01T00:00:00Z
+inline bool credibleEpoch(const time_t t) { return t >= EPOCH_2024; }
+
+// Un tramo más largo que esto no es una descarga: es el aparato apagado (o la
+// fecha rota). Nadie mide la autonomía sobre dos semanas, y si aparece una
+// ventana así es que algo anda mal con las fechas, no que la batería dure eso.
+constexpr double MAX_WINDOW_S = 14 * 24 * 3600;
 
 // La cuenta, sin nada del aparato adentro: se prueba de escritorio en
 // test/battery_drain/. Toma la ventana MÁS LARGA que termine en la muestra más
@@ -68,16 +83,27 @@ inline Drain analyze(const std::vector<Sample>& rows) {
   Drain d;
   if (rows.size() < 2) return d;
   const Sample& last = rows.back();
+  // La muestra más nueva tiene que tener fecha creíble: sin eso no hay nada que
+  // medir, y medir contra una fecha rota es peor que no medir.
+  if (!credibleEpoch(last.epoch)) return d;
   size_t first = rows.size() - 1;
   for (size_t i = rows.size(); i-- > 0;) {
     if (rows[i].charging) break;
     if (rows[i].pct < last.pct) break;
+    // La fecha tiene que ser creíble Y tiene que ir hacia atrás. Una muestra
+    // anotada cuando el RTC no estaba en hora (1970, o el 2000-01-01 del
+    // PCF85063 sin pila) estira la ventana décadas hacia atrás, y con ella la
+    // pendiente se va a cero y la autonomía a siglos. Y una fecha que va
+    // hacia ADELANTE mirando hacia atrás quiere decir que en el medio pusieron
+    // el reloj en hora: de ahí para atrás ya no se puede comparar.
+    if (!credibleEpoch(rows[i].epoch)) break;
+    if (rows[i].epoch > last.epoch) break;
     first = i;
   }
   if (first >= rows.size() - 1) return d;
   const Sample& from = rows[first];
   const double seconds = static_cast<double>(last.epoch - from.epoch);
-  if (seconds < MIN_WINDOW_S) return d;
+  if (seconds < MIN_WINDOW_S || seconds > MAX_WINDOW_S) return d;
   const int drop = from.pct - last.pct;
   if (drop <= 0) return d;
   d.valid = true;
