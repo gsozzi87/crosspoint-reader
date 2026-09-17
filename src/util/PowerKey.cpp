@@ -21,6 +21,12 @@ constexpr uint8_t REG_PWRON_STATUS = 0x20;   // what powered the PMIC on (log on
 constexpr uint8_t REG_PWROFF_STATUS = 0x21;  // what powered it off last time (log only)
 constexpr uint8_t REG_PWROFF_EN = 0x22;      // bit1 PWRON > OFFLEVEL powers off, bit0 1 = restart / 0 = off
 constexpr uint8_t REG_IRQ_OFF_ON_LEVEL = 0x27;  // [1:0] PressOn [3:2] PressOff [5:4] IrqLevel
+// Cargador de la PILA DE RESPALDO, la que sostiene al RTC cuando se corta el
+// riel principal. ACÁ ESA PILA ES UNA CR2032, o sea PRIMARIA: no se carga.
+// Meterle corriente la calienta, la hincha y la deja seca antes de tiempo — y
+// una CR2032 seca es exactamente "el aparato vuelve del apagado sin hora".
+constexpr uint8_t REG_MODULE_EN = 0x18;      // bit2 = cargador de la pila de respaldo
+constexpr uint8_t MODULE_EN_BTN_BAT = 0x04;  // bit2
 constexpr uint8_t REG_INTEN1 = 0x40;
 constexpr uint8_t REG_INTEN2 = 0x41;
 constexpr uint8_t REG_INTEN3 = 0x42;
@@ -117,6 +123,20 @@ void PowerKey::begin() {
   // never be echoed back from a read.
   if (readReg(REG_COMMON_CONFIG, v)) writeReg(REG_COMMON_CONFIG, (v & static_cast<uint8_t>(~0x03)) | 0x04);
   if (readReg(REG_PWROFF_EN, v)) writeReg(REG_PWROFF_EN, (v | 0x02) & static_cast<uint8_t>(~0x01));
+  // NUNCA cargar la pila de respaldo: es una CR2032, primaria. El bit viene
+  // apagado de fábrica, pero "de fábrica" acá es el OTP del clon del PMIC y un
+  // gestor de arranque del vendor, y ninguno de los dos lo decidimos nosotros.
+  // Si alguno lo dejó encendido, el aparato le estuvo metiendo corriente a una
+  // celda que no la acepta desde el día uno — y una CR2032 castigada así se
+  // seca en semanas, que es justo el síntoma de volver del apagado sin hora.
+  // Se comprueba y se apaga en cada arranque, y se dice en el log si estaba
+  // encendido: ese renglón es la diferencia entre "cambiá la pila" y "cambiá
+  // la pila Y ya sabemos quién te la secó".
+  if (readReg(REG_MODULE_EN, v) && (v & MODULE_EN_BTN_BAT) != 0) {
+    writeReg(REG_MODULE_EN, static_cast<uint8_t>(v & static_cast<uint8_t>(~MODULE_EN_BTN_BAT)));
+    LOG_ERR(TAG, "el PMIC estaba CARGANDO la pila de respaldo (0x18=%02X): es una CR2032, se apaga", v);
+  }
+
   // Only the key may pull the IRQ line: anything else left enabled by OTP
   // (battery, charger, VBUS) would hold it LOW forever and turn the cheap
   // level check into an I2C read on every loop.

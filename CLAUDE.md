@@ -1274,6 +1274,47 @@ completo y de la web"*, y vuelve como app de Lua más adelante.
   vía a propósito: el viaje que los explicaba no existe.
 - De paso se fue `STR_AGENDA_EMPTY`, que no lo usaba nadie desde que existe `STR_AGENDA_EMPTY_VOICE`.
 
+## El reloj, la pila del RTC y un log de hace diez versiones (1.5.94)
+
+El aparato volvía del apagado sin hora, la agenda decía que no estaba en hora y sólo se acomodaba al sincronizar
+con el servidor. Y el log que vino con el reporte era de **1.5.82 o anterior**, cosa que se puede fechar sin
+preguntar y conviene saber hacer:
+
+- dice `[UI] Using Bento theme`, y `BentoTheme` se borró en **1.5.86**;
+- repite `[DREG] No /.dictionaries directory` una vez por visita a Ajustes, y la guardia de una-vez-por-arranque
+  entró en **1.5.83**;
+- dice `Time = NN ms from clearScreen to displayBuffer` en cada pintada, y esa línea pasó a salir sólo arriba de
+  150 ms en **1.5.93**.
+
+O sea que casi todo lo reportado ya estaba arreglado en versiones que ese aparato nunca corrió: el reposo que no
+entraba por un vencido que la pantalla de turno no iba a atender (1.5.93), la batería medida "desde 1970"
+(1.5.93), la red de seguridad del reposo que era código muerto y el log que se truncaba en cada arranque
+(1.5.92). **Antes de diagnosticar un log, fecharlo.**
+
+Lo que NO arreglaba actualizar, y por eso va acá:
+
+- **Eran dos relojes y se mantenía uno solo, otra vez.** 1.5.79 arregló el arranque (`applyToSystemClock()` le
+  pasa la hora del RTC al reloj del sistema), pero `setFromEpochUtc()` —el camino por el que el servidor pone
+  en hora al aparato— escribía el RTC y **no tocaba el reloj del sistema**. O sea que justo después de
+  sincronizar, `time(nullptr)` seguía en 1970 hasta el próximo arranque, y `ensureClockForTls()` ya había
+  gastado su único intento de la sesión, así que nadie lo volvía a corregir. Ahora los dos caminos que ponen el
+  RTC en hora (servidor y NTP) ponen también el del sistema, por `HalClock::applySystemClock()`.
+- **"El RTC no tiene una hora creíble" eran TRES cosas distintas con un solo cartel**, y mandan a buscar el
+  problema a lugares que no tienen nada que ver: que el chip **no conteste por I2C** es cableado; que conteste
+  con la bandera OS puesta es que **el oscilador se paró**, o sea que se quedó sin alimentación, o sea la pila;
+  y que conteste con una hora buena pero absurda (2000-01-01 es el arranque de fábrica del PCF85063) es que
+  **nunca se lo puso en hora**. Ahora cada uno tiene su renglón. Es el mismo defecto que el "el DNS no devolvió
+  nada" contra "resuelve a red interna" de 1.5.92: dos causas con un solo mensaje no son un diagnóstico.
+- **El PMIC no puede cargar la pila de respaldo: es una CR2032.** El AXP2101 tiene cargador para esa celda
+  (0x18 bit2, apagado de fábrica) y la primera versión de este arreglo lo ENCENDÍA, dando por sentado que había
+  algo recargable. Lo confirmó el dueño y es al revés: es primaria. Cargar una primaria la calienta, la hincha y
+  la seca antes de tiempo — y una CR2032 seca ES el síntoma. Así que el arranque ahora **comprueba y apaga** ese
+  bit, y si lo encontró encendido lo dice en el log: "de fábrica" acá es el OTP de un clon del PMIC y un gestor
+  de arranque del vendor, y ninguno de los dos lo decidimos nosotros.
+
+**El diagnóstico de la hora, entonces, se lee en una línea del arranque.** Si dice `el RTC se quedó sin
+alimentación (oscilador parado)`, la pila está seca o no hace contacto y no hay software que lo arregle.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

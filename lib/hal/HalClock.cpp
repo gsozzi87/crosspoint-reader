@@ -108,6 +108,13 @@ bool HalClock::setFromEpochUtc(const time_t epoch) {
   _cachedHour = dt.hour;
   _cachedMinute = dt.minute;
   _hasCachedTime = true;
+  // Y el reloj del SISTEMA con él. Son dos relojes distintos y hasta acá se
+  // mantenía uno solo: poner en hora el RTC dejaba `time(nullptr)` en 1970
+  // hasta el próximo arranque, que es cuando applyToSystemClock() lo lee. En
+  // un aparato que acaba de sincronizar eso es justo al revés de lo que hace
+  // falta — y ServerClient::ensureClockForTls() ya gastó su único intento de
+  // la sesión, así que nadie lo vuelve a corregir.
+  applySystemClock(epoch);
   LOG_INF("CLK", "RTC set from server to %04u-%02u-%02u %02u:%02u:%02u UTC", dt.year, dt.month, dt.day, dt.hour,
           dt.minute, dt.second);
   return true;
@@ -145,6 +152,7 @@ bool HalClock::syncFromNTP() {
         _cachedHour = dt.hour;
         _cachedMinute = dt.minute;
         _hasCachedTime = true;
+        applySystemClock(now);
         LOG_INF("CLK", "RTC set to %04u-%02u-%02u %02u:%02u:%02u UTC", dt.year, dt.month, dt.day, dt.hour, dt.minute,
                 dt.second);
         return true;
@@ -165,17 +173,43 @@ static constexpr time_t CREIBLE_DESDE = 1704067200;  // 2024-01-01
 
 bool HalClock::systemClockLooksSet() { return time(nullptr) >= CREIBLE_DESDE; }
 
-bool HalClock::applyToSystemClock() const {
-  time_t epoch = 0;
-  if (!getEpochUtc(epoch) || epoch < CREIBLE_DESDE) {
-    LOG_ERR("CLK", "el RTC no tiene una hora creíble: el reloj del sistema queda en 1970");
-    return false;
-  }
+bool HalClock::applySystemClock(const time_t epoch) {
+  if (epoch < CREIBLE_DESDE) return false;
   const struct timeval tv = {.tv_sec = epoch, .tv_usec = 0};
   if (settimeofday(&tv, nullptr) != 0) {
     LOG_ERR("CLK", "settimeofday falló");
     return false;
   }
+  return true;
+}
+
+bool HalClock::applyToSystemClock() const {
+  // TRES motivos distintos, y hasta acá los tres salían con el mismo cartel.
+  // Mandan a buscar el problema a lugares que no tienen nada que ver:
+  //
+  //   - el chip no contesta por I2C  -> bus, dirección o pines: es cableado.
+  //   - contesta y la bandera OS está puesta -> el oscilador SE PARÓ, o sea
+  //     que el RTC se quedó sin alimentación. Eso es hardware de respaldo, no
+  //     software, y es lo que pasa en cada apagado si nada sostiene el chip.
+  //   - contesta con una hora buena pero absurda (2000-01-01 es el arranque de
+  //     fábrica del PCF85063) -> nunca se lo puso en hora.
+  //
+  // El aparato no puede arreglar ninguno solo, pero decir cuál es lo que separa
+  // "hay que revisar la pila" de "hay que sincronizar una vez".
+  if (!_available) {
+    LOG_ERR("CLK", "el RTC no contesta por I2C: el reloj del sistema queda en 1970");
+    return false;
+  }
+  time_t epoch = 0;
+  if (!getEpochUtc(epoch)) {
+    LOG_ERR("CLK", "el RTC se quedó sin alimentación (oscilador parado): perdió la hora");
+    return false;
+  }
+  if (epoch < CREIBLE_DESDE) {
+    LOG_ERR("CLK", "el RTC anda pero nunca se lo puso en hora (epoch %lld)", (long long)epoch);
+    return false;
+  }
+  if (!applySystemClock(epoch)) return false;
   LOG_INF("CLK", "reloj del sistema en hora desde el RTC (epoch %lld)", (long long)epoch);
   return true;
 }
