@@ -90,6 +90,9 @@ const SCHEMA = [
      stt_seconds int DEFAULT 0,
      PRIMARY KEY (account_id, month)
    )`,
+  // Las apps de Lua gastan modelo con su propia clave y se cuentan aparte
+  // (ver usage.ts): no entran en el tope de Hablar ni lo consumen.
+  `ALTER TABLE usage ADD COLUMN IF NOT EXISTS apps_calls int DEFAULT 0`,
   `CREATE TABLE IF NOT EXISTS server_meta (
      key   text PRIMARY KEY,
      value text NOT NULL

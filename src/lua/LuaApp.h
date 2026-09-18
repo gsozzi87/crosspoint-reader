@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -35,6 +37,15 @@ struct lua_State;
 // documentada en docs/ws397/APPS_LUA.md. Y todo lo que corre pasa por un worker
 // de vida corta con el stack declarado (`tasks::runBounded`), así el stack de
 // una app no vive en el loop de Arduino, que es el que anda justo.
+//
+// Las puertas (contrato v1, docs/ws397/PLAN_APPS_VIAJES_EPUB.md): micrófono,
+// servidor, descargas, archivos propios, el visor y el lector. Todo lo que
+// espera es ASÍNCRONO: `cp.listen`, `cp.call`, `cp.download`, `cp.view` y
+// `cp.open_book` sólo ENCOLAN un pedido y vuelven en el acto; el host
+// (LuaAppsActivity) lo saca de la cola desde su loop(), hace el trabajo con sus
+// propias pantallas y le contesta a la app por `on_heard(texto)` /
+// `on_reply(id, ok, tabla)`. La red y el micrófono NUNCA corren en el worker de
+// Lua: son 32 KB de stack y el TLS no entra ahí.
 class LuaApp {
  public:
   // Cuánto stack se le da al worker donde corre el script. 32 KB es lo mismo
@@ -54,6 +65,38 @@ class LuaApp {
   static constexpr unsigned long TICK_MS = 120;
   // Tope del texto que una app puede guardar (`cp.save`).
   static constexpr size_t SAVE_CAP = 4096;
+  // Los archivos propios de la app (`/Apps/data/<app>/`): lo que se lee de un
+  // tirón, lo que se escribe y lo que se manda al visor. Son topes de memoria,
+  // no de tarjeta: `cp.read` con rango sirve para archivos más grandes.
+  static constexpr size_t READ_CAP = 48 * 1024;
+  static constexpr size_t WRITE_CAP = 64 * 1024;
+  static constexpr size_t VIEW_CAP = 64 * 1024;
+  // El JSON de `args` de `cp.call` y su profundidad. 16 KB es más que cualquier
+  // índice de capítulos; una tabla cíclica se corta por la profundidad.
+  static constexpr size_t ARGS_CAP = 16 * 1024;
+  static constexpr int ARGS_DEPTH = 6;
+  // Pedidos encolados como mucho. Salen de a uno y en orden.
+  static constexpr int QUEUE_CAP = 4;
+  // Nombres de archivo que pasa la app: [A-Za-z0-9._-]{1,48}, sin punto inicial.
+  static constexpr size_t NAME_CAP = 48;
+  // Segundos de escucha como mucho (VoiceRecorder reserva PSRAM por segundo).
+  static constexpr int LISTEN_MAX_S = 30;
+
+  // Un pedido de la app al host. Los strings significan distinto según el tipo:
+  //   Listen:   seconds, a = pregunta (puede estar vacía)
+  //   Call:     id, a = servicio, b = args en JSON
+  //   Download: id, a = fileId, b = nombre de destino, c = "app" | "books"
+  //   View:     a = nombre, b = título
+  //   OpenBook: a = nombre
+  struct Request {
+    enum class Kind : uint8_t { Listen, Call, Download, View, OpenBook };
+    Kind kind = Kind::Call;
+    int id = 0;
+    int seconds = 0;
+    std::string a;
+    std::string b;
+    std::string c;
+  };
 
   // Una app instalada: el archivo y el nombre que se muestra.
   struct Entry {
@@ -71,6 +114,9 @@ class LuaApp {
   bool ok() const { return state_ != nullptr && error_.empty(); }
   const std::string& error() const { return error_; }
   const std::string& name() const { return name_; }
+  // El nombre saneado que da nombre a las carpetas y viaja al servidor como
+  // `app` en cp.call (`librito.lua` → "librito").
+  const std::string& appId() const { return dirName_; }
   bool quitRequested() const { return quit_; }
 
   // Las tres llamadas al script. Devuelven true si hay que repintar. Un error
@@ -79,12 +125,46 @@ class LuaApp {
   bool onTick();
   void onDraw();
 
+  // --- Las puertas: lo que el host atiende -----------------------------------
+  // Saca el pedido más viejo de la cola. False si no hay ninguno.
+  bool takeRequest(Request& out);
+  bool hasRequests() const;
+  // El host dice si tiene un pedido EN CURSO (ya sacado de la cola): es lo que
+  // `cp.busy()` responde además de mirar la cola.
+  void setBusy(bool busy);
+  // Cancela lo que sigue encolado: cada Call/Download recibe
+  // `on_reply(id, false, {error="cancelado"})` y un Listen, `on_heard(nil)`.
+  // Devuelve true si algún callback pidió repintar.
+  bool cancelQueued();
+
+  // Lo que vuelve a la app. Todos devuelven true si hay que repintar (y el
+  // contrato dice que después de cada uno se repinta igual). Si la app no
+  // define `on_heard` / `on_reply` no es error: se ignora.
+  bool onHeard(const char* textOrNull);
+  // `json` es el cuerpo del servidor tal cual. `ok` = parsea y trae ok=true; si
+  // no parsea, la tabla lleva `error`.
+  bool onReply(int id, const std::string& json);
+  bool onReplyError(int id, const char* error);
+  bool onReplyBytes(int id, size_t bytes);
+
+  // Carpetas de la app: `/Apps/data/<app>` y `/Books/<app>`. `<app>` es el
+  // nombre del archivo sin `.lua`, saneado a [A-Za-z0-9._-].
+  std::string dataDir() const;
+  std::string booksDir() const;
+  // Nombre válido para un archivo que pasa la app: [A-Za-z0-9._-]{1,48}, sin
+  // punto inicial (nada de `.state`, nada de `..`) y sin barras.
+  static bool validName(const char* name);
+
  private:
   bool callback(const char* fn, const char* arg);
+  // Igual que callback() pero con un empujador de argumentos arbitrario, que
+  // corre DENTRO del worker (es donde se arma la tabla de la respuesta).
+  bool callbackWith(const char* fn, int (*push)(lua_State*, void*), void* ctx);
 
   lua_State* state_ = nullptr;
   std::string error_;
   std::string name_;
+  std::string dirName_;
   std::string path_;
   bool quit_ = false;
   bool hasTick_ = false;

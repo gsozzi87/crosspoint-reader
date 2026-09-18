@@ -8,7 +8,13 @@
 //   g++ -std=c++17 -I lib/Lua/src -I src/lua test/lua_sandbox/test_sandbox.cpp \
 //       src/lua/LuaSandbox.cpp lib/Lua/src/*.c -o /tmp/test_sandbox && /tmp/test_sandbox
 
+#include <dirent.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -116,6 +122,227 @@ int stubTime(lua_State* L) {
   return 1;
 }
 
+// --- El `cp` falso de las puertas (contrato v1) -----------------------------
+//
+// Lo de red, micrófono, visor y lector va como PRELUDE en Lua sobre unos pocos
+// ayudantes en C para los archivos, porque así se lee como el contrato que
+// imita: una cola de pedidos que `fake.step()` entrega de a uno llamando a
+// on_heard / on_reply, lo mismo que hace LuaAppsActivity desde su loop().
+// El escenario (test/lua_sandbox/scenarios/<app>.lua) maneja:
+//
+//   fake.heard = "texto"        la próxima cp.listen llama on_heard con eso
+//   fake.reply[servicio] = f    f(args) -> ok, tabla; la próxima cp.call de ese
+//                               servicio llama on_reply con eso
+//   fake.download[fileId] = s   contenido que "baja" cp.download (si falta, un
+//                               relleno); fake.downloadFails = true la hace fallar
+//   fake.key(k), fake.tick()    on_key / on_tick, con la regla de busy()
+//   fake.step()                 entrega UNA cosa pendiente (la más vieja)
+//   fake.draw()                 corre on_draw y devuelve los textos dibujados
+//   fake.advance(ms) / fake.ms  el reloj de cp.ms(), que no avanza solo
+//   fake.opened                 lo que abrió cp.view / cp.open_book
+//   fake.reload()               vacía la cola (el escenario llama on_open él)
+//
+// Los archivos van a un directorio temporal: <tmp>/data (la carpeta de la app)
+// y <tmp>/books.
+
+std::string g_fsRoot;  // el directorio temporal del escenario en curso
+
+std::string fsPath(const char* sub, const char* name) { return g_fsRoot + "/" + sub + "/" + name; }
+
+int fsRead(lua_State* L) {
+  FILE* f = fopen(fsPath(luaL_checkstring(L, 1), luaL_checkstring(L, 2)).c_str(), "rb");
+  if (!f) {
+    lua_pushnil(L);
+    return 1;
+  }
+  std::string out;
+  char buf[4096];
+  size_t n;
+  while ((n = fread(buf, 1, sizeof(buf), f)) > 0) out.append(buf, n);
+  fclose(f);
+  lua_pushlstring(L, out.data(), out.size());
+  return 1;
+}
+
+int fsWrite(lua_State* L) {
+  size_t len = 0;
+  const char* data = luaL_checklstring(L, 3, &len);
+  const std::string path = fsPath(luaL_checkstring(L, 1), luaL_checkstring(L, 2));
+  const std::string tmp = path + ".tmp";
+  FILE* f = fopen(tmp.c_str(), "wb");
+  if (!f) {
+    lua_pushboolean(L, 0);
+    return 1;
+  }
+  const bool ok = fwrite(data, 1, len, f) == len;
+  fclose(f);
+  lua_pushboolean(L, ok && rename(tmp.c_str(), path.c_str()) == 0 ? 1 : 0);
+  return 1;
+}
+
+int fsRemove(lua_State* L) {
+  lua_pushboolean(L, unlink(fsPath(luaL_checkstring(L, 1), luaL_checkstring(L, 2)).c_str()) == 0 ? 1 : 0);
+  return 1;
+}
+
+int fsExists(lua_State* L) {
+  struct stat st;
+  lua_pushboolean(L, stat(fsPath(luaL_checkstring(L, 1), luaL_checkstring(L, 2)).c_str(), &st) == 0 ? 1 : 0);
+  return 1;
+}
+
+int fsList(lua_State* L) {
+  lua_newtable(L);
+  DIR* d = opendir((g_fsRoot + "/" + luaL_checkstring(L, 1)).c_str());
+  if (!d) return 1;
+  std::vector<std::string> names;
+  while (dirent* e = readdir(d)) {
+    if (e->d_name[0] == '.') continue;
+    const std::string n = e->d_name;
+    if (n.size() > 4 && n.compare(n.size() - 4, 4, ".tmp") == 0) continue;
+    names.push_back(n);
+  }
+  closedir(d);
+  std::sort(names.begin(), names.end());
+  lua_Integer i = 1;
+  for (const std::string& n : names) {
+    lua_pushstring(L, n.c_str());
+    lua_rawseti(L, -2, i++);
+  }
+  return 1;
+}
+
+const char* FAKE_PRELUDE = R"LUA(
+fake = { heard = nil, reply = {}, download = {}, downloadFails = false, opened = {}, drawn = {}, ms = 12345 }
+local pending = {}          -- la cola de pedidos, en orden
+local nextId = 0
+local saved = nil           -- cp.save / cp.load dentro del escenario
+local QUEUE_CAP = 4
+
+local function validName(n)
+  return type(n) == "string" and #n >= 1 and #n <= 48 and n:sub(1, 1) ~= "." and n:match("^[A-Za-z0-9._%-]+$") ~= nil
+end
+local function validToken(n)
+  return type(n) == "string" and #n >= 1 and #n <= 64 and n:match("^[A-Za-z0-9._%-]+$") ~= nil
+end
+
+cp.ms = function() return fake.ms end
+fake.advance = function(ms) fake.ms = fake.ms + ms end
+cp.save = function(t) saved = tostring(t):sub(1, 4096); return true end
+cp.load = function() return saved end
+cp.text = function(x, y, s) fake.drawn[#fake.drawn + 1] = tostring(s) end
+
+cp.busy = function() return #pending > 0 end
+
+cp.listen = function(seg, pregunta)
+  if #pending >= QUEUE_CAP then return false end
+  for _, p in ipairs(pending) do if p.kind == "listen" then return false end end
+  pending[#pending + 1] = { kind = "listen", seg = seg, pregunta = pregunta }
+  return true
+end
+
+cp.call = function(service, args)
+  assert(validToken(service), "cp.call: servicio inválido")
+  assert(args == nil or type(args) == "table", "cp.call: args tiene que ser una tabla")
+  if #pending >= QUEUE_CAP then return nil end
+  nextId = nextId + 1
+  pending[#pending + 1] = { kind = "call", id = nextId, service = service, args = args or {} }
+  return nextId
+end
+
+cp.download = function(fileId, nombre, destino)
+  destino = destino or "app"
+  if not validToken(fileId) or not validName(nombre) or (destino ~= "app" and destino ~= "books") then return nil end
+  if #pending >= QUEUE_CAP then return nil end
+  nextId = nextId + 1
+  pending[#pending + 1] = { kind = "download", id = nextId, fileId = fileId, name = nombre, dest = destino }
+  return nextId
+end
+
+cp.files = function() return hostfs.list("data") end
+cp.read = function(nombre, desde, largo)
+  if not validName(nombre) then return nil end
+  local s = hostfs.read("data", nombre)
+  if not s then return nil end
+  if desde then return s:sub(desde + 1, desde + (largo or 48 * 1024)) end
+  if #s > 48 * 1024 then return nil end
+  return s
+end
+cp.write = function(nombre, texto)
+  if not validName(nombre) or type(texto) ~= "string" or #texto > 64 * 1024 then return false end
+  return hostfs.write("data", nombre, texto)
+end
+cp.remove = function(nombre)
+  if not validName(nombre) then return false end
+  return hostfs.remove("data", nombre)
+end
+cp.size = function(nombre)
+  if not validName(nombre) then return nil end
+  local s = hostfs.read("data", nombre)
+  return s and #s or nil
+end
+cp.view = function(nombre, titulo)
+  if not validName(nombre) or not hostfs.exists("data", nombre) then return false end
+  fake.opened[#fake.opened + 1] = { kind = "view", name = nombre, title = titulo or nombre }
+  return true
+end
+cp.open_book = function(nombre)
+  if not validName(nombre) or not hostfs.exists("books", nombre) then return false end
+  fake.opened[#fake.opened + 1] = { kind = "book", name = nombre }
+  return true
+end
+
+local function call(fn, ...)
+  local f = rawget(_G, fn)
+  if type(f) == "function" then return f(...) end
+  return nil
+end
+
+-- Entrega UNA cosa pendiente, la más vieja. Devuelve true si entregó algo.
+fake.step = function()
+  local p = table.remove(pending, 1)
+  if not p then return false end
+  if p.kind == "listen" then
+    local t = fake.heard
+    fake.heard = nil
+    call("on_heard", t)
+  elseif p.kind == "call" then
+    local f = fake.reply[p.service]
+    if f then
+      local ok, t = f(p.args)
+      call("on_reply", p.id, ok and true or false, t or {})
+    else
+      call("on_reply", p.id, false, { error = "sin servicio falso: " .. p.service })
+    end
+  elseif p.kind == "download" then
+    if fake.downloadFails then
+      call("on_reply", p.id, false, { error = "descarga fallida (1)" })
+    else
+      local body = fake.download[p.fileId] or ("<falso " .. p.fileId .. ">")
+      local sub = p.dest == "books" and "books" or "data"
+      assert(hostfs.write(sub, p.name, body), "no se pudo escribir la descarga falsa")
+      call("on_reply", p.id, true, { bytes = #body })
+    end
+  end
+  return true
+end
+
+-- Con algo en curso sólo pasa "back", como el host.
+fake.key = function(k)
+  if #pending > 0 and k ~= "back" then return nil end
+  return call("on_key", k)
+end
+fake.tick = function() return call("on_tick") end
+fake.draw = function()
+  fake.drawn = {}
+  call("on_draw")
+  local out = {}
+  for i, s in ipairs(fake.drawn) do out[i] = s end
+  return out
+end
+fake.reload = function() pending = {} end
+)LUA";
+
 void installStubCp(lua_State* L) {
   static const luaL_Reg CP[] = {
       {"clear", stubNone}, {"text", stubNone},      {"textw", stubTextW}, {"texth", stubTextH},   {"rect", stubNone},
@@ -125,7 +352,30 @@ void installStubCp(lua_State* L) {
   };
   luaL_newlib(L, CP);
   lua_setglobal(L, "cp");
+  static const luaL_Reg FS[] = {
+      {"read", fsRead}, {"write", fsWrite}, {"remove", fsRemove}, {"exists", fsExists}, {"list", fsList},
+      {nullptr, nullptr},
+  };
+  luaL_newlib(L, FS);
+  lua_setglobal(L, "hostfs");
+  if (luaL_loadbuffer(L, FAKE_PRELUDE, strlen(FAKE_PRELUDE), "=fake") != LUA_OK || lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    printf("FALLA el prelude del cp falso: %s\n", lua_tostring(L, -1));
+    exit(2);
+  }
   (void)stubZero;
+}
+
+// Un directorio temporal limpio para los archivos de la app de turno.
+void freshFsRoot() {
+  if (!g_fsRoot.empty()) {
+    const std::string cmd = "rm -rf '" + g_fsRoot + "'";
+    if (system(cmd.c_str()) != 0) printf("(no se pudo borrar %s)\n", g_fsRoot.c_str());
+  }
+  char tmpl[] = "/tmp/lua_sandbox_XXXXXX";
+  const char* dir = mkdtemp(tmpl);
+  g_fsRoot = dir ? dir : "/tmp";
+  mkdir((g_fsRoot + "/data").c_str(), 0700);
+  mkdir((g_fsRoot + "/books").c_str(), 0700);
 }
 
 std::string slurp(const char* path) {
@@ -143,6 +393,7 @@ std::string slurp(const char* path) {
 std::string runApp(const char* path) {
   const std::string source = slurp(path);
   if (source.empty()) return "no se pudo leer el archivo";
+  freshFsRoot();
   lua_State* L = luasandbox::create(1024 * 1024);
   if (!L) return "sin memoria";
   installStubCp(L);
@@ -190,6 +441,7 @@ std::string runApp(const char* path) {
 std::string playApp(const char* path, const char* const* teclas, const int cuantas, const int vueltas) {
   const std::string source = slurp(path);
   if (source.empty()) return "no se pudo leer el archivo";
+  freshFsRoot();
   lua_State* L = luasandbox::create(1024 * 1024);
   if (!L) return "sin memoria";
   installStubCp(L);
@@ -227,6 +479,50 @@ std::string playApp(const char* path, const char* const* teclas, const int cuant
   }
   luasandbox::destroy(L);
   return err;
+}
+// Un escenario: carga la app, corre el guion de test/lua_sandbox/scenarios/
+// encima (con `fake` y `cp` a mano) y falla si el guion lanza. El guion llama
+// a on_open él mismo, que es como sabe en qué estado arranca.
+std::string runScenario(const char* appPath, const char* scenarioPath) {
+  const std::string source = slurp(appPath);
+  const std::string script = slurp(scenarioPath);
+  if (source.empty() || script.empty()) return "no se pudo leer el archivo";
+  freshFsRoot();
+  lua_State* L = luasandbox::create(1024 * 1024);
+  if (!L) return "sin memoria";
+  installStubCp(L);
+  std::string err;
+  if (luaL_loadbuffer(L, source.data(), source.size(), appPath) != LUA_OK || lua_pcall(L, 0, 0, 0) != LUA_OK) {
+    err = std::string("la app no carga: ") + (lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
+  } else if (luaL_loadbuffer(L, script.data(), script.size(), scenarioPath) != LUA_OK) {
+    err = std::string("el escenario no compila: ") + (lua_tostring(L, -1) ? lua_tostring(L, -1) : "?");
+  } else {
+    // Sin guardia de instrucciones: el guion entero es una sola llamada y
+    // legítimamente larga. La app, adentro, sigue sin poder abrir archivos.
+    if (lua_pcall(L, 0, 0, 0) != LUA_OK) err = lua_tostring(L, -1) ? lua_tostring(L, -1) : "?";
+  }
+  luasandbox::destroy(L);
+  return err;
+}
+
+// Todas las apps de examples/Apps, ordenadas: la que agregue alguien mañana
+// entra sola en la prueba.
+std::vector<std::string> discoverApps() {
+  std::vector<std::string> out;
+  DIR* d = opendir("examples/Apps");
+  if (!d) return out;
+  while (dirent* e = readdir(d)) {
+    const std::string n = e->d_name;
+    if (n.size() > 4 && n.compare(n.size() - 4, 4, ".lua") == 0) out.push_back("examples/Apps/" + n);
+  }
+  closedir(d);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+bool fileExists(const std::string& path) {
+  struct stat st;
+  return stat(path.c_str(), &st) == 0;
 }
 }  // namespace
 
@@ -284,21 +580,67 @@ int main() {
   check(fat.find("memory") != std::string::npos, "y el error lo dice");
   check(luasandbox::memUsed() == 0, "al cerrar no queda nada pedido");
 
+  printf("\n-- el cp falso de las puertas --\n");
+  {
+    // El prelude tiene que cumplir el contrato que las apps van a suponer:
+    // encolar, entregar de a uno, busy() mientras tanto, archivos que persisten.
+    freshFsRoot();
+    lua_State* L = luasandbox::create(1024 * 1024);
+    installStubCp(L);
+    const char* code =
+        "local heard, replies = nil, {}\n"
+        "function on_heard(t) heard = t end\n"
+        "function on_reply(id, ok, t) replies[#replies+1] = {id=id, ok=ok, t=t} end\n"
+        "assert(cp.listen(10, 'tema') == true)\n"
+        "assert(cp.listen(10) == false, 'dos escuchas no')\n"
+        "local id = cp.call('x.y', {a=1, b={'p','q'}})\n"
+        "assert(id == 1 and cp.busy())\n"
+        "fake.heard = 'hola'\n"
+        "fake.reply['x.y'] = function(args) assert(args.b[2] == 'q'); return true, {ok=true, jobId='j1', n=7} end\n"
+        "assert(fake.step() and heard == 'hola' and #replies == 0, 'de a uno')\n"
+        "assert(fake.step() and replies[1].ok and replies[1].t.jobId == 'j1' and replies[1].t.n == 7)\n"
+        "assert(not cp.busy() and not fake.step())\n"
+        "assert(cp.write('a.txt', 'abc') and cp.read('a.txt') == 'abc' and cp.size('a.txt') == 3)\n"
+        "assert(cp.read('a.txt', 1, 1) == 'b' and #cp.files() == 1)\n"
+        "assert(cp.view('a.txt', 'T') and fake.opened[1].name == 'a.txt')\n"
+        "assert(not cp.view('no.txt') and not cp.write('../x', 'a') and not cp.write('.oculto', 'a'))\n"
+        "assert(cp.download('f1', 'l.epub', 'books') == 2); fake.download['f1'] = 'EPUB'\n"
+        "assert(fake.step() and replies[2].t.bytes == 4 and cp.open_book('l.epub'))\n"
+        "assert(cp.remove('a.txt') and #cp.files() == 0)\n"
+        "cp.save('s'); assert(cp.load() == 's')\n"
+        "local m = cp.ms(); fake.advance(5000); assert(cp.ms() == m + 5000)\n";
+    std::string err;
+    if (luaL_loadbuffer(L, code, strlen(code), "=cpfalso") != LUA_OK || lua_pcall(L, 0, 0, 0) != LUA_OK) {
+      err = lua_tostring(L, -1);
+    }
+    luasandbox::destroy(L);
+    check(err.empty(), (std::string("el cp falso cumple el contrato") + (err.empty() ? "" : ": " + err)).c_str());
+  }
+
   printf("\n-- las apps de ejemplo y las de fábrica --\n");
-  const char* APPS[] = {"examples/Apps/contador.lua", "examples/Apps/dados.lua", "examples/Apps/reloj.lua",
-                        "examples/Apps/ahorcado.lua", "examples/Apps/tresenraya.lua"};
-  for (const char* file : APPS) {
-    const std::string err = runApp(file);
-    check(err.empty(), (std::string(file) + (err.empty() ? "" : ": " + err)).c_str());
+  const std::vector<std::string> APPS = discoverApps();
+  check(!APPS.empty(), "hay apps en examples/Apps");
+  for (const std::string& file : APPS) {
+    const std::string err = runApp(file.c_str());
+    check(err.empty(), (file + (err.empty() ? "" : ": " + err)).c_str());
   }
 
   printf("\n-- las mismas apps con el aparato SIN hora --\n");
   g_relojEnHora = false;
-  for (const char* file : APPS) {
-    const std::string err = runApp(file);
-    check(err.empty(), (std::string(file) + " sin reloj" + (err.empty() ? "" : ": " + err)).c_str());
+  for (const std::string& file : APPS) {
+    const std::string err = runApp(file.c_str());
+    check(err.empty(), (file + " sin reloj" + (err.empty() ? "" : ": " + err)).c_str());
   }
   g_relojEnHora = true;
+
+  printf("\n-- los escenarios (test/lua_sandbox/scenarios) --\n");
+  for (const std::string& file : APPS) {
+    const std::string stem = file.substr(strlen("examples/Apps/"), file.size() - strlen("examples/Apps/") - 4);
+    const std::string scenario = "test/lua_sandbox/scenarios/" + stem + ".lua";
+    if (!fileExists(scenario)) continue;
+    const std::string err = runScenario(file.c_str(), scenario.c_str());
+    check(err.empty(), (scenario + (err.empty() ? "" : ": " + err)).c_str());
+  }
 
   printf("\n-- partidas enteras --\n");
   {
@@ -324,6 +666,11 @@ int main() {
     check(err.empty(), (std::string("reloj: 50 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
   }
 
+  // El último directorio temporal de los archivos falsos no lo borra nadie más.
+  if (!g_fsRoot.empty()) {
+    const std::string cmd = "rm -rf '" + g_fsRoot + "'";
+    if (system(cmd.c_str()) != 0) printf("(no se pudo borrar %s)\n", g_fsRoot.c_str());
+  }
   printf("\n%s (%d fallas)\n", failures == 0 ? "TODO BIEN" : "HAY FALLAS", failures);
   return failures == 0 ? 0 : 1;
 }

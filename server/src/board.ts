@@ -32,7 +32,7 @@ import { logMeta } from "./devicelog";
 import { LIMITS, quotasOn, usageOf } from "./usage";
 import { multiUser } from "./db";
 import { hubDiagnostics } from "./hub";
-import { config, saveConfig, publicConfig, MODEL_PRICES, STT_PRICES, SEARCH_PRICE_ANTHROPIC, QUERY_SHAPE, deepSeekPeak, queryCost, type Config } from "./config";
+import { config, saveConfig, publicConfig, APPS_MODELS, MODEL_PRICES, STT_PRICES, SEARCH_PRICE_ANTHROPIC, QUERY_SHAPE, deepSeekPeak, queryCost, type Config } from "./config";
 import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSearchKind } from "./llm";
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
@@ -224,7 +224,7 @@ boardApi.get("/config", async (c) => c.json({ ok: true, config: await publicConf
 boardApi.post("/config", async (c) => {
   const b = await readBody(c);
   const cfg = await config();
-  const next: Config = { llm: { ...cfg.llm }, stt: { ...cfg.stt }, search: { ...cfg.search }, deviceToken: cfg.deviceToken };
+  const next: Config = { llm: { ...cfg.llm }, stt: { ...cfg.stt }, search: { ...cfg.search }, apps: { ...cfg.apps }, deviceToken: cfg.deviceToken };
   // La clave del proveedor viaja como Bearer a este baseUrl: si se acepta
   // cualquier URL, cambiarla es exfiltrar la clave. Solo https a un host
   // público (o http a localhost, para un modelo corriendo en la misma máquina).
@@ -272,10 +272,16 @@ boardApi.post("/config", async (c) => {
     if (Number.isFinite(Number(b.search.maxUses))) next.search.maxUses = Math.max(1, Math.min(10, Math.round(Number(b.search.maxUses))));
     if (typeof b.search.key === "string" && b.search.key.trim()) next.search.key = b.search.key.trim();
   }
+  // Apps de Lua: clave propia y modelo de una lista cerrada (los dos de
+  // Anthropic que escriben prosa larga). Clave vacía = no cambiarla.
+  if (b.apps) {
+    if ((APPS_MODELS as readonly string[]).includes(b.apps.model)) next.apps.model = b.apps.model;
+    if (typeof b.apps.key === "string" && b.apps.key.trim()) next.apps.key = b.apps.key.trim();
+  }
   if (typeof b.deviceToken === "string") next.deviceToken = b.deviceToken.trim().slice(0, 200);
   if (next.llm.provider === "openai" && !next.llm.baseUrl) return c.json({ ok: false, error: "falta la URL del proveedor" }, 400);
   await saveConfig(next);
-  console.log(`config: llm=${next.llm.provider}/${next.llm.model} stt=${next.stt.model} búsqueda=${next.search.enabled ? next.search.provider : "off"}`);
+  console.log(`config: llm=${next.llm.provider}/${next.llm.model} stt=${next.stt.model} búsqueda=${next.search.enabled ? next.search.provider : "off"} apps=${next.apps.model}${next.apps.key ? "" : " (sin clave)"}`);
   return c.json({ ok: true, config: await publicConfig() });
 });
 

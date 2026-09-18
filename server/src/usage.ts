@@ -40,14 +40,20 @@ function month(): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-01`;
 }
 
-export type Usage = { llmCalls: number; sttSeconds: number };
+// `appsCalls` son las llamadas al modelo de las apps de Lua (Librito, Viajes),
+// que van con SU clave (config.apps) y se cuentan en su propia columna: el tope
+// mensual mira solo `llmCalls`, así un librito de ocho capítulos no deja al
+// usuario sin Hablar. Se muestran en /board, nada más.
+export type Usage = { llmCalls: number; sttSeconds: number; appsCalls: number };
+
+const NONE: Usage = { llmCalls: 0, sttSeconds: 0, appsCalls: 0 };
 
 export async function usageOf(accountId: number): Promise<Usage> {
-  if (!multiUser) return { llmCalls: 0, sttSeconds: 0 };
+  if (!multiUser) return { ...NONE };
   const rows = (await db()`
-    SELECT llm_calls, stt_seconds FROM usage WHERE account_id = ${accountId} AND month = ${month()}::date`) as any[];
-  if (!rows.length) return { llmCalls: 0, sttSeconds: 0 };
-  return { llmCalls: num(rows[0].llm_calls), sttSeconds: num(rows[0].stt_seconds) };
+    SELECT llm_calls, stt_seconds, apps_calls FROM usage WHERE account_id = ${accountId} AND month = ${month()}::date`) as any[];
+  if (!rows.length) return { ...NONE };
+  return { llmCalls: num(rows[0].llm_calls), sttSeconds: num(rows[0].stt_seconds), appsCalls: num(rows[0].apps_calls) };
 }
 
 export const LIMITS = { llmCalls: MAX_LLM, sttSeconds: MAX_STT };
@@ -62,18 +68,20 @@ export async function overQuota(accountId: number): Promise<boolean> {
 }
 
 /** Suma lo consumido. Nunca tira: que falle la contabilidad no puede tirar el pedido. */
-export async function addUsage(accountId: number, add: { llm?: number; sttSeconds?: number }): Promise<void> {
+export async function addUsage(accountId: number, add: { llm?: number; sttSeconds?: number; apps?: number }): Promise<void> {
   if (!multiUser) return;
   const llm = Math.max(0, Math.round(add.llm ?? 0));
   const stt = Math.max(0, Math.round(add.sttSeconds ?? 0));
-  if (!llm && !stt) return;
+  const apps = Math.max(0, Math.round(add.apps ?? 0));
+  if (!llm && !stt && !apps) return;
   try {
     await db()`
-      INSERT INTO usage (account_id, month, llm_calls, stt_seconds)
-      VALUES (${accountId}, ${month()}::date, ${llm}, ${stt})
+      INSERT INTO usage (account_id, month, llm_calls, stt_seconds, apps_calls)
+      VALUES (${accountId}, ${month()}::date, ${llm}, ${stt}, ${apps})
       ON CONFLICT (account_id, month) DO UPDATE
         SET llm_calls = usage.llm_calls + EXCLUDED.llm_calls,
-            stt_seconds = usage.stt_seconds + EXCLUDED.stt_seconds`;
+            stt_seconds = usage.stt_seconds + EXCLUDED.stt_seconds,
+            apps_calls = usage.apps_calls + EXCLUDED.apps_calls`;
   } catch (err) {
     console.error("usage:", err);
   }

@@ -1658,6 +1658,45 @@ salía en 3,5 s. O sea 15 s en el mejor caso y un minuto y medio en el peor. Dos
   `— LENTO` pasados los 15 s), al lado de la línea del servidor (`stt= llm= tts=`). Con esas dos líneas la
   próxima queja de "tarda" se lee sin deducir nada de los sellos.
 
+## Las apps de Lua salen a la red, y la primera es el Librito (1.5.104)
+
+Plan y contrato en **`docs/ws397/PLAN_APPS_VIAJES_EPUB.md`** (decisiones del dueño incluidas). Lo que entró:
+
+- **Cinco puertas nuevas en `cp`** (`docs/ws397/APPS_LUA.md`, sección "Las puertas"): `listen` (micrófono →
+  texto), `call` (servicio con nombre del servidor), `download` (archivo generado → carpeta de la app o
+  `/Books/<app>/`), archivos propios (`files/read/write/remove/size`, sólo `/Apps/data/<app>/`), `view`
+  (el visor paginado del sistema) y `open_book` (el lector). **Todo lo que espera es asíncrono**: la app
+  encola y el resultado llega por `on_heard(texto)` / `on_reply(id, ok, tabla)`. Lo de red y micrófono lo
+  hace `LuaAppsActivity` desde su loop (fases Listening/Connecting/Transcribing/Calling/Downloading/Viewing),
+  **nunca el worker de Lua** (32 KB de stack; TLS no entra). WiFi arriba hasta cerrar la app, sin reinicio
+  silencioso salvo `open_book` después de TLS (mismo camino que Preguntarle al libro). Con el micrófono
+  abierto `on_tick` no corre (cada tick es una tarea de 32 KB al lado del DMA).
+- **Harness de escritorio con `cp` falso completo** (`test/lua_sandbox/test_sandbox.cpp`, tabla `fake`:
+  `heard`, `reply[servicio]`, `download`, `key`, `tick`, `step` —una cosa por vez—, `draw`, `advance/ms`,
+  `opened`, `reload`). Descubre `examples/Apps/*.lua` solo y corre `test/lua_sandbox/scenarios/<app>.lua`
+  si existe. **Una app nueva no está terminada sin su escenario.**
+- **Servidor `/api/apps/*`** (`server/src/apps.ts`, `appsJobs.ts`, `appsLlm.ts`): `POST /api/apps/call`
+  `{app, service, args}` siempre 200 con `{ok, …}`; servicios síncronos en < 25 s; lo largo son **trabajos**
+  (`job.status`, `/data/apps-jobs.json`, archivos en `/data/apps-files/`, poda a 24 h) y `GET /api/apps/file/:id`.
+  **Cliente de Anthropic aparte** con `config.apps = {key, model}` (`/board` → Ajustes → Avanzado → Apps de
+  Lua; `claude-opus-5` u `claude-sonnet-5`; pensamiento adaptativo; streaming para la prosa). Se cuenta en
+  `usage` como `apps_calls`, **fuera** del tope de Hablar (a propósito: `job.status` cada 5 s contaría como
+  llamada al modelo). Sin clave: `{ok:false, error:"Carga la clave de las apps en la web…"}`.
+- **Librito** (`examples/Apps/librito.lua`, `server/src/librito.ts`, `epub.ts`): dicta un tema → tres enfoques
+  → índice de 5-8 capítulos que el usuario **edita** (OK desactiva, "Agregar o cambiar por voz", "Más
+  temas") → trabajo que escribe capítulo por capítulo (índice cacheado con `cache_control`, resumen de lo ya
+  escrito, línea `RESUMEN:` recortada) y arma el EPUB a mano con `fflate` (`mimetype` primero y sin comprimir;
+  prueba en `./test/epub/run.sh`) → `/Books/librito/<slug>.epub` → "Abrir en el lector". **Mínimo 15 minutos**
+  (200 palabras/min): si se sacan capítulos, el resto se alarga. El `jobId` se guarda con `cp.save` y al
+  volver a entrar ofrece "Retomar".
+- **Y el pedo de la 1.5.103, encontrado de paso**: la etiqueta nueva de la casilla de búsqueda llevaba
+  comillas sin escapar dentro de un string de `app.js` → `SyntaxError` → **`/board` no cargaba** desde el
+  despliegue de 1.5.103 hasta este arreglo. `node --check server/public/board/app.js` lo habría dicho; ahora
+  es parte del chequeo de todo cambio en la web.
+
+Pendiente de hardware: todo lo de red y micrófono desde una app (la lógica se probó de escritorio con el
+escenario entero del Librito), y una escritura real con la clave cargada.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

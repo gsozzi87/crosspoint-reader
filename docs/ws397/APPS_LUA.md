@@ -67,6 +67,9 @@ regla número uno del sistema visual es que **nunca hay letras sobre trama**.
 | `cp.quit()` | Cierra la app y vuelve al catálogo |
 | `cp.time()` | La hora local, o `nil` si el aparato no está en hora |
 
+Y las **puertas** —escuchar, llamar al servidor, bajar archivos, la carpeta de
+la app, el visor y el lector— van en su propia sección más abajo.
+
 `cp.time()` es la **única** forma que tiene una app de saber la hora: `os` no
 está en el cajón (`os.execute` y `os.remove` vienen en la misma biblioteca).
 Devuelve una tabla con `year`, `month`, `day`, `hour`, `min`, `sec`, `wday`
@@ -86,6 +89,123 @@ Los gestos que devuelve `cp.motion()` son los mismos de todo el aparato:
 `TiltLeft`, `TiltRight`, `TiltForward`, `TiltBack`, `Shake`, `Rotate`, `Level`,
 `FaceDown`, `FaceUp`, `DoubleTap`.
 
+### Las puertas: micrófono, servidor, archivos, visor y lector
+
+Una app también puede escuchar, hablar con el servidor de la cuenta, bajar
+archivos, guardar lo suyo en la tarjeta y abrir lo que bajó en los visores del
+aparato. Es lo que hacen el Librito (`examples/Apps/librito.lua`) y lo que va a
+hacer Viajes. La regla es la misma que la del cajón: **nada de URLs ni de
+rutas**; la app nombra un servicio o un archivo, y a dónde va eso lo decide el
+firmware.
+
+| Llamada | Devuelve | Qué hace |
+| --- | --- | --- |
+| `cp.listen(seg [, pregunta])` | `true` si quedó pedido | Escucha hasta `seg` segundos (tope 30) con la pantalla de escucha del sistema (`pregunta` arriba, "Escuchando…", OK termina, Atrás cancela). Lo entendido llega por **`on_heard(texto)`**; `nil` si canceló, no se entendió o falló |
+| `cp.call(servicio [, args])` | `id` (entero) o `nil` | `POST /api/apps/call` con `{app, service, args}` y el Bearer del aparato. La respuesta llega por **`on_reply(id, ok, tabla)`** |
+| `cp.download(fileId, nombre [, destino])` | `id` o `nil` | Baja `GET /api/apps/file/<fileId>` a la carpeta de la app (`destino = "app"`, por omisión) o a `/Books/<app>/` (`"books"`). Llega **`on_reply(id, ok, {bytes = n})`** |
+| `cp.busy()` | `true`/`false` | Hay una escucha, llamada, descarga o visor en curso, o pedidos encolados |
+| `cp.files()` | tabla de nombres | Los archivos de `/Apps/data/<app>/` |
+| `cp.read(nombre [, desde, largo])` | texto o `nil` | Entero si entra en **48 KB**; más grande, con rango (`desde` es 0-based) |
+| `cp.write(nombre, texto)` | `true`/`false` | Hasta **64 KB**, atómico (`.tmp` y renombrar) |
+| `cp.remove(nombre)` | `true`/`false` | |
+| `cp.size(nombre)` | bytes o `nil` | |
+| `cp.view(nombre [, titulo])` | `true` si existía | Abre el archivo (hasta 64 KB) en el **visor paginado del sistema**; al salir vuelve a la app y la repinta |
+| `cp.open_book(nombre)` | `true` si existía | Abre `/Books/<app>/<nombre>` en el lector de CrossPoint. **La app se cierra**; al cerrar el libro se vuelve al hub |
+
+`<app>` es el nombre del archivo sin `.lua`: `librito.lua` guarda en
+`/Apps/data/librito/` y sus libros en `/Books/librito/`. Los nombres de archivo
+que pasa la app son `[A-Za-z0-9._-]`, de 1 a 48, sin punto inicial y sin
+barras; cualquier otra cosa devuelve `false`/`nil` sin tocar la tarjeta.
+
+**Todo lo que espera es asíncrono y llega por callback.** `cp.listen`,
+`cp.call`, `cp.download` y `cp.view` no hacen el trabajo: lo **encolan** y
+vuelven en el acto. El firmware lo atiende desde su propio loop, con sus
+pantallas (escucha, conexión al WiFi, "Esperando al servidor…", el visor), y
+cuando termina llama a la app:
+
+```lua
+function on_heard(texto)          -- lo que dijo el usuario, o nil
+function on_reply(id, ok, tabla)  -- la respuesta al cp.call / cp.download con ese id
+```
+
+Ninguno de los dos es obligatorio: si la app no los define, la respuesta se
+descarta. Después de cada uno la pantalla se repinta sola (`on_draw`).
+
+Cómo se lee `on_reply`:
+
+* `ok` es `true` sólo si el servidor contestó HTTP 200, con JSON legible y
+  `ok = true` adentro. `tabla` es el JSON del servidor convertido: objetos →
+  tablas con claves string, arrays → tablas `1..n`, números, booleanos y
+  strings tal cual (un `jobId` que llega como string sigue siendo string), y
+  `null` → `nil`.
+* Con `ok = false`, `tabla.error` es el texto. Los que pone el firmware:
+  `"sin vincular"` (el aparato no tiene token: no se va a la red),
+  `"sin conexión con el servidor (N)"` (falló el HTTP; `N` es el estado, 0 si no
+  hubo respuesta), `"descarga fallida (N)"`, `"cancelado"` (Atrás) y
+  `"respuesta ilegible del servidor"`.
+* En `cp.call`, `args` viaja como JSON: una tabla con claves string es un
+  objeto, una tabla secuencial `1..n` es un array, una tabla vacía es un objeto
+  vacío. Tope de **16 KB** y **6 niveles** de profundidad; pasarse devuelve
+  `nil` y lo dice en el log. Funciones y cosas que no viajan tampoco.
+
+Las reglas del tráfico:
+
+* **De a uno, y hasta cuatro en cola.** Los pedidos salen en orden; el quinto
+  `cp.call` devuelve `nil` y una segunda `cp.listen` con otra ya pendiente,
+  `false`.
+* **Mientras `cp.busy()`**, `on_key` no se llama salvo con `"back"`, que
+  **cancela**: corta la escucha (`on_heard(nil)`) o descarta lo que todavía no
+  salió (`on_reply(id, false, {error = "cancelado"})`), en cola incluida. Lo que
+  ya está en el aire —un POST en curso— no se puede cortar: Atrás se ignora
+  hasta que vuelve. `on_tick` sigue corriendo, salvo con el micrófono abierto.
+* **El tope de instrucciones no corre mientras el firmware espera** a la red o
+  al micrófono: la espera es del host, no del script. Lo que sí sigue vigente
+  es que **la espera larga no va adentro de una llamada**: un trabajo de
+  minutos se consulta desde `on_tick` con `cp.call("job.status", {id = …})`
+  cada 5 s, mirando `cp.ms()`, como hace `librito.lua`.
+* **WiFi**: la primera `cp.listen`, `cp.call` o `cp.download` levanta la red
+  con las redes guardadas (pantalla de conexión del sistema si tarda; el
+  selector si ninguna sirve) y la deja arriba **hasta que la app se cierra**.
+  Sin token del aparato (no está vinculado) no se va a la red: `on_reply`
+  vuelve con `"sin vincular"` y `on_heard` con `nil`.
+* **Escuchando o con un pedido en curso el aparato no se duerme solo**, y con
+  la red arriba tampoco; la red de seguridad de la media hora sin tocar nada
+  sigue mandando.
+* `cp.open_book` cierra la app y la radio y abre el lector; si en la sesión
+  hubo red, va con reinicio silencioso (el lector necesita el heap entero, igual
+  que Preguntarle al libro). Guarda antes lo que quieras conservar con
+  `cp.save` o `cp.write`.
+
+Un esqueleto:
+
+```lua
+local estado, oido, pedido = "tema", nil, nil
+
+function on_key(k)
+  if cp.busy() then return k == "back" end
+  if k == "ok" and estado == "tema" then
+    cp.listen(15, "¿Sobre qué quieres leer?")   -- vuelve en el acto
+    return true
+  end
+end
+
+function on_heard(texto)
+  if not texto then return end                  -- canceló o no se entendió
+  oido = texto
+  pedido = cp.call("librito.enfoque", { tema = texto })
+end
+
+function on_reply(id, ok, r)
+  if id ~= pedido then return end
+  if not ok then estado = "error"; oido = r.error; return end
+  estado = "enfoques"; -- r.enfoques[1].titulo, ...
+end
+
+function on_draw()
+  cp.text(24, 100, cp.busy() and "Esperando al servidor…" or (oido or "OK: dictar el tema"))
+end
+```
+
 ## El cajón
 
 Una app **no puede**: abrir archivos, salir a la red, tocar el I2C o el SPI del
@@ -96,8 +216,12 @@ están `io`, `os`, `package`, `debug`, `require`, `load`, `loadstring`, `dofile`
 `loadfile` ni `string.dump`. Los `.c` de esas bibliotecas ni siquiera están en
 `lib/Lua`.
 
-Lo único que una app escribe en la tarjeta es su propio archivo de estado, con
-`cp.save`. No recibe rutas: no puede elegir dónde escribir.
+Lo único que una app escribe en la tarjeta es su propio archivo de estado
+(`cp.save`) y **su propia carpeta** `/Apps/data/<app>/` (`cp.write`,
+`cp.download`), más `/Books/<app>/` para lo que baja con `destino = "books"`.
+No recibe rutas: no puede elegir dónde escribir ni leer fuera de ahí. Con el
+servidor pasa lo mismo: nombra un servicio (`cp.call`) o un archivo generado
+(`cp.download`), nunca una URL.
 
 Tres topes más:
 
@@ -111,6 +235,29 @@ Tres topes más:
 La política del cajón vive en `src/lua/LuaSandbox.cpp`, separada del resto para
 poder probarla de escritorio: `./test/lua_sandbox/run.sh` verifica que lo que
 tiene que estar está y que lo que no, no.
+
+## Probar una app sin aparato
+
+`./test/lua_sandbox/run.sh` carga cada `examples/Apps/<app>.lua` contra un `cp`
+falso completo y, si existe `test/lua_sandbox/scenarios/<app>.lua`, corre ese
+guion encima. El guion tiene `cp` y una tabla `fake`:
+
+| | |
+| --- | --- |
+| `fake.heard = "texto"` | La próxima `cp.listen` llama `on_heard` con eso en el siguiente `fake.step()` |
+| `fake.reply["librito.enfoque"] = function(args) return true, {…} end` | La próxima `cp.call` de ese servicio llama `on_reply` con eso. Con un contador adentro de la función, `job.status` contesta distinto cada vez |
+| `fake.download["f-1"] = "…"`, `fake.downloadFails = true` | Lo que "baja" `cp.download` (o que falle) |
+| `fake.key("ok")`, `fake.tick()` | `on_key` / `on_tick`, con la regla de `busy()` (sólo pasa `"back"` con algo en curso) |
+| `fake.step()` | Entrega **una** cosa pendiente, la más vieja |
+| `fake.draw()` | Corre `on_draw` y devuelve los textos dibujados como lista |
+| `fake.advance(ms)`, `fake.ms` | El reloj de `cp.ms()`, que en la prueba no avanza solo |
+| `fake.opened` | Lo que abrió `cp.view` / `cp.open_book` (`{kind, name, title}`) |
+| `fake.reload()` | Vacía la cola; `on_open` lo llama el guion |
+
+Los archivos van a un directorio temporal. `cp.save`/`cp.load` persisten dentro
+del guion. El guion llama a `on_open()` él mismo y falla con `error()`;
+`test/lua_sandbox/scenarios/librito.lua` es el flujo entero del Librito de
+punta a punta.
 
 ## Un ejemplo entero
 
