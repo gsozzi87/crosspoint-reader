@@ -23,6 +23,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "network/HttpDownloader.h"
+#include "util/UrlEncode.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 
@@ -34,6 +35,12 @@ constexpr unsigned long EXIT_HOLD_MS = 1000;
 // El servidor contesta un servicio síncrono en menos de 25 s por contrato; lo
 // que tarde más es un trabajo que se consulta con `job.status`.
 constexpr uint32_t CALL_TIMEOUT_MS = 40000;
+// Segundos de voz como mucho por cp.say (`max=` del servidor): una respuesta
+// hablada, no una lectura. Lo largo va al visor.
+constexpr int SAY_MAX_S = 45;
+// La tarea de audio tarda un toque en arrancar: recién pedido el clip,
+// isPlaying() dice false y soltarlo ahí lo mataría (mismo margen que Hablar).
+constexpr unsigned long SPEECH_START_GRACE_MS = 400;
 
 size_t fileSize(const std::string& path) {
   HalFile f;
@@ -59,6 +66,7 @@ void LuaAppsActivity::onExit() {
   // quede una app viva si se sale por un camino raro (una alarma, el hub).
   if (recorder) recorder->abort();
   recorder.reset();
+  stopSpeech();
   app.reset();
   shutdownRadio();
   Activity::onExit();
@@ -112,6 +120,7 @@ void LuaAppsActivity::startSelected() {
 void LuaAppsActivity::backToList() {
   if (recorder) recorder->abort();
   recorder.reset();
+  stopSpeech();
   app.reset();
   phase = Phase::Idle;
   workPending = false;
@@ -213,6 +222,7 @@ void LuaAppsActivity::runningLoop() {
     case Phase::Transcribing:
     case Phase::Calling:
     case Phase::Downloading:
+    case Phase::Speaking:
       // Lo que todavía no salió se puede cancelar; lo que está en el aire es un
       // POST síncrono y no (los botones no se leen mientras dura).
       if (workPending && mappedInput.wasPressed(MappedInputManager::Button::Back)) {
@@ -225,6 +235,8 @@ void LuaAppsActivity::runningLoop() {
           performTranscribe();
         } else if (phase == Phase::Calling) {
           performCall();
+        } else if (phase == Phase::Speaking) {
+          performSay();
         } else {
           performDownload();
         }
@@ -234,6 +246,16 @@ void LuaAppsActivity::runningLoop() {
       return;  // el visor tiene el foco
     case Phase::Idle:
       break;
+  }
+
+  // El clip de cp.say suena por debajo de la app. Cuando terminó se suelta la
+  // PSRAM; mientras suena, Atrás lo corta y ese Atrás es de la voz, no de la
+  // app (el siguiente sí le llega).
+  if (speech.hasStarted() && !speaking()) stopSpeech();
+  if (phase == Phase::Idle && speaking() && mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+    LOG_INF(TAG, "%s: Atrás corta la voz", app->name().c_str());
+    stopSpeech();
+    return;
   }
 
   const char* key = nullptr;
@@ -294,6 +316,7 @@ void LuaAppsActivity::startRequest() {
     case LuaApp::Request::Kind::Listen: beginListen(); return;
     case LuaApp::Request::Kind::Call:
     case LuaApp::Request::Kind::Download:
+    case LuaApp::Request::Kind::Say:
       // Sin token no hay a quién llamar: se contesta sin levantar la red.
       if (!SERVER_STORE.hasToken()) {
         LOG_ERR(TAG, "%s: pedido %d sin vincular", app->name().c_str(), current.id);
@@ -323,7 +346,8 @@ void LuaAppsActivity::cancelCurrent() {
   switch (current.kind) {
     case LuaApp::Request::Kind::Listen: repaint = app->onHeard(nullptr); break;
     case LuaApp::Request::Kind::Call:
-    case LuaApp::Request::Kind::Download: repaint = app->onReplyError(current.id, "cancelado"); break;
+    case LuaApp::Request::Kind::Download:
+    case LuaApp::Request::Kind::Say: repaint = app->onReplyError(current.id, "cancelado"); break;
     default: break;
   }
   recorder.reset();
@@ -348,8 +372,9 @@ void LuaAppsActivity::beginListen() {
     if (wifi.phase() == FriendlyWifi::Phase::Idle) wifi.begin();
     wifiActivated = true;
   }
-  // No hay nada del aparato hablando acá (la app no reproduce voz), pero el
-  // I2S es uno solo igual: la grabadora se abre con el códec libre.
+  // El I2S es uno solo: si un cp.say sigue sonando, la captura falla ("Falló la
+  // captura del micrófono"). Se corta antes de abrir la grabadora, como en Hablar.
+  stopSpeech();
   recorder = makeUniqueNoThrow<VoiceRecorder>(static_cast<uint32_t>(current.seconds));
   StrId why = StrId::STR_AUDIO_CAPTURE_FAILED;
   if (!recorder || !recorder->start(why)) {
@@ -421,6 +446,7 @@ void LuaAppsActivity::onConnected() {
     case LuaApp::Request::Kind::Listen: phase = Phase::Transcribing; break;
     case LuaApp::Request::Kind::Call: phase = Phase::Calling; break;
     case LuaApp::Request::Kind::Download: phase = Phase::Downloading; break;
+    case LuaApp::Request::Kind::Say: phase = Phase::Speaking; break;
     default: finishRequest(false); return;
   }
   // La petición corre desde loop() para que la pantalla de espera se pinte antes.
@@ -435,6 +461,7 @@ void LuaAppsActivity::onConnectFailed() {
     case LuaApp::Request::Kind::Listen: repaint = app->onHeard(nullptr); break;
     case LuaApp::Request::Kind::Call:
     case LuaApp::Request::Kind::Download:
+    case LuaApp::Request::Kind::Say:
       repaint = app->onReplyError(current.id, "sin conexión con el servidor (wifi)");
       break;
     default: break;
@@ -514,6 +541,51 @@ void LuaAppsActivity::performDownload() {
   finishRequest(app->onReplyBytes(current.id, bytes));
 }
 
+// GET /api/tts?lang=&text=&max= y al parlante. La fase termina en cuanto el
+// clip ARRANCA, no cuando termina: la app recupera la pantalla y sigue
+// (puede abrir cp.view encima mientras suena). La respuesta es
+// `on_reply(id, true, {})` si sonó, o `"sin voz (N)"` con el estado HTTP (0 sin
+// respuesta, -1 si el cuerpo llegó pero no se pudo reproducir).
+void LuaAppsActivity::performSay() {
+  WiFi.setSleep(false);
+  requestMade = true;
+  ServerClient::Response resp;
+  const unsigned long t0 = millis();
+  const std::string path = std::string("/api/tts?lang=") + uiLanguageCode() + "&text=" + urlEncode(current.a) +
+                           "&max=" + std::to_string(SAY_MAX_S);
+  const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
+  const unsigned long ms = millis() - t0;
+  WiFi.setSleep(true);
+  int status = resp.status;
+  bool ok = r == ServerClient::Result::Ok && resp.body.size() >= 16;
+  if (ok) {
+    stopSpeech();
+    ok = speech.playAdpcm(reinterpret_cast<const uint8_t*>(resp.body.data()), resp.body.size());
+    if (!ok) status = -1;
+  }
+  if (!ok) {
+    char detail[48];
+    snprintf(detail, sizeof(detail), "sin voz (%d)", status);
+    LOG_ERR(TAG, "%s: cp.say falló: %s %d, %u B (%lu ms)", app->name().c_str(), ServerClient::resultName(r),
+            resp.status, (unsigned)resp.body.size(), ms);
+    finishRequest(app->onReplyError(current.id, detail));
+    return;
+  }
+  speechStartedAt = millis();
+  LOG_INF(TAG, "%s: cp.say habla (%u B, %lu ms)", app->name().c_str(), (unsigned)resp.body.size(), ms);
+  finishRequest(app->onReply(current.id, "{\"ok\":true}"));
+}
+
+bool LuaAppsActivity::speaking() const {
+  if (!speech.hasStarted()) return false;
+  return speech.isPlaying() || millis() - speechStartedAt < SPEECH_START_GRACE_MS;
+}
+
+void LuaAppsActivity::stopSpeech() {
+  speech.stop();
+  speechStartedAt = 0;
+}
+
 // El visor paginado del sistema con un archivo de la app. Lee hasta VIEW_CAP;
 // el visor pagina solo. Al volver, la app recupera la pantalla y se repinta.
 void LuaAppsActivity::openViewer() {
@@ -545,6 +617,10 @@ void LuaAppsActivity::openViewer() {
   }
   phase = Phase::Viewing;
   startActivityForResult(std::move(viewer), [this](const ActivityResult&) {
+    // El visor no sabe de la voz: mientras está abierto la lectura sigue, y el
+    // Atrás que lo cierra es el que la corta (el contrato dice "Atrás corta la
+    // voz" y desde acá no se puede leer el botón del visor).
+    stopSpeech();
     // El manager repinta solo al volver: la app vuelve a la pantalla.
     finishRequest(false);
   });
@@ -706,7 +782,8 @@ void LuaAppsActivity::render(RenderLock&&) {
       case Phase::Listening: renderListening(); break;
       case Phase::Connecting: renderWaiting(""); break;
       case Phase::Transcribing:
-      case Phase::Calling: renderWaiting(tr(STR_LUA_WAIT_SERVER)); break;
+      case Phase::Calling:
+      case Phase::Speaking: renderWaiting(tr(STR_LUA_WAIT_SERVER)); break;
       case Phase::Downloading: renderWaiting(tr(STR_LUA_DOWNLOADING)); break;
       case Phase::Viewing: return;  // el visor pinta
       case Phase::Idle:

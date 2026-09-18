@@ -39,9 +39,9 @@ struct lua_State;
 // una app no vive en el loop de Arduino, que es el que anda justo.
 //
 // Las puertas (contrato v1, docs/ws397/PLAN_APPS_VIAJES_EPUB.md): micrófono,
-// servidor, descargas, archivos propios, el visor y el lector. Todo lo que
-// espera es ASÍNCRONO: `cp.listen`, `cp.call`, `cp.download`, `cp.view` y
-// `cp.open_book` sólo ENCOLAN un pedido y vuelven en el acto; el host
+// servidor, descargas, archivos propios, el visor, el lector y la voz. Todo lo
+// que espera es ASÍNCRONO: `cp.listen`, `cp.call`, `cp.download`, `cp.view`,
+// `cp.open_book` y `cp.say` sólo ENCOLAN un pedido y vuelven en el acto; el host
 // (LuaAppsActivity) lo saca de la cola desde su loop(), hace el trabajo con sus
 // propias pantallas y le contesta a la app por `on_heard(texto)` /
 // `on_reply(id, ok, tabla)`. La red y el micrófono NUNCA corren en el worker de
@@ -88,8 +88,10 @@ class LuaApp {
   //   Download: id, a = fileId, b = nombre de destino, c = "app" | "books"
   //   View:     a = nombre, b = título
   //   OpenBook: a = nombre
+  //   Say:      id, a = texto (el host lo pasa por el TTS del servidor y lo
+  //             reproduce; la app sigue mientras suena)
   struct Request {
-    enum class Kind : uint8_t { Listen, Call, Download, View, OpenBook };
+    enum class Kind : uint8_t { Listen, Call, Download, View, OpenBook, Say };
     Kind kind = Kind::Call;
     int id = 0;
     int seconds = 0;
@@ -144,7 +146,7 @@ class LuaApp {
   // El host dice si tiene un pedido EN CURSO (ya sacado de la cola): es lo que
   // `cp.busy()` responde además de mirar la cola.
   void setBusy(bool busy);
-  // Cancela lo que sigue encolado: cada Call/Download recibe
+  // Cancela lo que sigue encolado: cada Call/Download/Say recibe
   // `on_reply(id, false, {error="cancelado"})` y un Listen, `on_heard(nil)`.
   // Devuelve true si algún callback pidió repintar.
   bool cancelQueued();

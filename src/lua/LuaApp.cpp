@@ -744,6 +744,27 @@ int cpOpenBook(lua_State* L) {
   return 1;
 }
 
+// cp.say(texto) -> id, o nil. El host pide la voz al servidor
+// (`GET /api/tts`) y la reproduce por el parlante mientras la app sigue; llega
+// `on_reply(id, true, {})` cuando el audio arrancó, o `ok=false` con `error`
+// ("sin voz (N)", "cancelado", "sin vincular"). El texto va acotado a
+// TEXT_CAP (512 bytes): un párrafo, no un capítulo; para eso está el visor.
+int cpSay(lua_State* L) {
+  const char* text = boundedText(L, 1);
+  if (*text == '\0' || queueFull()) {
+    lua_pushnil(L);
+    return 1;
+  }
+  const int id = ++g_nextId;
+  LuaApp::Request req;
+  req.kind = LuaApp::Request::Kind::Say;
+  req.id = id;
+  req.a = text;
+  g_requests.push_back(std::move(req));
+  lua_pushinteger(L, id);
+  return 1;
+}
+
 const luaL_Reg CP_API[] = {
     {"clear", cpClear},
     {"text", cpText},
@@ -773,6 +794,7 @@ const luaL_Reg CP_API[] = {
     {"size", cpSize},
     {"view", cpView},
     {"open_book", cpOpenBook},
+    {"say", cpSay},
     {nullptr, nullptr},
 };
 
@@ -1079,7 +1101,8 @@ bool LuaApp::cancelQueued() {
     switch (r.kind) {
       case Request::Kind::Listen: repaint |= onHeard(nullptr); break;
       case Request::Kind::Call:
-      case Request::Kind::Download: repaint |= onReplyError(r.id, "cancelado"); break;
+      case Request::Kind::Download:
+      case Request::Kind::Say: repaint |= onReplyError(r.id, "cancelado"); break;
       case Request::Kind::View:
       case Request::Kind::OpenBook: break;  // no tienen respuesta
     }

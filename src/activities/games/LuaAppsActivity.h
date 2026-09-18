@@ -8,6 +8,7 @@
 #include "activities/home/HubSyncActivity.h"  // FriendlyWifi: conexión sin la pantalla técnica
 #include "lua/LuaApp.h"
 #include "util/ButtonNavigator.h"
+#include "voice/SpeechOut.h"
 #include "voice/VoiceRecorder.h"
 
 // El catálogo de apps de la tarjeta y el sitio donde corren.
@@ -21,11 +22,14 @@
 // se coma el botón no puede dejar al usuario encerrado.
 //
 // Y es el HOST de las puertas (contrato v1): la app encola pedidos
-// (`cp.listen`, `cp.call`, `cp.download`, `cp.view`, `cp.open_book`) y esta
-// Activity los atiende desde su loop() con sus propias pantallas — escucha,
-// conexión, "esperando al servidor", el visor — y le contesta por
+// (`cp.listen`, `cp.call`, `cp.download`, `cp.view`, `cp.open_book`, `cp.say`)
+// y esta Activity los atiende desde su loop() con sus propias pantallas —
+// escucha, conexión, "esperando al servidor", el visor — y le contesta por
 // `on_heard` / `on_reply`. El micrófono y la red corren acá, en el loop de
 // Arduino, nunca en el worker de Lua (32 KB de stack: el TLS no entra).
+// La voz (`cp.say`) es la única puerta que NO retiene la pantalla: en cuanto el
+// clip arranca la app recupera los botones y sigue mientras suena; Atrás corta
+// la voz, y el micrófono la corta antes de abrirse (el I2S es uno solo).
 // Política de red copiada de Hablar: la radio se levanta la primera vez que
 // hace falta y queda arriba hasta que la app se cierra; `WiFi.setSleep(false)`
 // sólo mientras hay una petición en el aire.
@@ -41,15 +45,19 @@ class LuaAppsActivity final : public Activity {
   // La grabadora se bombea desde el loop: sin pausa mientras el micrófono está
   // abierto, como en Hablar.
   bool skipLoopDelay() override { return phase == Phase::Listening; }
-  // Escuchando, con un pedido en curso o con la red arriba no se duerme solo:
-  // una app que baja un librito no puede quedarse a mitad de descarga.
-  bool preventAutoSleep() override { return state == RUNNING && (phase != Phase::Idle || wifiActivated); }
+  // Escuchando, con un pedido en curso, con la red arriba o hablando no se
+  // duerme solo: una app que baja un librito no puede quedarse a mitad de
+  // descarga, y el reposo cortaría el clip a medias.
+  bool preventAutoSleep() override {
+    return state == RUNNING && (phase != Phase::Idle || wifiActivated || speaking());
+  }
 
  private:
   enum State : uint8_t { LIST, RUNNING, FAILED };
   // Qué está haciendo el host por la app. Idle = la app tiene la pantalla y los
   // botones; el resto son las pantallas del host.
-  enum class Phase : uint8_t { Idle, Listening, Connecting, Transcribing, Calling, Downloading, Viewing };
+  // Speaking es sólo el GET del clip: en cuanto suena se vuelve a Idle.
+  enum class Phase : uint8_t { Idle, Listening, Connecting, Transcribing, Calling, Downloading, Viewing, Speaking };
 
   void startSelected();
   void backToList();
@@ -76,6 +84,11 @@ class LuaAppsActivity final : public Activity {
   void performTranscribe();
   void performCall();
   void performDownload();
+  void performSay();
+  // Hay un clip de cp.say sonando (con la gracia de arranque de la tarea de
+  // audio: recién pedido, isPlaying() todavía dice false).
+  bool speaking() const;
+  void stopSpeech();
   void openViewer();
   void openBook();
   // Cancela el pedido en curso (Atrás) y lo encolado, y se lo dice a la app.
@@ -99,6 +112,8 @@ class LuaAppsActivity final : public Activity {
   LuaApp::Request current;  // el pedido en curso, ya sacado de la cola
   bool workPending = false;  // la fase pintó su pantalla: en el próximo loop se hace el trabajo
   std::unique_ptr<VoiceRecorder> recorder;  // uno por escucha: los segundos los pide la app
+  SpeechOut speech;                         // el clip de cp.say; la PSRAM se suelta al terminar
+  unsigned long speechStartedAt = 0;
   FriendlyWifi wifi;
   bool wifiActivated = false;
   bool wifiPicker = false;  // la pantalla de selección tiene el foco
