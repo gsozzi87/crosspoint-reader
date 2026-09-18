@@ -175,6 +175,34 @@ async function weather(accountId: number, lang: Lang): Promise<Weather> {
   }
 }
 
+// El clima de UN lugar cualquiera en una línea ("Nublado · 19°"), para el
+// viaje activo de Viajes: el lugar del viaje no es el lugar de la cuenta, así
+// que no pasa por `weather()` ni por su caché por cuenta. Caché propia de 15
+// minutos por coordenadas; si falla, devuelve "" (la vista lo tolera).
+const lineCache = new Map<string, { at: number; line: string }>();
+
+export async function weatherLineAt(lat: number, lon: number, tz: string, lang: Lang): Promise<string> {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return "";
+  const key = `${lat.toFixed(3)},${lon.toFixed(3)},${lang}`;
+  const hit = lineCache.get(key);
+  if (hit && Date.now() - hit.at < WEATHER_TTL_MS) return hit.line;
+  const p: Place = { name: "", label: "", lat, lon, timezone: tz || TZ };
+  const url =
+    `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&current=temperature_2m,relative_humidity_2m,weather_code` +
+    `&daily=temperature_2m_max,temperature_2m_min&forecast_days=1&timezone=${encodeURIComponent(p.timezone)}`;
+  try {
+    const data = await openMeteoOrMetNo(url, p);
+    const line = `${describeWeather(data.current.weather_code, lang)} · ${Math.round(data.current.temperature_2m)}°`;
+    if (lineCache.size > 256) lineCache.clear();
+    lineCache.set(key, { at: Date.now(), line });
+    return line;
+  } catch (err) {
+    console.error("weatherLineAt:", `${lat},${lon}`, err);
+    return hit?.line ?? "";
+  }
+}
+
 type HubData = {
   reminders?: { title: string; when: string }[];
   events?: { when: string; title: string }[];

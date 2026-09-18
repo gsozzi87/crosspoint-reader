@@ -120,7 +120,7 @@ function stripInlineCitations(text: string): string {
 // proyecto es claude-haiku-4-5) va la básica.
 type SearchTool = Anthropic.Messages.WebSearchTool20250305 | Anthropic.Messages.WebSearchTool20260209;
 
-function webSearchTool(model: string, maxUses: number): SearchTool {
+export function webSearchTool(model: string, maxUses: number): SearchTool {
   const modern = /(opus-5|sonnet-5|opus-4-8|opus-4-7|opus-4-6|sonnet-4-6)/.test(model);
   return modern
     ? { type: "web_search_20260209", name: "web_search", max_uses: maxUses }

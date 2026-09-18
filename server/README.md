@@ -12,7 +12,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 
 - **Root Directory**: `server` (Settings → Source → Root Directory). Con eso Railway solo mira esta carpeta.
 - **Build**: hay `Dockerfile` (Railway lo usa solo): Bun + Piper con las seis voces (~400 MB de imagen). Start = `bun run src/index.ts`.
-- **Volumen** montado en `/data` (firmware subido, `store.json`, `calendar.json`, `hub-settings.json`, `hub-data.json`).
+- **Volumen** montado en `/data` (firmware subido, `store.json`, `calendar.json`, `trips.json`, `hub-settings.json`, `hub-data.json`).
 - Variables:
 
 | Variable | Para qué |
@@ -400,20 +400,31 @@ elegible de una lista. El texto de la repetición se ve **mientras se edita** y 
 (`GET /api/calendar/repeat`), o sea que es exactamente el mismo que después muestra el aparato. Los
 recordatorios de la pestaña Pizarra usan los mismos controles y se pueden editar con "Editar".
 
-## Viajes: salió del producto (1.5.93)
+## Viajes (`src/viajes.ts`, documento `trips` → `/data/trips.json`)
 
-Viajes fue una pestaña propia de `/board` y un mosaico adentro de "Mi día", con sus papeles adjuntos
-(el PDF del vuelo pasado a bitmaps, el código de barras leído y vuelto a generar limpio). **Se borró
-entero**: `src/trips.ts`, `src/attachments.ts` y `src/deviceBmp.ts`, las rutas `/api/trips`, `/api/trip*`,
-`/api/attachment*`, `/api/board/attachment` y `/api/suggest/trip`, la pestaña de la web y la pantalla del
-aparato. Vuelve como app de Lua, que es donde el usuario lo quiere.
+Volvió después de 1.5.93, esta vez como **pestaña de `/board` + servicios para la app de Lua `viajes`**
+(contrato en `docs/ws397/VIAJES_CONTRATO.md`). Sin adjuntos: los papeles son **texto** pegado desde el correo
+(título, fecha, tipo, campos "Etiqueta: valor" y el texto entero). Un viaje tiene días del primero al último,
+ítems con hora, tipo, lugar, código y papel, la lista para llevar, la guía generada y un `active` por cuenta.
 
-Con eso se fueron cuatro dependencias nativas que **solo** usaban los adjuntos: `sharp`, `mupdf`,
-`bwip-js` y `zxing-wasm`. Si alguna vez vuelven los adjuntos, vuelven con ellas.
+Rutas de la web (Bearer o sesión, montadas en `api.ts`): `GET /api/trips`, `GET /api/trip?id=`, `POST /api/trip`
+(alta/edición; destino con `lat`/`lon`/`timezone` del buscador de `/api/hub/location/search`), `/api/trip/delete`,
+`/active`, `/day`, `/day/item`, `/day/item/delete`, `/packing`, `/paper`, `/paper/delete`, `GET /guide/questions`,
+`POST /guide/generate` → `{jobId}` (se sigue con `job.status` por `/api/apps/call`), `GET /guide/section?id=&n=`,
+`POST /sync`.
 
-Lo que el viaje espejaba en `/data/calendar.json` (eventos con `tripId`) ya no tiene dueño: nadie los
-puede editar ni borrar, así que `normalizeCalendar()` los **descarta al leer**. Es de una sola vía a
-propósito.
+Servicios de la app (`POST /api/apps/call`, `app: "viajes"`): `viajes.lista`, `viajes.activar`, `viajes.viaje`
+(la vista compacta, ≤ 40 KB, con `weather` del destino y `today` en su zona), `viajes.papel`, `viajes.llevar`
+(`toggle`/`remove`/`add`; `add` recibe lo DICHO y el modelo lo parte en altas y bajas, sin duplicar), `viajes.sugerir`
+y `viajes.sugerir.agregar`, `viajes.guia.preguntas` (0-4 preguntas decididas mirando el itinerario, sin modelo),
+`viajes.guia.generar` (trabajo: diez secciones con búsqueda web, `appsProseSearch`, progreso "Sección N de 10"),
+`viajes.guia.seccion`, `viajes.preguntar` (el viaje entero en el system con `cache_control`; busca en internet
+**solo si la pregunta dice "busca"**; devuelve `answer` y `spoken` ≤ 220 caracteres) y `viajes.recordar`
+(recordatorio 2 h antes en `store.json`, con la hora del ítem pasada de la zona del viaje a la de la cuenta).
+Todo lo que llama al modelo usa la clave de las apps (`config.apps`) y cuenta como `apps_calls`.
+
+Los ítems **con hora** se espejan en `/data/calendar.json` como eventos con `tripId` (kind `trip` en
+`GET /api/calendar`); el espejo se rehace entero al guardar el viaje y se borra al borrarlo.
 
 ## Paquete de contenido descargable (`/api/assets/*`)
 
@@ -632,6 +643,7 @@ Cada archivo JSON de hoy pasa a ser una fila `docs(account_id, name)` con **el m
 | `/data/voice-context.json` | `docs(1, "voice-context")` |
 | `/data/hub-settings.json` | `docs(1, "hub-settings")` |
 | `/data/hub-data.json` | `docs(1, "hub-data")` |
+| `/data/trips.json` | `docs(1, "trips")` |
 
 Por eso `store.ts`, `calendar.ts` y compañía **no cambiaron su lógica**: cambió de dónde leen y
 escriben. Las tablas son `accounts`, `devices`, `pairings`, `docs`, `usage` y `server_meta`; se crean solas al
