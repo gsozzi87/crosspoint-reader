@@ -36,6 +36,11 @@ void tick();
 // Antes de dormir, con la tarjeta todavía montada. Es la muestra que cierra el
 // tramo despierto y abre el tramo dormido.
 void sampleNow(const char* why);
+// Al despertar de un sueño profundo: compara la última línea del diario (la de
+// "antes de dormir") con la lectura de ahora y lo dice en el log, con %/h. Es
+// la medida que el dueño tenía que sacar a mano de dos arranques ("anoche se
+// tragó el 9 %"): ahora la dice el aparato, y avisa cuando es demasiado.
+void reportAfterSleep();
 
 // Una línea del diario.
 struct Sample {

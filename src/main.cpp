@@ -45,7 +45,11 @@
 #include "activities/home/VoiceActivity.h"
 #include "util/DeviceLog.h"
 #if SOC_PM_SUPPORT_EXT1_WAKEUP
+#include <driver/gpio.h>
 #include <driver/rtc_io.h>
+#include <esp_system.h>
+
+#include "util/CodecSleep.h"
 #endif
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
@@ -426,6 +430,26 @@ static void sleepNow() {
   // de la lista.
   halTiltSensor.deepSleep();   // QMI8658 a dormir; idempotente
   AudioManager::silenceAmp();  // el enable del amplificador (GPIO39) a un nivel definido
+  if (BoardConfig::isWS397()) {
+    // LO QUE SE COMÍA LA BATERÍA DURMIENDO (1.5.106): 9 % en una noche, o sea
+    // del orden de 10 mA con el S3 en sueño profundo (que son microamperios).
+    // El firmware no toca los rieles del PMIC, así que Audio_VCC (ES8311) y
+    // AudioCTR_VCC/VCC3V3 (NS4150B) siguen a 3,3 V toda la noche; y dos cosas
+    // dejaban a esos dos chips ENCENDIDOS de verdad:
+    //  1. el ES8311 nunca se apagaba (powerDown() sólo corta un riel por GPIO
+    //     que acá no existe): quedaba polarizado como lo dejó la última
+    //     reproducción;
+    //  2. el enable del NS4150B es GPIO39, que NO es RTC GPIO y en la placa no
+    //     tiene resistencia a masa (R74 sin poblar): el LOW de silenceAmp()
+    //     dura hasta que esp_sleep_config_gpio_isolate() suelta el pad, y el
+    //     amplificador pasa la noche con el enable al aire.
+    // El códec se pone en suspensión por I2C y el pin se RETIENE en bajo a
+    // través del sueño (gpio_deep_sleep_hold_en lo hace el SDK). setup() lo
+    // libera antes de que el audio lo vuelva a manejar.
+    codecsleep::es8311Suspend();
+    const int8_t amp = BoardConfig::ACTIVE.audio.ampEnable;
+    if (amp >= 0) gpio_hold_en(static_cast<gpio_num_t>(amp));
+  }
   armReminderWake(/*quiet=*/true);
   // ws397: the wake key is OK (GPIO5, RTC-capable, EXT1 low). PWR cannot wake:
   // the PMIC IRQ is on GPIO38, which is not an RTC GPIO. A PWR press while
@@ -1124,6 +1148,14 @@ void setup() {
 
   gpio.begin();
   powerManager.begin();
+  if (BoardConfig::isWS397()) {
+    // El enable del amplificador quedó RETENIDO en bajo durante el sueño
+    // profundo (sleepNow); si no se suelta, el audio escribe el pin y el pad no
+    // se entera: el parlante queda mudo hasta el próximo corte de energía.
+    // Sobre un pad que no está retenido es un no-op.
+    const int8_t amp = BoardConfig::ACTIVE.audio.ampEnable;
+    if (amp >= 0) gpio_hold_dis(static_cast<gpio_num_t>(amp));
+  }
   // ws397: PMIC power key. Configures 0x27/0x10/0x22 and the interrupt enables
   // and flushes whatever the key latched while we slept (the PMIC does not
   // reset with the ESP), so the first pump() never sees a phantom press.
@@ -1222,6 +1254,9 @@ void setup() {
   devlog::begin();  // from here every LOG_* line also goes to the SD
   setLogSink(&devlog::write);
   POWER_KEY.logSnapshot();  // the PMIC register dump, now that it reaches /board/log
+  // Cuánto se fue durmiendo, dicho por el aparato: la última línea del diario
+  // es la de "antes de dormir" y ésta es la de ahora.
+  if (BoardConfig::isWS397() && esp_reset_reason() == ESP_RST_DEEPSLEEP) batterylog::reportAfterSleep();
   // ws397: the short-press binding is meaningless here (PWR short = clean
   // screen, and OK is plain Confirm), and SLEEP would make a 10 ms wake tap
   // count as verified. Force it whatever the file (or the web) says.
