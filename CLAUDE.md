@@ -1790,6 +1790,35 @@ consumiendo dormido es sólo lo que cuelga de VCC3V3 (la tarjeta en reposo) y el
 - La línea del arranque lo dice: `rieles ALDO1-3 re-encendidos al arrancar (estaban apagados: 07)`. Si no aparece
   después de un sueño profundo, el corte no se hizo.
 
+## "Se trabó por completo": el panel no contestaba y el SDK esperaba 30 s por cada cosa (1.5.108)
+
+Con 1.5.105 el aparato "se trabó por completo, no respondía ni a la palanca, a los años se conectó a la red".
+Sacarle la batería no lo arregló. **No estaba colgado**: el log lo dice, y hay que saber leerlo.
+
+- A las 15:56, primer refresco después de diez minutos de reposo: `refresh FULL hint=ui 30086ms`. Y después de
+  los arranques en frío (con el cable puesto, `vbus=1`), el init de la pantalla tarda **90 s** y cada refresco
+  **30 s**, siempre el mismo número redondo. Ése número es el tope del SDK: `EpdBus::waitBusy` esperaba hasta
+  30 s a que BUSY del SSD1677 bajara, tres veces en el init y una por pintada. **BUSY quedó en alto** y el
+  aparato pagaba el tope entero por cada comando: cada toque de la palanca "no hacía nada" porque la pintada
+  anterior seguía esperando.
+- **Por qué sacar la batería no lo arregló**: el USB estaba puesto y el PMIC no se resetea con el ESP, así que
+  el riel del panel (ALDO, vía el P-MOSFET Q2) nunca se cortó. Un controlador trabado no sale de ahí con RST
+  ni con un reinicio del ESP: hace falta un corte de corriente de verdad. Y 1.5.105 no toca nada del panel ni
+  del PMIC (1.5.106/107 nunca corrieron en ese aparato): no fue un commit, fue el chip.
+- **Parche 0026 del SDK**: `EpdBus::setBusyTimeoutMs()` y un contador `busyTimeouts()`. `HalDisplay` pone
+  **5 s** en la ws397 (la onda más larga medida es el FULL, 2,2 s; hay margen para el frío). Con eso un panel
+  mudo cuesta 5 s por pintada en vez de 30 y se llega a Ajustes y a la OTA.
+- **El aparato se rescata solo, una vez por encendido** (`checkPanelAfterInit` en `main.cpp`): si el init
+  venció alguna espera, `[ERR] EL PANEL NO CONTESTA`, `PowerKey::railsCycle(500)` (ALDO1-3 abajo medio
+  segundo, que se lleva también códec y amplificador, y arriba) y reinicio limpio. `panelRescueMagic` en
+  RTC_NOINIT evita el bucle: si al volver sigue mudo, arranca igual y el log dice qué probar (PWR 10 s, o
+  batería **y** cable). En uso, `checkPanelHealth()` en el loop anota cada espera vencida en el acto y a la
+  tercera de la sesión hace el mismo ciclo con reinicio silencioso al hub.
+- **Lo que hay que ver en el log del aparato afectado** cuando tome 1.5.108: si `el panel volvió a contestar
+  después del ciclo de corriente` aparece, era el controlador trabado y ya está; si aparece `ya se le dio un
+  ciclo de corriente y sigue mudo`, mirar la línea `AXP2101 rieles:` (LDO(90) sin los bits 0-2 = riel apagado)
+  y, si el riel está bien, es hardware: el panel o su cable plano.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

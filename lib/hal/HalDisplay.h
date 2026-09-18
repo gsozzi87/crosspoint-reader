@@ -25,6 +25,10 @@ class HalDisplay {
   // (~770ms each on X3).
   void begin(bool seamless = false);
 
+  // Esperas de BUSY que vencieron desde el arranque (ver EpdBus::setBusyTimeoutMs).
+  // Cero en un panel sano; cualquier otra cosa es un panel que no contesta.
+  uint32_t busyTimeouts() const { return einkDisplay.busyTimeouts(); }
+
   // Display dimensions
   static constexpr uint16_t DISPLAY_WIDTH = EInkDisplay::DISPLAY_WIDTH;
   static constexpr uint16_t DISPLAY_HEIGHT = EInkDisplay::DISPLAY_HEIGHT;

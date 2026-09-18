@@ -80,6 +80,15 @@ class PowerKey {
   // PMIC) o sacar la batería lo devuelve a los valores de fábrica.
   bool railsOffForSleep() const;
 
+  // CICLO DE CORRIENTE AL PANEL (1.5.108). Un SSD1677 que se quedó con BUSY
+  // en alto no sale de ahí ni con RST ni con un reinicio del ESP: el PMIC no
+  // se resetea con el ESP y el riel sigue puesto, así que "sacar la batería"
+  // con el USB enchufado tampoco lo apaga. Lo único que lo vuelve es cortarle
+  // la alimentación de verdad: ALDO1-3 abajo, `offMs` de espera para que se
+  // descarguen los condensadores detrás de Q2, y arriba otra vez. Se lleva
+  // también el códec y el amplificador, que se reinician con el aparato.
+  bool railsCycle(uint16_t offMs) const;
+
   // APAGAR DE VERDAD, no dormir: el AXP2101 corta sus rieles (bit0 de 0x10,
   // soft off) y el aparato queda consumiendo lo que consume el PMIC y nada
   // más. No hay alarmas, no hay reloj en pantalla, no hay wake por botón: se

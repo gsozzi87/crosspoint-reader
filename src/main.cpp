@@ -218,6 +218,13 @@ constexpr int MAX_CLOCKLESS_RETRIES = 5;
 
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
+// EL PANEL NO CONTESTA (1.5.108): con este valor puesto ya se le dio un ciclo
+// de corriente al panel y se reinició UNA vez; si sigue mudo no se insiste, el
+// aparato arranca igual (cada pintada tarda el tope de BUSY) y el log lo dice.
+// Sobrevive a un reinicio y al sueño profundo, no a un corte de energía — que
+// es justamente el otro remedio.
+static constexpr uint32_t PANEL_RESCUE_MAGIC = 0x50414E4C;  // "PANL"
+RTC_NOINIT_ATTR uint32_t panelRescueMagic;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
@@ -1072,6 +1079,70 @@ static bool handlePowerHold(const bool gateOpen) {
 // hace solo el coordinador de refresco (un completo cada 12 parciales) y el
 // bloqueo se quedó sin puerta; si hace falta, entra en Ajustes → Sistema.
 
+// EL PANEL NO CONTESTA (1.5.108). El dueño lo describió como "se trabó por
+// completo, no respondía ni a la palanca, a los años se conectó a la red": el
+// log de ese aparato tenía un `refresh FULL 30086ms` y, después, un init de la
+// pantalla de 90 s y cada refresco de 30 s. No estaba colgado: BUSY del
+// SSD1677 se quedó en alto y cada comando esperaba el tope del SDK entero.
+// Sacarle la batería no lo arregló porque el USB estaba puesto y el PMIC —que
+// no se resetea con el ESP— siguió alimentando el panel: un controlador
+// trabado no sale de ahí sin un corte de corriente DE VERDAD. Eso es lo que
+// hace esto, una sola vez por encendido: ALDO1-3 abajo medio segundo, arriba,
+// y reinicio limpio. Si al volver sigue mudo, se arranca igual con el tope de
+// 5 s por pintada (lento, pero se llega a Ajustes y a la OTA) y el log dice
+// qué pasa en vez de callarse.
+void checkPanelAfterInit(unsigned long initMs) {
+  const uint32_t timeouts = display.busyTimeouts();
+  if (timeouts == 0) {
+    if (panelRescueMagic == PANEL_RESCUE_MAGIC) {
+      LOG_INF("MAIN", "el panel volvió a contestar después del ciclo de corriente (init %lu ms)", initMs);
+      panelRescueMagic = 0;
+    }
+    return;
+  }
+  LOG_ERR("MAIN", "EL PANEL NO CONTESTA: BUSY quedó en alto, %lu esperas vencidas en el init (%lu ms)",
+          static_cast<unsigned long>(timeouts), initMs);
+  if (panelRescueMagic == PANEL_RESCUE_MAGIC) {
+    LOG_ERR("MAIN",
+            "ya se le dio un ciclo de corriente y sigue mudo: se arranca igual (cada pintada tarda el tope). "
+            "Probar PWR 10 s o sacar batería Y cable; si persiste, es el panel o su cable plano");
+    return;
+  }
+  LOG_ERR("MAIN", "ciclo de corriente al panel y reinicio, una sola vez");
+  panelRescueMagic = PANEL_RESCUE_MAGIC;
+  const bool cycled = POWER_KEY.railsCycle(500);
+  if (!cycled) LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual");
+  devlog::flush();
+  delay(50);
+  ESP.restart();
+}
+
+// Vigilancia en el loop: una espera de BUSY vencida en uso deja su línea en el
+// acto (antes, un refresco de 30 s se veía como un `refresh … 30086ms` de nivel
+// DBG y nada más). A la tercera de la sesión —un panel que no volvió solo— se
+// hace lo mismo que en el arranque: ciclo de corriente y reinicio, una vez.
+void checkPanelHealth() {
+  static uint32_t seen = 0;
+  const uint32_t now = display.busyTimeouts();
+  if (now == seen) return;
+  seen = now;
+  LOG_ERR("MAIN", "EL PANEL NO CONTESTÓ: la espera de BUSY venció (van %lu en esta sesión); cada pintada tarda el tope",
+          static_cast<unsigned long>(now));
+  if (now < 3 || deepSleepInProgress) return;
+  if (panelRescueMagic == PANEL_RESCUE_MAGIC) {
+    LOG_ERR("MAIN", "el ciclo de corriente ya se hizo una vez en este encendido: no se repite");
+    return;
+  }
+  LOG_ERR("MAIN", "tres esperas vencidas: ciclo de corriente al panel y reinicio, una sola vez");
+  panelRescueMagic = PANEL_RESCUE_MAGIC;
+  silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
+  silentRebootMagic = SILENT_REBOOT_MAGIC;
+  if (!POWER_KEY.railsCycle(500)) LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual");
+  devlog::flush();
+  delay(50);
+  ESP.restart();
+}
+
 void setupDisplayAndFonts(bool seamless = false) {
 #if !FREEINK_MCU_C3
   // C3 resolves its controller in HalGPIO::begin() before SPI claims the
@@ -1086,7 +1157,9 @@ void setupDisplayAndFonts(bool seamless = false) {
   }
 #endif
 
+  const unsigned long displayBeginAt = millis();
   display.begin(seamless);
+  if (BoardConfig::isWS397()) checkPanelAfterInit(millis() - displayBeginAt);
   renderer.begin();
   activityManager.begin();
   // Con un micrófono abierto el panel no puede promover un refresco a limpieza:
@@ -1540,6 +1613,7 @@ void loop() {
   shtc3::tick();       // temperatura de adentro, en dos tiempos y sin bloquear
   batterylog::tick();  // el diario de la batería, una línea cada diez minutos
   devlog::tick();      // que lo último escrito llegue a la tarjeta antes de un cuelgue
+  if (BoardConfig::isWS397()) checkPanelHealth();
 
   if (activityManager.requiresExclusiveStorageLoop()) {
     // USB Drive handed the raw SD card to the host. Do not run screenshots,
