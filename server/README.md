@@ -629,7 +629,7 @@ Cada archivo JSON de hoy pasa a ser una fila `docs(account_id, name)` con **el m
 |---|---|
 | `/data/store.json` | `docs(1, "store")` |
 | `/data/calendar.json` | `docs(1, "calendar")` |
-| `/data/suggest.json` | `docs(1, "suggest")` |
+| `/data/voice-context.json` | `docs(1, "voice-context")` |
 | `/data/hub-settings.json` | `docs(1, "hub-settings")` |
 | `/data/hub-data.json` | `docs(1, "hub-data")` |
 

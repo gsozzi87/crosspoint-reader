@@ -31,27 +31,45 @@ import { sourcesLine } from "./websearch";
 import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { accountOf, type AppEnv } from "./tenant";
-import { randomUUID } from "node:crypto";
+import { mutateDoc, readDoc } from "./fsjson";
 
 // La zona es la de la cuenta del pedido (el lugar que eligió para el clima).
 
 export const voice = new Hono<AppEnv>();
 
+// EL CONTEXTO DE LA CONVERSACIÓN ES DE LA CUENTA Y DURA 24 HORAS (1.5.108).
+// Hasta 1.5.107 vivía en memoria, atado a un id que el aparato tenía que
+// devolver, y sólo mientras el aparato se quedaba en la pantalla de "¿quieres
+// preguntar algo más?". El dueño no quiere esa pantalla: pregunta, lee, Atrás
+// al hub, y la pregunta siguiente —una hora después— tiene que poder decir "¿y
+// por qué?". Así que los últimos turnos de PREGUNTAS de cada cuenta se guardan
+// en el volumen (`voice-context`), sobreviven al redeploy y caducan a las 24 h.
+// Sólo las preguntas: una tarea o un recordatorio no son "tema" de nada.
 type ConversationTurn = { user: string; assistant: string };
-type VoiceConversation = { accountId: number; expiresAt: number; turns: ConversationTurn[] };
-const conversations = new Map<string, VoiceConversation>();
-const CONVERSATION_TTL_MS = 20 * 60 * 1000;
-const CONVERSATION_MAX_TURNS = 6;
+type StoredTurn = ConversationTurn & { at: number };
+type VoiceContext = { turns: StoredTurn[] };
+const CONTEXT_TTL_MS = 24 * 60 * 60 * 1000;
+const CONTEXT_MAX_TURNS = 8;
 
-function conversationFor(accountId: number, id: string): VoiceConversation | null {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return null;
-  const found = conversations.get(id);
-  if (!found || found.accountId !== accountId || found.expiresAt <= Date.now()) {
-    conversations.delete(id);
-    return null;
-  }
-  found.expiresAt = Date.now() + CONVERSATION_TTL_MS;
-  return found;
+function shapeContext(raw: unknown): VoiceContext {
+  const doc = (raw && typeof raw === "object" ? raw : {}) as Partial<VoiceContext>;
+  const cutoff = Date.now() - CONTEXT_TTL_MS;
+  const turns = Array.isArray(doc.turns) ? doc.turns : [];
+  return {
+    turns: turns.filter((t) => t && typeof t.user === "string" && typeof t.assistant === "string" && typeof t.at === "number" && t.at > cutoff),
+  };
+}
+
+async function loadContext(accountId: number): Promise<ConversationTurn[]> {
+  const doc = shapeContext(await readDoc<unknown>(accountId, "voice-context", null));
+  return doc.turns.map(({ user, assistant }) => ({ user, assistant }));
+}
+
+async function rememberTurn(accountId: number, user: string, assistant: string): Promise<void> {
+  await mutateDoc(accountId, "voice-context", shapeContext, (doc) => {
+    doc.turns.push({ user: user.slice(0, 500), assistant: assistant.slice(0, 1200), at: Date.now() });
+    if (doc.turns.length > CONTEXT_MAX_TURNS) doc.turns.splice(0, doc.turns.length - CONTEXT_MAX_TURNS);
+  });
 }
 
 function contextualMessage(turns: ConversationTurn[], text: string): string {
@@ -65,32 +83,6 @@ function contextualMessage(turns: ConversationTurn[], text: string): string {
     "NUEVO MENSAJE DEL USUARIO (clasifica y responde únicamente esto):",
     text,
   ].join("\n\n");
-}
-
-function rememberConversation(accountId: number, requestedId: string, text: string, reply: string): string {
-  let id = requestedId;
-  let conversation = conversationFor(accountId, id);
-  if (!conversation) {
-    if (conversations.size >= 512) {
-      const now = Date.now();
-      for (const [key, value] of conversations) if (value.expiresAt <= now) conversations.delete(key);
-      // Cota dura por si hay muchas conversaciones activas a la vez. Map
-      // conserva el orden de inserción, por lo que se descarta la más antigua.
-      if (conversations.size >= 512) {
-        const oldest = conversations.keys().next().value;
-        if (oldest) conversations.delete(oldest);
-      }
-    }
-    id = randomUUID();
-    conversation = { accountId, expiresAt: Date.now() + CONVERSATION_TTL_MS, turns: [] };
-    conversations.set(id, conversation);
-  }
-  conversation.turns.push({ user: text.slice(0, 500), assistant: reply.slice(0, 1200) });
-  if (conversation.turns.length > CONVERSATION_MAX_TURNS) {
-    conversation.turns.splice(0, conversation.turns.length - CONVERSATION_MAX_TURNS);
-  }
-  conversation.expiresAt = Date.now() + CONVERSATION_TTL_MS;
-  return id;
 }
 
 function framed(json: object, audio: Uint8Array | null): Response {
@@ -184,11 +176,18 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     `Ahora es ${now} (${weekday}), zona ${timeZone()}. Convierte las fechas relativas (mañana, el jueves, la semana que viene) a fecha absoluta.`,
     `Hay exactamente DOS listas y no se pueden crear más: "${lists[0]}" (lo que se compra) y "${lists[1]}" (todo lo demás por hacer).`,
     "Si el usuario nombra cualquier otra lista, ignora ese nombre: lo que sea una compra va a la de compras y todo lo demás a la de tareas.",
-    "Reglas: 'recuérdame', 'avísame', 'despiértame' → reminder. En dueAt incluye la hora SOLO si el usuario la dijo; si dijo",
+    "PALABRAS DE ORDEN. El usuario elige qué hacer con la PRIMERA palabra de orden que dice, y cada tipo tiene la suya:",
+    `'${CMD[lang].remind}' → reminder; '${CMD[lang].memorize}' → memory; '${CMD[lang].search}' → question con needsWeb;`,
+    `'${CMD[lang].buy}' → shopping; '${CMD[lang].task}' → task; '${CMD[lang].note}' → note; '${CMD[lang].timer}' → timer;`,
+    `'${CMD[lang].alarm}' → alarm; '${CMD[lang].translate}' → translate. Sin palabra de orden es una pregunta (question).`,
+    "Las palabras de orden NO se mezclan: 'recuérdame' es SIEMPRE un recordatorio con fecha y hora, NUNCA una memoria,",
+    "aunque diga 'recuerda que' o 'acuérdate de que'. Una memoria (memory) existe ÚNICAMENTE si la frase lleva",
+    `'${CMD[lang].memorize}'; sin esa palabra, un dato sobre el usuario se contesta como pregunta y NO se guarda.`,
+    "'recuérdame', 'recuerda', 'avísame', 'despiértame' → reminder. En dueAt incluye la hora SOLO si el usuario la dijo; si dijo",
     "el día pero no la hora ('mañana', 'el jueves'), incluye solo la fecha (YYYY-MM-DD, sin T) y NUNCA inventes una hora.",
-    "'Comprar X', 'compras:' o",
-    "artículos sueltos → shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Agrega', 'anota que tengo que',",
-    "'tengo que', 'hay que' → task (va a la lista de tareas). 'Nota:', 'anota' → note.",
+    "'Compra X', 'comprar X', 'compras:' →",
+    "shopping, un ítem por producto (\"leche y huevos\" son dos acciones). 'Tarea:', 'tengo que', 'hay que',",
+    "'anota que tengo que' → task (va a la lista de tareas). 'Nota:', 'anota' → note.",
     "'Pon N minutos', 'temporizador', 'pomodoro' (25 min) → timer con seconds y reply corta ('Listo, 10 minutos'). " +
     "OJO con la unidad: `seconds` va SIEMPRE en SEGUNDOS. '20 segundos' → 20 (no 1200). '10 minutos' → 600. " +
     "'un minuto y medio' → 90. 'media hora' → 1800. 'pomodoro' → 1500. Repite en la reply la misma unidad que dijo el usuario.",
@@ -201,11 +200,11 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     "'todos los meses', 'el 5 de cada mes' → {kind:monthly}; 'todos los años', cumpleaños y aniversarios → {kind:yearly}.",
     "'hasta fin de mes', 'hasta el viernes' → until con la fecha absoluta YYYY-MM-DD. Si no dice nada de repetir, kind = none.",
     "Con una repetición semanal incluye en dueAt el PRIMER día que corresponde (el próximo de esos días) con la hora indicada.",
-    "'Recuerda que', 'ten presente que', 'mi ... es ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.",
-    "Si está corrigiendo algo que ya sabes de él ('ya no vivo en México', 'ahora trabajo en otro lugar'), también es memory:",
+    `'${CMD[lang].memorize} que ...' (un dato sobre el usuario o su vida) → memory con text = el dato en una frase.`,
+    `Si con '${CMD[lang].memorize}' corrige algo que ya sabes de él ('memoriza que ya no vivo en México'), también es memory:`,
     "escribe el dato NUEVO completo en text y el servidor sustituye el anterior.",
-    "needsWeb va en true SOLO si el usuario PIDIO EXPRESAMENTE que busque en internet",
-    "(busca, busca en internet, revisa en internet, averigua). Que la pregunta sea de actualidad NO es suficiente:",
+    `needsWeb va en true SOLO si el usuario dijo '${CMD[lang].search}' (busca, busca en internet, revisa en internet, averigua).`,
+    "Que la pregunta sea de actualidad NO es suficiente:",
     "si no pidió buscar, responde con lo que sabes y aclara que el dato puede estar desactualizado.",
     "Buscar cuesta dinero y el usuario pidió decidirlo. En todos los demás casos va false.",
     `'Traduce', 'cómo se dice' (o su equivalente en el idioma del usuario) → translate y reply es SOLO la traducción, al idioma que pida; si no dice a cuál, a ${defaultTranslateTarget(lang)}. Cualquier otra cosa (duda, dato, explicación) → question`,
@@ -214,6 +213,40 @@ function systemPrompt(now: string, weekday: string, lists: string[], lang: Lang)
     `El usuario habla en ${LANGUAGE_NAME[lang]}: los títulos de las acciones y reply van en ese idioma (salvo la traducción). Usa siempre español neutro, sin voseo ni expresiones regionales. Texto plano, sin markdown ni listas. Máximo 120 palabras salvo que pida más.`,
   ].join(" ");
 }
+
+// Las palabras de orden por idioma, tal como se le explican al modelo y tal
+// como las muestra la pantalla de Hablar (STR_VOICE_SAY_*). REGLA DEL DUEÑO
+// (1.5.108): "para memorizar sí o sí debo decir memoriza, para la búsqueda
+// busca, para recordarme recuérdame". Un recuérdame nunca es memoria.
+type Commands = { remind: string; memorize: string; search: string; buy: string; task: string; note: string; timer: string; alarm: string; translate: string };
+const CMD: Record<Lang, Commands> = {
+  es: { remind: "recuérdame", memorize: "memoriza", search: "busca", buy: "compra", task: "tarea", note: "nota", timer: "pon N minutos / temporizador", alarm: "alarma / despiértame", translate: "traduce" },
+  en: { remind: "remind me", memorize: "memorize", search: "search", buy: "buy", task: "task", note: "note", timer: "set N minutes / timer", alarm: "alarm / wake me", translate: "translate" },
+  fr: { remind: "rappelle-moi", memorize: "mémorise", search: "cherche", buy: "achète", task: "tâche", note: "note", timer: "mets N minutes / minuteur", alarm: "alarme / réveille-moi", translate: "traduis" },
+  de: { remind: "erinnere mich", memorize: "merk dir", search: "such", buy: "kauf", task: "aufgabe", note: "notiz", timer: "stell N Minuten / Timer", alarm: "Wecker / weck mich", translate: "übersetz" },
+  pt: { remind: "lembra-me", memorize: "memoriza", search: "busca / pesquisa", buy: "compra", task: "tarefa", note: "nota", timer: "põe N minutos / temporizador", alarm: "alarme / acorda-me", translate: "traduz" },
+  ru: { remind: "напомни", memorize: "запомни", search: "найди", buy: "купи", task: "задача", note: "заметка", timer: "поставь N минут / таймер", alarm: "будильник / разбуди", translate: "переведи" },
+};
+
+// La palabra que vuelve memoria a una frase, por idioma, como raíz sin
+// acentos: "memoriz" cubre memoriza/memorizá/memorize. Es la guardia del
+// servidor: aunque el modelo diga memory, sin esta palabra no se guarda.
+const MEMORIZE_ROOT: Record<Lang, string[]> = {
+  es: ["memoriz"], en: ["memoriz", "memoris"], fr: ["memoris"], de: ["merk dir", "merke dir"], pt: ["memoriz"], ru: ["запомни"],
+};
+
+function saysMemorize(text: string, lang: Lang): boolean {
+  const plain = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  return MEMORIZE_ROOT[lang].some((root) => plain.includes(root));
+}
+
+const SAVED_MSG: Record<Lang, string> = {
+  es: "Listo, guardado.", en: "Done, saved.", fr: "C'est noté.", de: "Erledigt, gespeichert.", pt: "Pronto, guardado.", ru: "Готово, сохранено.",
+};
+const NOT_UNDERSTOOD_MSG: Record<Lang, string> = {
+  es: "No entendí, ¿puedes repetirlo?", en: "I didn't get that, can you repeat?", fr: "Je n'ai pas compris, tu peux répéter ?",
+  de: "Das habe ich nicht verstanden, kannst du es wiederholen?", pt: "Não entendi, podes repetir?", ru: "Не понял, повтори, пожалуйста.",
+};
 
 const ASK_TIME: Record<Lang, string> = {
   es: "¿A qué hora te lo recuerdo?",
@@ -424,9 +457,9 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
   const acc = accountOf(c);
   const lang = normalizeLang(c.req.query("lang"));
   const speak = c.req.query("speak") ?? "short";  // none | short | all (ajuste del aparato)
-  const requestedConversationId = (c.req.query("conversation") ?? "").slice(0, 36);
-  const priorConversation = conversationFor(acc, requestedConversationId);
-  const conversationTurns = priorConversation?.turns ?? [];
+  // El contexto es de la cuenta (ver arriba); el `conversation=` que mandaban
+  // los aparatos hasta 1.5.107 se ignora.
+  const conversationTurns = await loadContext(acc);
   // Segunda vuelta cuando le preguntamos la hora de un recordatorio: el
   // aparato reenvía el título pendiente y esta grabación es solo la hora.
   const pending = (c.req.query("pending") ?? "").slice(0, 200);
@@ -480,6 +513,14 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
       return framed({ ok: true, text, intent: "reminder", reply, saved: [{ kind: "reminder", id: pendingId, title: pending, when: label, repeatText: repText }], timerSeconds: 0, audio: audio?.length ?? 0, ms: { stt: tStt - t0, total: Date.now() - t0 } }, audio);
     }
     const parsed = await classify(acc, text, lang, conversationTurns);
+    // GUARDIA: sin la palabra "memoriza" no hay memoria, diga lo que diga el
+    // modelo. Lo que pretendía guardar se contesta como pregunta y se dice en
+    // el log; así un "recuérdame" mal entendido no queda anotado para siempre.
+    if ((parsed.actions ?? []).some((a) => a.kind === "memory") && !saysMemorize(text, lang)) {
+      console.warn(`voice: el modelo quiso guardar memoria sin "${CMD[lang].memorize}": no se guarda ("${text}")`);
+      parsed.actions = (parsed.actions ?? []).filter((a) => a.kind !== "memory");
+      if (parsed.intent === "memory") parsed.intent = "question";
+    }
     // Recordatorio sin hora (con día o sin día): se pregunta en vez de inventarla,
     // y no se guarda nada todavía — antes execute() ya lo había guardado y el
     // segundo turno creaba un duplicado.
@@ -520,6 +561,14 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
       }
     }
     const saved = await execute(acc, parsed, text, lang);
+    // Un modelo compatible puede volver con la acción hecha y la reply vacía;
+    // el aparato mostraba "El servidor no contestó nada" con la tarea ya
+    // guardada. Se contesta algo cierto en vez de nada.
+    if (!parsed.reply.trim()) {
+      parsed.reply = saved.length ? SAVED_MSG[lang] : NOT_UNDERSTOOD_MSG[lang];
+      spokenReply = parsed.reply;
+      console.warn(`voice: reply vacía del modelo (intent=${parsed.intent}, saved=${saved.length})`);
+    }
     // Temporizador y alarma corren en el aparato: segundos hasta que suene.
     let timerSeconds = 0;
     for (const a of parsed.actions ?? []) {
@@ -536,11 +585,9 @@ voice.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     // reproducirlo (45 s de ADPCM son ~360 KB) y no sabe reproducir mientras baja.
     const ms = { stt: tStt - t0, llm: tLlm - tStt, tts: Date.now() - tLlm, total: Date.now() - t0 };
     console.log(`voice ms: stt=${ms.stt} llm=${ms.llm} tts=${ms.tts} total=${ms.total} intent=${parsed.intent} web=${web}`);
-    const conversationId = parsed.intent === "question"
-      ? rememberConversation(acc, requestedConversationId, text, parsed.reply)
-      : "";
+    if (parsed.intent === "question") await rememberTurn(acc, text, parsed.reply);
     return framed({ ok: true, text, intent: parsed.intent, reply: parsed.reply, saved, timerSeconds,
-      conversationId, audio: audio?.length ?? 0, ms }, audio);
+      audio: audio?.length ?? 0, ms }, audio);
   } catch (err) {
     // Igual que en ask.ts: el aparato tiene que poder distinguir "falta la
     // clave" de "el proveedor falló".

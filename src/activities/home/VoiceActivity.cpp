@@ -55,6 +55,7 @@ struct VoiceExample {
 };
 const VoiceExample EXAMPLES[] = {
     {StrId::STR_VOICE_CAT_ASK, StrId::STR_VOICE_SAY_ASK},
+    {StrId::STR_VOICE_CAT_SEARCH, StrId::STR_VOICE_SAY_SEARCH},
     {StrId::STR_VOICE_CAT_REMINDER, StrId::STR_VOICE_SAY_REMINDER},
     {StrId::STR_VOICE_CAT_REPEAT, StrId::STR_VOICE_SAY_REPEAT},
     {StrId::STR_VOICE_CAT_TASK, StrId::STR_VOICE_SAY_TASK},
@@ -218,7 +219,6 @@ void VoiceActivity::performRequest() {
   }
   LOG_DBG(TAG, "POST /api/voice: %u bytes", (unsigned)bytes);
   std::string path = std::string("/api/voice?lang=") + uiLanguageCode() + "&speak=" + HUB_STORE.speakParam();
-  if (!conversationId.empty()) path += "&conversation=" + urlEncode(conversationId);
   if (!pendingTitle.empty()) path += "&pending=" + urlEncode(pendingTitle);
   if (!pendingDate.empty()) path += "&pendingDate=" + urlEncode(pendingDate);
   ServerClient::Response resp;
@@ -259,7 +259,6 @@ void VoiceActivity::performRequest() {
   heard = doc["text"] | "";
   intent = doc["intent"] | "";
   reply = doc["reply"] | "";
-  conversationId = std::string(doc["conversationId"] | "");
   timerSeconds = doc["timerSeconds"] | 0;
   const char* askTime = doc["askTime"] | "";  // reminder with no time: ask for it
   const size_t audioBytes = framed ? raw.size() - 4 - jsonLen : 0;
@@ -269,6 +268,10 @@ void VoiceActivity::performRequest() {
   }
   if (reply.empty()) {
     WiFi.setSleep(true);
+    // Que el log diga QUÉ vino, no sólo que no vino nada: lo entendido, cuántas
+    // cosas guardó y los tiempos del servidor.
+    LOG_ERR(TAG, "respuesta vacía: text=\"%s\" intent=%s saved=%u stt=%d llm=%d", heard.c_str(), intent.c_str(),
+            (unsigned)doc["saved"].size(), (int)(doc["ms"]["stt"] | 0), (int)(doc["ms"]["llm"] | 0));
     fail(StrId::STR_ASK_FAILED, doc["error"] | tr(STR_VOICE_EMPTY_REPLY));
     return;
   }
@@ -379,20 +382,15 @@ void VoiceActivity::runAfterSpeech() {
   showReply();
 }
 
+// Atrás sobre la respuesta vuelve a donde se abrió Hablar (el hub, casi
+// siempre). Hasta 1.5.108 había una segunda pantalla —"¿quieres preguntar
+// algo más?"— que el dueño no quería: el contexto de la conversación vive
+// ahora en el servidor, por cuenta y durante 24 h, así que la pregunta
+// siguiente puede referirse a ésta sin que el aparato tenga que quedarse.
 void VoiceActivity::showReply() {
   state = REPLY;
   startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, intentTitle(), reply),
-                         [this](const ActivityResult&) {
-                           // Solo las respuestas conversacionales conservan
-                           // contexto. Las acciones (temporizadores, notas,
-                           // recordatorios) mantienen su flujo habitual.
-                           if (intent == "question" && !conversationId.empty()) {
-                             state = FOLLOW_UP;
-                             requestUpdate();
-                           } else {
-                             leave();
-                           }
-                         });
+                         [this](const ActivityResult&) { leave(); });
 }
 
 void VoiceActivity::loop() {
@@ -460,13 +458,6 @@ void VoiceActivity::loop() {
       pumpConnect();
       break;
     case REPLY:
-      break;
-    case FOLLOW_UP:
-      if (mappedInput.wasPressed(MappedInputManager::Button::Back)) {
-        leave();
-      } else if (mappedInput.wasPressed(MappedInputManager::Button::Confirm)) {
-        startRecording();
-      }
       break;
   }
 }
@@ -554,11 +545,6 @@ void VoiceActivity::render(RenderLock&&) {
       if (!wifiPicker) FriendlyWifi::drawStatus(renderer, wifi, mid);
       break;
     case REPLY:
-      break;
-    case FOLLOW_UP:
-      renderer.drawCenteredText(UI_12_FONT_ID, mid - 26, tr(STR_VOICE_FOLLOW_UP), true, EpdFontFamily::BOLD);
-      renderer.drawCenteredText(UI_10_FONT_ID, mid + 12, tr(STR_VOICE_FOLLOW_UP_HINT), true);
-      confirmLabel = tr(STR_VOICE_FOLLOW_UP_ACTION);
       break;
   }
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
