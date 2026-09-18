@@ -36,6 +36,12 @@ constexpr uint8_t REG_INTEN3 = 0x42;
 constexpr uint8_t REG_INTSTS1 = 0x48;
 constexpr uint8_t REG_INTSTS2 = 0x49;  // bit0 POSITIVE, bit1 NEGATIVE, bit2 LONG, bit3 SHORT (W1C)
 constexpr uint8_t REG_INTSTS3 = 0x4A;
+// Rieles: bit0-2 de 0x90 = ALDO1-3 (bit3 ALDO4, bit4-5 BLDO1-2, bit6 CPUSLDO,
+// bit7 DLDO1); 0x92-0x94 = tensión de ALDO1-3, 0x1C = 3,3 V (0,5 V + n·0,1 V).
+constexpr uint8_t REG_LDO_ONOFF0 = 0x90;
+constexpr uint8_t REG_ALDO1_VOLT = 0x92;
+constexpr uint8_t ALDO123_MASK = 0x07;
+constexpr uint8_t ALDO_3V3 = 0x1C;
 constexpr uint8_t CHIP_ID = 0x4A;
 
 // 0x27: IrqLevel 1 s (0 << 4): LONG latches one second into a hold, anchoring
@@ -143,6 +149,22 @@ void PowerKey::begin() {
   for (size_t i = 0; i < sizeof(SNAP_REGS); ++i) {
     if (!readReg(SNAP_REGS[i], snapshot_[i])) snapshot_[i] = 0xEE;
   }
+  // Los rieles que sleepNow() cortó para dormir vuelven ACÁ, antes de que
+  // nadie toque el panel o el audio. Si ya están prendidos (primer arranque
+  // después de la OTA, o un reinicio sin sueño) no se escribe nada.
+  railsRestored_ = 0;
+  uint8_t ldo = 0;
+  if (readReg(REG_LDO_ONOFF0, ldo)) {
+    const uint8_t missing = static_cast<uint8_t>(~ldo & ALDO123_MASK);
+    if (missing != 0) {
+      for (uint8_t i = 0; i < 3; ++i) {
+        if (missing & (1u << i)) writeReg(static_cast<uint8_t>(REG_ALDO1_VOLT + i), ALDO_3V3);
+      }
+      writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK));
+      delay(20);  // que los LDO suban y el panel salga de su reset antes de display.begin()
+      railsRestored_ = missing;
+    }
+  }
   snapshotValid_ = true;
   logSnapshot();
 
@@ -240,6 +262,19 @@ bool PowerKey::powerOff() const {
   return writeReg(REG_COMMON_CONFIG, static_cast<uint8_t>(cfg | 0x01));
 }
 
+bool PowerKey::railsOffForSleep() const {
+  if (!available_) return false;
+  uint8_t ldo = 0;
+  if (!readReg(REG_LDO_ONOFF0, ldo)) return false;
+  if ((ldo & ALDO123_MASK) == 0) return true;
+  const uint8_t after = static_cast<uint8_t>(ldo & ~ALDO123_MASK);
+  if (!writeReg(REG_LDO_ONOFF0, after)) return false;
+  uint8_t check = 0xEE;
+  readReg(REG_LDO_ONOFF0, check);
+  LOG_INF(TAG, "rieles ALDO1-3 cortados para dormir (90: %02X -> %02X)", ldo, check);
+  return check == after;
+}
+
 void PowerKey::logSnapshot() const {
   if (!snapshotValid_) return;
   LOG_INF(TAG, "AXP2101 regs at boot: 10=%02X 20=%02X 21=%02X 22=%02X 27=%02X 40=%02X 41=%02X 42=%02X 48=%02X 49=%02X 4A=%02X",
@@ -247,6 +282,10 @@ void PowerKey::logSnapshot() const {
           snapshot_[7], snapshot_[8], snapshot_[9], snapshot_[10]);
   LOG_INF(TAG, "AXP2101 rieles: DCDC(80)=%02X LDO(90)=%02X ALDO1-4=%02X %02X %02X %02X (1C = 3,3 V)", snapshot_[11],
           snapshot_[12], snapshot_[13], snapshot_[14], snapshot_[15], snapshot_[16]);
+  if (railsRestored_ != 0) {
+    LOG_INF(TAG, "rieles ALDO1-3 re-encendidos al arrancar (estaban apagados: %02X): panel, códec y amplificador",
+            railsRestored_);
+  }
 }
 
 void PowerKey::flushAllStatus(const char* why) {

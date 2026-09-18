@@ -1774,13 +1774,21 @@ Y dos cosas para que **el log lo mida solo** (regla del dueño: el aparato detec
 - El volcado del PMIC al arrancar suma los rieles: `AXP2101 rieles: DCDC(80)= LDO(90)= ALDO1-4= …` (0x1C = 3,3 V).
   Con eso se ve qué está prendido sin abrir el aparato.
 
-**Lo que queda, y es la palanca grande: cortar ALDO1-3 en el sueño profundo** (bits 0-2 de 0x90) y volver a
-encenderlos **lo primero** en `setup()`, antes de tocar el panel. Saca del todo el códec, el amplificador y la
-polarización del panel; queda sólo lo que cuelga de VCC3V3 (la tarjeta en reposo, ~0,3-1 mA) y el consumo propio
-del PMIC. No fue en esta versión a propósito: si el re-encendido en el arranque falla o llega tarde, el aparato
-despierta con el panel a oscuras y sin audio, y **la salida es PWR 10 s** (corte duro del PMIC, que vuelve a los
-valores de fábrica) o sacar la batería. Primero hay que ver cuánto recuperan las dos cosas de arriba con el número
-que ahora escribe el log, y recién después decidir si vale ese riesgo.
+**Y la palanca grande, hecha en 1.5.107 a pedido del dueño ("hacé lo de los rieles a ver qué onda"):**
+`PowerKey::railsOffForSleep()` apaga ALDO1-3 (bits 0-2 de 0x90) como ÚLTIMO paso de `sleepNow()`, con el panel ya
+en su deep sleep y el log cerrado; `PowerKey::begin()` los vuelve a encender **lo primero** al arrancar (pone 3,3 V
+en 0x92-0x94 y los bits en 0x90, 20 ms de espera), y `begin()` corre antes de `setupDisplayAndFonts()` en los dos
+caminos del setup. Un arranque sin sueño de por medio los encuentra prendidos y no escribe nada. Lo que queda
+consumiendo dormido es sólo lo que cuelga de VCC3V3 (la tarjeta en reposo) y el PMIC mismo.
+- **Vía de rescate**: si alguna vez despierta con el panel a oscuras y sin audio, es que el reencendido no llegó:
+  **PWR 10 s** (corte duro del PMIC, que vuelve a los valores de fábrica) o sacar la batería.
+- **Ojo con el códec sin riel**: su I2C es el bus compartido, con pull-ups de 4,7 K a VCC3V3 (R22/R28). Con
+  Audio_VCC apagado, esas líneas alimentan al ES8311 por sus diodos de protección (unos cientos de µA). Si el
+  número de "dormido" no baja lo esperado, la alternativa es dejar Audio_VCC encendido con el códec en suspensión
+  y cortar sólo los otros dos; para eso hace falta saber cuál ALDO es cuál, y se puede averiguar en caliente
+  (cortar uno y ver si el ES8311 deja de contestar en 0x18).
+- La línea del arranque lo dice: `rieles ALDO1-3 re-encendidos al arrancar (estaban apagados: 07)`. Si no aparece
+  después de un sueño profundo, el corte no se hizo.
 
 ## Roadmap acordado
 
