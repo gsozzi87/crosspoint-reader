@@ -27,6 +27,7 @@ import { assets } from "./assets";
 import { calendar } from "./calendar";
 import { suggest } from "./suggest";
 import { notes } from "./notes";
+import { apps } from "./apps";
 import { accountApi, pairStatus, startPairing } from "./accounts";
 import { readBody } from "./net";
 import { accountOf, bearerOf, requireTenant, type AppEnv } from "./tenant";
@@ -130,3 +131,7 @@ api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → 
 api.route("/suggest", suggest);        // GET /api/suggest/day → sugerencias del día (cacheadas, con tope diario)
 api.route("/account", accountApi);  // POST /api/account/pair, /device/rename, /device/delete, /password (desde la web)
 api.route("/log", deviceLog);         // GET/POST/DELETE /api/log → el aparato sube su log; se lee en /board/log
+// POST /api/apps/call {app, service, args}; GET /api/apps/file/:id → la puerta
+// de las apps de Lua (cp.call / cp.download): servicios con nombre, trabajos
+// largos por jobId y los archivos que generan (Librito → EPUB).
+api.route("/apps", apps);

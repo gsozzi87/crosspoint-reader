@@ -30,10 +30,19 @@ export type SearchConfig = {
   key: string;                            // clave del buscador; vacía = gratis, sin clave
 };
 
+// Las apps de Lua (Librito, Viajes) tienen su PROPIO cliente de Anthropic con
+// su propia clave (ver appsLlm.ts): escriben prosa larga con un modelo caro y
+// el dueño quiere ese gasto aparte del de Hablar. Solo Anthropic: la prosa
+// larga con streaming y la salida estructurada nativa son de ese SDK.
+export type AppsConfig = { key: string; model: string };
+export const APPS_MODELS = ["claude-opus-5", "claude-sonnet-5"] as const;
+export const APPS_DEFAULT_MODEL = APPS_MODELS[0];
+
 export type Config = {
   llm: LlmConfig;
   stt: SttConfig;
   search: SearchConfig;
+  apps: AppsConfig;
   deviceToken: string;  // vacío = solo vale el DEVICE_TOKEN del entorno
 };
 
@@ -162,6 +171,10 @@ function defaults(): Config {
       provider: (process.env.SEARCH_PROVIDER as SearchConfig["provider"]) ?? "free",
       key: process.env.SEARCH_API_KEY ?? "",
     },
+    apps: {
+      key: process.env.APPS_ANTHROPIC_KEY ?? "",
+      model: APPS_DEFAULT_MODEL,
+    },
     deviceToken: "",
   };
 }
@@ -173,12 +186,15 @@ function merge(saved: Partial<Config> | null): Config {
     llm: { ...base.llm, ...obj<LlmConfig>(saved?.llm) },
     stt: { ...base.stt, ...obj<SttConfig>(saved?.stt) },
     search: { ...base.search, ...obj<SearchConfig>(saved?.search) },
+    apps: { ...base.apps, ...obj<AppsConfig>(saved?.apps) },
     deviceToken: typeof saved?.deviceToken === "string" ? saved.deviceToken : "",
   };
   // Una clave vacía en el archivo no pisa la del entorno.
   if (!out.llm.key) out.llm.key = base.llm.key;
   if (!out.stt.key) out.stt.key = base.stt.key;
   if (!out.search.key) out.search.key = base.search.key;
+  if (!out.apps.key) out.apps.key = base.apps.key;
+  if (!(APPS_MODELS as readonly string[]).includes(out.apps.model)) out.apps.model = APPS_DEFAULT_MODEL;
   if (!["free", "tavily", "brave"].includes(out.search.provider)) out.search.provider = "free";
   out.search.maxUses = Math.max(1, Math.min(10, Math.round(Number(out.search.maxUses) || 3)));
   return out;
@@ -211,6 +227,7 @@ export async function publicConfig() {
     llm: { provider: c.llm.provider, baseUrl: c.llm.baseUrl, model: c.llm.model, hasKey: !!c.llm.key },
     stt: { baseUrl: c.stt.baseUrl, model: c.stt.model, hasKey: !!c.stt.key },
     search: { enabled: c.search.enabled, maxUses: c.search.maxUses, provider: c.search.provider, hasKey: !!c.search.key },
+    apps: { model: c.apps.model, hasKey: !!c.apps.key, models: APPS_MODELS },
     deviceTokenSet: !!c.deviceToken,
     presets: PRESETS,
   };

@@ -40,8 +40,16 @@ class HttpDownloader {
 
   /**
    * Download a file to the SD card with optional credentials.
+   *
+   * ws397: `authorization`, si no está vacío, viaja tal cual como cabecera
+   * `Authorization` ("Bearer <token>"). Es lo que usan las descargas de las
+   * apps de Lua (`GET /api/apps/file/<id>` con el Bearer del aparato): así el
+   * archivo va derecho a la tarjeta, sin pasar por el cuerpo en memoria de
+   * ServerClient, que lo copia dos veces en heap interno. Con Basic
+   * (username/password) además de esto, manda la Basic; no se usan juntos.
    */
   static DownloadError downloadToFile(const std::string& url, const std::string& destPath,
                                       ProgressCallback progress = nullptr, bool* cancelFlag = nullptr,
-                                      const std::string& username = "", const std::string& password = "");
+                                      const std::string& username = "", const std::string& password = "",
+                                      const std::string& authorization = "");
 };

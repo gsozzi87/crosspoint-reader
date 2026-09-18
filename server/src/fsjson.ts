@@ -81,7 +81,8 @@ export type DocName =
   | "suggest"
   | "hub-settings"
   | "hub-data"
-  | "news";
+  | "news"
+  | "apps-jobs";
 
 const LEGACY_FILE: Record<DocName, string> = {
   store: process.env.STORE_FILE ?? "/data/store.json",
@@ -90,6 +91,7 @@ const LEGACY_FILE: Record<DocName, string> = {
   "hub-settings": process.env.HUB_SETTINGS_FILE ?? "/data/hub-settings.json",
   "hub-data": process.env.HUB_DATA_FILE ?? "/data/hub-data.json",
   news: process.env.NEWS_FILE ?? "/data/news.json",
+  "apps-jobs": process.env.APPS_JOBS_FILE ?? "/data/apps-jobs.json",
 };
 
 export const DOC_NAMES = Object.keys(LEGACY_FILE) as DocName[];

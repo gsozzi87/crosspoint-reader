@@ -20,6 +20,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `OTA_TOKEN` | Bearer que usa `release.sh` / `release.ps1` para subir el `.bin` (`PUT /firmware`). |
 | `DEVICE_TOKEN` | Bearer del aparato para todo `/api/*` (web UI del aparato → Servidor → token). |
 | `ANTHROPIC_API_KEY` | Claude (preguntas y clasificador de voz). Nunca va al aparato. |
+| `APPS_ANTHROPIC_KEY` | Clave de Anthropic **de las apps de Lua** (Librito, Viajes), aparte de la de Hablar; también se carga desde `/board` → Ajustes → Avanzado → Apps de Lua. `APPS_FILES_DIR` (default `/data/apps-files`) guarda lo que generan. |
 | `STT_API_KEY` (o `OPENAI_API_KEY`) | Transcripción por un endpoint compatible con OpenAI. |
 | `STT_BASE_URL`, `STT_MODEL` | Opcionales. Groq: `https://api.groq.com/openai/v1` + `whisper-large-v3-turbo`. |
 | `ASK_MODEL`, `VOICE_MODEL` | Opcionales, default `claude-haiku-4-5`. |
@@ -72,6 +73,8 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /api/assets/file?id=` | aparato | Un archivo del paquete, con `Range` para reanudar. |
 | `GET /api/assets/status`, `POST /api/assets/build` | web | Cómo va la generación del paquete y cómo forzarla. |
 | `GET /api/board/costs` | web | Cuánto sale cada consulta con cada modelo (tarjeta de la pestaña IA). |
+| `POST /api/apps/call?lang=xx` | aparato (`cp.call`) | `{app, service, args}` → siempre 200 con `{ok:true, …}` o `{ok:false, error}`. Servicios con nombre: `job.status`, `librito.enfoque`, `librito.indice`, `librito.ajustar`, `librito.escribir` (ver `src/apps.ts`, `src/librito.ts`). |
+| `GET /api/apps/file/:id` | aparato (`cp.download`) | Un archivo generado por un trabajo (el EPUB del librito), solo de la propia cuenta. Se poda a las 24 h. |
 | `POST /auth/register`, `/auth/login`, `/auth/logout` | web | Cuentas de la web. Solo con `DATABASE_URL`. |
 | `GET /auth/me` | web | Si el servidor tiene cuentas, quién soy y qué aparatos tengo. |
 | `POST /api/pair/start` | aparato (**sin** token) | Pide el código de 6 dígitos para vincularse. |

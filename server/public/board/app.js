@@ -642,7 +642,8 @@ function hoyView() {
     const u = S.usage;
     html += '<div class="card" style="margin-top:12px"><h2>Uso del mes</h2><div class="status">' +
       '<div><div class="k">Consultas</div><div class="v">' + u.llmCalls + (u.limits.llmCalls ? " / " + u.limits.llmCalls : "") + "</div></div>" +
-      '<div><div class="k">Audio transcrito</div><div class="v">' + Math.round(u.sttSeconds / 60) + " min" + (u.limits.sttSeconds ? " / " + Math.round(u.limits.sttSeconds / 60) : "") + "</div></div></div></div>";
+      '<div><div class="k">Audio transcrito</div><div class="v">' + Math.round(u.sttSeconds / 60) + " min" + (u.limits.sttSeconds ? " / " + Math.round(u.limits.sttSeconds / 60) : "") + "</div></div>" +
+      (u.appsCalls ? '<div><div class="k">Apps de Lua</div><div class="v">' + u.appsCalls + "</div></div>" : "") + "</div></div>";
   }
   return html;
 }
@@ -857,6 +858,15 @@ function iaView() {
     '<label class="inline"><input type="checkbox" name="searchOn" ' + (se.enabled ? "checked" : "") + "> Buscar en internet cuando lo pido ("busca...")</label>" +
     field("Buscador", select("searchProvider", [["free", "Gratis (Google Noticias + DuckDuckGo)"], ["tavily", "Tavily (con clave)"], ["brave", "Brave (con clave)"]], se.provider)) +
     '<div class="two">' + field("Máximo por respuesta", input("searchMax", se.maxUses, 'type="number" min="1" max="10"')) + field("Clave" + keyState(se.hasKey, "sin clave"), input("searchKey", "", 'type="password" placeholder="vacía = no cambiarla" autocomplete="off"'), true) + "</div></div>";
+  // Las apps de Lua (Librito, Viajes) escriben con su propia clave de Anthropic
+  // y su propio modelo: el gasto va aparte del de Hablar y no entra en su tope.
+  const ap = cfg.apps || { model: "claude-opus-5", hasKey: false, models: ["claude-opus-5", "claude-sonnet-5"] };
+  const apModels = (ap.models || []).slice();
+  if (ap.model && apModels.indexOf(ap.model) < 0) apModels.unshift(ap.model);
+  html += '<div class="card"><h2>Apps de Lua</h2><p class="hint">Las apps de la tarjeta que escriben con el modelo (Librito, Viajes). Usan una clave de Anthropic propia y se cuentan aparte de Hablar. Elige Opus para la mejor prosa o Sonnet para gastar menos.</p>' +
+    field("Modelo", select("appsModel", apModels.map((m) => [m, m]), ap.model)) +
+    field("Clave de Anthropic" + keyState(ap.hasKey), input("appsKey", "", 'type="password" placeholder="vacía = no cambiarla" autocomplete="off"'), true) +
+    "</div>";
   html += '<div class="btnrow"><button>Guardar</button><button type="button" class="ghost" data-act="ai-test">Probar</button></div>' +
     (aiTest ? '<pre class="muted" style="white-space:pre-wrap;font-size:13px">' + esc(aiTest) + "</pre>" : "") + "</form>";
 
@@ -882,6 +892,7 @@ async function saveAi(root) {
     llm: { provider: preset.provider, baseUrl: val(root, "llmBase"), model: val(root, "llmModel"), key: val(root, "llmKey") },
     stt: { baseUrl: val(root, "sttBase"), model: val(root, "sttModel"), key: val(root, "sttKey") },
     search: { enabled: val(root, "searchOn"), provider: val(root, "searchProvider"), maxUses: Number(val(root, "searchMax")), key: val(root, "searchKey") },
+    apps: { model: val(root, "appsModel"), key: val(root, "appsKey") },
   };
   busy(true);
   try {

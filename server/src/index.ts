@@ -1,6 +1,7 @@
 // Punto de entrada. Railway: Root Directory = server, start = bun run src/index.ts.
 import { Hono } from "hono";
 import { startRefresher } from "./news";
+import { startJobsJanitor } from "./appsJobs";
 import { api } from "./api";
 import { firmware } from "./firmware";
 import { board } from "./board";
@@ -53,6 +54,10 @@ const port = Number(process.env.PORT ?? 3000);
 // El masticador de noticias corre solo, cada hora: el aparato se baja el
 // paquete ya armado en vez de esperar a que se limpie cada artículo.
 startRefresher();
+// Los trabajos de las apps de Lua y sus archivos se podan a las 24 h (al
+// arrancar y cada hora); los que quedaron a medias en un reinicio se dan por
+// fallados cuando alguien los consulta.
+startJobsJanitor();
 
 console.log(`ws397 server on :${port} (${multiUser ? "multiusuario, Postgres" : "un solo usuario, archivos en /data"})`);
 
