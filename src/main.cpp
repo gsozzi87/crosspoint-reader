@@ -451,6 +451,11 @@ static void sleepNow() {
     if (amp >= 0) gpio_hold_en(static_cast<gpio_num_t>(amp));
   }
   armReminderWake(/*quiet=*/true);
+  // Y LOS RIELES (1.5.107): ALDO1-3 = panel, códec y amplificador, apagados
+  // hasta el próximo arranque, donde PowerKey::begin() los enciende antes que
+  // nada. Va al final, con el panel ya en su deep sleep y el log cerrado: desde
+  // acá hasta esp_deep_sleep_start() no se toca ni la pantalla ni el audio.
+  if (BoardConfig::isWS397()) POWER_KEY.railsOffForSleep();
   // ws397: the wake key is OK (GPIO5, RTC-capable, EXT1 low). PWR cannot wake:
   // the PMIC IRQ is on GPIO38, which is not an RTC GPIO. A PWR press while
   // asleep only latches status in the AXP2101 (flushed by PowerKey::begin()

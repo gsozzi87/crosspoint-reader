@@ -68,6 +68,18 @@ class PowerKey {
   // The PMIC answered in begin() and the key is being decoded.
   bool available() const { return available_; }
 
+  // RIELES EN EL SUEÑO PROFUNDO (1.5.107). Según el esquemático, ALDO1-3 del
+  // AXP2101 alimentan EPD_VCC_AXP (el panel, vía el P-MOSFET Q2), Audio_VCC
+  // (ES8311 + micrófono) y AudioCTR_VCC (NS4150B); ALDO4, BLDO y DLDO no se
+  // usan, y DC1 es VCC3V3 (ESP, tarjeta, sensores), que NO se toca nunca.
+  // Cortar los tres justo antes de dormir saca del todo lo que se comía la
+  // batería de noche; begin() los vuelve a encender LO PRIMERO al arrancar
+  // (corre antes que el panel en los dos caminos del setup), así que un
+  // arranque por el motivo que sea los encuentra prendidos. Si esto fallara,
+  // el aparato despierta con el panel a oscuras: PWR 10 s (corte duro del
+  // PMIC) o sacar la batería lo devuelve a los valores de fábrica.
+  bool railsOffForSleep() const;
+
   // APAGAR DE VERDAD, no dormir: el AXP2101 corta sus rieles (bit0 de 0x10,
   // soft off) y el aparato queda consumiendo lo que consume el PMIC y nada
   // más. No hay alarmas, no hay reloj en pantalla, no hay wake por botón: se
@@ -123,6 +135,7 @@ class PowerKey {
   unsigned long heldMs_ = 0;
 
   uint8_t snapshot_[17] = {};
+  uint8_t railsRestored_ = 0;  // qué ALDO de 1-3 tuvo que volver a encender begin()
   bool snapshotValid_ = false;
 };
 
