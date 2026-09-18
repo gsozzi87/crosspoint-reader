@@ -207,6 +207,20 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
               (unsigned)(body && body->data ? body->len : 0), networkUp() ? "arriba" : "CAÍDO", (int)WiFi.RSSI(),
               (unsigned)(ESP.getFreeHeap() / 1024));
     }
+    // UN SERVIDOR QUE TARDA NO SE REINTENTA. Un -1 justo al cumplirse el tope
+    // es un servidor VIVO que todavía está trabajando (una pregunta con
+    // búsqueda en internet son 20-60 s de modelo): repetir el pedido es
+    // hacerle repetir el trabajo y esperar el tope otra vez —tres veces, dos
+    // minutos de "Pensando" con el aparato sordo, que es lo que el dueño vio
+    // como "se trabó"—. La conexión MUDA, que era el motivo del reintento, ya
+    // no llega hasta acá: el keepalive (1.5.103) la corta a los ~14 s y ese -1
+    // sí se reintenta, porque llega ANTES del tope.
+    const uint32_t tope = timeoutMs ? timeoutMs : TIMEOUT_MS;
+    if (out.status < 0 && took >= tope) {
+      LOG_ERR(TAG, "%s %s: venció el tope de %lu ms sin que la conexión se cayera: el servidor sigue trabajando, no se reintenta",
+              method, path.c_str(), (unsigned long)tope);
+      break;
+    }
     if (!retryable(out.status)) break;
   }
   if (wifiDormia) WiFi.setSleep(true);

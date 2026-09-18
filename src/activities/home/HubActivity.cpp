@@ -57,9 +57,6 @@ constexpr int SUMMARY_GAP = 8;                // entre el sumario y el marco de 
 constexpr int HINT_GAP = 26;                  // aire entre el aviso del atajo de voz y la barra de botones
 constexpr unsigned long SYNC_HOLD_MS = 1200;  // Back held this long = sync now
 constexpr unsigned long TICK_MS = 15000;      // cada cuánto se mira si cambió algo de la barra
-constexpr time_t SYNC_INTERVAL_S = 3 * 3600;  // cache older than this at entry = sync
-                                              // (3 h: lo que se carga desde /board tarda menos en llegar)
-constexpr time_t SYNC_RETRY_S = 3600;         // after a failed attempt
 
 // Alturas de las fuentes (el ascender, que es lo que devuelve getTextHeight):
 // UI_14 28, UI_12 24, UI_10 20, SMALL 18. Se usan para alinear por la línea de
@@ -108,25 +105,19 @@ void HubActivity::onEnter() {
   requestUpdate();
 }
 
-// Sync on entry only when the cache is stale and we have not just tried: the
-// hub is re-entered after every silent restart (Ask, Sync itself), and WiFi
-// costs 10-20 s each time.
+// EL HUB NO LEVANTA LA RED POR SU CUENTA (decisión del dueño, después de
+// 1.5.104: "luego de una suspensión a huevo quería conectarse al wifi, eso debe
+// quedar solo para cuando yo lo requiero, no en auto"). Hasta acá el hub
+// sincronizaba solo al entrar con la caché de más de 3 h —o sea en CADA
+// despertar del sueño profundo de una noche— y reintentaba a la hora si el
+// clima venía vacío. Sincroniza quien lo pide: Atrás mantenido acá, Ajustes →
+// Sincronizar hub, y la sincronización oportunista cuando la red ya está
+// arriba por otra cosa (Noticias, la Biblia, el Clima). La única excepción es
+// la vuelta de una actualización que el dueño mismo pidió: el paquete de
+// contenido queda anotado como pendiente y se baja una vez.
 bool HubActivity::shouldAutoSync() const {
   if (!SERVER_STORE.hasToken()) return false;
-  // Recién actualizado por OTA: el paquete de contenido está anotado como
-  // pendiente y la sincronización lo baja con la red que levanta para lo demás.
-  if (AssetSyncActivity::isPending()) return true;
-  time_t now = 0;
-  if (!halClock.getEpochUtc(now)) {
-    // No clock yet: only the very first run, so a dead server cannot loop us.
-    return HUB_STORE.syncedAt == 0 && HUB_STORE.lastAttemptAt == 0;
-  }
-  // Clima vacío = falta el lugar o el servidor falló: reintentar a la hora en vez
-  // de esperar el ciclo entero (el lugar recién cargado en /board entra acá).
-  const time_t interval = HUB_STORE.weatherLine.empty() ? SYNC_RETRY_S : SYNC_INTERVAL_S;
-  if (HUB_STORE.syncedAt > 1 && now - HUB_STORE.syncedAt < interval) return false;
-  if (HUB_STORE.lastAttemptAt > 1 && now - HUB_STORE.lastAttemptAt < SYNC_RETRY_S) return false;
-  return true;
+  return AssetSyncActivity::isPending();
 }
 
 void HubActivity::startSync() {

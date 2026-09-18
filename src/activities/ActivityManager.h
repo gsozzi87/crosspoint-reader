@@ -118,6 +118,10 @@ class ActivityManager {
   bool hasStackedActivities() const { return !stackActivities.empty(); }
 
   bool preventAutoSleep() const;
+  // Sólo si la pantalla actual Y todas las apiladas debajo lo permiten: el
+  // visor de la respuesta de Hablar va encima de Hablar, y el que sabe que
+  // hay una conversación abierta es el de abajo.
+  bool allowsBackgroundSync() const;
   bool requiresExclusiveStorageLoop() const;
   bool isReaderActivity() const;
   bool handleForcedRefresh();

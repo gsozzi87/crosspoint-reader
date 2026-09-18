@@ -1697,6 +1697,48 @@ Plan y contrato en **`docs/ws397/PLAN_APPS_VIAJES_EPUB.md`** (decisiones del due
 Pendiente de hardware: todo lo de red y micrófono desde una app (la lógica se probó de escritorio con el
 escenario entero del Librito), y una escritura real con la clave cargada.
 
+## "Se trabó" con una pregunta con búsqueda, la red sola al despertar y el Atrás raro (1.5.105)
+
+Tres quejas del dueño sobre 1.5.104, y el log que mandó era de **1.5.98** (19:36 del 17, antes de 1.5.99 de las
+20:35): los siete `WATCHDOG de interrupciones` y el `doble Atrás (104 ms)` que hay ahí son los bugs que cerraron
+1.5.99 y 1.5.101. Fechar el log primero, siempre. Lo que sí seguía vigente en el árbol:
+
+- **"Se trabó luego de que le pregunté algo que tenía que buscar."** Dos causas, las dos reales:
+  1. El tope de Hablar eran **40 s** (1.5.101, por la conexión muda) y una pregunta con búsqueda en internet son
+     20-60 s de modelo (el servidor le da 90 s). El aparato vencía, y `ServerClient` **reintentaba dos veces
+     más**: el servidor repetía la búsqueda entera y el dueño miraba "Pensando" dos minutos con el aparato sordo.
+     Ahora el tope vuelve a **90 s** —la conexión muda la corta el keepalive de 1.5.103 a los ~14 s, así que el
+     tope ya no la protegía de nada— y **un -1 que llega al cumplirse el tope no se reintenta**: es un servidor
+     vivo que sigue trabajando, no una conexión caída (ésa muere antes del tope y sí se reintenta).
+  2. **La sincronización oportunista se metía adentro de Hablar.** Con la respuesta en pantalla o en "¿otra
+     pregunta?" la radio sigue arriba y `preventAutoSleep()` ya es false, así que a los 3 s de quietud
+     `devicesync::ifDue` bloqueaba el loop con la cola, las noticias y el hub. El dueño tocaba Atrás justo ahí
+     y no pasaba nada: "la pantalla de si tienes otra pregunta no vuelve al hub". `Activity::allowsBackgroundSync()`
+     (Hablar devuelve false) y `ActivityManager::allowsBackgroundSync()` mira **toda la pila**, porque el visor de
+     la respuesta va encima de Hablar y el que sabe que hay una conversación abierta es el de abajo.
+- **"Luego de una suspensión quería conectarse al wifi a huevo; eso solo cuando yo lo requiero, no en auto."**
+  Decisión del dueño, dos caminos cerrados:
+  1. **El hub ya no sincroniza solo al entrar.** Lo hacía con caché de más de 3 h —o sea en cada despertar de una
+     noche— y reintentaba a la hora si el clima venía vacío. Queda sólo la vuelta de una OTA (paquete de contenido
+     pendiente, una vez). Sincroniza quien lo pide: Atrás mantenido en el hub, Ajustes → Sincronizar hub, y la
+     oportunista cuando la red ya está arriba por otra cosa. **Consecuencia**: el clima, los recordatorios cargados
+     desde `/board` y la hora del RTC se refrescan cuando el dueño sincroniza o usa algo con red, no antes.
+  2. **La tecla que despierta del reposo ya no es un gesto largo.** En el log: `despertó por pin`, Atrás seguía
+     abajo porque la pantalla no reaccionaba, y a los 1,2 s el hub lo leyó como "Atrás mantenido = sincronizar" y
+     levantó la red. `MappedInputManager::ignoreHeldLongPress()` marca sólo la pulsación larga como ya disparada;
+     **la suelta sigue siendo un toque**, porque casi toda vuelta de página en el lector viene del reposo (leer una
+     página tarda más que los 30 s de `REST_AFTER_MS`) y tragarse ese toque obligaría a apretar dos veces.
+     Se aplica en la pasada siguiente a `Woke::Button` (`restWakeHeldPending`), que es cuando la tecla se lee.
+- **"Comportamiento raro en el botón de atrás."** Cancelar Hablar con Atrás abría la ventana del atajo de voz,
+  y el toque siguiente —"¿por qué no volvió?", toco otra vez— abría Hablar de nuevo. `checkVoiceShortcut` corre
+  ANTES del loop de la Activity y Hablar sale con el flanco de bajada, así que se anota **en qué pantalla se
+  apretó**: si no era una tranquila (Hablar, Noticias, la Biblia, una app de Lua), ese Atrás ya hizo lo suyo y no
+  abre ninguna ventana. El rebote de 104 ms del log es el de 1.5.101 y ya estaba cerrado.
+
+**Sin probar en hardware**: los cuatro. Lo que hay que ver es que una pregunta con "busca" conteste (el log dirá
+`ida y vuelta N ms` sin `intento 2`), que después de la respuesta Atrás vuelva al hub en el acto, que al
+despertar de una noche el hub NO levante la red, y que apretar Atrás para despertar y mantenerlo no sincronice.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

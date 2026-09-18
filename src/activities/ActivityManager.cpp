@@ -364,6 +364,12 @@ const char* ActivityManager::currentActivityName() const {
 
 bool ActivityManager::preventAutoSleep() const { return currentActivity && currentActivity->preventAutoSleep(); }
 
+bool ActivityManager::allowsBackgroundSync() const {
+  if (currentActivity && !currentActivity->allowsBackgroundSync()) return false;
+  return std::all_of(stackActivities.begin(), stackActivities.end(),
+                     [](const auto& activity) { return activity->allowsBackgroundSync(); });
+}
+
 bool ActivityManager::requiresExclusiveStorageLoop() const {
   return currentActivity && currentActivity->requiresExclusiveStorageLoop();
 }

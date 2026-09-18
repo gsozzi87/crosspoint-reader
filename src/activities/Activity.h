@@ -43,6 +43,13 @@ class Activity {
 
   virtual bool skipLoopDelay() { return false; }
   virtual bool preventAutoSleep() { return false; }
+  // ¿Puede la sincronización oportunista (src/sync/Sync) meterse debajo de esta
+  // pantalla? Bloquea el loop varios segundos con la red arriba. Hablar dice
+  // que no: con la respuesta en pantalla o "¿otra pregunta?" a la vista, la
+  // radio sigue encendida y la pantalla ya no pide preventAutoSleep(), así que
+  // la sincronización entraba a los 3 s y el aparato quedaba sordo justo
+  // cuando el dueño tocaba Atrás para volver al hub.
+  virtual bool allowsBackgroundSync() const { return true; }
   // Exclusive storage activities suspend global controls and normal activity
   // transitions so no filesystem code races a raw SD-card owner.
   virtual bool requiresExclusiveStorageLoop() const { return false; }

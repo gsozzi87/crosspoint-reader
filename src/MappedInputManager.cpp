@@ -338,6 +338,11 @@ void MappedInputManager::absorbHeldButton(const Button button) const {
   if (isPressed(button)) suppressNextRelease(button);
 }
 
+void MappedInputManager::ignoreHeldLongPress(const Button button) const {
+  if (!isPressed(button)) return;  // update() lo limpia al soltar; sin tecla abajo no hay nada que ignorar
+  longPressFiredButtons |= 1u << static_cast<uint8_t>(button);
+}
+
 void MappedInputManager::suppressNextRelease(const Button button) const {
   suppressedReleaseButtons |= 1u << static_cast<uint8_t>(button);
 }

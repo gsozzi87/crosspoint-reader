@@ -506,13 +506,37 @@ static bool isCalmScreen(const char* name) {
 // toque no se vio. Antes no se anotaba ninguna: sólo salía una línea cuando
 // funcionaba, que es justo cuando no hace falta. Ahora cada toque deja su
 // renglón con el número, así el aparato dice cuál de las cuatro es.
+// Woke::Button la pone; la pasada siguiente del loop la consume (ver arriba
+// de checkVoiceShortcut y el update() de la entrada).
+static bool restWakeHeldPending = false;
+
 static void checkVoiceShortcut() {
   static unsigned long lastBackRelease = 0;
   static unsigned long backPressedAt = 0;
   static unsigned long lastLongBackRelease = 0;
-  if (mappedInputManager.wasPressed(MappedInputManager::Button::Back)) backPressedAt = millis();
+  // Dónde estaba la pantalla cuando se APRETÓ: esto corre antes del loop de la
+  // Activity, y Hablar sale con el flanco de bajada, así que al soltar ya está
+  // el hub en frente y no se sabría de dónde vino el toque.
+  static bool pressedOnExitScreen = false;
+  if (mappedInputManager.wasPressed(MappedInputManager::Button::Back)) {
+    backPressedAt = millis();
+    pressedOnExitScreen = !isCalmScreen(activityManager.currentActivityName());
+  }
   if (!mappedInputManager.wasReleased(MappedInputManager::Button::Back)) return;
   const unsigned long now = millis();
+  // EL ATRÁS QUE CIERRA UNA PANTALLA NO ES EL PRIMER TOQUE. Cancelar Hablar
+  // con Atrás abría la ventana del atajo, y el toque siguiente —"¿por qué no
+  // volvió al hub?", toco de nuevo— abría Hablar otra vez: un bucle en el que
+  // el botón parecía hacer cualquier cosa. Vale para toda pantalla que usa
+  // Atrás para salir (Hablar, Noticias, la Biblia, una app de Lua): ese toque
+  // ya hizo lo suyo.
+  if (pressedOnExitScreen) {
+    pressedOnExitScreen = false;
+    backPressedAt = 0;
+    lastBackRelease = 0;
+    LOG_DBG("MAIN", "Atrás cerró una pantalla: no abre la ventana del atajo de voz");
+    return;
+  }
   // UNA PULSACIÓN LARGA NO ES UN TOQUE. `wasLongPressed()` marca la suelta como
   // suprimida, pero `wasReleased()` NO mira esa marca (sólo la mira
   // `consumeSuppressedRelease()`, que usa el camino del botón de despertar), así
@@ -1457,6 +1481,20 @@ void loop() {
     gpio.setSharedConfirmPowerShortPressEmitsPower(SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::SLEEP);
   }
   mappedInputManager.update();
+  // La tecla que despertó del reposo (ver Woke::Button más abajo) recién se
+  // ve acá: mantenida no es un gesto largo de la pantalla nueva. La suelta
+  // sigue siendo un toque normal (pasa la página, elige).
+  if (restWakeHeldPending) {
+    restWakeHeldPending = false;
+    static const MappedInputManager::Button KEYS[] = {MappedInputManager::Button::Back, MappedInputManager::Button::Confirm,
+                                                      MappedInputManager::Button::Up, MappedInputManager::Button::Down};
+    for (const MappedInputManager::Button k : KEYS) {
+      if (mappedInputManager.isPressed(k)) {
+        mappedInputManager.ignoreHeldLongPress(k);
+        LOG_DBG("MAIN", "la tecla que despertó del reposo sigue abajo: cuenta como toque, no como mantenida");
+      }
+    }
+  }
   POWER_KEY.pump();    // ws397: PMIC key state for this pass (no-op elsewhere)
   MOTION.poll();       // ws397: acelerómetro cada 80 ms (no-op sin IMU o sin gestos)
   shtc3::tick();       // temperatura de adentro, en dos tiempos y sin bloquear
@@ -1541,8 +1579,12 @@ void loop() {
   // aprovecha para subir lo pendiente y bajar lo que cambió. La guardia de
   // "desocupada" es la que hace que esto no se meta en el medio de nada: casi
   // toda Activity de red pide preventAutoSleep() MIENTRAS trabaja.
+  // Y no en Hablar (allowsBackgroundSync): ahí la radio sigue arriba con la
+  // respuesta en pantalla y la pantalla ya no pide preventAutoSleep(), así que
+  // esto entraba a los 3 s de quietud y bloqueaba el loop justo cuando el
+  // dueño tocaba Atrás en "¿otra pregunta?" para volver al hub.
   if (BoardConfig::isWS397() && !activityManager.preventAutoSleep() && !activityManager.isReaderActivity() &&
-      !busyRecording() && !MUSIC.isSounding()) {
+      activityManager.allowsBackgroundSync() && !busyRecording() && !MUSIC.isSounding()) {
     devicesync::ifDue(millis() - lastActivityTime);
   }
   static unsigned long lastAlarmCheck = 0;
@@ -1759,6 +1801,12 @@ void loop() {
       case IdleSleep::Woke::Button:
         // El botón que despertó se lee en la pasada siguiente (la entrada de
         // ESTA pasada se leyó antes de dormir): salir ya y empezar de nuevo.
+        // Y esa pulsación cuenta como TOQUE pero no como MANTENIDO: quien
+        // despierta el aparato apretando Atrás y lo sigue apretando porque la
+        // pantalla no reacciona no está pidiendo sincronizar (Atrás mantenido
+        // 1,2 s en el hub = levantar la red). Se marca en la pasada siguiente,
+        // cuando la tecla ya se leyó (restWakeHeldPending).
+        restWakeHeldPending = true;
         lastActivityTime = millis();
         powerManager.setPowerSaving(false);
         return;
