@@ -60,8 +60,12 @@ export type JobHandle = {
   accountId: number;
   /** "Capítulo 3 de 6: título" — lo que el aparato muestra mientras espera. */
   setProgress(step: number, total: number, label: string): Promise<void>;
-  /** Guarda un archivo del trabajo y devuelve su ficha para `files`. */
-  saveFile(name: string, bytes: Uint8Array): Promise<JobFile>;
+  /**
+   * Guarda un archivo del trabajo y devuelve su ficha para `files`. El tope
+   * de siempre son 8 MB (un EPUB generado); quien baje algo más grande (un
+   * libro que manda un bot, hasta 40 MB) lo dice en `maxBytes`.
+   */
+  saveFile(name: string, bytes: Uint8Array, opts?: { maxBytes?: number }): Promise<JobFile>;
 };
 
 // Los que este proceso está corriendo de verdad. Un `running` que no esté acá
@@ -115,9 +119,9 @@ export async function startJob(accountId: number, label: string, run: (job: JobH
       j.total = total;
       j.label = text;
     }),
-    saveFile: async (name, bytes) => {
+    saveFile: async (name, bytes, opts) => {
       if (!FILE_NAME.test(name)) throw new Error(`nombre de archivo inválido: ${name.slice(0, 40)}`);
-      if (bytes.byteLength > MAX_FILE_BYTES) throw new Error("el archivo generado es demasiado grande");
+      if (bytes.byteLength > (opts?.maxBytes ?? MAX_FILE_BYTES)) throw new Error("el archivo generado es demasiado grande");
       const dir = jobDir(accountId, id);
       await mkdir(dir, { recursive: true });
       await writeBytesAtomic(`${dir}/${name}`, bytes);

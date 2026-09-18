@@ -35,6 +35,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `SESSION_SECRET` | Clave con la que se firman las cookies de sesión. Si no está, se genera una y se guarda en la base. |
 | `MONTHLY_LLM_CALLS`, `MONTHLY_STT_SECONDS` | Topes mensuales por cuenta. Sin poner = sin tope. |
 | `ACCOUNTS_DIR` | Dónde vive el log de las cuentas nuevas (default `/data/accounts`). |
+| `TELEGRAM_DIR` | Dónde se guardan las sesiones MTProto de la app Libros, una por cuenta (`<cuenta>.session`; default `/data/telegram`). `TELEGRAM_FILE` (default `/data/telegram.json`) es el documento con api id, teléfono, bot y estado del login en el servidor sin base de datos. |
 
 ## Rutas
 
@@ -43,7 +44,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /firmware/latest` | aparato (sin token) | JSON con forma de release de GitHub: `tag_name`, `assets[firmware-ws397.bin]`. |
 | `GET /firmware/firmware-ws397.bin` | aparato | El binario. |
 | `PUT /firmware` | `release.sh` (Bearer `OTA_TOKEN`, `X-Version`) | Sube un binario nuevo. |
-| `GET /board` | teléfono | La app del teléfono (`public/board/`): Hoy, Agenda, Listas, Notas y Ajustes (noticias, memoria, aparatos y, en Avanzado, IA, contenido y log). Pide el token del aparato una vez, o correo y contraseña con base de datos. |
+| `GET /board` | teléfono | La app del teléfono (`public/board/`): Hoy, Agenda, Listas, Notas y Ajustes (noticias, memoria, aparatos y, en Avanzado, IA, contenido, Telegram y log). Pide el token del aparato una vez, o correo y contraseña con base de datos. |
 | `GET /api/board/state` | página web | TODO el estado de la cuenta en una respuesta: recordatorios (pendientes y hechos), listas enteras, notas, memoria, feeds, ajustes, lugar y clima, estado del aparato (última sincronización, firmware, último log) y consumo del mes. La web lo vuelve a pedir después de cada cambio. |
 | `POST /api/board/{reminder,item,note,memory,feed}` | página web | Altas y **ediciones** (con `id`): texto, hecho/deshecho de un ítem, nombre de un feed. |
 | `GET /api/log/meta` | página web | Última subida del log, versión de firmware y motivo del último arranque, sin bajar el log. |
@@ -73,8 +74,10 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /api/assets/file?id=` | aparato | Un archivo del paquete, con `Range` para reanudar. |
 | `GET /api/assets/status`, `POST /api/assets/build` | web | Cómo va la generación del paquete y cómo forzarla. |
 | `GET /api/board/costs` | web | Cuánto sale cada consulta con cada modelo (tarjeta de la pestaña IA). |
-| `POST /api/apps/call?lang=xx` | aparato (`cp.call`) | `{app, service, args}` → siempre 200 con `{ok:true, …}` o `{ok:false, error}`. Servicios con nombre: `job.status`, `librito.enfoque`, `librito.indice`, `librito.ajustar`, `librito.escribir` (ver `src/apps.ts`, `src/librito.ts`). |
-| `GET /api/apps/file/:id` | aparato (`cp.download`) | Un archivo generado por un trabajo (el EPUB del librito), solo de la propia cuenta. Se poda a las 24 h. |
+| `POST /api/apps/call?lang=xx` | aparato (`cp.call`) | `{app, service, args}` → siempre 200 con `{ok:true, …}` o `{ok:false, error}`. Servicios con nombre: `job.status`, `librito.*`, `viajes.*`, `libros.*` (ver `src/apps.ts`, `src/librito.ts`, `src/viajes.ts`, `src/libros.ts`). |
+| `GET /api/apps/file/:id` | aparato (`cp.download`) | Un archivo generado por un trabajo (el EPUB del librito, el libro que mandó el bot), solo de la propia cuenta. Se poda a las 24 h. |
+| `GET /api/board/telegram` | web | Estado de la sesión de Telegram de la cuenta (app Libros): `configured`, `loggedIn`, `phone`, `bot`, `hasHash`, `user`, `awaitingCode`, `awaitingPassword`. El api hash no vuelve nunca. |
+| `POST /api/board/telegram/{config,code,signin,logout,test}` | web | Los pasos del login: guardar `{apiId, apiHash, phone, bot}`, mandar el código, entrar con `{code}` (y `{password}` si Telegram pide la de dos pasos), cerrar la sesión, y una búsqueda de prueba `{q}`. Ver "Libros" más abajo. |
 | `POST /auth/register`, `/auth/login`, `/auth/logout` | web | Cuentas de la web. Solo con `DATABASE_URL`. |
 | `GET /auth/me` | web | Si el servidor tiene cuentas, quién soy y qué aparatos tengo. |
 | `POST /api/pair/start` | aparato (**sin** token) | Pide el código de 6 dígitos para vincularse. |
@@ -434,6 +437,38 @@ la cuenta). Todo lo que llama al modelo usa la clave de las apps (`config.apps`)
 Los ítems **con hora** se espejan en `/data/calendar.json` como eventos con `tripId` (kind `trip` en
 `GET /api/calendar`; el lugar del evento es el del ítem o, si no tiene, el del día); el espejo se rehace entero al
 guardar el viaje y se borra al borrarlo.
+
+## Libros: un bot de Telegram manda el libro (`src/telegram.ts`, `src/libros.ts`, `src/librosParse.ts`)
+
+Contrato en `docs/ws397/LIBROS_CONTRATO.md`. El bot de libros es un chat de Telegram que contesta a un texto con
+una lista `Título /comando`, a un comando con una ficha (texto + botones en línea: Información, Leer online,
+**Epub**…) y al botón con el archivo. Un bot no puede hablarle a otro bot, así que el servidor le escribe
+**como la cuenta de Telegram del dueño** (MTProto con `@mtcute/bun`), con una sesión por cuenta de `/board`
+guardada en `TELEGRAM_DIR/<cuenta>.session`. El aparato nunca ve nada de Telegram: habla por
+`POST /api/apps/call` con `app: "libros"` como cualquier app.
+
+- **Abrir la sesión, una vez, desde `/board` → Ajustes → Avanzado → Telegram**: api id y api hash (de
+  https://my.telegram.org → API development tools), teléfono, `@bot`; **Guardar** → **Enviar código** →
+  código (+ contraseña de dos pasos si Telegram la pide, `awaitingPassword`) → **Entrar** → **Probar**.
+  El api hash se guarda y no vuelve nunca (`hasHash`); vacío al guardar = no tocarlo.
+- **Servicios**: `libros.estado` → `{connected, bot}`; `libros.buscar {q}` → `{results:[{title, code}]}` (hasta
+  10; `[]` si el bot no encontró); `libros.ficha {code}` → `{title, author, year, pages, genre, desc, formats}`
+  (`formats` = los botones que parecen un formato, en minúsculas, epub primero); `libros.bajar {code, format?}`
+  → `{jobId}`: un trabajo que manda el comando, aprieta el botón del formato, espera el documento (hasta
+  120 s), lo guarda con `saveFile` (tope **40 MB**) y termina con `files:[{id, name, bytes}]`; `name` es el del
+  archivo del bot si es sano o `<slug del título>.<formato>`. `label` mientras tanto: "Pidiendo la ficha…",
+  "Esperando el archivo…", "Guardando…".
+- **Errores**: siempre `{ok:false, error, code}` en el idioma del pedido. `no_telegram` sin sesión (la app lo
+  dice antes de pedir el micrófono), `telegram_busy` si hay otro pedido de la cuenta en curso (un solo pedido
+  por cuenta: dos búsquedas encimadas confundirían las respuestas), `bot_unknown`, `no_reply`, `no_file`,
+  `too_big`, `session_lost` (Telegram cerró la sesión: hay que entrar de nuevo).
+- **Cómo se le habla al bot**: `sendText`, y después se **sondea** `getHistory(bot, {limit: 6})` cada 700 ms
+  hasta ver un mensaje entrante con id mayor que el enviado (20 s para texto, 120 s para el archivo). Nada de
+  updates: el sondeo no depende del bucle de updates y se prueba fácil. El botón es `getCallbackAnswer` con el
+  `data` del botón cuyo texto coincide con el formato; si el bot no contesta la consulta se espera el archivo
+  igual. Conectar tiene plazo de 15 s: sin red, error claro y no un pedido colgado.
+- **Cómo se lee lo que dice el bot** son funciones puras (`librosParse.ts`) probadas con los textos de las
+  capturas del dueño: **`./test/libros/run.sh`**. Nunca se loguea el api hash ni el código.
 
 ## Paquete de contenido descargable (`/api/assets/*`)
 

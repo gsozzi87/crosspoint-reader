@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { jobFile, jobStatus } from "./appsJobs";
 import { AppsLlmError } from "./appsLlm";
 import { LIBRITO_SERVICES } from "./librito";
+import { LIBROS_SERVICES } from "./libros";
 import { VIAJES_SERVICES } from "./viajes";
 import { limitBody, redactSecrets } from "./net";
 import { normalizeLang, type Lang } from "./lang";
@@ -41,6 +42,7 @@ const SERVICES: Record<string, Service> = {
   "job.status": jobStatusService,
   ...LIBRITO_SERVICES,
   ...VIAJES_SERVICES,
+  ...LIBROS_SERVICES,
 };
 
 export const apps = new Hono<AppEnv>();
@@ -79,6 +81,10 @@ apps.post("/call", limitBody(MAX_BODY), async (c) => {
 
 const TYPES: Record<string, string> = {
   epub: "application/epub+zip",
+  pdf: "application/pdf",
+  mobi: "application/x-mobipocket-ebook",
+  azw3: "application/vnd.amazon.mobi8-ebook",
+  fb2: "application/x-fictionbook+xml",
   txt: "text/plain; charset=utf-8",
   json: "application/json; charset=utf-8",
   bin: "application/octet-stream",

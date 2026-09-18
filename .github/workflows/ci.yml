@@ -242,6 +242,9 @@ jobs:
       - name: Filtro de URLs (SSRF)
         run: ./test/ssrf/run.sh
 
+      - name: Libros: lo que dice el bot
+        run: ./test/libros/run.sh
+
   # El servidor: que compile de tipos y que el lockfile esté al día. Con
   # --frozen-lockfile, un package.json tocado sin actualizar el lock falla acá
   # y no en el deploy de Railway.
