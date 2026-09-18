@@ -855,7 +855,7 @@ function iaView() {
     field("Clave" + keyState(cfg.stt.hasKey), input("sttKey", "", 'type="password" placeholder="vacía = no cambiarla" autocomplete="off"'), true) +
     '<label class="inline"><input type="checkbox" name="sttFollow" checked> Seguir al proveedor de texto</label></div>';
   html += '<div class="card"><h2>Buscar en internet</h2><p class="hint">Para que conteste cosas de ahora. Con Claude busca el modelo (US$ 0,01 por búsqueda); con los demás busca este servidor: gratis con Google Noticias y DuckDuckGo, o con una clave de Tavily o Brave.</p>' +
-    '<label class="inline"><input type="checkbox" name="searchOn" ' + (se.enabled ? "checked" : "") + "> Buscar en internet cuando lo pido ("busca...")</label>" +
+    '<label class="inline"><input type="checkbox" name="searchOn" ' + (se.enabled ? "checked" : "") + "> Buscar en internet cuando lo pido (\"busca...\")</label>" +
     field("Buscador", select("searchProvider", [["free", "Gratis (Google Noticias + DuckDuckGo)"], ["tavily", "Tavily (con clave)"], ["brave", "Brave (con clave)"]], se.provider)) +
     '<div class="two">' + field("Máximo por respuesta", input("searchMax", se.maxUses, 'type="number" min="1" max="10"')) + field("Clave" + keyState(se.hasKey, "sin clave"), input("searchKey", "", 'type="password" placeholder="vacía = no cambiarla" autocomplete="off"'), true) + "</div></div>";
   // Las apps de Lua (Librito, Viajes) escriben con su propia clave de Anthropic
