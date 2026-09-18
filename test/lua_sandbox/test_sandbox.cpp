@@ -140,6 +140,7 @@ int stubTime(lua_State* L) {
 //   fake.draw()                 corre on_draw y devuelve los textos dibujados
 //   fake.advance(ms) / fake.ms  el reloj de cp.ms(), que no avanza solo
 //   fake.opened                 lo que abrió cp.view / cp.open_book
+//   fake.said                   los textos que cp.say mandó al parlante
 //   fake.reload()               vacía la cola (el escenario llama on_open él)
 //
 // Los archivos van a un directorio temporal: <tmp>/data (la carpeta de la app)
@@ -213,7 +214,7 @@ int fsList(lua_State* L) {
 }
 
 const char* FAKE_PRELUDE = R"LUA(
-fake = { heard = nil, reply = {}, download = {}, downloadFails = false, opened = {}, drawn = {}, ms = 12345 }
+fake = { heard = nil, reply = {}, download = {}, downloadFails = false, opened = {}, said = {}, drawn = {}, ms = 12345 }
 local pending = {}          -- la cola de pedidos, en orden
 local nextId = 0
 local saved = nil           -- cp.save / cp.load dentro del escenario
@@ -256,6 +257,16 @@ cp.download = function(fileId, nombre, destino)
   if #pending >= QUEUE_CAP then return nil end
   nextId = nextId + 1
   pending[#pending + 1] = { kind = "download", id = nextId, fileId = fileId, name = nombre, dest = destino }
+  return nextId
+end
+
+-- cp.say encola como los demás; el host contesta on_reply(id, true, {}) cuando
+-- el audio arrancó, y acá además anota el texto en fake.said.
+cp.say = function(texto)
+  if type(texto) ~= "string" or texto == "" or #texto > 512 then return nil end
+  if #pending >= QUEUE_CAP then return nil end
+  nextId = nextId + 1
+  pending[#pending + 1] = { kind = "say", id = nextId, text = texto }
   return nextId
 end
 
@@ -314,6 +325,9 @@ fake.step = function()
     else
       call("on_reply", p.id, false, { error = "sin servicio falso: " .. p.service })
     end
+  elseif p.kind == "say" then
+    fake.said[#fake.said + 1] = p.text
+    call("on_reply", p.id, true, {})
   elseif p.kind == "download" then
     if fake.downloadFails then
       call("on_reply", p.id, false, { error = "descarga fallida (1)" })
@@ -607,6 +621,8 @@ int main() {
         "assert(cp.download('f1', 'l.epub', 'books') == 2); fake.download['f1'] = 'EPUB'\n"
         "assert(fake.step() and replies[2].t.bytes == 4 and cp.open_book('l.epub'))\n"
         "assert(cp.remove('a.txt') and #cp.files() == 0)\n"
+        "assert(cp.say('') == nil and cp.say('hola') == 3 and cp.busy())\n"
+        "assert(fake.step() and replies[3].ok and fake.said[1] == 'hola' and not cp.busy())\n"
         "cp.save('s'); assert(cp.load() == 's')\n"
         "local m = cp.ms(); fake.advance(5000); assert(cp.ms() == m + 5000)\n";
     std::string err;

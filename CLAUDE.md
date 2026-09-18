@@ -1869,6 +1869,42 @@ mismo bucle sin fallar. O sea que el nil no lo produjo el script ni la función:
   de escritorio no lo puede encontrar: es de un solo hilo por diseño. **Regla**: el `lua_State` de una app lo
   toca un hilo por vez, siempre, y la puerta es `VmGuard`.
 
+## Viajes, la app de Lua, y `cp.say` (1.5.111)
+
+Diseño en `docs/ws397/VIAJES_APP.md`; **la verdad sobre nombres y formas en `docs/ws397/VIAJES_CONTRATO.md`**
+(decisiones del dueño: sin Diario ni libro del viaje; la guía se guarda directo en la tarjeta sin confirmar;
+antes de generarla la app pregunta POR VOZ lo que le falta al itinerario; Preguntar por voz con el viaje entero en
+el contexto y respuesta hablada). Tres paquetes en paralelo, cada uno con su prueba:
+
+- **Servidor y web** (`server/src/viajes.ts`, ~1400 líneas): modelo `Trip` resucitado de `d13923b^` SIN adjuntos
+  (los papeles son TEXTO pegado con campos), con `hotel`, `code`, `guide` y un viaje `active` por cuenta; doc
+  `trips` en `fsjson`. Rutas web `/api/trips` y `/api/trip*` y la **sexta pestaña Viajes** de `/board` (agenda por
+  día con editor en hoja, papeles, lista, guía con las preguntas como campos, buscador de destino). Doce servicios
+  bajo `POST /api/apps/call` (`VIAJES_SERVICES`): `viajes.lista/activar/viaje/papel/llevar/sugerir/
+  sugerir.agregar/guia.preguntas/guia.generar/guia.seccion/preguntar/recordar`. La guía es un trabajo con
+  **búsqueda web** (`appsProseSearch` en `appsLlm.ts`, misma herramienta que `chatSearch`); `guia.preguntas` decide
+  SIN modelo mirando el itinerario (¿hay hotel? ¿llegada? ¿salida?) más una de intereses; `preguntar` busca sólo
+  con "busca" (regla 1.5.103) y devuelve `spoken` ≤ 220 para el parlante; `recordar` crea el recordatorio 2 h
+  antes en la zona del viaje. **El espejo al calendario vuelve** (`syncCalendar`, eventos con `tripId`;
+  `normalizeCalendar` dejó de descartarlos): sólo ítems con hora. Probado con curl y Playwright a 360 px; lo que
+  llama al modelo no se pudo ejecutar acá (sin clave) y queda con `{ok:false, error}` limpio.
+- **`examples/Apps/viajes.lua`** (49 KB de los 64 del tope): pantallas 0-11 menos Diario; JSON propio (no hay
+  `json` en el cajón) **sin `pcall`**, porque un `pcall` ahí se traga la guardia de instrucciones y el segundo
+  disparo condena la VM. Medido con `armStepLimit`: `on_open` ≈ 110 k instrucciones con un `viaje.json` de 35 KB
+  (tope 400 k). Archivos: `viaje.json` (vista compacta normalizada), `papel-<id>.txt`, `guia-N.txt`,
+  `pendientes.json` (tildes sin red, se reproducen en Actualizar), `respuesta.txt`. `cp.save`: `trip`, `viajes`,
+  `updE/updM`, `job`. Escenario entero en `test/lua_sandbox/scenarios/viajes.lua` (Lisboa 9 días + Cusco: las
+  once pantallas, la guía con preguntas contestadas y salteadas, retomar el trabajo, cambiar de viaje, sin reloj).
+  **La app no levanta la red sola**: la levantan Actualizar, la guía, Sugerir, Preguntar, Agregar por voz y Recordar.
+- **`cp.say(texto)`** (firmware): `Request::Kind::Say`, `GET /api/tts?…&max=45` desde el host y `SpeechOut` en
+  `LuaAppsActivity`; la fase vuelve a `Idle` apenas arranca el audio, así la app sigue y `cp.view` se abre encima.
+  Atrás corta la voz (y ese Atrás no llega a la app); `cp.listen` la corta antes de abrir el micrófono (I2S
+  único); `preventAutoSleep()` mientras habla. En el harness: `fake.said`.
+
+**Instalar**: copiar `examples/Apps/viajes.lua` a `/Apps` de la tarjeta (modo memoria USB). Cargar el viaje en
+`/board` → Viajes y en el aparato Juegos → Viajes → Actualizar. **Pendiente de hardware**: red, micrófono y voz
+desde la app, y una guía generada de verdad con la clave de las apps cargada.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

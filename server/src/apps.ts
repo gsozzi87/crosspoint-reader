@@ -15,6 +15,7 @@ import { Hono } from "hono";
 import { jobFile, jobStatus } from "./appsJobs";
 import { AppsLlmError } from "./appsLlm";
 import { LIBRITO_SERVICES } from "./librito";
+import { VIAJES_SERVICES } from "./viajes";
 import { limitBody, redactSecrets } from "./net";
 import { normalizeLang, type Lang } from "./lang";
 import { accountOf, type AppEnv } from "./tenant";
@@ -39,6 +40,7 @@ const jobStatusService: Service = async (ctx, args) => {
 const SERVICES: Record<string, Service> = {
   "job.status": jobStatusService,
   ...LIBRITO_SERVICES,
+  ...VIAJES_SERVICES,
 };
 
 export const apps = new Hono<AppEnv>();

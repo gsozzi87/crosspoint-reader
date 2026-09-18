@@ -125,6 +125,7 @@ firmware.
 | `cp.size(nombre)` | bytes o `nil` | |
 | `cp.view(nombre [, titulo])` | `true` si existía | Abre el archivo (hasta 64 KB) en el **visor paginado del sistema**; al salir vuelve a la app y la repinta |
 | `cp.open_book(nombre)` | `true` si existía | Abre `/Books/<app>/<nombre>` en el lector de CrossPoint. **La app se cierra**; al cerrar el libro se vuelve al hub |
+| `cp.say(texto)` | `id` o `nil` | Lee `texto` (hasta 512 bytes) por el parlante con la voz del servidor (`GET /api/tts`, 45 s de audio como mucho). Llega **`on_reply(id, true, {})`** cuando el audio **arrancó** (no cuando terminó); con `ok = false`, `tabla.error` es `"sin voz (N)"`, `"cancelado"` o `"sin vincular"`. La app **sigue mientras suena** y puede abrir `cp.view` encima; Atrás corta la voz (en la app, ese Atrás no le llega; en el visor, la corta al volver) |
 
 `<app>` es el nombre del archivo sin `.lua`: `librito.lua` guarda en
 `/Apps/data/librito/` y sus libros en `/Books/librito/`. Los nombres de archivo
@@ -132,14 +133,14 @@ que pasa la app son `[A-Za-z0-9._-]`, de 1 a 48, sin punto inicial y sin
 barras; cualquier otra cosa devuelve `false`/`nil` sin tocar la tarjeta.
 
 **Todo lo que espera es asíncrono y llega por callback.** `cp.listen`,
-`cp.call`, `cp.download` y `cp.view` no hacen el trabajo: lo **encolan** y
+`cp.call`, `cp.download`, `cp.view` y `cp.say` no hacen el trabajo: lo **encolan** y
 vuelven en el acto. El firmware lo atiende desde su propio loop, con sus
 pantallas (escucha, conexión al WiFi, "Esperando al servidor…", el visor), y
 cuando termina llama a la app:
 
 ```lua
 function on_heard(texto)          -- lo que dijo el usuario, o nil
-function on_reply(id, ok, tabla)  -- la respuesta al cp.call / cp.download con ese id
+function on_reply(id, ok, tabla)  -- la respuesta al cp.call / cp.download / cp.say con ese id
 ```
 
 Ninguno de los dos es obligatorio: si la app no los define, la respuesta se
@@ -177,7 +178,13 @@ Las reglas del tráfico:
   es que **la espera larga no va adentro de una llamada**: un trabajo de
   minutos se consulta desde `on_tick` con `cp.call("job.status", {id = …})`
   cada 5 s, mirando `cp.ms()`, como hace `librito.lua`.
-* **WiFi**: la primera `cp.listen`, `cp.call` o `cp.download` levanta la red
+* **`cp.say` cuenta como un pedido más en la cola** (sale en orden, ocupa
+  `cp.busy()` sólo mientras se pide el clip al servidor) **y el audio no
+  bloquea a la app**: en cuanto suena, `on_key` y `on_tick` vuelven a correr y
+  `cp.busy()` da `false`. Un `cp.listen` que venga después corta la voz antes
+  de abrir el micrófono (el I2S es uno solo). Mientras suena el aparato no se
+  duerme solo.
+* **WiFi**: la primera `cp.listen`, `cp.call`, `cp.download` o `cp.say` levanta la red
   con las redes guardadas (pantalla de conexión del sistema si tarda; el
   selector si ninguna sirve) y la deja arriba **hasta que la app se cierra**.
   Sin token del aparato (no está vinculado) no se va a la red: `on_reply`

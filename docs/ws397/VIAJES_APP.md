@@ -1,5 +1,10 @@
 # Viajes — la app de Lua (propuesta, pantalla a pantalla)
 
+> **Aprobada por el dueño el 18-09-2026 con cuatro cambios**, que están en `VIAJES_CONTRATO.md` (la verdad
+> sobre nombres y formas): sin Diario ni libro del viaje; la guía se guarda directo en la tarjeta, sin
+> confirmar bajar ni rehacer; antes de generarla la app pregunta por voz lo que le falta al itinerario (hotel,
+> horas de llegada y salida); Preguntar por voz con el viaje entero en el contexto y respuesta hablada (`cp.say`).
+
 Pedido del dueño: calendario de viaje, lugar, documentos tipo vouchers, guía (mejores lugares, restaurantes,
 reseñas, historia de la ciudad, "todo lo que necesita una mente curiosa"), **lista de cosas** y **agenda de viaje
 diaria del día uno al último, con fechas**. Decisiones ya tomadas (PLAN_APPS_VIAJES_EPUB.md): los vouchers se

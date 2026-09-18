@@ -271,7 +271,12 @@ label.inline { display: flex; align-items: center; gap: 10px; min-height: 44px; 
 .menu .lbl small { display: block; font-size: 13px; }
 .menu .chev { color: var(--muted); }
 
-/* ── Fotos ────────────────────────────────────────────────────────────── */
+/* ── Viajes ───────────────────────────────────────────────────────────── */
+.prose { white-space: pre-wrap; font-size: 15px; line-height: 1.5; margin: 0 0 10px; word-break: break-word; }
+.rows .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; }
+.bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; margin: 8px 0; }
+.bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+
 
 /* ── Tablas (IA) ──────────────────────────────────────────────────────── */
 table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
