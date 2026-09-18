@@ -1849,6 +1849,26 @@ Pedidos del dueño sobre 1.5.108, todos hechos:
   ninguna está, cae al selector de redes ("No hay redes disponibles" o la lista con la clave por el teléfono) y
   Atrás ahí muestra "No se pudo conectar al WiFi" y vuelve. Sin ninguna red guardada, directo al selector.
 
+## El Librito murió en la línea 53, y la línea 53 no tenía la culpa (1.5.110)
+
+`librito:53: attempt to compare nil with number`, en `if cp.textw(corte, tam) <= ancho`. El nil es el
+resultado de `cp.textw`, y `cpTextWidth` **siempre** hace `lua_pushinteger`: no hay camino en C que devuelva
+nil. El archivo de la tarjeta es byte a byte el del repo (19465 B), y el harness con letra ancha recorre ese
+mismo bucle sin fallar. O sea que el nil no lo produjo el script ni la función: lo produjo **la VM corrupta**.
+
+- **`on_draw` corre en la tarea de render** (`ActivityManager::renderTaskLoop`, núcleo 1) y **`on_tick` y
+  `on_key` en el loop de Arduino**, y cada uno abre su propio worker de `runBounded` sobre el MISMO
+  `lua_State`. `ActivityManager::loop()` llama a `currentActivity->loop()` sin ningún candado, a propósito
+  ("do not hold a lock here"). Con un tick cada 120 ms y un `on_draw` del índice de 275 ms (`dibujo lento` en
+  el log, por las decenas de `cp.textw` que miden cada título), el solapamiento era cuestión de tiempo.
+- **Un mutex recursivo alrededor de toda entrada a la VM** (`VmGuard` en `LuaApp.cpp`): `open`, `close`,
+  `callbackWith`, `onHeard`, `onReply*`, `cancelQueued`, `takeRequest`, `hasRequests`, `setBusy`. Recursivo
+  porque `cancelQueued` llama a `onHeard`/`onReplyError`. La cola de pedidos también va adentro: la llena el
+  worker de un callback y la vacía el loop.
+- Existía desde 1.5.48 y no se veía porque los `on_draw` de las apps de fábrica tardan milisegundos. El harness
+  de escritorio no lo puede encontrar: es de un solo hilo por diseño. **Regla**: el `lua_State` de una app lo
+  toca un hilo por vez, siempre, y la puerta es `VmGuard`.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
