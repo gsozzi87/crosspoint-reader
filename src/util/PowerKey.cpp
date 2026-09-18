@@ -131,9 +131,15 @@ void PowerKey::begin() {
 
   // Raw snapshot before touching anything: what the vendor/OTP/last firmware
   // left behind (PressOff, power-off enables, interrupt enables, pending status).
-  static const uint8_t SNAP_REGS[11] = {REG_COMMON_CONFIG, REG_PWRON_STATUS, REG_PWROFF_STATUS, REG_PWROFF_EN,
+  // Los seis últimos son los RIELES (sólo lectura): 0x80 DCDC on/off, 0x90 LDO
+  // on/off (bit0-3 ALDO1-4, bit4-5 BLDO1-2, bit6 CPUSLDO, bit7 DLDO1) y la
+  // tensión de ALDO1-4 (0x92-0x95: 0x1C = 3,3 V). Según el esquemático, DC1 es
+  // VCC3V3 (ESP, tarjeta, sensores) y ALDO1-3 alimentan EPD_VCC_AXP, Audio_VCC
+  // y AudioCTR_VCC: lo que sigue prendido toda la noche en el sueño profundo.
+  static const uint8_t SNAP_REGS[17] = {REG_COMMON_CONFIG, REG_PWRON_STATUS, REG_PWROFF_STATUS, REG_PWROFF_EN,
                                         REG_IRQ_OFF_ON_LEVEL, REG_INTEN1, REG_INTEN2, REG_INTEN3,
-                                        REG_INTSTS1, REG_INTSTS2, REG_INTSTS3};
+                                        REG_INTSTS1, REG_INTSTS2, REG_INTSTS3,
+                                        0x80, 0x90, 0x92, 0x93, 0x94, 0x95};
   for (size_t i = 0; i < sizeof(SNAP_REGS); ++i) {
     if (!readReg(SNAP_REGS[i], snapshot_[i])) snapshot_[i] = 0xEE;
   }
@@ -239,6 +245,8 @@ void PowerKey::logSnapshot() const {
   LOG_INF(TAG, "AXP2101 regs at boot: 10=%02X 20=%02X 21=%02X 22=%02X 27=%02X 40=%02X 41=%02X 42=%02X 48=%02X 49=%02X 4A=%02X",
           snapshot_[0], snapshot_[1], snapshot_[2], snapshot_[3], snapshot_[4], snapshot_[5], snapshot_[6],
           snapshot_[7], snapshot_[8], snapshot_[9], snapshot_[10]);
+  LOG_INF(TAG, "AXP2101 rieles: DCDC(80)=%02X LDO(90)=%02X ALDO1-4=%02X %02X %02X %02X (1C = 3,3 V)", snapshot_[11],
+          snapshot_[12], snapshot_[13], snapshot_[14], snapshot_[15], snapshot_[16]);
 }
 
 void PowerKey::flushAllStatus(const char* why) {

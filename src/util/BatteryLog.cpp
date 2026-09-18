@@ -97,6 +97,33 @@ void sampleNow(const char* why) {
   LOG_INF(TAG, "%s: %u %% · %u mV%s", why, (unsigned)r.pct, (unsigned)r.mv, r.charging ? " (cargando)" : "");
 }
 
+void reportAfterSleep() {
+  time_t now = 0;
+  if (!halClock.getEpochUtc(now) || !batterylog::credibleEpoch(now)) return;
+  const std::vector<Row> rows = readAll();
+  if (rows.empty()) return;
+  const Row& last = rows.back();
+  if (!batterylog::credibleEpoch(last.epoch) || last.charging) return;
+  const double secs = static_cast<double>(now - last.epoch);
+  if (secs < 20 * 60 || secs > MAX_WINDOW_S) return;  // menos de 20 min no mide nada; más de dos semanas es la fecha rota
+  static const BatteryMonitor battery;
+  uint16_t pct = 0;
+  if (!battery.readPercentageChecked(pct)) return;
+  const int mv = battery.readMillivolts();
+  const double hours = secs / 3600.0;
+  const double perHour = (last.pct - static_cast<int>(pct)) / hours;
+  // Un sueño profundo sano son décimas por hora (el S3 dormido son microamperios;
+  // lo que queda son los rieles del PMIC con el códec, la tarjeta y el panel).
+  // Arriba de esto hay algo encendido que no debería, y el log lo dice solo.
+  const bool tooMuch = perHour >= 0.3;
+  if (tooMuch) {
+    LOG_ERR(TAG, "dormido %.1f h: %d -> %u %% (%.2f %%/h, %d -> %d mV) — DEMASIADO para un sueño profundo: algo quedó encendido",
+            hours, last.pct, (unsigned)pct, perHour, last.mv, mv);
+  } else {
+    LOG_INF(TAG, "dormido %.1f h: %d -> %u %% (%.2f %%/h, %d -> %d mV)", hours, last.pct, (unsigned)pct, perHour, last.mv, mv);
+  }
+}
+
 void tick() {
   const unsigned long every = SAMPLE_MIN * 60UL * 1000UL;
   if (everSampled && millis() - lastSampleMs < every) return;

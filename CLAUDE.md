@@ -1739,6 +1739,49 @@ Tres quejas del dueño sobre 1.5.104, y el log que mandó era de **1.5.98** (19:
 `ida y vuelta N ms` sin `intento 2`), que después de la respuesta Atrás vuelva al hub en el acto, que al
 despertar de una noche el hub NO levante la red, y que apretar Atrás para despertar y mantenerlo no sincronice.
 
+## "Anoche se tragó el 9 % suspendido" (1.5.106)
+
+Del log: 04:18 `antes de dormir: 82 % · 3975 mV` → 15:45 `bateria 73 %` (3908 mV). Once horas y media de sueño
+profundo a **0,8 %/h**, que en una batería de 1500 mAh son unos **10-12 mA**. El S3 dormido son microamperios,
+así que eso no es el ESP: es lo que queda prendido alrededor. La noche anterior (23:29 → 02:38, 86 → 86 %) parecía
+gratis, pero por tensión (4020 → 3987 mV) fue ~1 %: el medidor del PMIC redondea y se queda.
+
+**El mapa de rieles, sacado del esquemático oficial** (`files.waveshare.com/wiki/ESP32-S3-ePaper-3.97/ESP32-S3_e-Paper-3.97-schematic.pdf`,
+una sola página): **DC1 = VCC3V3** (ESP32, tarjeta SD, SHTC3, QMI8658, pull-ups; no se puede cortar), **RTCLDO = VRTC**
+(PCF85063, con la pila de respaldo; independiente), y **ALDO1-3 = EPD_VCC_AXP, Audio_VCC y AudioCTR_VCC** (en un
+orden que el esquemático no deja leer): el panel (a través del P-MOSFET Q2), el ES8311 con el micrófono, y la zona
+del NS4150B. ALDO4, BLDO y DLDO sin uso. El firmware NO toca los rieles (regla de siempre), así que los tres ALDO
+quedan a 3,3 V toda la noche.
+
+Con eso, dos cosas que dejaban chips **encendidos de verdad**, arregladas sin tocar el PMIC:
+
+- **El ES8311 nunca se apagaba.** `AudioManager::powerDown()` sólo corta un riel por GPIO que en esta placa es
+  `PIN_UNASSIGNED`, así que el códec pasaba la noche polarizado como lo dejó la última reproducción. Ahora
+  `codecsleep::es8311Suspend()` (`src/util/CodecSleep.h`, la secuencia `es8311_suspend` de esp-adf) va en
+  `sleepNow()`; al despertar el aparato se reinicia y `codecInit()` lo resetea.
+- **El enable del amplificador quedaba al aire.** GPIO39 (PA_CTRL del NS4150B) no es RTC GPIO y en la placa **no
+  tiene resistencia a masa** (R74 sin poblar). `silenceAmp()` lo pone en LOW, pero `PowerManager::deepSleep()`
+  llama a `esp_sleep_config_gpio_isolate()` y suelta el pad: un clase D con el enable flotando puede quedar
+  encendido con su corriente de reposo. Ahora se **retiene** (`gpio_hold_en`, el SDK ya hace
+  `gpio_deep_sleep_hold_en`) y `setup()` lo libera antes de que el audio lo maneje; sin liberar, el parlante
+  quedaría mudo hasta el próximo corte de energía.
+
+Y dos cosas para que **el log lo mida solo** (regla del dueño: el aparato detecta, no él):
+
+- Al despertar de un sueño profundo, `batterylog::reportAfterSleep()` compara la línea de "antes de dormir" con la
+  lectura de ahora: `dormido 11.4 h: 82 -> 73 % (0.79 %/h, 3975 -> 3908 mV)`, y **arriba de 0,3 %/h** sale como
+  `[ERR]` con "DEMASIADO para un sueño profundo: algo quedó encendido".
+- El volcado del PMIC al arrancar suma los rieles: `AXP2101 rieles: DCDC(80)= LDO(90)= ALDO1-4= …` (0x1C = 3,3 V).
+  Con eso se ve qué está prendido sin abrir el aparato.
+
+**Lo que queda, y es la palanca grande: cortar ALDO1-3 en el sueño profundo** (bits 0-2 de 0x90) y volver a
+encenderlos **lo primero** en `setup()`, antes de tocar el panel. Saca del todo el códec, el amplificador y la
+polarización del panel; queda sólo lo que cuelga de VCC3V3 (la tarjeta en reposo, ~0,3-1 mA) y el consumo propio
+del PMIC. No fue en esta versión a propósito: si el re-encendido en el arranque falla o llega tarde, el aparato
+despierta con el panel a oscuras y sin audio, y **la salida es PWR 10 s** (corte duro del PMIC, que vuelve a los
+valores de fábrica) o sacar la batería. Primero hay que ver cuánto recuperan las dos cosas de arriba con el número
+que ahora escribe el log, y recién después decidir si vale ese riesgo.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

@@ -122,7 +122,7 @@ class PowerKey {
   unsigned long pressStartMs_ = 0;
   unsigned long heldMs_ = 0;
 
-  uint8_t snapshot_[11] = {};
+  uint8_t snapshot_[17] = {};
   bool snapshotValid_ = false;
 };
 
