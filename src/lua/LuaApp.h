@@ -114,6 +114,9 @@ class LuaApp {
   bool ok() const { return state_ != nullptr && error_.empty(); }
   const std::string& error() const { return error_; }
   const std::string& name() const { return name_; }
+  // El nombre saneado que da nombre a las carpetas y viaja al servidor como
+  // `app` en cp.call (`librito.lua` → "librito").
+  const std::string& appId() const { return dirName_; }
   bool quitRequested() const { return quit_; }
 
   // Las tres llamadas al script. Devuelven true si hay que repintar. Un error

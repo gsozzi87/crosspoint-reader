@@ -35,13 +35,12 @@ constexpr unsigned long EXIT_HOLD_MS = 1000;
 // que tarde más es un trabajo que se consulta con `job.status`.
 constexpr uint32_t CALL_TIMEOUT_MS = 40000;
 
-std::string sizeOf(const std::string& path, size_t& out) {
+size_t fileSize(const std::string& path) {
   HalFile f;
-  out = 0;
-  if (!Storage.openFileForRead(TAG, path, f)) return "";
-  out = f.size();
+  if (!Storage.openFileForRead(TAG, path, f)) return 0;
+  const size_t size = f.size();
   f.close();
-  return path;
+  return size;
 }
 }  // namespace
 
@@ -464,8 +463,7 @@ void LuaAppsActivity::performTranscribe() {
 void LuaAppsActivity::performCall() {
   WiFi.setSleep(false);
   requestMade = true;
-  std::string body = "{\"app\":\"" + app->dataDir().substr(strlen("/Apps/data/")) + "\",\"service\":\"" + current.a +
-                     "\",\"args\":" + current.b + "}";
+  std::string body = "{\"app\":\"" + app->appId() + "\",\"service\":\"" + current.a + "\",\"args\":" + current.b + "}";
   ServerClient::Response resp;
   const unsigned long t0 = millis();
   const ServerClient::Result r =
@@ -507,8 +505,7 @@ void LuaAppsActivity::performDownload() {
     finishRequest(app->onReplyError(current.id, detail));
     return;
   }
-  size_t bytes = 0;
-  sizeOf(dest, bytes);
+  const size_t bytes = fileSize(dest);
   LOG_INF(TAG, "%s: bajó %s (%u B, %lu ms)", app->name().c_str(), dest.c_str(), (unsigned)bytes, ms);
   finishRequest(app->onReplyBytes(current.id, bytes));
 }
@@ -522,7 +519,8 @@ void LuaAppsActivity::openViewer() {
     finishRequest(false);
     return;
   }
-  const size_t size = std::min(f.size(), LuaApp::VIEW_CAP);
+  const size_t total = f.size();
+  const size_t size = std::min(total, LuaApp::VIEW_CAP);
   std::string text;
   text.resize(size);
   const int got = size ? f.read(&text[0], size) : 0;
@@ -532,8 +530,10 @@ void LuaAppsActivity::openViewer() {
     return;
   }
   text.resize(static_cast<size_t>(got));
-  if (size < f.size()) LOG_INF(TAG, "%s: cp.view(%s) recortado a %u KB", app->name().c_str(), current.a.c_str(),
-                               (unsigned)(LuaApp::VIEW_CAP / 1024));
+  if (size < total) {
+    LOG_INF(TAG, "%s: cp.view(%s) recortado a %u KB", app->name().c_str(), current.a.c_str(),
+            (unsigned)(LuaApp::VIEW_CAP / 1024));
+  }
   auto viewer = makeUniqueNoThrow<DictionaryDefinitionActivity>(renderer, mappedInput, current.b, std::move(text));
   if (!viewer) {
     finishRequest(false);
