@@ -28,7 +28,8 @@ const MAX_BODY = 32 * 1024;
 
 // Común a todas las apps: cómo va un trabajo. `files` va vacío hasta `done`.
 const jobStatusService: Service = async (ctx, args) => {
-  const id = typeof args.id === "string" ? args.id.trim() : "";
+  // La app manda el id como string; si lo guardó como número, también vale.
+  const id = typeof args.id === "string" ? args.id.trim() : typeof args.id === "number" ? String(args.id) : "";
   if (!/^[0-9a-f]{16}$/.test(id)) return { ok: false, error: "trabajo desconocido" };
   const job = await jobStatus(ctx.accountId, id);
   if (!job) return { ok: false, error: "trabajo desconocido" };

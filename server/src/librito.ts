@@ -29,6 +29,9 @@ const MIN_MINUTES = 15;
 const MAX_MINUTES = 120;
 const MIN_CHAPTERS = 5;
 const MAX_CHAPTERS = 8;
+// Con "Más temas" el usuario agrega dos o tres a los que ya tiene, así que el
+// índice ajustado puede pasar de ocho; el tope de escritura acompaña.
+const MAX_CHAPTERS_ADJUSTED = 12;
 const MIN_CHAPTER_WORDS = 150;
 // Tokens por palabra con margen, y un colchón para el pensamiento adaptativo,
 // que sale del mismo `max_tokens`: sin él un capítulo largo se cortaba a mitad.
@@ -168,10 +171,25 @@ const INDICE_SCHEMA = {
   },
 };
 
+// El mismo índice más lo que el modelo entendió del pedido: con "agregar" el
+// servidor GARANTIZA que los capítulos actuales se conservan (ver `ajustar`).
+const AJUSTAR_SCHEMA = {
+  ...INDICE_SCHEMA,
+  required: ["accion", "titulo", "capitulos"],
+  properties: {
+    accion: {
+      type: "string",
+      enum: ["agregar", "quitar", "cambiar", "reordenar", "otro"],
+      description: "Qué pidió el usuario: agregar = más capítulos o más temas sin sacar los que están; quitar = sacar alguno; cambiar = acortar, alargar, renombrar o reenfocar alguno; reordenar; otro.",
+    },
+    ...INDICE_SCHEMA.properties,
+  },
+};
+
 type IndiceRaw = { titulo?: unknown; capitulos?: unknown };
 
-function finishIndex(raw: IndiceRaw, fallbackTitle: string, minutos: number, lang: Lang) {
-  const caps = cleanCaps(raw.capitulos);
+function finishIndex(raw: IndiceRaw, fallbackTitle: string, minutos: number, lang: Lang, max = MAX_CHAPTERS) {
+  const caps = cleanCaps(raw.capitulos, max);
   if (caps.length < 2) throw new Error("el modelo no devolvió un índice");
   if (caps.length < MIN_CHAPTERS) console.warn(`librito: el modelo propuso ${caps.length} capítulos (se piden ${MIN_CHAPTERS} a ${MAX_CHAPTERS})`);
   const titulo = str(raw.titulo, 60) || fallbackTitle || T[lang].untitled;
@@ -230,7 +248,7 @@ const ajustar: Service = async (ctx, args) => {
   const total = minutos * WORDS_PER_MINUTE;
   const pedido = str(args.pedido, 500);
   const titulo = str(args.titulo, 60);
-  const activos = cleanCaps(args.capitulos, 20).filter((c) => c.activo);
+  const activos = cleanCaps(args.capitulos, MAX_CHAPTERS_ADJUSTED).filter((c) => c.activo);
   // Sin pedido no hay nada que preguntarle al modelo: se descartan los
   // inactivos y se reparten las palabras de nuevo para que el total no baje.
   if (!pedido) {
@@ -240,7 +258,7 @@ const ajustar: Service = async (ctx, args) => {
   const current = activos.length
     ? activos.map((c, i) => `${i + 1}. ${c.titulo} — ${c.linea}${c.palabras ? ` (${c.palabras} palabras)` : ""}`).join("\n")
     : "(el usuario sacó todos los capítulos)";
-  const raw = await appsJson<IndiceRaw>({
+  const raw = await appsJson<IndiceRaw & { accion?: unknown }>({
     accountId: ctx.accountId,
     system: editorSystem(ctx.lang),
     user: [
@@ -249,13 +267,26 @@ const ajustar: Service = async (ctx, args) => {
       titulo ? `Título actual: ${titulo}` : "",
       `Índice actual (solo los capítulos que el usuario conservó):\n${current}`,
       `El usuario dictó este ajuste: "${pedido}"`,
-      `Aplícalo (agregar, quitar, cambiar, acortar o alargar capítulos, más temas, otro orden) y devuelve el índice completo resultante, de ${MIN_CHAPTERS} a ${MAX_CHAPTERS} capítulos. Conserva lo que el usuario no pidió cambiar.`,
+      `Aplícalo y devuelve el índice completo resultante. Conserva tal cual (mismo título, misma línea) todo lo que el usuario no pidió cambiar.`,
+      `Si pide agregar, más temas o más capítulos: devuelve TODOS los actuales en su orden y agrega dos o tres nuevos sobre aspectos del tema que todavía no están cubiertos. Si pide quitar, cambiar, acortar, alargar o reordenar: hazlo solo sobre lo que nombró. En los demás casos el índice tiene de ${MIN_CHAPTERS} a ${MAX_CHAPTERS} capítulos.`,
       `Largo total: ${total} palabras como mínimo (${minutos} minutos). La suma de los capítulos tiene que dar ${total}.`,
     ].filter(Boolean).join("\n\n"),
-    schema: INDICE_SCHEMA,
-    maxTokens: 2500,
+    schema: AJUSTAR_SCHEMA,
+    maxTokens: 3000,
   });
-  return finishIndex(raw, titulo || tema, minutos, ctx.lang);
+  // "Más temas" (el botón de la app manda "propón más capítulos sobre otros
+  // aspectos del tema, sin quitar los que están"): los actuales se conservan
+  // ACÁ, no por confianza en el modelo. Se toman tal cual y se les suman los
+  // nuevos que el modelo propuso, o sea los que no coinciden con ninguno.
+  if (raw.accion === "agregar" && activos.length) {
+    const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[^\p{L}\p{N}]+/gu, "");
+    const have = new Set(activos.map((c) => norm(c.titulo)));
+    const nuevos = cleanCaps(raw.capitulos, MAX_CHAPTERS_ADJUSTED).filter((c) => !have.has(norm(c.titulo)));
+    const merged = [...activos, ...nuevos].slice(0, MAX_CHAPTERS_ADJUSTED);
+    if (!nuevos.length) console.warn("librito: el modelo dijo agregar y no agregó ningún capítulo nuevo");
+    return finishIndex({ titulo: raw.titulo, capitulos: merged }, titulo || tema, minutos, ctx.lang, MAX_CHAPTERS_ADJUSTED);
+  }
+  return finishIndex(raw, titulo || tema, minutos, ctx.lang, MAX_CHAPTERS_ADJUSTED);
 };
 
 // ── Escribir: el trabajo ───────────────────────────────────────────────────
@@ -311,7 +342,7 @@ const escribir: Service = async (ctx, args) => {
   const enfoqueTxt = str(args.enfoque, 200);
   const minutos = minutesOf(args.minutos);
   const titulo = str(args.titulo, 60) || tema.slice(0, 60);
-  const given = cleanCaps(args.capitulos, 10).filter((c) => c.activo);
+  const given = cleanCaps(args.capitulos, MAX_CHAPTERS_ADJUSTED).filter((c) => c.activo);
   if (!given.length) throw new Error("falta el índice");
   const caps = calibrate(given, minutos * WORDS_PER_MINUTE);
   const lang = ctx.lang;
