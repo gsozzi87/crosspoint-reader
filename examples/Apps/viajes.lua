@@ -1,17 +1,24 @@
--- Viajes: la agenda, los papeles y la guía del viaje.
+-- Viajes: la agenda, los papeles y la guía de cada día.
 -- Todo se lee de la tarjeta (/Apps/data/viajes/): viaje.json es la vista
--- compacta que baja Actualizar, papel-<id>.txt y guia-N.txt se bajan una vez y
--- quedan, y pendientes.json guarda los tildes hechos sin red, que Actualizar
--- reproduce. La app NUNCA levanta la red sola: la levantan Actualizar, la guía,
--- Sugerir, Preguntar, Agregar por voz y Recordar, cuando el usuario los elige.
+-- compacta que baja Actualizar, papel-<id>.txt y guia-<fecha>.txt se bajan una
+-- vez y quedan, y pendientes.json guarda los tildes hechos sin red, que
+-- Actualizar reproduce. La app NUNCA levanta la red sola: la levantan Actualizar,
+-- la guía de un día, Sugerir, Preguntar, Agregar por voz y Recordar, cuando el
+-- usuario los elige.
 --
--- Contrato: docs/ws397/VIAJES_CONTRATO.md. Pantallas: docs/ws397/VIAJES_APP.md.
+-- La guía es POR DÍA y sólo a pedido: no hay guía general del viaje. Cada día
+-- tiene su lugar y su hotel (un viaje son varios lugares, trenes, un crucero).
+--
+-- REGLA: todo lo que entra por cp.read, cp.load, cp.files o el servidor pasa
+-- por s() o n() antes de concatenarse, compararse, indexarse o medirse. Un nil
+-- que llega de la tarjeta no se ve en el harness y en el aparato rompe la app.
+--
+-- Contrato: docs/ws397/VIAJES_CONTRATO.md (v2). Pantallas: docs/ws397/VIAJES_APP.md.
 -- Estilo y helpers: examples/Apps/librito.lua.
 
 local SIDE, PAD = 24, 24          -- margen de la pantalla y borde de fila -> texto
 local ROW1, ROW2 = 48, 72         -- fila de uno y de dos renglones
 local POLL_MS = 5000
-local GUIA_N = 10                 -- secciones de la guía
 local ARCHIVO = "viaje.json"
 local PENDIENTES = "pendientes.json"
 local RESPUESTA = "respuesta.txt"
@@ -30,13 +37,16 @@ local dia = 1                     -- índice del día abierto (Hoy / Día)
 local item = nil                  -- {d=, i=} del ítem abierto
 local itemDesde = "agenda"        -- a dónde vuelve Atrás desde el ítem
 local sug = {}                    -- sugerencias: {t=, marcada=}
-local guia = {fase = "lista", preguntas = {}, respuestas = {}, q = 0, job = nil, step = 0, total = 0,
-              label = "", n = 0, tiene = {}, titulos = {}, cuantas = 0}
+-- La guía del día en curso: qué día (di/date), a qué pantalla volver, la fase
+-- (lista, preguntas, generando, bajando), el trabajo del servidor y qué días
+-- ya tienen su guia-<fecha>.txt en la tarjeta.
+local guia = {fase = "lista", di = 0, date = "", volver = "inicio", preguntas = {}, respuestas = {}, q = 0,
+              job = nil, jobDate = "", jobTrip = "", step = 0, total = 0, label = "", tiene = {}, cuantas = 0}
 local act = {fase = "", hechos = 0, total = 0}
 local upd = {epoch = 0, ms = 0}   -- cuándo fue la última actualización
 local ultimoPoll = 0
 
--- Todo lo que viene del servidor pasa por acá: nunca un nil donde va un texto.
+-- Todo lo que viene de afuera pasa por acá: nunca un nil donde va un texto.
 local function s(v, def)
   if type(v) == "string" then return (v:gsub("[\r\n]+", " ")) end
   if type(v) == "number" then return tostring(v) end
@@ -226,11 +236,14 @@ local function diasDe(fecha)  -- "YYYY-MM-DD" -> días, o nil
   if not y then return nil end
   return diasCivil(tonumber(y), tonumber(m), tonumber(d))
 end
+local function fechaValida(f) return s(f):match("^%d%d%d%d%-%d%d%-%d%d$") ~= nil end
 -- La fecha de hoy: del reloj del aparato, y si no está en hora, la que mandó el
 -- servidor con el viaje. nil si no hay ninguna.
 local function hoy()
   local t = cp.time()
-  if type(t) == "table" and t.year then return string.format("%04d-%02d-%02d", t.year, t.month, t.day) end
+  if type(t) == "table" and n(t.year) > 0 then
+    return string.format("%04d-%02d-%02d", n(t.year), n(t.month), n(t.day))
+  end
   if trip and trip.today ~= "" then return trip.today end
   return nil
 end
@@ -268,6 +281,13 @@ local function wrap(t, ancho, tam, max)
   end
   return lineas
 end
+-- "a · b", salteando lo vacío.
+local function junta(a, b)
+  a, b = s(a), s(b)
+  if a == "" then return b end
+  if b == "" then return a end
+  return a .. " · " .. b
+end
 
 -- ---------------------------------------------------------------- datos
 -- Nombre de archivo a partir de un id del servidor: sólo lo que cp.write acepta.
@@ -277,7 +297,7 @@ local function saneado(id)
   return v
 end
 local function archivoPapel(paperId) return "papel-" .. saneado(paperId) .. ".txt" end
-local function archivoGuia(k) return "guia-" .. k .. ".txt" end
+local function archivoGuia(fecha) return "guia-" .. saneado(fecha) .. ".txt" end
 local function existe(nombre) return cp.size(nombre) ~= nil end
 
 local function normItem(it)
@@ -296,29 +316,24 @@ end
 local function normalizar(t)
   if type(t) ~= "table" then t = {} end
   local v = {id = s(t.id), name = s(t.name, "Viaje"), place = s(t.place), start = s(t.start),
-             ["end"] = s(t["end"]), when = s(t.when), hotel = s(t.hotel), weather = s(t.weather),
-             today = s(t.today), days = {}, packing = normPacking(t.packing), papers = {},
-             guide = {ready = false, sections = {}}}
+             ["end"] = s(t["end"]), when = s(t.when), today = s(t.today), days = {},
+             packing = normPacking(t.packing), papers = {}}
   for i, d in ipairs(type(t.days) == "table" and t.days or {}) do
     if type(d) == "table" then
       local items = {}
       for _, it in ipairs(type(d.items) == "table" and d.items or {}) do
         if type(it) == "table" then items[#items + 1] = normItem(it) end
       end
-      v.days[#v.days + 1] = {date = s(d.date), n = n(d.n, i), label = s(d.label, s(d.date)),
-                             short = s(d.short, s(d.date)), note = s(d.note), items = items}
+      local g = type(d.guide) == "table" and d.guide or {}
+      v.days[#v.days + 1] = {date = s(d.date), n = n(d.n, i), label = s(d.label, s(d.date, "Día " .. i)),
+                             short = s(d.short, s(d.date, tostring(i))), place = s(d.place), hotel = s(d.hotel),
+                             note = s(d.note), guide = {ready = g.ready == true, at = n(g.at)}, items = items}
     end
   end
   for _, p in ipairs(type(t.papers) == "table" and t.papers or {}) do
     if type(p) == "table" then
       v.papers[#v.papers + 1] = {id = s(p.id), date = s(p.date), kind = s(p.kind), title = s(p.title, "Papel"),
                                  line = s(p.line)}
-    end
-  end
-  if type(t.guide) == "table" then
-    v.guide.ready = t.guide.ready == true
-    for _, sec in ipairs(type(t.guide.sections) == "table" and t.guide.sections or {}) do
-      if type(sec) == "table" then v.guide.sections[#v.guide.sections + 1] = {n = n(sec.n), title = s(sec.title)} end
     end
   end
   return v
@@ -367,9 +382,12 @@ local function aplicarPend()
 end
 
 -- Estado chico: una clave por renglón (no hay JSON en cp.save y esto alcanza).
+-- El trabajo de la guía se guarda con su día y su viaje: al volver a entrar
+-- se ofrece "Retomar la guía del día N".
 local function guardar()
   cp.save("trip=" .. (trip and trip.id or "") .. "\nviajes=" .. nViajes .. "\nupdE=" .. upd.epoch ..
-          "\nupdM=" .. upd.ms .. "\njob=" .. s(guia.job) .. "\n")
+          "\nupdM=" .. upd.ms .. "\njob=" .. s(guia.job) .. "\njobDate=" .. s(guia.jobDate) ..
+          "\njobTrip=" .. s(guia.jobTrip) .. "\n")
 end
 local function cargar()
   local d = cp.load()
@@ -378,15 +396,53 @@ local function cargar()
   for k, v in d:gmatch("(%w+)=([^\n]*)") do t[k] = v end
   nViajes = n(t.viajes)
   upd.epoch, upd.ms = n(t.updE), n(t.updM)
-  guia.job = (t.job and t.job ~= "") and t.job or nil
+  guia.job = s(t.job) ~= "" and s(t.job) or nil
+  guia.jobDate, guia.jobTrip = s(t.jobDate), s(t.jobTrip)
+end
+local function olvidarJob()
+  guia.job, guia.jobDate, guia.jobTrip = nil, "", ""
+  guardar()
 end
 
--- Los papeles y la guía son de UN viaje: al cambiar de viaje se van.
+-- Los papeles y las guías son de UN viaje: al cambiar de viaje se van.
 local function limpiarArchivos()
   for _, nombre in ipairs(cp.files()) do
+    nombre = s(nombre)
     if nombre:match("^papel%-") or nombre:match("^guia%-") or nombre == RESPUESTA then cp.remove(nombre) end
   end
-  guia.tiene, guia.titulos, guia.cuantas = {}, {}, 0
+  guia.tiene, guia.cuantas = {}, 0
+  guia.job, guia.jobDate, guia.jobTrip = nil, "", ""
+end
+
+-- ---------------------------------------------------------------- días
+local function diaPorFecha(fecha)
+  fecha = s(fecha)
+  if not trip or fecha == "" then return nil end
+  for i, d in ipairs(trip.days) do
+    if d.date == fecha then return i end
+  end
+  return nil
+end
+
+-- Qué días tienen su guía en la tarjeta. Una sola lectura del directorio, al
+-- abrir la app y cada vez que una guía llega; el inicio muestra `guia.cuantas`
+-- sin volver a mirar. Un trabajo guardado que no es de este viaje se olvida.
+local function guiaRevisar()
+  guia.tiene = {}
+  for _, nombre in ipairs(cp.files()) do
+    local fecha = s(nombre):match("^guia%-(%d%d%d%d%-%d%d%-%d%d)%.txt$")
+    if fecha then guia.tiene[fecha] = true end
+  end
+  local cuantas = 0
+  for _, d in ipairs(trip and trip.days or {}) do
+    if guia.tiene[d.date] then cuantas = cuantas + 1 end
+  end
+  guia.cuantas = cuantas
+  if guia.job and (not trip or guia.jobTrip ~= trip.id or not diaPorFecha(guia.jobDate)) then
+    guia.job, guia.jobDate, guia.jobTrip = nil, "", ""
+    guardar()
+  end
+  return cuantas
 end
 
 local function llegoViaje(raw)
@@ -395,19 +451,13 @@ local function llegoViaje(raw)
   trip = nuevo
   aplicarPend()
   guardarViaje()
+  guiaRevisar()
   local t = cp.time()
   upd.epoch = (type(t) == "table" and n(t.epoch) > 0) and n(t.epoch) or 0
   upd.ms = cp.ms()
   guardar()
 end
 
--- ---------------------------------------------------------------- días
-local function diaPorFecha(fecha)
-  for i, d in ipairs(trip.days) do
-    if d.date == fecha then return i end
-  end
-  return nil
-end
 -- El día que corresponde a "Hoy": el de hoy si el viaje está en curso; antes
 -- del viaje, el primer día con cosas; después, nada. Devuelve índice, estado.
 local function diaHoy()
@@ -472,31 +522,7 @@ local function haceCuanto()
   if seg < 86400 then return "hace " .. seg // 3600 .. " h" end
   return "hace " .. seg // 86400 .. " días"
 end
-
--- ---------------------------------------------------------------- guía en la tarjeta
--- Qué secciones hay en la tarjeta y cómo se titulan. Son hasta veinte lecturas
--- de la SD, así que se hace al abrir la app y cada vez que la guía cambia, y
--- el inicio muestra `guia.cuantas` sin volver a mirar.
-local function guiaRevisar()
-  guia.tiene, guia.titulos = {}, {}
-  local cuantas = 0
-  for k = 1, GUIA_N do
-    if existe(archivoGuia(k)) then
-      guia.tiene[k] = true
-      cuantas = cuantas + 1
-      local cabeza = cp.read(archivoGuia(k), 0, 160) or ""
-      local titulo = s(cabeza:match("^([^\n]*)"))
-      if titulo == "" then
-        for _, sec in ipairs(trip and trip.guide.sections or {}) do
-          if sec.n == k then titulo = sec.title end
-        end
-      end
-      guia.titulos[k] = titulo ~= "" and titulo or ("Sección " .. k)
-    end
-  end
-  guia.cuantas = cuantas
-  return cuantas
-end
+local function tituloGuia(d) return "Guía · Día " .. d.n end
 
 -- ---------------------------------------------------------------- pedidos
 local function pedir(servicio, args, que, extra)
@@ -520,6 +546,13 @@ local function escuchar(que, pregunta, extra)
     cp.beep("error")
   end
   return false  -- el host muestra su propia pantalla de escucha
+end
+
+-- Cambia de pantalla. "guia" es la lista de días (7); las fases del flujo
+-- las ponen las funciones de la guía.
+local function irA(pantalla)
+  st, sel = pantalla, 1
+  if st == "guia" then guia.fase = "lista" end
 end
 
 local function fallo(tit, cuerpo, filas, volver)
@@ -595,11 +628,28 @@ local function sinViajes()
   st, sel = "sin", 1
 end
 
--- ---------------------------------------------------------------- guía: flujo
+-- ---------------------------------------------------------------- guía del día: flujo
+-- preguntas por voz → viajes.guia.generar (trabajo) → job.status cada 5 s →
+-- viajes.guia.dia → guia-<fecha>.txt → visor. Termina volviendo a la pantalla
+-- desde la que se pidió (guia.volver), con el visor encima.
+-- Vuelve a la pantalla desde la que se pidió la guía, con el resalte sobre la
+-- fila de ese día (la que se eligió), no sobre la primera.
+local filas
+local function guiaSalir()
+  if (guia.volver == "dia" or guia.volver == "hoy") and guia.di > 0 then dia = guia.di end
+  irA(guia.volver)
+  if st == "inicio" then return end
+  for k, f in ipairs(filas()) do
+    if f.act == "guia.abrir" and (st == "guia" and f.i == guia.di or st ~= "guia") then
+      sel = k
+      return
+    end
+  end
+end
 local function guiaGenerar()
   guia.fase = "generando"
   guia.step, guia.total, guia.label = 0, 0, "Pidiendo la guía"
-  return pedir("viajes.guia.generar", {id = trip.id, answers = guia.respuestas}, "guia.generar")
+  return pedir("viajes.guia.generar", {id = trip.id, date = guia.date, answers = guia.respuestas}, "guia.generar")
 end
 local function guiaPreguntar()
   guia.q = guia.q + 1
@@ -607,40 +657,50 @@ local function guiaPreguntar()
   if p then return escuchar("guia", p.text) end
   return guiaGenerar()
 end
-local function guiaEmpezar()
-  guia.fase, guia.preguntas, guia.respuestas, guia.q = "preguntas", {}, {}, 0
-  guia.job = nil
-  guardar()
-  return pedir("viajes.guia.preguntas", {id = trip.id}, "guia.preguntas")
-end
-local function guiaBajar(k, saltar)
-  guia.fase = "bajando"
-  while saltar and k <= GUIA_N and guia.tiene[k] do k = k + 1 end
-  guia.n = k
-  if k > GUIA_N then
-    guia.fase = "lista"
-    guiaRevisar()
-    guia.job = nil
-    guardar()
-    cp.beep("ok")
-    return true
+-- Apunta el flujo al día `di`. false si ese día no puede tener guía (sin fecha).
+local function guiaApuntar(di, volver, fase)
+  local d = trip.days[di]
+  if not d or not fechaValida(d.date) then
+    cp.beep("error")
+    return false
   end
-  return pedir("viajes.guia.seccion", {id = trip.id, n = k}, "guia.seccion", {n = k, saltar = saltar})
-end
-local function abrirGuia()
+  guia.di, guia.date, guia.volver, guia.fase = di, d.date, volver, fase
   st, sel = "guia", 1
-  local cuantas = guiaRevisar()
-  if guia.job then
-    guia.fase = "generando"
-    ultimoPoll = cp.ms() - POLL_MS  -- que el primer tick pregunte ya
-    return true
-  elseif cuantas == GUIA_N then
-    guia.fase = "lista"
-    return true
-  elseif cuantas > 0 or trip.guide.ready then
-    return guiaBajar(1, true)      -- lo que falte se baja; lo que está, queda
+  return true
+end
+local function guiaEmpezar(di, volver)
+  if not guiaApuntar(di, volver, "preguntas") then return false end
+  guia.preguntas, guia.respuestas, guia.q = {}, {}, 0
+  olvidarJob()
+  return pedir("viajes.guia.preguntas", {id = trip.id, date = guia.date}, "guia.preguntas")
+end
+-- Bajar la guía que el servidor ya tiene: la que acaba de armar, o una hecha
+-- desde la web (day.guide.ready). No pregunta nada.
+local function guiaBajar(di, volver)
+  if not guiaApuntar(di, volver, "bajando") then return false end
+  return pedir("viajes.guia.dia", {id = trip.id, date = guia.date}, "guia.dia")
+end
+-- Seguir mirando un trabajo que quedó andando en el servidor.
+local function guiaRetomar(volver)
+  local di = diaPorFecha(guia.jobDate)
+  if not guia.job or not di then
+    olvidarJob()
+    return false
   end
-  return guiaEmpezar()
+  if not guiaApuntar(di, volver, "generando") then return false end
+  guia.step, guia.total, guia.label = 0, 0, ""
+  ultimoPoll = cp.ms() - POLL_MS  -- que el primer tick pregunte ya
+  return true
+end
+-- La fila "Guía de este día": en la tarjeta → visor; en el servidor → bajar;
+-- si no hay → armarla. Sin confirmaciones, por decisión del dueño.
+local function guiaAbrir(di, volver)
+  local d = trip.days[di]
+  if not d then return false end
+  if guia.job and guia.jobDate == d.date then return guiaRetomar(volver) end
+  if guia.tiene[d.date] then return cp.view(archivoGuia(d.date), tituloGuia(d)) end
+  if d.guide.ready then return guiaBajar(di, volver) end
+  return guiaEmpezar(di, volver)
 end
 
 -- ---------------------------------------------------------------- papeles
@@ -665,36 +725,59 @@ end
 
 function on_open()
   st, sel, calls, oir, viajes, sug = "sin", 1, {}, nil, {}, {}
-  guia = {fase = "lista", preguntas = {}, respuestas = {}, q = 0, job = nil, step = 0, total = 0, label = "",
-          n = 0, tiene = {}, titulos = {}, cuantas = 0}
+  guia = {fase = "lista", di = 0, date = "", volver = "inicio", preguntas = {}, respuestas = {}, q = 0,
+          job = nil, jobDate = "", jobTrip = "", step = 0, total = 0, label = "", tiene = {}, cuantas = 0}
   cargar()
   cargarPend()
   local raw = json.decode(cp.read(ARCHIVO))
   if type(raw) == "table" and s(raw.id) ~= "" then
     trip = normalizar(raw)
     st = "inicio"
-    guiaRevisar()
   else
     trip = nil
   end
+  guiaRevisar()
 end
 
 -- ---------------------------------------------------------------- filas
 local function filaItem(d, i)
   local it = trip.days[d].items[i]
   local t = it.at ~= "" and (it.at .. "  " .. it.title) or it.title
-  local det = it.kindLabel
-  if it.place ~= "" then det = det ~= "" and (det .. " · " .. it.place) or it.place end
+  local det = junta(it.kindLabel, it.place)
   return {t = t, d = det ~= "" and det or nil, m = it.paperId ~= "" and "papel" or nil,
           h = det ~= "" and ROW2 or ROW1, act = "item", d_ = d, i = i}
 end
+-- Las filas de la guía de un día (en Hoy y en Día): ver, bajar o armar, y
+-- rehacer si ya existe.
+local function filasGuiaDia(f, di)
+  local d = trip.days[di]
+  if not d or not fechaValida(d.date) then return end
+  if guia.job and guia.jobDate == d.date then
+    f[#f + 1] = {t = "Retomar la guía del día", d = "Se sigue armando en el servidor", h = ROW2,
+                 act = "guia.retomar"}
+  elseif guia.tiene[d.date] then
+    f[#f + 1] = {t = "Guía de este día", d = "En la tarjeta", h = ROW2, act = "guia.abrir", i = di}
+    f[#f + 1] = {t = "Rehacer la guía del día", h = ROW1, act = "guia.rehacer", i = di}
+  elseif d.guide.ready then
+    f[#f + 1] = {t = "Guía de este día", d = "Bajar del servidor", h = ROW2, act = "guia.abrir", i = di}
+    f[#f + 1] = {t = "Rehacer la guía del día", h = ROW1, act = "guia.rehacer", i = di}
+  else
+    f[#f + 1] = {t = "Guía de este día", d = "Se arma con unas preguntas por voz", h = ROW2, act = "guia.abrir",
+                 i = di}
+  end
+end
 
 -- Las filas de la pantalla de turno. Cada una sabe su alto y qué hace OK.
-local function filas()
+filas = function()
   local f = {}
   if st == "sin" then
     f[1] = {t = "Actualizar", h = ROW1, act = "actualizar"}
   elseif st == "inicio" then
+    local ji = guia.job and diaPorFecha(guia.jobDate)
+    if ji then
+      f[#f + 1] = {t = "Retomar la guía del día " .. trip.days[ji].n, d = "Se sigue armando en el servidor",
+                   h = ROW2, act = "guia.retomar"}
+    end
     local i, como = diaHoy()
     if como == "sinhora" then
       f[#f + 1] = {t = "Hoy", d = "El aparato no está en hora", h = ROW2, act = "agenda"}
@@ -704,21 +787,15 @@ local function filas()
       f[#f + 1] = {t = "Hoy", d = "El viaje no tiene días", h = ROW2, act = "agenda"}
     else
       local d = trip.days[i]
-      local t = (como == "hoy" and "Hoy" or ("Día " .. d.n)) .. " · " .. d.short .. " · " .. cosas(d)
+      local t = junta(junta((como == "hoy" and "Hoy" or ("Día " .. d.n)) .. " · " .. d.short, d.place), cosas(d))
       f[#f + 1] = {t = t, h = ROW1, act = "hoy", i = i}
     end
     f[#f + 1] = {t = "Agenda · " .. #trip.days .. (#trip.days == 1 and " día" or " días"), h = ROW1, act = "agenda"}
     f[#f + 1] = {t = "Papeles · " .. #trip.papers, h = ROW1, act = "papeles"}
     local hechos, total = llevar()
     f[#f + 1] = {t = "Lista para llevar · " .. hechos .. " de " .. total, h = ROW1, act = "lista"}
-    local g
-    if guia.job then
-      g = "generando…"
-    else
-      local c = guia.cuantas
-      g = c == 0 and "no bajada" or (c .. (c == 1 and " sección" or " secciones"))
-    end
-    f[#f + 1] = {t = "Guía · " .. g, h = ROW1, act = "guia"}
+    f[#f + 1] = {t = "Guía · " .. guia.cuantas .. " de " .. #trip.days .. (#trip.days == 1 and " día" or " días"),
+                 h = ROW1, act = "guia"}
     f[#f + 1] = {t = "Preguntar por voz", h = ROW1, act = "preg"}
     f[#f + 1] = {t = "Actualizar · " .. haceCuanto(), h = ROW1, act = "actualizar"}
     if nViajes > 1 then f[#f + 1] = {t = "Cambiar de viaje (" .. nViajes .. ")", h = ROW1, act = "cambiar"} end
@@ -727,13 +804,16 @@ local function filas()
     if d then
       for i = 1, #d.items do f[#f + 1] = filaItem(dia, i) end
       if #d.items == 0 then f[#f + 1] = {t = "— libre —", h = ROW1} end
+      filasGuiaDia(f, dia)
       f[#f + 1] = {t = st == "hoy" and "Preguntar sobre hoy" or "Preguntar sobre este día", h = ROW1,
                    act = "preg", ctx = {date = d.date}}
     end
   elseif st == "agenda" then
     for di, d in ipairs(trip.days) do
-      local det = d.note ~= "" and d.note or (#d.items == 0 and "— libre —" or nil)
-      f[#f + 1] = {t = "Día " .. d.n .. " · " .. d.label, d = det, h = det and ROW2 or ROW1, act = "dia", i = di}
+      local det = junta(d.place, d.note)
+      if det == "" and #d.items == 0 then det = "— libre —" end
+      f[#f + 1] = {t = "Día " .. d.n .. " · " .. d.label, d = det ~= "" and det or nil, h = det ~= "" and ROW2 or ROW1,
+                   act = "dia", i = di}
       for i = 1, #d.items do f[#f + 1] = filaItem(di, i) end
     end
   elseif st == "item" then
@@ -744,8 +824,7 @@ local function filas()
                  ctx = {date = trip.days[item.d].date, itemId = it.id}}
   elseif st == "papeles" then
     for i, p in ipairs(trip.papers) do
-      local det = p.date ~= "" and p.date or ""
-      if p.line ~= "" then det = det ~= "" and (det .. " · " .. p.line) or p.line end
+      local det = junta(p.date, p.line)
       f[#f + 1] = {t = p.title, d = det ~= "" and det or nil, h = det ~= "" and ROW2 or ROW1, act = "papel", i = i}
     end
     if #trip.papers == 0 then f[1] = {t = "No hay papeles. Se cargan en la web.", h = ROW1} end
@@ -759,14 +838,23 @@ local function filas()
     for i, x in ipairs(sug) do f[#f + 1] = {t = x.t, h = ROW1, act = "sug", i = i, casilla = x.marcada} end
     f[#f + 1] = {t = "Agregar las marcadas", h = ROW1, act = "sug.agregar"}
   elseif st == "guia" and guia.fase == "lista" then
-    for k = 1, GUIA_N do
-      if guia.tiene[k] then f[#f + 1] = {t = k .. ". " .. guia.titulos[k], h = ROW1, act = "guia.ver", k = k} end
+    -- Un día por fila; el detalle dice si la guía ya está.
+    for di, d in ipairs(trip.days) do
+      local det
+      if guia.job and guia.jobDate == d.date then
+        det = "generando…"
+      elseif guia.tiene[d.date] then
+        det = "guía lista"
+      elseif d.guide.ready then
+        det = "en el servidor"
+      end
+      f[#f + 1] = {t = junta("Día " .. d.n .. " · " .. d.short, d.place), d = det, h = det and ROW2 or ROW1,
+                   act = "guia.abrir", i = di}
     end
-    f[#f + 1] = {t = "Rehacer la guía", h = ROW1, act = "guia.rehacer"}
+    if #trip.days == 0 then f[1] = {t = "El viaje no tiene días.", h = ROW1} end
   elseif st == "cambiar" then
     for i, v in ipairs(viajes) do
-      local det = v.when
-      if v.place ~= "" then det = det ~= "" and (det .. " · " .. v.place) or v.place end
+      local det = junta(v.when, v.place)
       f[#f + 1] = {t = v.name, d = det ~= "" and det or nil, m = v.active and "activo" or nil,
                    h = det ~= "" and ROW2 or ROW1, act = "cambiar.a", i = i}
     end
@@ -804,8 +892,7 @@ local function accion(it)
   elseif a == "papeles" or a == "lista" then
     st, sel = a, 1
   elseif a == "guia" then
-    abrirGuia()  -- la pantalla cambia aunque el pedido no haya salido
-    return true
+    irA("guia")
   elseif a == "preg" then
     return preguntar(it.ctx)
   elseif a == "cambiar" then
@@ -852,27 +939,28 @@ local function accion(it)
       return true
     end
     return pedir("viajes.sugerir.agregar", {id = trip.id, texts = textos}, "packing", {volver = "lista"})
-  elseif a == "guia.ver" then
-    return cp.view(archivoGuia(it.k), guia.titulos[it.k])
+  elseif a == "guia.abrir" then
+    return guiaAbrir(it.i, st)
   elseif a == "guia.rehacer" then
-    guiaEmpezar()
-    return true
+    return guiaEmpezar(it.i, st)
+  elseif a == "guia.retomar" then
+    return guiaRetomar(st)
   elseif a == "guia.reintentar" then
     st, sel = "guia", 1
-    if guia.fase == "bajando" then return guiaBajar(guia.n, false) end
-    if guia.fase == "generando" then
+    if guia.fase == "bajando" then return pedir("viajes.guia.dia", {id = trip.id, date = guia.date}, "guia.dia") end
+    if guia.fase == "generando" and guia.job then
       ultimoPoll = cp.ms() - POLL_MS
       return true
     end
-    return guiaEmpezar()
+    return guiaEmpezar(guia.di, guia.volver)
   elseif a == "cambiar.a" then
     local v = viajes[it.i]
     if not v then return false end
     return pedir("viajes.activar", {id = v.id}, "cambiar.activar", {id = v.id})
   elseif a == "volver" then
-    st, sel = err.volver, 1
+    irA(err.volver)
   elseif a == "inicio" then
-    st, sel = pantallaBase(), 1
+    irA(pantallaBase())
   else
     return false
   end
@@ -901,11 +989,15 @@ local function atras()
   elseif st == "sug" then
     st = "lista"
   elseif st == "guia" then
-    st = "inicio"  -- generando sigue en el servidor y se retoma al volver a entrar
+    if guia.fase == "lista" then
+      st = "inicio"
+    else
+      guiaSalir()  -- generando sigue en el servidor y se retoma al volver a entrar
+    end
   elseif st == "actualizar" then
     st = pantallaBase()
   elseif st == "error" then
-    st = err.volver
+    irA(err.volver)
   end
   sel = 1
   cp.beep("back")
@@ -958,9 +1050,9 @@ function on_heard(texto)
   texto = s(texto)
   if que.que == "preguntar" then
     local args = {id = trip.id, question = texto}
-    if que.ctx then
-      if s(que.ctx.date) ~= "" then args.date = que.ctx.date end
-      if s(que.ctx.itemId) ~= "" then args.itemId = que.ctx.itemId end
+    if type(que.ctx) == "table" then
+      if s(que.ctx.date) ~= "" then args.date = s(que.ctx.date) end
+      if s(que.ctx.itemId) ~= "" then args.itemId = s(que.ctx.itemId) end
     end
     pedir("viajes.preguntar", args, "preguntar", {q = texto})
   elseif que.que == "agregar" then
@@ -976,21 +1068,48 @@ local function llegoPacking(t, volver)
   cp.beep("ok")
 end
 
+local function volverGuia() return guia.volver end
+
 local function llegoJob(t)
   local estado = s(t.state)
   if estado == "done" then
-    guiaRevisar()
-    if not guiaBajar(1, false) then
-      fallo("No se pudo", "No se pudo empezar a bajar la guía.", filasReintento("guia.reintentar", "inicio"))
+    guia.fase = "bajando"
+    if not pedir("viajes.guia.dia", {id = trip.id, date = guia.date}, "guia.dia") then
+      fallo("No se pudo", "No se pudo empezar a bajar la guía.", filasReintento("guia.reintentar", volverGuia()))
     end
   elseif estado == "failed" then
-    guia.job = nil
-    guardar()
-    fallo("No se pudo armar la guía", s(t.error, "El servidor no pudo armar la guía."), filaVolver("inicio"))
+    olvidarJob()
+    guia.fase = "preguntas"
+    fallo("No se pudo armar la guía", s(t.error, "El servidor no pudo armar la guía."),
+          filasReintento("guia.reintentar", volverGuia()))
   else
     guia.step, guia.total, guia.label = n(t.step), n(t.total), s(t.label)
     ultimoPoll = cp.ms()
   end
+end
+
+-- La guía del día llegó: a la tarjeta, a la vista, y al visor.
+local function llegoGuia(t)
+  local texto = txt(t.text)
+  if texto == "" then
+    return fallo("Sin guía", "El servidor no tiene la guía de ese día.", filasReintento("guia.reintentar", volverGuia()))
+  end
+  local d = trip.days[guia.di]
+  local nombre = archivoGuia(guia.date)
+  local cabeza = d and junta("Día " .. d.n .. " · " .. d.label, d.place) or "Guía"
+  if not cp.write(nombre, cabeza .. "\n\n" .. texto) then
+    return fallo("No se pudo", "No se pudo guardar la guía en la tarjeta.",
+                 filasReintento("guia.reintentar", volverGuia()))
+  end
+  if d then
+    d.guide = {ready = true, at = n(t.at)}
+    guardarViaje()
+  end
+  olvidarJob()
+  guiaRevisar()
+  cp.beep("ok")
+  guiaSalir()
+  cp.view(nombre, d and tituloGuia(d) or "Guía")
 end
 
 function on_reply(id, ok, t)
@@ -1012,17 +1131,14 @@ function on_reply(id, ok, t)
     end
     if e == "cancelado" then
       if que:find("^act%.") then st, sel = pantallaBase(), 1 end
-      if que == "guia.seccion" then
-        guia.fase = "lista"
-        guiaRevisar()
-      end
+      if que == "guia.preguntas" or que == "guia.generar" or que == "guia.dia" then guiaSalir() end
       if que == "cambiar.lista" or que == "cambiar.activar" or que == "cambiar.viaje" then st, sel = "inicio", 1 end
       return
     end
     if que:find("^act%.") then return errorServidor(e, filasReintento("actualizar", pantallaBase())) end
-    if que == "guia.job" or que == "guia.seccion" or que == "guia.generar" or que == "guia.preguntas" then
+    if que:find("^guia%.") then
       if que == "guia.generar" or que == "guia.preguntas" then guia.fase = "preguntas" end
-      return errorServidor(e, filasReintento("guia.reintentar", "inicio"))
+      return errorServidor(e, filasReintento("guia.reintentar", volverGuia()))
     end
     if que:find("^cambiar%.") then return errorServidor(e, filaVolver("inicio")) end
     return errorServidor(e, filaVolver(st))
@@ -1060,7 +1176,7 @@ function on_reply(id, ok, t)
       return fallo("No se pudo", "El servidor no mandó el texto del papel.", filaVolver(st))
     end
     local titulo = s(t.title)
-    if titulo == "" then titulo = c.titulo end
+    if titulo == "" then titulo = s(c.titulo, "Papel") end
     if not cp.write(c.nombre, titulo .. "\n\n" .. cuerpo) then
       return fallo("No se pudo", "No se pudo guardar el papel en la tarjeta.", filaVolver(st))
     end
@@ -1095,28 +1211,21 @@ function on_reply(id, ok, t)
     local jid = s(t.jobId)
     if jid == "" then
       guia.fase = "preguntas"
-      return fallo("No se pudo", "El servidor no devolvió el trabajo.", filasReintento("guia.reintentar", "inicio"))
+      return fallo("No se pudo", "El servidor no devolvió el trabajo.",
+                   filasReintento("guia.reintentar", volverGuia()))
     end
-    guia.job = jid
+    guia.job, guia.jobDate, guia.jobTrip = jid, guia.date, trip.id
     guia.fase = "generando"
     guardar()
     ultimoPoll = cp.ms()
   elseif que == "guia.job" then
     llegoJob(t)
-  elseif que == "guia.seccion" then
-    local k = c.n
-    local titulo = s(t.title)
-    if titulo == "" then titulo = "Sección " .. k end
-    if not cp.write(archivoGuia(k), titulo .. "\n\n" .. txt(t.text)) then
-      return fallo("No se pudo", "No se pudo guardar la sección " .. k .. " en la tarjeta.",
-                   filasReintento("guia.reintentar", "inicio"))
-    end
-    guia.tiene[k] = true
-    guiaBajar(k + 1, c.saltar)
+  elseif que == "guia.dia" then
+    llegoGuia(t)
   elseif que == "preguntar" then
     local respuesta = txt(t.answer)
     if respuesta == "" then return fallo("Sin respuesta", "El servidor no contestó nada.", filaVolver(st)) end
-    if not cp.write(RESPUESTA, c.q .. "\n\n" .. respuesta) then
+    if not cp.write(RESPUESTA, s(c.q) .. "\n\n" .. respuesta) then
       return fallo("No se pudo", "No se pudo guardar la respuesta en la tarjeta.", filaVolver(st))
     end
     -- La voz sale primero y el visor encima: la app sigue mientras suena.
@@ -1218,38 +1327,38 @@ local function barra(y, paso, total)
   if total > 0 then cp.rect(SIDE + 2, y + 2, math.max(0, math.min(w - 4, (w - 4) * paso // total)), 8, true) end
 end
 
+-- El día que la guía tiene apuntado, para los cabezales del flujo.
+local function diaDeLaGuia()
+  local d = trip.days[guia.di]
+  return d and ("día " .. d.n) or "día"
+end
+
 local function dibujarGuia(fin)
   if guia.fase == "lista" then
     local y = cabezal("Guía · " .. trip.name)
     lista(filas(), y + 8, fin)
-    pie("OK: leer la sección · Atrás: volver")
+    pie("OK: leer o armar la guía del día · Atrás: volver")
   elseif guia.fase == "preguntas" then
-    local y = cabezal("Guía · preguntas")
+    local y = cabezal("Guía del " .. diaDeLaGuia())
     local p = guia.preguntas[guia.q]
     if p then
       cp.text(SIDE, y + 8, "Pregunta " .. guia.q .. " de " .. #guia.preguntas, 10)
       parrafo(y + 32, p.text, 14, 4, true)
     else
-      parrafo(y + 8, "Antes de armar la guía, unas preguntas por voz sobre lo que falta del itinerario.", 12, 4)
+      parrafo(y + 8, "Antes de armar la guía, unas preguntas por voz sobre lo que falta de ese día.", 12, 4)
     end
     pie("Atrás: saltar la pregunta")
   elseif guia.fase == "generando" then
-    local y = cabezal("Armando la guía…")
-    local paso
-    if guia.total > 0 then
-      paso = "Sección " .. guia.step .. " de " .. guia.total
-    else
-      paso = "Preparando"
-    end
+    local y = cabezal("Armando la guía del " .. diaDeLaGuia() .. "…")
+    local paso = guia.total > 0 and ("Paso " .. guia.step .. " de " .. guia.total) or "Preparando"
     cp.text(SIDE, y + 16, fit(paso, cp.width() - 2 * SIDE, 12), 12)
     y = parrafo(y + 16 + cp.texth(12), guia.label, 10, 2)
     barra(y + 16, guia.step, guia.total)
     pie("Tarda unos minutos · Atrás: salir; se retoma al volver")
   elseif guia.fase == "bajando" then
-    local y = cabezal("Bajando la guía")
-    cp.text(SIDE, y + 16, "Sección " .. guia.n .. " de " .. GUIA_N, 12)
-    barra(y + 48, guia.n - 1, GUIA_N)
-    pie("Se guarda en la tarjeta · Atrás: parar")
+    local y = cabezal("Bajando la guía del " .. diaDeLaGuia())
+    cp.text(SIDE, y + 16, "Se guarda en la tarjeta y se abre en el visor.", 12)
+    pie("Esperando al servidor…")
   end
 end
 
@@ -1265,10 +1374,8 @@ function on_draw()
     local y = cabezal(trip.name)
     cp.text(SIDE, y, fit(subtitulo(), cp.width() - 2 * SIDE, 12), 12)
     y = y + cp.texth(12) + 4
-    if trip.weather ~= "" then
-      local clima = trip.weather
-      if trip.place ~= "" then clima = clima .. " en " .. trip.place end
-      cp.text(SIDE, y, fit(clima, cp.width() - 2 * SIDE, 10), 10)
+    if trip.place ~= "" then
+      cp.text(SIDE, y, fit(trip.place, cp.width() - 2 * SIDE, 10), 10)
       y = y + cp.texth(10) + 4
     end
     lista(filas(), y + 12, fin)
@@ -1281,9 +1388,11 @@ function on_draw()
       local y = cabezal(d.label)
       cp.text(SIDE, y, "Día " .. d.n .. " de " .. #trip.days, 10)
       y = y + cp.texth(10) + 4
-      if st == "hoy" and trip.weather ~= "" then
-        cp.text(SIDE, y, fit(trip.weather, cp.width() - 2 * SIDE, 10), 10)
-        y = y + cp.texth(10) + 4
+      -- El lugar y el hotel del día: "Barcelona · Hotel Praktik". Sin lugar, nada.
+      local donde = junta(d.place, d.hotel)
+      if donde ~= "" then
+        cp.text(SIDE, y, fit(donde, cp.width() - 2 * SIDE, 12), 12)
+        y = y + cp.texth(12) + 4
       end
       if d.note ~= "" then y = parrafo(y + 4, d.note, 12, 3) end
       lista(filas(), y + 12, fin)
@@ -1301,8 +1410,7 @@ function on_draw()
     if it.at ~= "" then cuando = cuando .. " · " .. it.at end
     cp.text(SIDE, y, fit(cuando, cp.width() - 2 * SIDE, 12), 12)
     y = y + cp.texth(12) + 4
-    local donde = it.kindLabel
-    if it.place ~= "" then donde = donde ~= "" and (donde .. " · " .. it.place) or it.place end
+    local donde = junta(it.kindLabel, it.place)
     if donde ~= "" then
       cp.text(SIDE, y, fit(donde, cp.width() - 2 * SIDE, 12), 12)
       y = y + cp.texth(12) + 4

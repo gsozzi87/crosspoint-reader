@@ -276,6 +276,12 @@ label.inline { display: flex; align-items: center; gap: 10px; min-height: 44px; 
 .rows .code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; }
 .bar { height: 6px; border-radius: 3px; background: var(--chip); overflow: hidden; margin: 8px 0; }
 .bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+/* Viajes: el lugar y el hotel de cada día (toca para editar) y la fila de la guía del día. */
+.dayline { display: flex; align-items: center; gap: 6px; margin: 0 0 8px; font-size: 14px; cursor: pointer; }
+.dayline .grow { flex: 1; min-width: 0; }
+.dayguide { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
+.dayguide .grow { flex: 1 1 100%; }
+.dayguide-status { margin-top: 10px; }
 
 
 /* ── Tablas (IA) ──────────────────────────────────────────────────────── */

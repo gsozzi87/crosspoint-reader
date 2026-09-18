@@ -4,6 +4,11 @@
 > sobre nombres y formas): sin Diario ni libro del viaje; la guía se guarda directo en la tarjeta, sin
 > confirmar bajar ni rehacer; antes de generarla la app pregunta por voz lo que le falta al itinerario (hotel,
 > horas de llegada y salida); Preguntar por voz con el viaje entero en el contexto y respuesta hablada (`cp.say`).
+>
+> **Y un quinto, después de probar 1.5.111 (v2 del contrato)**: un viaje son VARIOS lugares (Roma → crucero →
+> islas → Roma → Madrid, trenes, un hotel distinto cada noche), así que cada día tiene su lugar y su hotel, y
+> **la guía es POR DÍA y sólo a pedido**. La sección 7 de abajo (diez secciones para el viaje) queda como
+> historia: no existe más.
 
 Pedido del dueño: calendario de viaje, lugar, documentos tipo vouchers, guía (mejores lugares, restaurantes,
 reseñas, historia de la ciudad, "todo lo que necesita una mente curiosa"), **lista de cosas** y **agenda de viaje
@@ -112,7 +117,7 @@ lista según destino, fechas, clima esperado y agenda (vuelo → "auriculares, a
 abre **6b. Sugerencias**: filas con casilla vacía, OK agrega cada una, Atrás vuelve con las agregadas. Lo que la
 IA sugiere NUNCA se agrega solo. Borrar definitivo: desde la web.
 
-### 7. Guía
+### 7. Guía (SUPERADA en v2: guía por día, ver `VIAJES_CONTRATO.md`)
 Diez secciones, cada una un archivo de texto en la tarjeta que abre el visor paginado:
 
 1. Para entender el lugar (historia en épocas, idioma, moneda y cambio, cómo se saluda)

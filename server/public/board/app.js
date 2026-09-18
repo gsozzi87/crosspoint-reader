@@ -881,8 +881,12 @@ function iaView() {
   } else html += '<p class="hint">Precio por consulta de voz con cada modelo, con el precio de la transcripción incluido.</p>';
   html += "</div>";
 
-  html += '<div class="card"><h2>Token del aparato</h2><p class="hint">' + (cfg.deviceTokenSet ? "Hay un token propio guardado además del del entorno." : "Se usa el token del entorno.") + " El del entorno vale siempre, así que no puedes quedarte afuera. El nuevo hay que ponerlo también en el aparato → Servidor.</p>" +
-    '<form class="addbar" data-form="token-set"><input name="token" placeholder="token nuevo (8 o más)" autocomplete="off"><button class="danger">Cambiar</button></form></div>';
+  // Solo en el servidor de un solo usuario: con cuentas, el token lo acuña el
+  // aparato y se vincula con el código de seis dígitos, y la web nunca lo pide.
+  if (!multi()) {
+    html += '<div class="card"><h2>Token del aparato</h2><p class="hint">' + (cfg.deviceTokenSet ? "Hay un token propio guardado además del del entorno." : "Se usa el token del entorno.") + " El del entorno vale siempre, así que no puedes quedarte afuera. El nuevo hay que ponerlo también en el aparato → Servidor.</p>" +
+      '<form class="addbar" data-form="token-set"><input name="token" placeholder="token nuevo (8 o más)" autocomplete="off"><button class="danger">Cambiar</button></form></div>';
+  }
   return html;
 }
 
@@ -956,22 +960,25 @@ async function copyText(text) {
 }
 
 // ── Viajes ──────────────────────────────────────────────────────────────────
-// Un viaje son sus días (del primero al último), lo que se hace cada día con
-// hora, los papeles (el correo de la reserva pegado como texto), la lista para
-// llevar y la guía que escribe el modelo. Todo se edita en hojas. El aparato lo
-// baja entero con la app de Lua `viajes`.
+// Un viaje son sus días (del primero al último), cada uno con su LUGAR y el
+// HOTEL de esa noche (un viaje son varios lugares: Roma, crucero, islas,
+// Madrid), lo que se hace cada día con hora, los papeles (el correo de la
+// reserva pegado como texto), la lista para llevar y, en cada día, su guía:
+// la escribe el modelo con búsqueda en internet, sólo a pedido y sólo para ese
+// día. No hay guía general. Todo se edita en hojas. El aparato lo baja entero
+// con la app de Lua `viajes`.
 //
 // Regla de datos, la misma que el resto: después de cada cambio se vuelve a
 // pedir el viaje ENTERO (`tripChange`) y se repinta.
 const TRIP_KINDS = [["flight", "Vuelo", "✈️"], ["train", "Tren", "🚆"], ["hotel", "Hotel", "🏨"], ["ticket", "Entrada", "🎟"], ["meal", "Comida", "🍽"], ["visit", "Visita", "📍"], ["other", "Otro", "•"]];
 function kindIcon(k) { const f = TRIP_KINDS.find((x) => x[0] === k); return f ? f[2] : "•"; }
 let trips = null;
-let tripPlaceResults = null;  // resultados del buscador de destino en la hoja del viaje
-let guideJobText = "";        // "Sección 3 de 10" mientras se genera
+let guideJobs = {};  // jobId -> {label, step, total} mientras se genera la guía de un día
 
 async function loadTrips() { trips = (await api("/api/trips?lang=es")).trips; return trips; }
 async function loadTrip(id) { const r = await api("/api/trip?id=" + encodeURIComponent(id) + "&lang=es"); tripCache[id] = r.trip; return r.trip; }
 function forgetTrips() { trips = null; tripCache = {}; clearCal(); }
+function dayUrl(t, date, tail) { return "/api/trip/" + encodeURIComponent(t.id) + "/day/" + encodeURIComponent(date) + tail; }
 
 // Un cambio en un viaje: se hace, se vuelve a pedir el viaje y la lista, y se
 // repinta. Lo que falle se muestra y se propaga (la hoja decide si se cierra).
@@ -994,45 +1001,33 @@ async function tripChange(id, fn, okMsg) {
 
 function viajesView() {
   if (!trips) { loadTrips().then(render).catch((e) => toast(e.message)); return '<p class="loading">Cargando…</p>'; }
-  let html = '<div class="card"><h2>Viajes</h2><p class="hint">Un viaje son sus días, lo que se hace cada día con su hora, los papeles (el correo de la reserva, pegado) y la lista para llevar. Los ítems con hora aparecen también en el calendario del aparato. El <b>viaje activo</b> es el que abre la app del aparato.</p><ul class="rows">';
+  let html = '<div class="card"><h2>Viajes</h2><p class="hint">Un viaje son sus días, cada uno con su lugar y su hotel, lo que se hace cada día con su hora, los papeles (el correo de la reserva, pegado) y la lista para llevar. Los ítems con hora aparecen también en el calendario del aparato. El <b>viaje activo</b> es el que abre la app del aparato.</p><ul class="rows">';
   if (!trips.length) html += '<li class="empty">Todavía no hay viajes. Con el + de abajo creas uno.</li>';
   for (const t of trips) {
     const state = t.active ? "activo" : t.state === "now" ? "en curso" : t.state === "past" ? "pasado" : "";
-    const bits = [t.when, t.place !== t.name ? t.place : "", t.itemCount + (t.itemCount === 1 ? " cosa" : " cosas"), t.paperCount ? t.paperCount + (t.paperCount === 1 ? " papel" : " papeles") : "", t.guideReady ? "guía lista" : "", state];
+    const bits = [t.when, t.place && t.place !== t.name ? t.place : "", t.itemCount + (t.itemCount === 1 ? " cosa" : " cosas"), t.paperCount ? t.paperCount + (t.paperCount === 1 ? " papel" : " papeles") : "", t.guideDays ? "guía de " + t.guideDays + " de " + t.dayCount + " días" : "", state];
     html += '<li><span class="kind">✈️</span><div class="body" data-act="trip-go" data-trip="' + attr(t.id) + '"><span class="title">' + esc(t.name) + '</span><span class="sub">' + esc(bits.filter(Boolean).join(" · ")) + "</span></div><span class=\"chev\">›</span></li>";
   }
   return html + "</ul></div>";
 }
 
-// Alta y edición del viaje. El destino sale del mismo buscador que el lugar del
-// clima (Open-Meteo): con lat/lon el aparato muestra el clima del viaje.
+// Alta y edición del viaje: nombre, resumen de lugares, fechas, zona horaria,
+// notas, activo. El lugar y el hotel de verdad van en cada día.
 function tripEditor(t) {
   const isNew = !t;
-  tripPlaceResults = null;
-  const placeLine = (root) => {
-    const el = qs(root, "#tripPlaceLine");
-    if (!el) return;
-    const lat = val(root, "lat"), tz = val(root, "timezone");
-    el.textContent = lat ? "Coordenadas guardadas · zona horaria " + tz : "Sin coordenadas: sin clima del destino. Busca la ciudad y elige una.";
-  };
   openSheet(isNew ? "Viaje nuevo" : "Viaje",
-    field("Nombre", input("name", t ? t.name : "", 'autofocus maxlength="80" placeholder="Lisboa"')) +
-    field("Destino", input("place", t ? t.place : "", 'maxlength="120" placeholder="Lisboa, Portugal"')) +
-    '<div class="addbar"><input name="q" placeholder="Buscar la ciudad (para el clima y la hora)" autocomplete="off"><button type="button" class="ghost" data-act="trip-place-search">Buscar</button></div>' +
-    '<div id="tripPlaceResults"></div>' +
-    '<p class="muted" id="tripPlaceLine" style="font-size:13px;margin:0 0 10px"></p>' +
-    input("lat", t && t.lat != null ? t.lat : "", 'type="hidden"') + input("lon", t && t.lon != null ? t.lon : "", 'type="hidden"') + input("timezone", t ? t.timezone : "", 'type="hidden"') +
+    field("Nombre", input("name", t ? t.name : "", 'autofocus maxlength="80" placeholder="Italia y España"')) +
+    field("Lugares (resumen)", input("place", t ? t.place : "", 'maxlength="120" placeholder="Roma · crucero · Madrid"')) +
+    '<p class="hint" style="margin:-4px 0 10px">El lugar de cada día se carga en el día. Si dejas esto vacío, el resumen se arma solo con los lugares de los días.</p>' +
     '<div class="two">' + field("Ida", input("start", t ? t.start : "", 'type="date"')) + field("Vuelta", input("end", t ? t.end : "", 'type="date"')) + "</div>" +
-    field("Hotel", input("hotel", t ? t.hotel : "", 'maxlength="120" placeholder="Hotel Lisboa Plaza"')) +
+    field("Zona horaria (para los recordatorios)", input("timezone", t ? t.timezone : "", 'maxlength="64" placeholder="Europe/Madrid" autocapitalize="off"')) +
     field("Notas", '<textarea name="notes" maxlength="1000" style="min-height:60px">' + esc(t ? t.notes : "") + "</textarea>") +
     (isNew ? "" : '<label class="inline"><input type="checkbox" name="active" ' + (t.active ? "checked" : "") + "> Viaje activo (el que abre el aparato)</label>"),
     {
-      onOpen: placeLine,
       save: async (root) => {
         const body = {
           id: t ? t.id : undefined, name: val(root, "name").trim(), place: val(root, "place").trim(), start: val(root, "start"), end: val(root, "end"),
-          hotel: val(root, "hotel").trim(), notes: val(root, "notes").trim(),
-          lat: val(root, "lat") === "" ? null : Number(val(root, "lat")), lon: val(root, "lon") === "" ? null : Number(val(root, "lon")), timezone: val(root, "timezone"),
+          timezone: val(root, "timezone").trim(), notes: val(root, "notes").trim(),
         };
         if (!isNew && val(root, "active")) body.active = true;
         if (!body.name || !body.start || !body.end) { sheetStatus("Faltan el nombre o las fechas", "bad"); return false; }
@@ -1043,7 +1038,7 @@ function tripEditor(t) {
         } catch (e) { sheetStatus(e.message, "bad"); return false; }
       },
       del: isNew ? null : async () => {
-        if (!sure("¿Borrar el viaje «" + t.name + "» con sus días, sus papeles y su guía?")) return false;
+        if (!sure("¿Borrar el viaje «" + t.name + "» con sus días, sus papeles y sus guías?")) return false;
         await tripChange("", () => api("/api/trip/delete", { id: t.id }), "Borrado");
         location.hash = "#viajes";
         return true;
@@ -1055,19 +1050,34 @@ function tripView(id) {
   const t = tripCache[id];
   if (!t) { loadTrip(id).then(render).catch((e) => { toast(e.message); location.hash = "#viajes"; }); return '<p class="loading">Cargando…</p>'; }
   let html = '<div class="card"><h2><span class="grow">' + esc(t.name) + '</span>' + (t.active ? '<span class="muted" style="font-size:13px;margin-right:8px">activo</span>' : '<button class="ghost small" data-act="trip-activate">Activar</button>') + '<button class="ghost small" data-act="trip-edit">Editar</button></h2>' +
-    '<p class="muted">' + esc([t.when, t.place !== t.name ? t.place : "", t.hotel ? "Hotel: " + t.hotel : ""].filter(Boolean).join(" · ")) + "</p>" + (t.notes ? '<p class="hint">' + esc(t.notes) + "</p>" : "") + "</div>";
+    '<p class="muted">' + esc([t.when, t.placeSummary && t.placeSummary !== t.name ? t.placeSummary : ""].filter(Boolean).join(" · ")) + "</p>" + (t.notes ? '<p class="hint">' + esc(t.notes) + "</p>" : "") + "</div>";
 
   for (const d of t.days) {
     html += '<div class="card"><h2><span class="grow">' + esc(d.label) + '</span><button class="ghost small" data-act="titem-new" data-date="' + d.date + '">+</button></h2>';
-    if (d.note) html += '<p class="hint" data-act="tday-note" data-date="' + d.date + '">' + esc(d.note) + "</p>";
+    // El lugar y el hotel del día: tocarlos abre la hoja del día.
+    const where = [d.place ? "📍 " + d.place : "", d.hotel ? "🏨 " + d.hotel : ""].filter(Boolean).join(" · ");
+    html += '<p class="dayline" data-act="tday-edit" data-date="' + d.date + '"><span class="grow">' + (where ? esc(where) : "Lugar y hotel del día") + '</span><span class="chev">›</span></p>';
+    if (d.note) html += '<p class="hint" data-act="tday-edit" data-date="' + d.date + '">' + esc(d.note) + "</p>";
     html += '<ul class="rows">';
-    if (!d.items.length) html += '<li class="empty">Libre. <button class="link small" data-act="tday-note" data-date="' + d.date + '">Nota del día</button></li>';
+    if (!d.items.length) html += '<li class="empty">Libre.</li>';
     for (const it of d.items) {
       const paper = it.paperId ? t.papers.find((p) => p.id === it.paperId) : null;
       const sub = [it.at, it.kindLabel, it.place, it.code ? "código " + it.code : "", paper ? "📎 " + paper.title : "", it.reminderId ? "⏰ 2 h antes" : ""].filter(Boolean).join(" · ");
       html += '<li><span class="kind">' + kindIcon(it.kind) + '</span><div class="body" data-act="titem-open" data-date="' + d.date + '" data-id="' + attr(it.id) + '"><span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
     }
-    html += "</ul></div>";
+    html += "</ul>";
+    // La guía de ESTE día: leerla y rehacerla, o generarla.
+    const g = d.guide;
+    if (g.job) {
+      const j = guideJobs[g.job.id] || {};
+      html += '<p class="muted dayguide-status">Generando la guía del día… ' + esc(j.label || "empieza") + '</p><div class="bar"><i style="width:' + (j.total ? Math.max(3, Math.round((j.step / j.total) * 100)) : 3) + '%"></i></div>';
+      pollGuide(t.id, d.date, g.job.id);
+    } else if (g.ready) {
+      html += '<div class="dayguide"><span class="muted grow">Guía del día · ' + esc(fmtStamp(new Date(g.at * 1000).toISOString())) + '</span><button class="ghost small" data-act="tguide-read" data-date="' + d.date + '">Leer la guía</button><button class="ghost small" data-act="tguide-gen" data-date="' + d.date + '">Rehacer</button></div>';
+    } else {
+      html += '<div class="dayguide"><button class="ghost small" data-act="tguide-gen" data-date="' + d.date + '">Generar la guía de este día</button></div>';
+    }
+    html += "</div>";
   }
 
   html += '<div class="card"><h2><span class="grow">Papeles</span><button class="ghost small" data-act="tpaper-new">+ Papel</button></h2><p class="hint">Pega el correo del vuelo, la reserva o la entrada. Queda como texto en el aparato: es lo que se muestra en el mostrador, sin WiFi.</p><ul class="rows">';
@@ -1082,75 +1092,64 @@ function tripView(id) {
   if (!t.packing.length) html += '<li class="empty">Nada anotado.</li>';
   for (const p of t.packing) html += '<li class="' + (p.done ? "done" : "") + '"><button class="tick' + (p.done ? " on" : "") + '" data-act="pack-tick" data-id="' + attr(p.id) + '" data-done="' + (p.done ? 1 : 0) + '"><i></i></button><div class="body" data-act="pack-open" data-id="' + attr(p.id) + '"><span class="title">' + esc(p.text) + "</span></div><span class=\"chev\">›</span></li>";
   html += "</ul></div>";
-
-  const g = t.guide;
-  html += '<div class="card"><h2><span class="grow">Guía</span>' + (g.job ? "" : '<button class="ghost small" data-act="tguide-gen">' + (g.ready ? "Rehacer" : "Generar") + "</button>") + "</h2>";
-  if (g.job) {
-    html += '<p class="muted">Generando… ' + esc(guideJobText || "empieza") + '</p><div class="bar"><i style="width:' + (guideJobText ? Math.round((Number((guideJobText.match(/(\d+)/) || [0, 0])[1]) / 10) * 100) : 3) + '%"></i></div>';
-    pollGuide(t.id, g.job.id);
-  } else if (g.ready) {
-    html += '<p class="hint">Diez secciones escritas para este viaje con búsqueda en internet, ' + esc(fmtStamp(new Date(g.at * 1000).toISOString())) + '. El aparato las baja a la tarjeta.</p><ul class="rows">';
-    for (const s of g.sections) html += '<li><span class="kind">' + s.n + '</span><div class="body" data-act="tguide-open" data-n="' + s.n + '"><span class="title">' + esc(s.title) + '</span><span class="sub">' + Math.round(s.chars / 1000) + " mil caracteres</span></div><span class=\"chev\">›</span></li>";
-    html += "</ul>";
-  } else {
-    html += '<p class="hint">Todavía no hay guía. Generarla tarda unos minutos: diez secciones (historia, barrios, imperdibles, comer, moverse, ojo con, un día perfecto, frases útiles, por si acaso) escritas para este viaje con búsqueda en internet. Usa la clave de las apps de Lua.</p>';
-  }
-  html += "</div>";
   return html;
 }
 
-let guidePolling = "";
-function pollGuide(tripId, jobId) {
-  if (guidePolling === jobId) return;
-  guidePolling = jobId;
+// Sondea `job.status` de la guía de un día cada 5 s; al terminar vuelve a
+// pedir el viaje entero (la guía y, si la contestó, el hotel del día).
+let guidePolling = {};  // jobId -> true mientras se sondea
+function pollGuide(tripId, date, jobId) {
+  if (guidePolling[jobId]) return;
+  guidePolling[jobId] = true;
   const tick = async () => {
-    if (guidePolling !== jobId) return;
+    if (!guidePolling[jobId]) return;
     try {
       const r = await api("/api/apps/call?lang=es", { app: "viajes", service: "job.status", args: { id: jobId } });
       if (r.state === "running") {
-        guideJobText = r.label || "";
+        guideJobs[jobId] = { label: r.label || "", step: r.step || 0, total: r.total || 0 };
         if (parts()[0] === "viajes" && parts()[1] === tripId) render();
         setTimeout(tick, 5000);
         return;
       }
-      guidePolling = "";
-      guideJobText = "";
+      delete guidePolling[jobId];
+      delete guideJobs[jobId];
       forgetTrips();
       if (parts()[0] === "viajes" && parts()[1] === tripId) { await loadTrip(tripId); render(); }
-      toast(r.state === "done" ? "Guía lista" : "La guía falló: " + (r.error || "sin detalle"), 5000);
+      toast(r.state === "done" ? "Guía del " + fmtDay(date) + " lista" : "La guía falló: " + (r.error || "sin detalle"), 5000);
     } catch (e) {
-      guidePolling = "";
+      delete guidePolling[jobId];
       toast("No se pudo consultar la guía: " + e.message, 3500);
     }
   };
   setTimeout(tick, 1500);
 }
 
-// Antes de generar, las mismas preguntas que la app hace por voz, como campos.
-async function guideEditor(t) {
+// Antes de generar la guía de un día, las mismas preguntas que la app hace por
+// voz (sólo lo que falta: hotel, llegada, intereses), como campos.
+async function dayGuideEditor(t, d) {
   let qs_ = [];
-  try { qs_ = (await api("/api/trip/guide/questions?id=" + encodeURIComponent(t.id) + "&lang=es")).questions; } catch (e) { toast(e.message); return; }
-  const prev = t.guide.answers || {};
-  let html = '<p class="hint">' + (t.guide.ready ? "Se vuelve a escribir entera (diez secciones, unos minutos y unas 30 búsquedas)." : "Lo que el itinerario no dice. Puedes dejar en blanco lo que no sepas.") + "</p>";
+  try { qs_ = (await api(dayUrl(t, d.date, "/guide/questions?lang=es"))).questions; } catch (e) { toast(e.message); return; }
+  const prev = d.guide.answers || {};
+  let html = '<p class="hint">' + esc((d.place ? d.place + " · " : "") + fmtDay(d.date)) + ". " + (d.guide.ready ? "Se vuelve a escribir entera (unos minutos y varias búsquedas en internet)." : "Lo que el itinerario no dice de ese día. Puedes dejar en blanco lo que no sepas.") + "</p>";
   for (const q of qs_) html += field(q.text, input("q_" + q.key, prev[q.key] || "", 'maxlength="400"'));
-  openSheet(t.guide.ready ? "Rehacer la guía" : "Generar la guía", html, {
+  openSheet(d.guide.ready ? "Rehacer la guía del día" : "Guía de este día", html, {
     saveLabel: "Generar",
     save: async (root) => {
       const answers = {};
       for (const q of qs_) { const v = val(root, "q_" + q.key).trim(); if (v) answers[q.key] = v; }
       try {
-        const r = await tripChange(t.id, () => api("/api/trip/guide/generate?lang=es", { id: t.id, answers }), "Generando la guía");
-        void r;
+        await tripChange(t.id, () => api(dayUrl(t, d.date, "/guide?lang=es"), { answers }), "Generando la guía del " + fmtDay(d.date));
         return true;
       } catch (e) { sheetStatus(e.message, "bad"); return false; }
     },
   });
 }
 
-async function guideSectionSheet(t, n) {
-  let s;
-  try { s = await api("/api/trip/guide/section?id=" + encodeURIComponent(t.id) + "&n=" + n); } catch (e) { toast(e.message); return; }
-  openSheet(s.n + ". " + s.title, '<div class="prose">' + esc(s.text) + "</div>", {});
+// La guía del día, tal cual la lee el aparato.
+async function dayGuideSheet(t, d) {
+  let g;
+  try { g = await api(dayUrl(t, d.date, "/guide")); } catch (e) { toast(e.message); return; }
+  openSheet("Guía del " + fmtDay(d.date) + (d.place ? " · " + d.place : ""), '<div class="prose">' + esc(g.text) + "</div>", {});
 }
 
 function tripItemEditor(t, date, it) {
@@ -1189,14 +1188,19 @@ function tripItemEditor(t, date, it) {
     });
 }
 
-function dayNoteEditor(t, date) {
-  const d = t.days.find((x) => x.date === date) || { note: "" };
-  openSheet("Nota del " + fmtDay(date), '<textarea name="note" autofocus maxlength="300" style="min-height:80px" placeholder="Día libre, hay que estar 2 h antes…">' + esc(d.note) + "</textarea>", {
-    save: async (root) => {
-      await tripChange(t.id, () => api("/api/trip/day", { tripId: t.id, date, note: val(root, "note") }));
-      return true;
-    },
-  });
+// El día: dónde se está, dónde se duerme esa noche y la nota.
+function dayEditor(t, date) {
+  const d = t.days.find((x) => x.date === date) || { place: "", hotel: "", note: "" };
+  openSheet("Día · " + fmtDay(date),
+    field("Lugar (dónde estás ese día)", input("place", d.place, 'autofocus maxlength="80" placeholder="Barcelona, crucero, Santorini…"')) +
+    field("Hotel (dónde duermes esa noche)", input("hotel", d.hotel, 'maxlength="120" placeholder="Hotel Artemide"')) +
+    field("Nota del día", '<textarea name="note" maxlength="300" style="min-height:70px" placeholder="Día libre, hay que estar 2 h antes…">' + esc(d.note) + "</textarea>"),
+    {
+      save: async (root) => {
+        await tripChange(t.id, () => api("/api/trip/day", { tripId: t.id, date, place: val(root, "place").trim(), hotel: val(root, "hotel").trim(), note: val(root, "note") }), "Guardado");
+        return true;
+      },
+    });
 }
 
 function packEditor(t, p) {
@@ -1475,35 +1479,13 @@ document.addEventListener("click", async (ev) => {
       case "trip-activate": await tripChange(trip.id, () => api("/api/trip/active", { id: trip.id }), "Ahora es el viaje activo"); break;
       case "titem-new": tripItemEditor(trip, d.date, null); break;
       case "titem-open": { const day = trip.days.find((x) => x.date === d.date); const it = day && day.items.find((i) => i.id === d.id); if (it) tripItemEditor(trip, d.date, it); break; }
-      case "tday-note": dayNoteEditor(trip, d.date); break;
+      case "tday-edit": dayEditor(trip, d.date); break;
       case "pack-tick": await tripChange(trip.id, () => api("/api/trip/packing", { tripId: trip.id, id: d.id, done: d.done !== "1" })); break;
       case "pack-open": { const p = trip.packing.find((x) => x.id === d.id); if (p) packEditor(trip, p); break; }
       case "tpaper-new": paperEditor(trip, null); break;
       case "tpaper-open": { const p = trip.papers.find((x) => x.id === d.id); if (p) paperEditor(trip, p); break; }
-      case "tguide-gen": await guideEditor(trip); break;
-      case "tguide-open": await guideSectionSheet(trip, Number(d.n)); break;
-      case "trip-place-search": {
-        const sh = $("sheet");
-        const q = val(sh, "q").trim();
-        if (!q) break;
-        const box = qs(sh, "#tripPlaceResults");
-        box.innerHTML = '<p class="loading" style="padding:8px 0">Buscando…</p>';
-        try { tripPlaceResults = (await api("/api/hub/location/search?q=" + encodeURIComponent(q))).results; } catch (e) { tripPlaceResults = []; toast(e.message); }
-        box.innerHTML = '<ul class="rows">' + (tripPlaceResults.length ? tripPlaceResults.map((p, i) => '<li><div class="body" data-act="trip-place-pick" data-i="' + i + '"><span class="title">' + esc(p.label) + '</span><span class="sub">' + esc(p.timezone) + "</span></div><span class=\"chev\">›</span></li>").join("") : '<li class="empty">No se encontró nada con ese nombre.</li>') + "</ul>";
-        break;
-      }
-      case "trip-place-pick": {
-        const sh = $("sheet");
-        const p = tripPlaceResults[Number(d.i)];
-        qs(sh, "[name='place']").value = p.label;
-        if (!val(sh, "name").trim()) qs(sh, "[name='name']").value = p.name;
-        qs(sh, "[name='lat']").value = p.lat;
-        qs(sh, "[name='lon']").value = p.lon;
-        qs(sh, "[name='timezone']").value = p.timezone;
-        qs(sh, "#tripPlaceResults").innerHTML = "";
-        qs(sh, "#tripPlaceLine").textContent = "Coordenadas guardadas · zona horaria " + p.timezone;
-        break;
-      }
+      case "tguide-gen": { const day = trip.days.find((x) => x.date === d.date); if (day) await dayGuideEditor(trip, day); break; }
+      case "tguide-read": { const day = trip.days.find((x) => x.date === d.date); if (day) await dayGuideSheet(trip, day); break; }
       default: break;
     }
   } catch (e) {
@@ -1633,6 +1615,14 @@ async function enter() {
     token = "";
     localStorage.removeItem("deviceToken");
     if (!me.ok) { showLogin(""); return; }
+  } else if (!me) {
+    // /auth/me no contestó: no se sabe si el servidor pide cuenta o token, así
+    // que no se cae al pedido del token a ciegas. Con un token guardado (el
+    // servidor de un solo usuario de siempre) se vuelve a esa puerta; si no,
+    // a la de la cuenta. "Intenta de nuevo" vuelve a preguntar /auth/me.
+    const msg = "No se pudo conectar con el servidor. Intenta de nuevo.";
+    if (token) gate(msg); else showLogin(msg);
+    return;
   } else if (!token) { gate(""); return; }
   screen("app");
   $("main").innerHTML = '<div class="loading">Cargando…</div>';
@@ -1650,7 +1640,8 @@ $("tokenSave").addEventListener("click", () => {
   if (!v) { $("gateMsg").textContent = "Pon el token"; return; }
   token = v;
   localStorage.setItem("deviceToken", token);
-  enter();
+  // Si /auth/me había fallado, se vuelve a preguntar antes de entrar.
+  (me ? Promise.resolve(me) : loadMe()).then(enter);
 });
 $("tokenInput").addEventListener("keydown", (ev) => { if (ev.key === "Enter") $("tokenSave").click(); });
 $("loginForm").addEventListener("submit", async (ev) => {
