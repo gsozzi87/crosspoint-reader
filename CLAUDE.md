@@ -1950,6 +1950,51 @@ destino, UN hotel, UN clima y UNA guía de diez secciones para todo el viaje. Co
 las ignora. **Pendiente de hardware**: el flujo de la guía con la clave de las apps cargada, y una guía
 generada de verdad desde la web.
 
+## Libros: el aparato le pide libros a un bot de Telegram (servidor, después de 1.5.112)
+
+Pedido del dueño con dos capturas de su Telegram: *"Digo un nombre, me llega esa lista, la selecciono, luego
+aprieto el botón epub y se baja"*, y *"obvio todo LUA"*. Contrato en `docs/ws397/LIBROS_CONTRATO.md`. **Sin cambio
+de firmware**: la app usa las puertas que ya existen.
+
+- **Un bot no puede hablarle a otro bot**, así que el servidor le escribe al bot **como la cuenta de Telegram del
+  dueño** (MTProto con `@mtcute/bun`, `server/src/telegram.ts`): una sesión por cuenta de `/board`, archivo
+  `/data/telegram/<accountId>.session` (`TELEGRAM_DIR`), config en el doc `telegram` de `fsjson` (el api hash es
+  secreto: nunca vuelve, sólo `hasHash`). Se abre desde **`/board` → Ajustes → Avanzado → Telegram (app Libros)**:
+  api id y api hash de https://my.telegram.org (API development tools), teléfono, `@bot`, Enviar código, Entrar
+  (contraseña de dos pasos si la pide), Probar, Cerrar sesión. Rutas `/api/board/telegram*` con la sesión de la
+  web, nunca con el Bearer de un aparato vinculado (403).
+- **Cómo se le habla al bot** (`askBot`): `sendText`, y después **sondeo** de `getHistory(bot, {limit:6})` cada
+  700 ms hasta ver un mensaje entrante con id mayor (20 s para texto, 120 s para el archivo), con una vuelta de
+  gracia por si la lista llega en dos mensajes. Nada de `on('new_message')`: el cliente va con
+  `disableUpdates`. Apretar un botón en línea = `getCallbackAnswer` con el `data` del botón cuyo texto es el
+  formato (`b.type.data` en esta capa TL, no `b.data`); si el bot no contesta el callback se ignora y manda el
+  historial. `connect()` resuelve al toque y reintenta solo para siempre, así que sin red inundaba el log: se
+  sondea con `help.getNearestDc` bajo 15 s y, si falla, se destruye el cliente. Un pedido por cuenta a la vez
+  (`telegram_busy`); 401 → `session_lost`.
+- **Servicios** (`LIBROS_SERVICES`, `server/src/libros.ts`): `libros.estado`, `libros.buscar {q}` →
+  `{results:[{title, code}]}`, `libros.ficha {code}` → `{title, author, year, pages, genre, desc, formats}`,
+  `libros.bajar {code, format}` → trabajo (tope 40 MB; `saveFile` acepta ahora `maxBytes`, el default sigue en
+  8). Lo que dice el bot se lee con funciones puras (`librosParse.ts`: `Título /comando` por línea; ficha
+  `Título - Autor`, año, páginas, género, descripción; botones que parecen formato) probadas con los textos
+  exactos de las capturas en **`./test/libros/run.sh`** (también en CI). Sin sesión: `code:"no_telegram"`.
+- **`examples/Apps/libros.lua`** (28 KB, `on_open` ≈ 20 k instrucciones): Inicio con "Buscar por voz" y la lista
+  de **Bajados** (`bajados.json` propio; OK abre en el lector) → `cp.listen(10)` → Resultados → Ficha (título,
+  autor, "1967 · 345 páginas · Novela Drama", filas "Bajar EPUB"/"Bajar PDF", "Leer la descripción", "Otra
+  búsqueda") → `job.status` cada 3 s con `label` → `cp.download(id, nombre, "books")` a `/Books/libros/` →
+  "Abrir en el lector". **El nombre de archivo lo sanea la app**: `cp.download` sólo acepta `[A-Za-z0-9._-]`,
+  así que "Cien años de soledad.epub" se guarda como `Cien-anos-de-soledad.epub` (el título original queda en
+  `bajados.json`). Escenario en `test/lua_sandbox/scenarios/libros.lua`, incluido un `bajados.json` roto.
+- **Hueco conocido**: el firmware no le manda "Atrás largo" a las apps (`LuaAppsActivity` sólo pasa
+  arriba/abajo/OK/Atrás y el mantenido sale de la app), así que no hay tecla para sacar un libro de Bajados; la
+  app ya atiende `on_key("backlong")` para cuando exista. El libro que ya no está en la tarjeta se saca solo.
+- El puente es genérico (cualquier bot que conteste `Título /comando` y entregue el archivo con un botón). Qué
+  bot se carga es del dueño.
+
+**Instalar**: copiar `examples/Apps/libros.lua` a `/Apps`; conectar Telegram en la web; en el aparato Juegos →
+Libros. **Pendiente de hardware y de Railway**: la sesión real de Telegram (código, contraseña), la cadencia
+del bot de verdad (si manda "Buscando…" antes de la lista, la ventana de gracia es lo que hay que tocar) y una
+bajada entera.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

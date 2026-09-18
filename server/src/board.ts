@@ -39,6 +39,7 @@ import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
 import { clampNote } from "./notes";
+import { telegramBoard } from "./libros";
 
 export const boardApi = new Hono<AppEnv>();
 
@@ -413,6 +414,11 @@ boardApi.get("/state", async (c) => {
     multi: multiUser,
   });
 });
+
+// ── Telegram (app Libros) ───────────────────────────────────────────────────
+// GET /api/board/telegram, POST …/config, /code, /signin, /logout, /test. Las
+// rutas viven en libros.ts junto a los servicios de la app; acá sólo se montan.
+boardApi.route("/telegram", telegramBoard);
 
 // ── La página ───────────────────────────────────────────────────────────────
 // Tres archivos estáticos de public/board/. El HTML se sirve sin caché (así un

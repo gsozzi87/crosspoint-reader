@@ -654,6 +654,8 @@ function hoyView() {
 // vez al año cuelga de Avanzado.
 function ajustesIndexView() {
   const item = (href, ic, label, sub) => '<li><a href="' + href + '"><span class="ic">' + ic + '</span><span class="lbl">' + esc(label) + (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="chev">›</span></a></li>';
+  // La fila de Telegram dice si está conectado: se pide una vez por carga.
+  if (tg === null) { tg = "loading"; tgLoad().then(() => { if (parts()[0] === "ajustes" && !parts()[1]) render(); }); }
   let html = ajustesAparatoView();
   html += '<ul class="menu">' +
     item("#ajustes/noticias", "📰", "Noticias", S.feeds.length ? S.feeds.length + " feed" + (S.feeds.length === 1 ? "" : "s") : "Ningún feed cargado") +
@@ -662,6 +664,7 @@ function ajustesIndexView() {
     "</ul>";
   const avanzado = (isAdmin() ? item("#ajustes/ia", "🤖", "Inteligencia artificial", "Proveedor, claves, costos") : "") +
     (isAdmin() ? item("#ajustes/contenido", "📦", "Paquete de contenido", "Lo que el aparato se baja a la tarjeta") : "") +
+    item("#ajustes/telegram", "✈️", "Telegram (app Libros)", tg && tg !== "loading" ? (tg.loggedIn ? "Conectado" + (tg.user && tg.user.name ? " como " + tg.user.name : "") : "Sin conectar") : "El bot que manda los libros") +
     item("#ajustes/log", "🧾", "Log del aparato", S.device.logAt ? "subido " + ago(new Date(S.device.logAt).getTime()) : "todavía no subió ninguno");
   if (avanzado) html += '<h2 class="sect">Avanzado</h2><ul class="menu">' + avanzado + "</ul>";
   html += '<div class="card plain"><p class="muted">' + (multi() ? "Sesión: " + esc(me.email) : "Entraste con el token del aparato") + "</p>" +
@@ -933,6 +936,83 @@ function contenidoView() {
   else html += '<div class="scroll"><table class="t"><tr><th>Idioma</th><th>Versión</th><th class="num">Archivos</th><th class="num">Tamaño</th><th>Estado</th></tr>' +
     assets.langs.map((l) => "<tr><td>" + esc(l.lang) + "</td><td>" + esc(l.version) + '</td><td class="num">' + l.files + '</td><td class="num">' + mb(l.bytes) + "</td><td>" + (l.building ? "generando " + l.done + "/" + l.total : "listo") + (l.error ? ' <span class="bad">' + esc(l.error) + "</span>" : "") + "</td></tr>").join("") + "</table></div>";
   html += '<div class="btnrow"><button class="ghost" data-act="assets-reload">Actualizar</button><button class="ghost" data-act="assets-build">Generar lo que falte</button></div></div>';
+  return html;
+}
+
+// ── Telegram (app Libros) ───────────────────────────────────────────────────
+// La app Libros del aparato le pide libros a un bot de Telegram hablándole
+// COMO LA CUENTA del dueño. La sesión se abre acá una sola vez: api id + api
+// hash (my.telegram.org), teléfono, código, y la contraseña de dos pasos si
+// la hay. El hash guardado nunca vuelve del servidor (solo "puesto").
+let tg = null;
+let tgTest = null;
+
+function tgLoad() {
+  return api("/api/board/telegram").then((r) => { tg = r; }).catch((e) => { tg = { error: e.message }; });
+}
+
+// Un paso: se hace, se vuelve a pedir el estado entero y se repinta.
+async function tgChange(fn, okMsg) {
+  busy(true);
+  try {
+    const out = await fn();
+    await tgLoad();
+    render();
+    if (okMsg) toast(okMsg);
+    return out;
+  } catch (e) {
+    toast("No se pudo: " + e.message, 4000);
+    throw e;
+  } finally {
+    busy(false);
+  }
+}
+
+function telegramView() {
+  if (tg === null || tg === "loading") {
+    if (tg === null) { tg = "loading"; tgLoad().then(render); }
+    return '<p class="loading">Cargando…</p>';
+  }
+  if (tg.error) return '<div class="card"><p class="bad">No se pudo leer el estado: ' + esc(tg.error) + '</p><button class="ghost" data-act="tg-reload">Reintentar</button></div>';
+  const u = tg.user || {};
+  const who = tg.loggedIn ? "Conectado" + (u.name ? " como " + u.name : "") + (u.phone || tg.phone ? " · " + (u.phone || tg.phone) : "") : "Sin conectar";
+  let html = '<div class="card"><h2>Telegram (app Libros)</h2>' +
+    '<p class="' + (tg.loggedIn ? "ok" : "muted") + '" style="font-weight:600">' + esc(who) + "</p>" +
+    '<p class="hint">La app <b>Libros</b> del aparato le pide libros a un bot de Telegram hablándole como tu cuenta. Los datos de la app salen de <a href="https://my.telegram.org" target="_blank" rel="noopener">my.telegram.org</a> → <b>API development tools</b>: crea una app cualquiera y copia el <b>api id</b> y el <b>api hash</b>.</p>' +
+    '<form data-form="tg-config">' +
+    '<div class="two">' + field("api id", input("apiId", tg.apiId || "", 'inputmode="numeric" placeholder="12345678" autocomplete="off"')) +
+    field("api hash" + '<span class="' + (tg.hasHash ? "ok" : "muted") + '" style="font-size:13px"> · ' + (tg.hasHash ? "puesto" : "sin poner") + "</span>", input("apiHash", "", 'type="password" placeholder="vacío = no cambiarlo" autocomplete="off"'), true) + "</div>" +
+    field("Teléfono (con código de país)", input("phone", tg.phone || "", 'inputmode="tel" placeholder="+52 55 1234 5678" autocomplete="off"')) +
+    field("Bot de libros", input("bot", tg.bot ? "@" + tg.bot : "", 'placeholder="@nombre_del_bot" autocomplete="off"')) +
+    '<div class="btnrow"><button>Guardar</button></div></form></div>';
+
+  if (tg.loggedIn) {
+    html += '<div class="card"><h2>Probar</h2><p class="hint">Una búsqueda de prueba, igual a la que hace el aparato.</p>' +
+      '<form class="addbar" data-form="tg-test"><input name="q" placeholder="Cien años de soledad" maxlength="200" autocomplete="off"><button>Probar</button></form>';
+    if (tgTest === "loading") html += '<p class="loading" style="margin-top:8px">Preguntándole al bot…</p>';
+    else if (tgTest && tgTest.error) html += '<p class="bad" style="margin-top:8px">' + esc(tgTest.error) + "</p>";
+    else if (tgTest && tgTest.results) {
+      html += '<ul class="rows" style="margin-top:8px">' + (tgTest.results.length ? tgTest.results.map((r) => '<li><span class="kind">📚</span><div class="body"><span class="title">' + esc(r.title) + '</span><span class="sub mono">' + esc(r.code) + "</span></div></li>").join("") : '<li class="empty">El bot no encontró nada.</li>') + "</ul>";
+    }
+    html += "</div>";
+    html += '<div class="card"><h2>Sesión</h2><p class="hint">Cerrar la sesión la quita de este servidor y de la lista de sesiones de tu Telegram.</p><div class="btnrow"><button class="danger" data-act="tg-logout">Cerrar sesión</button></div></div>';
+  } else {
+    html += '<div class="card"><h2>Entrar</h2>';
+    if (!tg.configured) html += '<p class="hint">Primero guarda los cuatro datos de arriba.</p>';
+    else if (tg.awaitingPassword) {
+      html += '<p class="hint">Tu cuenta tiene verificación en dos pasos: escribe esa contraseña.</p>' +
+        '<form data-form="tg-signin">' + field("Contraseña de dos pasos", input("password", "", 'type="password" autocomplete="current-password"')) +
+        '<div class="btnrow"><button>Entrar</button><button type="button" class="ghost" data-act="tg-code">Pedir el código de nuevo</button></div></form>';
+    } else if (tg.awaitingCode) {
+      html += '<p class="hint">Telegram te mandó un código (a la app de Telegram o por SMS). Escríbelo acá.</p>' +
+        '<form data-form="tg-signin">' + field("Código", input("code", "", 'inputmode="numeric" pattern="[0-9]*" maxlength="8" placeholder="12345" autocomplete="one-time-code"')) +
+        '<div class="btnrow"><button>Entrar</button><button type="button" class="ghost" data-act="tg-code">Enviar otro código</button></div></form>';
+    } else {
+      html += '<p class="hint">Telegram manda un código al teléfono de arriba; después se escribe acá.</p>' +
+        '<div class="btnrow"><button data-act="tg-code">Enviar código</button></div>';
+    }
+    html += "</div>";
+  }
   return html;
 }
 
@@ -1279,7 +1359,7 @@ function quickAdd(kind) {
 function parts() { return (location.hash.replace(/^#/, "") || "hoy").split("/"); }
 function screenId() { return parts()[0]; }
 
-const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", viajes: "Viajes", noticias: "Noticias", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", log: "Log del aparato" };
+const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", viajes: "Viajes", noticias: "Noticias", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", telegram: "Telegram", log: "Log del aparato" };
 
 function render() {
   if (!entered || !S) return;
@@ -1313,6 +1393,7 @@ function render() {
         else if (p[1] === "aparatos") html = multi() ? aparatosView() : '<p class="loading">Este servidor no tiene cuentas.</p>';
         else if (p[1] === "ia") html = isAdmin() ? iaView() : '<p class="loading">Solo el administrador.</p>';
         else if (p[1] === "contenido") html = contenidoView();
+        else if (p[1] === "telegram") html = telegramView();
         else if (p[1] === "log") html = logView();
         else html = '<p class="loading">No existe esa pantalla.</p>';
       }
@@ -1470,6 +1551,11 @@ document.addEventListener("click", async (ev) => {
       case "costs-load": { costs = "loading"; render(); try { costs = await api("/api/board/costs"); } catch (e) { costs = null; toast(e.message); } render(); break; }
       case "assets-reload": assets = null; render(); break;
       case "assets-build": await api("/api/assets/build", {}); toast("Generando"); setTimeout(() => { assets = null; render(); }, 1500); break;
+      // Telegram (app Libros)
+      case "tg-reload": tg = null; render(); break;
+      case "tg-code": await tgChange(() => api("/api/board/telegram/code", {}), "Código enviado"); break;
+      case "tg-logout": if (sure("¿Cerrar la sesión de Telegram? La app Libros deja de funcionar hasta que vuelvas a entrar.")) await tgChange(() => api("/api/board/telegram/logout", {}), "Sesión cerrada"); break;
+
       case "log-reload": logText = null; render(); break;
       case "log-copy": await copyText(logText || ""); break;
       case "log-clear": if (sure("¿Vaciar el log del aparato?")) { await apiText("/api/log", "DELETE"); logText = null; await loadState(); render(); } break;
@@ -1547,6 +1633,23 @@ document.addEventListener("submit", async (ev) => {
       await api("/api/board/config", { deviceToken: v });
       cfg = null; render();
       toast("Token guardado");
+    } else if (kind === "tg-config") {
+      const body = { apiId: f.apiId.value.trim(), apiHash: f.apiHash.value.trim(), phone: f.phone.value.trim(), bot: f.bot.value.trim() };
+      if (!body.apiHash) delete body.apiHash;
+      await tgChange(() => api("/api/board/telegram/config", body), "Guardado");
+    } else if (kind === "tg-signin") {
+      const body = {};
+      if (f.code) body.code = f.code.value.trim();
+      if (f.password) body.password = f.password.value;
+      const r = await tgChange(() => api("/api/board/telegram/signin", body));
+      toast(r.loggedIn ? "Sesión abierta" : r.awaitingPassword ? "Falta la contraseña de dos pasos" : "No se pudo entrar", 3000);
+    } else if (kind === "tg-test") {
+      const q = f.q.value.trim();
+      if (!q) return;
+      tgTest = "loading"; render();
+      try { tgTest = await api("/api/board/telegram/test", { q }); }
+      catch (e) { tgTest = { error: e.message }; }
+      render();
     } else if (kind === "pack-add") {
       const text = f.text.value.trim();
       if (!text) return;
@@ -1570,7 +1673,7 @@ document.addEventListener("input", (ev) => {
 $("sheetBg").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && sheetOpts) closeSheet(); });
 $("backBtn").addEventListener("click", () => { location.hash = $("backBtn").dataset.to || "#ajustes"; });
-$("reloadBtn").addEventListener("click", () => { clearCal(); trips = null; tripCache = {}; rssCache = null; refresh(); });
+$("reloadBtn").addEventListener("click", () => { clearCal(); trips = null; tripCache = {}; rssCache = null; tg = null; refresh(); });
 $("fab").addEventListener("click", () => {
   const p = parts();
   if (p[0] === "listas") quickAdd(listSeg() === "Compras" ? "shop" : "task");
