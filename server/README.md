@@ -403,28 +403,37 @@ recordatorios de la pestaña Pizarra usan los mismos controles y se pueden edita
 ## Viajes (`src/viajes.ts`, documento `trips` → `/data/trips.json`)
 
 Volvió después de 1.5.93, esta vez como **pestaña de `/board` + servicios para la app de Lua `viajes`**
-(contrato en `docs/ws397/VIAJES_CONTRATO.md`). Sin adjuntos: los papeles son **texto** pegado desde el correo
-(título, fecha, tipo, campos "Etiqueta: valor" y el texto entero). Un viaje tiene días del primero al último,
-ítems con hora, tipo, lugar, código y papel, la lista para llevar, la guía generada y un `active` por cuenta.
+(contrato en `docs/ws397/VIAJES_CONTRATO.md`, hoy en su **v2**). Sin adjuntos: los papeles son **texto** pegado
+desde el correo (título, fecha, tipo, campos "Etiqueta: valor" y el texto entero). Un viaje son VARIOS lugares
+(Roma, crucero, islas, Madrid), así que **cada día tiene su `place` y su `hotel`**, y la guía es **por día y sólo a
+pedido** (`day.guide = {at, answers, text}`): no hay guía general, ni clima ni coordenadas del viaje. Lo que la v1
+guardó a nivel de viaje se migra al leer (`normalizeTrip`): el `hotel` pasa a cada día que no tenga el suyo; la
+guía general, `weather`, `lat` y `lon` se descartan; `timezone` se queda (es la de los recordatorios).
 
 Rutas de la web (Bearer o sesión, montadas en `api.ts`): `GET /api/trips`, `GET /api/trip?id=`, `POST /api/trip`
-(alta/edición; destino con `lat`/`lon`/`timezone` del buscador de `/api/hub/location/search`), `/api/trip/delete`,
-`/active`, `/day`, `/day/item`, `/day/item/delete`, `/packing`, `/paper`, `/paper/delete`, `GET /guide/questions`,
-`POST /guide/generate` → `{jobId}` (se sigue con `job.status` por `/api/apps/call`), `GET /guide/section?id=&n=`,
-`POST /sync`.
+(alta/edición: nombre, resumen de lugares, fechas, zona horaria, notas, activo), `/api/trip/delete`, `/active`,
+`/day` (`{tripId, date, place?, hotel?, note?}`: sólo se toca lo que viene), `/day/item`, `/day/item/delete`,
+`/packing`, `/paper`, `/paper/delete`, `GET /api/trip/:id/day/:date/guide/questions`,
+`POST /api/trip/:id/day/:date/guide {answers}` → `{jobId}` (se sigue con `job.status` por `/api/apps/call`),
+`GET /api/trip/:id/day/:date/guide` → `{text, at}` y `POST /sync`.
 
-Servicios de la app (`POST /api/apps/call`, `app: "viajes"`): `viajes.lista`, `viajes.activar`, `viajes.viaje`
-(la vista compacta, ≤ 40 KB, con `weather` del destino y `today` en su zona), `viajes.papel`, `viajes.llevar`
+Servicios de la app (`POST /api/apps/call`, `app: "viajes"`): `viajes.lista` (`guideReady` = algún día tiene guía,
+más `guideDays` y `dayCount`), `viajes.activar`, `viajes.viaje` (la vista compacta, ≤ 40 KB: cada día con `place`,
+`hotel` y `guide:{ready,at}`, `place` del viaje como resumen y `today` en su zona), `viajes.papel`, `viajes.llevar`
 (`toggle`/`remove`/`add`; `add` recibe lo DICHO y el modelo lo parte en altas y bajas, sin duplicar), `viajes.sugerir`
-y `viajes.sugerir.agregar`, `viajes.guia.preguntas` (0-4 preguntas decididas mirando el itinerario, sin modelo),
-`viajes.guia.generar` (trabajo: diez secciones con búsqueda web, `appsProseSearch`, progreso "Sección N de 10"),
-`viajes.guia.seccion`, `viajes.preguntar` (el viaje entero en el system con `cache_control`; busca en internet
-**solo si la pregunta dice "busca"**; devuelve `answer` y `spoken` ≤ 220 caracteres) y `viajes.recordar`
-(recordatorio 2 h antes en `store.json`, con la hora del ítem pasada de la zona del viaje a la de la cuenta).
-Todo lo que llama al modelo usa la clave de las apps (`config.apps`) y cuenta como `apps_calls`.
+y `viajes.sugerir.agregar`, `viajes.guia.preguntas {id, date}` (0-3 preguntas del día decididas sin modelo: `hotel`
+si el día no tiene hotel, `llegada` si cambia de lugar y no hay vuelo ni tren, `intereses` siempre),
+`viajes.guia.generar {id, date, answers}` (trabajo: UNA guía de 600-1000 palabras de ese día con búsqueda web,
+`appsProseSearch`, progreso "Buscando cerca de …" / "Escribiendo…"; la respuesta `hotel` se guarda en el día si no
+tenía), `viajes.guia.dia {id, date}` → `{text, at}` o `{ok:false, error:"sin guía"}`, `viajes.preguntar` (el viaje
+entero en el system con `cache_control`, con el lugar y el hotel de cada día y la guía del día del que se habla o de
+hoy; busca en internet **solo si la pregunta dice "busca"**; devuelve `answer` y `spoken` ≤ 220 caracteres) y
+`viajes.recordar` (recordatorio 2 h antes en `store.json`, con la hora del ítem pasada de la zona del viaje a la de
+la cuenta). Todo lo que llama al modelo usa la clave de las apps (`config.apps`) y cuenta como `apps_calls`.
 
 Los ítems **con hora** se espejan en `/data/calendar.json` como eventos con `tripId` (kind `trip` en
-`GET /api/calendar`); el espejo se rehace entero al guardar el viaje y se borra al borrarlo.
+`GET /api/calendar`; el lugar del evento es el del ítem o, si no tiene, el del día); el espejo se rehace entero al
+guardar el viaje y se borra al borrarlo.
 
 ## Paquete de contenido descargable (`/api/assets/*`)
 

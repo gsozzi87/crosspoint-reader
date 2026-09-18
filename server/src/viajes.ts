@@ -1,32 +1,38 @@
-// Viajes: agenda día por día, papeles (texto), lista para llevar y guía, para
-// la app de Lua `viajes` y para la pestaña Viajes de /board.
+// Viajes: agenda día por día, papeles (texto), lista para llevar y la guía POR
+// DÍA, para la app de Lua `viajes` y para la pestaña Viajes de /board.
 //
 // Resucitado de `d13923b^:server/src/trips.ts` con lo que dice
-// docs/ws397/VIAJES_CONTRATO.md: SIN adjuntos (los papeles son texto pegado con
-// título, fecha, tipo y campos), SIN diario, con `hotel`, `code` por ítem,
-// `papers[]` por viaje, la guía guardada en el viaje y un viaje `active` por
-// cuenta.
+// docs/ws397/VIAJES_CONTRATO.md (v2): SIN adjuntos (los papeles son texto
+// pegado con título, fecha, tipo y campos), SIN diario, SIN guía general. Un
+// viaje son VARIOS lugares (Roma, crucero, islas, Madrid), así que **cada día
+// tiene su lugar y su hotel**, y la guía es de UN día y sólo a pedido: el
+// servidor mira dónde se está ese día y qué hay cargado, y busca qué hay cerca,
+// qué se está perdiendo uno, cómo moverse, dónde comer y lo práctico de ESA
+// fecha. Se guarda en `day.guide = {at, answers, text}`.
 //
 // La fuente de verdad es el documento `trips` (/data/trips.json sin base de
-// datos). El calendario muestra como "trip" cualquier evento con `tripId`, así
-// que los ítems CON HORA se espejan ahí con `syncCalendar()`: el espejo se
-// rehace entero en cada cambio y nunca se edita a mano.
+// datos). Lo guardado por la v1 (hotel, guía, clima y coordenadas a nivel de
+// viaje) se migra AL LEER en `normalizeTrip`: el hotel del viaje pasa a cada
+// día que no tenga el suyo y lo demás se descarta (una guía general no tiene
+// día al que ir). El calendario muestra como "trip" cualquier evento con
+// `tripId`, así que los ítems CON HORA se espejan ahí con `syncCalendar()`: el
+// espejo se rehace entero en cada cambio y nunca se edita a mano.
 //
 // Rutas de la web (montadas en api.ts, heredan el Bearer / la sesión):
 //   GET  /api/trips?lang=                 -> lista de viajes
 //   GET  /api/trip?id=&lang=              -> un viaje entero
-//   POST /api/trip                        -> crear o editar {id?, name, place, lat, lon, timezone, start, end, hotel, notes, active}
+//   POST /api/trip                        -> crear o editar {id?, name, place, timezone, start, end, notes, active}
 //   POST /api/trip/delete                 -> {id}
 //   POST /api/trip/active                 -> {id}
-//   POST /api/trip/day                    -> {tripId, date, note}
+//   POST /api/trip/day                    -> {tripId, date, place?, hotel?, note?} (sólo lo que viene se toca)
 //   POST /api/trip/day/item               -> crear o editar un ítem del día
 //   POST /api/trip/day/item/delete        -> {tripId, date, id}
 //   POST /api/trip/packing                -> {tripId, id?, text?, done?, action?}
 //   POST /api/trip/paper                  -> crear o editar un papel {tripId, id?, title, date, kind, text, fields, itemId}
 //   POST /api/trip/paper/delete           -> {tripId, id}
-//   GET  /api/trip/guide/questions?id=    -> las preguntas que faltan antes de generar
-//   POST /api/trip/guide/generate         -> {id, answers} -> {jobId}
-//   GET  /api/trip/guide/section?id=&n=   -> una sección de la guía
+//   GET  /api/trip/:id/day/:date/guide/questions?lang= -> las preguntas que faltan para ESE día
+//   POST /api/trip/:id/day/:date/guide?lang=           -> {answers} -> {jobId}
+//   GET  /api/trip/:id/day/:date/guide                 -> {text, at} (404 sin guía)
 //   POST /api/trip/sync                   -> rehacer el espejo del calendario
 //
 // Servicios de la app (`POST /api/apps/call`, app "viajes"): `VIAJES_SERVICES`
@@ -40,7 +46,6 @@ import { LANGUAGE_NAME, normalizeLang, type Lang } from "./lang";
 import { appsJson, appsProse, appsProseSearch, AppsLlmError, NO_KEY_MSG } from "./appsLlm";
 import { config } from "./config";
 import { startJob, type JobFile } from "./appsJobs";
-import { weatherLineAt } from "./hub";
 import { epochToLocal, mutate as mutateStore, nextId, NO_REPEAT, timeZoneOf } from "./store";
 import { asksForSearch } from "./websearch";
 import type { Service } from "./apps";
@@ -62,7 +67,21 @@ export type TripItem = {
   reminderId?: number;  // el recordatorio de "2 h antes" en store.ts, si está puesto
 };
 
-export type TripDay = { date: string; note?: string; items: TripItem[] };
+// La guía de UN día: texto plano para el visor, con las respuestas que la
+// motivaron (se vuelven a mostrar al rehacerla).
+export type DayGuide = { at: number; answers: Record<string, string>; text: string };
+
+export type TripDay = {
+  date: string;
+  place?: string;       // dónde se está ese día ("Barcelona", "crucero", "Santorini")
+  hotel?: string;       // dónde se duerme ESA noche
+  note?: string;
+  guide?: DayGuide;
+  // Mientras se genera la guía del día: el trabajo en curso, para que la web y
+  // la app puedan retomar el `job.status` si se fueron en el medio.
+  guideJob?: { id: string; at: number };
+  items: TripItem[];
+};
 export type PackItem = { id: string; text: string; done: boolean };
 export type Paper = {
   id: string;
@@ -73,41 +92,36 @@ export type Paper = {
   fields?: Record<string, string>;  // "Localizador": "ABC123"
   itemId?: string;
 };
-export type GuideSection = { n: number; title: string; text: string };
-export type Guide = { at: number; answers: Record<string, string>; sections: GuideSection[] };
 
 export type Trip = {
   id: string;
   name: string;
-  place: string;
-  lat?: number;
-  lon?: number;
+  place: string;        // resumen ("Roma · crucero · Madrid"); vacío = se arma con los lugares de los días
   timezone?: string;
   start: string;        // "YYYY-MM-DD"
   end: string;
-  hotel?: string;
   notes?: string;
   active?: boolean;
   days: TripDay[];
   packing: PackItem[];
   papers: Paper[];
-  guide?: Guide;
-  // Mientras se genera la guía: el trabajo en curso, para que la web y la app
-  // puedan retomar el `job.status` si se fueron en el medio.
-  guideJob?: { id: string; at: number };
 };
+
+// Lo que la v1 guardaba a nivel de viaje y ya no existe: se lee para migrar y
+// se borra al escribir.
+type LegacyTrip = Trip & { hotel?: unknown; guide?: unknown; guideJob?: unknown; weather?: unknown; lat?: unknown; lon?: unknown };
 
 type Store = { version: number; trips: Trip[] };
 
-const EMPTY: Store = { version: 1, trips: [] };
+const STORE_VERSION = 2;
+const EMPTY: Store = { version: STORE_VERSION, trips: [] };
 const MAX_DAYS = 90;
 const MAX_TRIPS = 40;
 const MAX_PACKING = 200;
 const MAX_PAPERS = 60;
 const MAX_PAPER_TEXT = 24 * 1024;
-const MAX_SECTION_TEXT = 24 * 1024;
+const MAX_GUIDE_TEXT = 24 * 1024;
 const MAX_VIEW_BYTES = 40 * 1024;
-const GUIDE_SECTIONS = 10;
 const REMIND_BEFORE_S = 2 * 3600;
 
 // ---------------------------------------------------------------- storage
@@ -120,18 +134,62 @@ function kindOf(v: unknown): ItemKind {
   return KINDS.includes(v as ItemKind) ? (v as ItemKind) : "other";
 }
 
-function shapeTrips(raw: unknown): Store {
-  const store = (raw && typeof raw === "object" ? raw : structuredClone(EMPTY)) as Store;
-  store.version ??= 1;
-  if (!Array.isArray(store.trips)) store.trips = [];
-  for (const t of store.trips) {
-    if (!Array.isArray(t.days)) t.days = [];
-    for (const d of t.days) if (!Array.isArray(d.items)) d.items = [];
-    if (!Array.isArray(t.packing)) t.packing = [];
-    if (!Array.isArray(t.papers)) t.papers = [];
-    if (typeof t.place !== "string") t.place = "";
-    if (t.guide && !Array.isArray(t.guide.sections)) delete t.guide;
+function isObj(v: unknown): v is Record<string, unknown> {
+  return !!v && typeof v === "object" && !Array.isArray(v);
+}
+
+// Un viaje tal como está en el archivo, a la forma v2. Nunca tira: lo que
+// falte se completa y lo que sobre (v1) se migra o se descarta.
+function normalizeTrip(raw: LegacyTrip): void {
+  const t = raw;
+  if (typeof t.id !== "string") t.id = newId();
+  if (typeof t.name !== "string") t.name = "";
+  if (typeof t.place !== "string") t.place = "";
+  if (typeof t.start !== "string") t.start = "";
+  if (typeof t.end !== "string") t.end = t.start;
+  if (typeof t.timezone !== "string" || !t.timezone) delete t.timezone;
+  if (typeof t.notes !== "string" || !t.notes) delete t.notes;
+  if (!Array.isArray(t.days)) t.days = [];
+  t.days = t.days.filter((d) => isObj(d) && typeof (d as TripDay).date === "string");
+  for (const d of t.days) {
+    if (!Array.isArray(d.items)) d.items = [];
+    d.items = d.items.filter((it) => isObj(it) && typeof (it as TripItem).id === "string");
+    for (const it of d.items) {
+      if (typeof it.title !== "string") it.title = "";
+      it.kind = kindOf(it.kind);
+    }
+    if (typeof d.place !== "string" || !d.place) delete d.place;
+    if (typeof d.hotel !== "string" || !d.hotel) delete d.hotel;
+    if (typeof d.note !== "string" || !d.note) delete d.note;
+    const g = d.guide as Partial<DayGuide> | undefined;
+    if (!isObj(g) || typeof g.text !== "string" || !g.text) delete d.guide;
+    else {
+      if (typeof g.at !== "number" || !Number.isFinite(g.at)) g.at = 0;
+      if (!isObj(g.answers)) g.answers = {};
+    }
+    if (d.guideJob && (!isObj(d.guideJob) || typeof d.guideJob.id !== "string")) delete d.guideJob;
   }
+  if (!Array.isArray(t.packing)) t.packing = [];
+  if (!Array.isArray(t.papers)) t.papers = [];
+  // v1 → v2: el hotel del viaje pasa a cada día que no tenga el suyo (el
+  // usuario lo cargó una vez y valía para todas las noches); la guía general,
+  // el clima y las coordenadas no tienen a dónde ir.
+  const hotel = typeof t.hotel === "string" ? t.hotel.trim().slice(0, 120) : "";
+  if (hotel && !t.days.some((d) => d.hotel)) for (const d of t.days) d.hotel = hotel;
+  delete t.hotel;
+  delete t.guide;
+  delete t.guideJob;
+  delete t.weather;
+  delete t.lat;
+  delete t.lon;
+}
+
+function shapeTrips(raw: unknown): Store {
+  const store = (isObj(raw) ? raw : structuredClone(EMPTY)) as Store;
+  if (!Array.isArray(store.trips)) store.trips = [];
+  store.trips = store.trips.filter(isObj) as Trip[];
+  for (const t of store.trips) normalizeTrip(t as LegacyTrip);
+  store.version = STORE_VERSION;
   return store;
 }
 
@@ -221,6 +279,11 @@ export function zonedToEpoch(date: string, hhmm: string, tz: string): number {
   return Math.floor(guess / 1000);
 }
 
+// Un día con algo cargado no se tira aunque quede fuera del rango.
+function dayHasContent(d: TripDay): boolean {
+  return !!(d.items.length || d.note || d.place || d.hotel || d.guide);
+}
+
 // Los días del viaje, uno por fecha, conservando lo que ya estaba cargado
 // (cambiar las fechas no puede borrar los ítems de los días que siguen adentro).
 function rebuildDays(trip: Trip): void {
@@ -234,7 +297,7 @@ function rebuildDays(trip: Trip): void {
   }
   // Lo que quedó afuera del rango pero tiene cosas cargadas no se tira: se
   // arrastra para que el usuario lo vea y decida.
-  for (const leftover of old.values()) if (leftover.items.length || leftover.note) out.push(leftover);
+  for (const leftover of old.values()) if (dayHasContent(leftover)) out.push(leftover);
   out.sort((a, b) => a.date.localeCompare(b.date));
   trip.days = out;
 }
@@ -249,6 +312,23 @@ function findItem(trip: Trip, itemId: string): { day: TripDay; item: TripItem } 
     if (item) return { day, item };
   }
   return null;
+}
+
+function findDay(trip: Trip, date: string): { day: TripDay; index: number } | null {
+  const index = trip.days.findIndex((d) => d.date === date);
+  return index >= 0 ? { day: trip.days[index], index } : null;
+}
+
+// El resumen de lugares del viaje: lo que el usuario escribió o, si no, los
+// lugares distintos de los días en orden ("Roma · crucero · Madrid").
+export function placeSummary(trip: Trip): string {
+  if (trip.place) return trip.place;
+  const seen: string[] = [];
+  for (const d of trip.days) {
+    const p = (d.place ?? "").trim();
+    if (p && !seen.some((s) => norm(s) === norm(p))) seen.push(p);
+  }
+  return seen.join(" · ");
 }
 
 // ---------------------------------------------------------------- idiomas
@@ -266,87 +346,108 @@ export function kindLabel(kind: ItemKind, lang: Lang): string {
   return KIND_LABEL[lang]?.[kind] ?? KIND_LABEL.es[kind];
 }
 
-// Las preguntas que la app hace por voz antes de generar la guía, y las
-// etiquetas que van en el texto de un papel. Español neutro.
+// Las preguntas que la app hace por voz antes de generar la guía de un día,
+// los rótulos del progreso, y las etiquetas que van en el texto de un papel.
+// Español neutro.
 const T: Record<Lang, {
-  qHotel: string; qArrival: string; qDeparture: string; qInterests: string;
-  section: (n: number) => string; code: string; date: string; noKeyList: string;
+  qHotel: (when: string) => string;
+  qArrival: (place: string) => string;
+  qInterests: string;
+  guideStart: (when: string) => string;
+  searching: (near: string) => string;
+  writing: (words: number) => string;
+  saving: string;
+  yourDay: string;
+  noGuide: string;
+  noDay: string;
+  code: string; date: string; noKeyList: string;
   reminder: (title: string, at: string) => string;
 }> = {
   es: {
-    qHotel: "¿Dónde te alojas? Di el nombre del hotel o la zona.",
-    qArrival: "¿Cómo y a qué hora llegas el primer día?",
-    qDeparture: "¿Cómo y a qué hora te vas el último día?",
-    qInterests: "¿Qué te interesa más de este viaje? Por ejemplo comida, historia, arte, naturaleza, salir de noche.",
-    section: (n) => `Sección ${n} de ${GUIDE_SECTIONS}`, code: "Código", date: "Fecha", noKeyList: "Carga la clave de las apps en la web para separar lo dicho; mientras tanto se agregó tal cual.",
+    qHotel: (w) => `¿Dónde duermes la noche del ${w}?`,
+    qArrival: (p) => p ? `¿Cómo y a qué hora llegas a ${p} ese día?` : "¿Cómo y a qué hora llegas ese día?",
+    qInterests: "¿Qué te interesa para ese día? Por ejemplo comida, historia, arte, naturaleza, salir de noche.",
+    guideStart: (w) => `Preparando la guía del ${w}…`,
+    searching: (n) => `Buscando cerca de ${n}…`,
+    writing: (n) => `Escribiendo la guía… ${n} palabras`,
+    saving: "Guardando la guía…",
+    yourDay: "tu día",
+    noGuide: "sin guía",
+    noDay: "ese día no está en el viaje",
+    code: "Código", date: "Fecha", noKeyList: "Carga la clave de las apps en la web para separar lo dicho; mientras tanto se agregó tal cual.",
     reminder: (t, at) => `En 2 h: ${t} (${at})`,
   },
   en: {
-    qHotel: "Where are you staying? Say the hotel name or the area.",
-    qArrival: "How and at what time do you arrive on the first day?",
-    qDeparture: "How and at what time do you leave on the last day?",
-    qInterests: "What interests you most on this trip? For example food, history, art, nature, nightlife.",
-    section: (n) => `Section ${n} of ${GUIDE_SECTIONS}`, code: "Code", date: "Date", noKeyList: "Add the apps key on the web to split what you said; it was added as is for now.",
+    qHotel: (w) => `Where do you sleep on the night of ${w}?`,
+    qArrival: (p) => p ? `How and at what time do you arrive in ${p} that day?` : "How and at what time do you arrive that day?",
+    qInterests: "What interests you for that day? For example food, history, art, nature, nightlife.",
+    guideStart: (w) => `Preparing the guide for ${w}…`,
+    searching: (n) => `Searching near ${n}…`,
+    writing: (n) => `Writing the guide… ${n} words`,
+    saving: "Saving the guide…",
+    yourDay: "your day",
+    noGuide: "no guide",
+    noDay: "that day is not in the trip",
+    code: "Code", date: "Date", noKeyList: "Add the apps key on the web to split what you said; it was added as is for now.",
     reminder: (t, at) => `In 2 h: ${t} (${at})`,
   },
   fr: {
-    qHotel: "Où loges-tu ? Dis le nom de l'hôtel ou le quartier.",
-    qArrival: "Comment et à quelle heure arrives-tu le premier jour ?",
-    qDeparture: "Comment et à quelle heure repars-tu le dernier jour ?",
-    qInterests: "Qu'est-ce qui t'intéresse le plus pour ce voyage ? Par exemple la cuisine, l'histoire, l'art, la nature, les sorties.",
-    section: (n) => `Section ${n} sur ${GUIDE_SECTIONS}`, code: "Code", date: "Date", noKeyList: "Ajoute la clé des apps sur le web pour séparer ce qui a été dit ; ajouté tel quel pour l'instant.",
+    qHotel: (w) => `Où dors-tu la nuit du ${w} ?`,
+    qArrival: (p) => p ? `Comment et à quelle heure arrives-tu à ${p} ce jour-là ?` : "Comment et à quelle heure arrives-tu ce jour-là ?",
+    qInterests: "Qu'est-ce qui t'intéresse pour ce jour-là ? Par exemple la cuisine, l'histoire, l'art, la nature, les sorties.",
+    guideStart: (w) => `Préparation du guide du ${w}…`,
+    searching: (n) => `Recherche autour de ${n}…`,
+    writing: (n) => `Rédaction du guide… ${n} mots`,
+    saving: "Enregistrement du guide…",
+    yourDay: "ta journée",
+    noGuide: "pas de guide",
+    noDay: "ce jour n'est pas dans le voyage",
+    code: "Code", date: "Date", noKeyList: "Ajoute la clé des apps sur le web pour séparer ce qui a été dit ; ajouté tel quel pour l'instant.",
     reminder: (t, at) => `Dans 2 h : ${t} (${at})`,
   },
   de: {
-    qHotel: "Wo übernachtest du? Sag den Namen des Hotels oder das Viertel.",
-    qArrival: "Wie und um wie viel Uhr kommst du am ersten Tag an?",
-    qDeparture: "Wie und um wie viel Uhr reist du am letzten Tag ab?",
-    qInterests: "Was interessiert dich auf dieser Reise am meisten? Zum Beispiel Essen, Geschichte, Kunst, Natur, Nachtleben.",
-    section: (n) => `Abschnitt ${n} von ${GUIDE_SECTIONS}`, code: "Code", date: "Datum", noKeyList: "Trag den Apps-Schlüssel im Web ein, damit das Gesagte aufgeteilt wird; vorerst wurde es so übernommen.",
+    qHotel: (w) => `Wo übernachtest du in der Nacht vom ${w}?`,
+    qArrival: (p) => p ? `Wie und um wie viel Uhr kommst du an dem Tag in ${p} an?` : "Wie und um wie viel Uhr kommst du an dem Tag an?",
+    qInterests: "Was interessiert dich an dem Tag? Zum Beispiel Essen, Geschichte, Kunst, Natur, Nachtleben.",
+    guideStart: (w) => `Der Reiseführer für den ${w} wird vorbereitet…`,
+    searching: (n) => `Suche in der Nähe von ${n}…`,
+    writing: (n) => `Der Reiseführer wird geschrieben… ${n} Wörter`,
+    saving: "Der Reiseführer wird gespeichert…",
+    yourDay: "dein Tag",
+    noGuide: "kein Reiseführer",
+    noDay: "dieser Tag gehört nicht zur Reise",
+    code: "Code", date: "Datum", noKeyList: "Trag den Apps-Schlüssel im Web ein, damit das Gesagte aufgeteilt wird; vorerst wurde es so übernommen.",
     reminder: (t, at) => `In 2 h: ${t} (${at})`,
   },
   pt: {
-    qHotel: "Onde você se hospeda? Diga o nome do hotel ou a região.",
-    qArrival: "Como e a que horas você chega no primeiro dia?",
-    qDeparture: "Como e a que horas você vai embora no último dia?",
-    qInterests: "O que mais te interessa nesta viagem? Por exemplo comida, história, arte, natureza, vida noturna.",
-    section: (n) => `Seção ${n} de ${GUIDE_SECTIONS}`, code: "Código", date: "Data", noKeyList: "Carregue a chave dos apps na web para separar o que foi dito; por enquanto foi adicionado como está.",
+    qHotel: (w) => `Onde você dorme na noite de ${w}?`,
+    qArrival: (p) => p ? `Como e a que horas você chega a ${p} nesse dia?` : "Como e a que horas você chega nesse dia?",
+    qInterests: "O que te interessa nesse dia? Por exemplo comida, história, arte, natureza, vida noturna.",
+    guideStart: (w) => `Preparando o guia de ${w}…`,
+    searching: (n) => `Buscando perto de ${n}…`,
+    writing: (n) => `Escrevendo o guia… ${n} palavras`,
+    saving: "Salvando o guia…",
+    yourDay: "seu dia",
+    noGuide: "sem guia",
+    noDay: "esse dia não está na viagem",
+    code: "Código", date: "Data", noKeyList: "Carregue a chave dos apps na web para separar o que foi dito; por enquanto foi adicionado como está.",
     reminder: (t, at) => `Em 2 h: ${t} (${at})`,
   },
   ru: {
-    qHotel: "Где вы остановитесь? Назовите отель или район.",
-    qArrival: "Как и во сколько вы прибываете в первый день?",
-    qDeparture: "Как и во сколько вы уезжаете в последний день?",
-    qInterests: "Что вам интереснее всего в этой поездке? Например еда, история, искусство, природа, ночная жизнь.",
-    section: (n) => `Раздел ${n} из ${GUIDE_SECTIONS}`, code: "Код", date: "Дата", noKeyList: "Добавьте ключ приложений на сайте, чтобы разделить сказанное; пока добавлено как есть.",
+    qHotel: (w) => `Где вы ночуете ${w}?`,
+    qArrival: (p) => p ? `Как и во сколько вы прибываете в ${p} в этот день?` : "Как и во сколько вы прибываете в этот день?",
+    qInterests: "Что вам интересно в этот день? Например еда, история, искусство, природа, ночная жизнь.",
+    guideStart: (w) => `Готовится путеводитель на ${w}…`,
+    searching: (n) => `Ищу рядом с ${n}…`,
+    writing: (n) => `Пишу путеводитель… ${n} слов`,
+    saving: "Сохраняю путеводитель…",
+    yourDay: "ваш день",
+    noGuide: "нет путеводителя",
+    noDay: "этого дня нет в поездке",
+    code: "Код", date: "Дата", noKeyList: "Добавьте ключ приложений на сайте, чтобы разделить сказанное; пока добавлено как есть.",
     reminder: (t, at) => `Через 2 ч: ${t} (${at})`,
   },
 };
-
-// Los diez títulos de la guía (VIAJES_APP.md §7), en el idioma del aparato.
-const GUIDE_TITLES: Record<Lang, string[]> = {
-  es: ["Para entender el lugar", "Barrios", "Imperdibles", "Para una mente curiosa", "Comer", "Moverse", "Ojo con", "Un día perfecto", "Frases útiles", "Por si acaso"],
-  en: ["Understanding the place", "Neighbourhoods", "Must-sees", "For a curious mind", "Eating", "Getting around", "Watch out for", "A perfect day", "Useful phrases", "Just in case"],
-  fr: ["Comprendre le lieu", "Quartiers", "Incontournables", "Pour un esprit curieux", "Manger", "Se déplacer", "Attention à", "Une journée parfaite", "Phrases utiles", "Au cas où"],
-  de: ["Den Ort verstehen", "Viertel", "Unbedingt sehen", "Für neugierige Köpfe", "Essen", "Unterwegs", "Vorsicht bei", "Ein perfekter Tag", "Nützliche Sätze", "Für alle Fälle"],
-  pt: ["Para entender o lugar", "Bairros", "Imperdíveis", "Para uma mente curiosa", "Comer", "Deslocar-se", "Cuidado com", "Um dia perfeito", "Frases úteis", "Por via das dúvidas"],
-  ru: ["Понять место", "Районы", "Обязательно посмотреть", "Для любознательных", "Еда", "Передвижение", "Осторожно", "Идеальный день", "Полезные фразы", "На всякий случай"],
-};
-
-// Qué va en cada sección (se lo pide al modelo en español: el resultado sale
-// en el idioma del aparato por el system).
-const GUIDE_BRIEF: string[] = [
-  "historia del lugar en épocas (cuatro o cinco, con lo que dejó cada una en lo que hoy se ve), idioma o idiomas que se hablan, moneda y cambio aproximado a la fecha, cómo se saluda y qué se considera de buena educación.",
-  "los barrios: cuáles son, qué carácter tiene cada uno, dónde conviene dormir según lo que se busca, y dónde no conviene andar de noche, dicho sin alarmismo.",
-  "los imperdibles: qué ver y POR QUÉ vale la pena cada uno, con el dato concreto que se puede contar después; horarios habituales y si conviene reservar.",
-  "para una mente curiosa: lo que no está en las guías comunes — rarezas, historias poco conocidas, detalles de la vida cotidiana, un lugar que sólo conocen los de ahí.",
-  "comer: los platos típicos y dónde probarlos, con lugares que tengan reseñas recientes (di de cuándo son), horarios de comidas, qué se pide y qué no, cuánto cuesta comer bien sin gastar de más.",
-  "moverse: del aeropuerto o la estación al centro (opciones, precio y tiempo), transporte público y sus tarjetas, taxis y apps, propinas, y cómo se pagan las cosas.",
-  "ojo con: estafas típicas para turistas, zonas a evitar, el clima que espera en ESAS fechas (busca el pronóstico o el clima habitual de esos días), feriados o fiestas que caen en el viaje y cómo afectan (cierres, precios).",
-  "un día perfecto: un itinerario a pie del primer día libre del viaje, desde la mañana hasta la noche, con horas aproximadas, dónde comer en el camino y qué dejar para otro día.",
-  "frases útiles: veinte frases del idioma del lugar para leer en el mostrador (saludos, pedir la cuenta, preguntar precios, direcciones, emergencias), cada una con su traducción y la pronunciación figurada. Si el idioma del lugar es el del lector, dedica la sección a las expresiones locales y a lo que se dice distinto.",
-  "por si acaso: número de emergencias, embajada o consulado del país del lector si se puede saber (y si no, cómo encontrarlo), hospital cercano al hotel o al centro, cómo bloquear una tarjeta perdida, dónde está la comisaría de turistas, y qué hacer si se pierde el pasaporte.",
-];
 
 // Fechas para las pantallas. Se arman en UTC a propósito: la fecha del viaje
 // es una fecha civil, no un instante, y pasarla por una zona la corre un día.
@@ -368,6 +469,11 @@ export function dayShort(date: string, lang: Lang): string {
 
 export function shortDate(date: string, lang: Lang): string {
   return fmt(date, lang, { day: "numeric", month: "short" }).replace(/\.$/, "");
+}
+
+// "16 de septiembre", "September 16": para las preguntas del día.
+export function longDate(date: string, lang: Lang): string {
+  return fmt(date, lang, { day: "numeric", month: "long" });
 }
 
 // "14 – 22 de septiembre" (mismo mes) o "28 de septiembre – 3 de octubre".
@@ -443,7 +549,7 @@ export async function syncCalendar(accountId: number, tripId: string): Promise<n
           if (!item.at) continue;
           const old = mine.get(item.id);
           const keep = Math.floor(Number(old?.id));
-          const place = item.place || trip.place || "";
+          const place = item.place || day.place || trip.place || "";
           const note = [item.code ? `${T.es.code}: ${item.code}` : "", item.note ?? ""].filter(Boolean).join(" · ");
           out.push({
             id: Number.isFinite(keep) && keep > 0 ? keep : ++free,
@@ -536,12 +642,17 @@ function reminderIdsOf(trip: Trip, items?: TripItem[]): number[] {
 // ---------------------------------------------------------------- vistas
 
 function tripStats(t: Trip) {
+  const guideDays = t.days.filter((d) => !!d.guide).length;
   return {
     itemCount: t.days.reduce((n, d) => n + d.items.length, 0),
     paperCount: t.papers.length,
     packDone: t.packing.filter((p) => p.done).length,
     packTotal: t.packing.length,
-    guideReady: !!(t.guide && t.guide.sections.length),
+    // `guideReady` del contrato v1 se lee ahora como "algún día tiene guía";
+    // `guideDays`/`dayCount` dicen cuántos ("Guía · 3 de 13 días").
+    guideReady: guideDays > 0,
+    guideDays,
+    dayCount: t.days.length,
   };
 }
 
@@ -549,7 +660,7 @@ function listRow(t: Trip, lang: Lang, active: boolean) {
   return {
     id: t.id,
     name: t.name,
-    place: t.place,
+    place: placeSummary(t),
     start: t.start,
     end: t.end,
     when: rangeText(t.start, t.end, lang),
@@ -563,23 +674,23 @@ function listRow(t: Trip, lang: Lang, active: boolean) {
 // recortan las notas, primero a 80 caracteres y después a cero.
 export async function compactView(accountId: number, trip: Trip, lang: Lang) {
   const tz = trip.timezone && tzOk(trip.timezone) ? trip.timezone : await timeZoneOf(accountId);
-  const weather = trip.lat !== undefined && trip.lon !== undefined ? await weatherLineAt(trip.lat, trip.lon, tz, lang) : "";
   const build = (noteMax: number) => ({
     id: trip.id,
     name: trip.name,
-    place: trip.place,
+    place: placeSummary(trip),
     start: trip.start,
     end: trip.end,
     when: rangeText(trip.start, trip.end, lang),
-    hotel: trip.hotel ?? "",
-    weather,
     today: todayIn(tz),
     days: trip.days.map((d, i) => ({
       date: d.date,
       n: i + 1,
       label: dayLabel(d.date, lang),
       short: dayShort(d.date, lang),
+      place: d.place ?? "",
+      hotel: d.hotel ?? "",
       note: (d.note ?? "").slice(0, noteMax),
+      guide: { ready: !!d.guide, at: d.guide?.at ?? 0 },
       items: d.items.map((it) => ({
         id: it.id,
         at: it.at ?? "",
@@ -595,11 +706,6 @@ export async function compactView(accountId: number, trip: Trip, lang: Lang) {
     })),
     packing: trip.packing.map((p) => ({ id: p.id, text: p.text, done: p.done })),
     papers: trip.papers.map((p) => ({ id: p.id, date: p.date ?? "", kind: p.kind, title: p.title, line: paperLine(p, lang) })),
-    guide: {
-      ready: !!(trip.guide && trip.guide.sections.length),
-      at: trip.guide?.at ?? 0,
-      sections: (trip.guide?.sections ?? []).map((s) => ({ n: s.n, title: s.title })),
-    },
   });
   for (const noteMax of [400, 80, 0]) {
     const view = build(noteMax);
@@ -608,27 +714,34 @@ export async function compactView(accountId: number, trip: Trip, lang: Lang) {
   return build(0);
 }
 
-// La vista de la web: todo, papeles con su texto incluido, y de la guía solo
-// los títulos (las secciones se piden de a una).
+// La vista de la web: todo, papeles con su texto incluido, y de cada guía sólo
+// la ficha (el texto se pide aparte, por día).
 function webView(trip: Trip, lang: Lang, active: boolean) {
   return {
     id: trip.id,
     name: trip.name,
-    place: trip.place,
-    lat: trip.lat,
-    lon: trip.lon,
+    place: trip.place,                 // lo que escribió el usuario (vacío = se arma solo)
+    placeSummary: placeSummary(trip),
     timezone: trip.timezone ?? "",
     start: trip.start,
     end: trip.end,
     when: rangeText(trip.start, trip.end, lang),
-    hotel: trip.hotel ?? "",
     notes: trip.notes ?? "",
     active,
     days: trip.days.map((d, i) => ({
       date: d.date,
       n: i + 1,
       label: `${dayLabel(d.date, lang)} · día ${i + 1}`,
+      place: d.place ?? "",
+      hotel: d.hotel ?? "",
       note: d.note ?? "",
+      guide: {
+        ready: !!d.guide,
+        at: d.guide?.at ?? 0,
+        answers: d.guide?.answers ?? {},
+        chars: d.guide?.text.length ?? 0,
+        job: d.guideJob ?? null,
+      },
       items: d.items.map((it) => ({
         id: it.id, at: it.at ?? "", title: it.title, kind: it.kind, kindLabel: kindLabel(it.kind, lang),
         place: it.place ?? "", code: it.code ?? "", note: it.note ?? "", paperId: it.paperId ?? "", reminderId: it.reminderId ?? 0,
@@ -636,13 +749,6 @@ function webView(trip: Trip, lang: Lang, active: boolean) {
     })),
     packing: trip.packing,
     papers: trip.papers.map((p) => ({ id: p.id, title: p.title, date: p.date ?? "", kind: p.kind, kindLabel: kindLabel(p.kind, lang), text: p.text, fields: p.fields ?? {}, itemId: p.itemId ?? "", line: paperLine(p, lang) })),
-    guide: {
-      ready: !!(trip.guide && trip.guide.sections.length),
-      at: trip.guide?.at ?? 0,
-      answers: trip.guide?.answers ?? {},
-      sections: (trip.guide?.sections ?? []).map((s) => ({ n: s.n, title: s.title, chars: s.text.length })),
-      job: trip.guideJob ?? null,
-    },
     ...tripStats(trip),
   };
 }
@@ -651,40 +757,60 @@ function webView(trip: Trip, lang: Lang, active: boolean) {
 
 export type GuideQuestion = { key: string; text: string };
 
-// Se decide mirando el itinerario, sin modelo: hotel si no hay ni `hotel` ni
-// un ítem de tipo hotel; llegada si el primer día no tiene vuelo/tren con
-// hora; salida ídem el último; intereses siempre (es lo que la agenda no dice).
-export function guideQuestions(trip: Trip, lang: Lang): GuideQuestion[] {
+// Las preguntas de UN día, decididas mirando el itinerario y sin modelo:
+// `hotel` si el día no tiene hotel; `llegada` si el día cambia de lugar
+// respecto del anterior (o es el primero) y no hay vuelo ni tren cargado ese
+// día; `intereses` siempre (es lo que la agenda no dice). Si el itinerario ya
+// lo dice, no se pregunta.
+export function dayGuideQuestions(trip: Trip, index: number, lang: Lang): GuideQuestion[] {
   const t = T[lang];
+  const day = trip.days[index];
   const out: GuideQuestion[] = [];
-  const hasHotel = !!trip.hotel || trip.days.some((d) => d.items.some((i) => i.kind === "hotel"));
-  const travel = (d: TripDay | undefined) => !!d && d.items.some((i) => (i.kind === "flight" || i.kind === "train") && !!i.at);
-  if (!hasHotel) out.push({ key: "hotel", text: t.qHotel });
-  if (!travel(trip.days[0])) out.push({ key: "arrival", text: t.qArrival });
-  if (trip.days.length > 1 && !travel(trip.days[trip.days.length - 1])) out.push({ key: "departure", text: t.qDeparture });
-  out.push({ key: "interests", text: t.qInterests });
-  return out.slice(0, 4);
+  if (!day.hotel) out.push({ key: "hotel", text: t.qHotel(longDate(day.date, lang)) });
+  const prev = index > 0 ? trip.days[index - 1] : undefined;
+  const changes = !prev || norm(day.place ?? "") !== norm(prev.place ?? "");
+  const hasTransport = day.items.some((i) => i.kind === "flight" || i.kind === "train");
+  if (changes && !hasTransport) out.push({ key: "llegada", text: t.qArrival(day.place ?? "") });
+  out.push({ key: "intereses", text: t.qInterests });
+  return out;
 }
 
-// El viaje entero como texto para el modelo (agenda, papeles, lo que se sabe).
-function tripContext(trip: Trip, lang: Lang, answers: Record<string, string> = {}, withGuide = false): string {
+function itemLine(it: TripItem, lang: Lang): string {
+  return [it.at || "sin hora", `[${kindLabel(it.kind, lang)}]`, it.title, it.place ? `en ${it.place}` : "", it.code ? `código ${it.code}` : "", it.note ?? ""].filter(Boolean).join(" · ");
+}
+
+// "Roma (14-16) · crucero (17-20) · Madrid (21-26)": el recorrido del viaje
+// en una línea, para que el modelo sepa de dónde se viene y a dónde se va.
+function routeLine(trip: Trip): string {
+  const legs: { place: string; from: string; to: string }[] = [];
+  for (const d of trip.days) {
+    const p = (d.place ?? "").trim();
+    if (!p) continue;
+    const last = legs[legs.length - 1];
+    if (last && norm(last.place) === norm(p)) last.to = d.date;
+    else legs.push({ place: p, from: d.date, to: d.date });
+  }
+  return legs.map((l) => `${l.place} (${l.from.slice(5)}${l.to !== l.from ? ` a ${l.to.slice(5)}` : ""})`).join(" · ");
+}
+
+// El viaje entero como texto para el modelo (agenda con lugar y hotel de cada
+// día, papeles, lo que se sabe). `guideOf` es la fecha cuya guía se adjunta.
+function tripContext(trip: Trip, lang: Lang, guideOf = ""): string {
   const lines: string[] = [];
-  lines.push(`Viaje: ${trip.name}${trip.place && trip.place !== trip.name ? ` (${trip.place})` : ""}`);
+  const summary = placeSummary(trip);
+  lines.push(`Viaje: ${trip.name}${summary && summary !== trip.name ? ` (${summary})` : ""}`);
   lines.push(`Fechas: del ${trip.start} al ${trip.end} (${Math.max(1, trip.days.length)} días)`);
   if (trip.timezone) lines.push(`Zona horaria: ${trip.timezone}`);
-  if (trip.hotel) lines.push(`Alojamiento: ${trip.hotel}`);
+  const route = routeLine(trip);
+  if (route) lines.push(`Recorrido: ${route}`);
   if (trip.notes) lines.push(`Notas del viaje: ${trip.notes}`);
-  for (const [k, v] of Object.entries(answers)) if (v) lines.push(`Respuesta del viajero (${k}): ${v}`);
   lines.push("");
-  lines.push("Agenda:");
+  lines.push("Agenda (cada día con su lugar y el hotel de esa noche):");
   trip.days.forEach((d, i) => {
-    const head = `Día ${i + 1} · ${dayLabel(d.date, lang)} (${d.date})${d.note ? ` — ${d.note}` : ""}`;
-    lines.push(head);
+    const bits = [`Día ${i + 1} · ${dayLabel(d.date, lang)} (${d.date})`, d.place ? `lugar: ${d.place}` : "", d.hotel ? `hotel: ${d.hotel}` : "", d.guide ? "(tiene guía)" : ""].filter(Boolean);
+    lines.push(`${bits.join(" · ")}${d.note ? ` — ${d.note}` : ""}`);
     if (!d.items.length) lines.push("  (libre)");
-    for (const it of d.items) {
-      const bits = [it.at || "sin hora", `[${kindLabel(it.kind, lang)}]`, it.title, it.place ? `en ${it.place}` : "", it.code ? `código ${it.code}` : "", it.note ?? ""].filter(Boolean);
-      lines.push(`  ${bits.join(" · ")}`);
-    }
+    for (const it of d.items) lines.push(`  ${itemLine(it, lang)}`);
   });
   if (trip.packing.length) {
     lines.push("");
@@ -699,10 +825,48 @@ function tripContext(trip: Trip, lang: Lang, answers: Record<string, string> = {
       lines.push(p.text.replace(/\s+/g, " ").trim().slice(0, 1500));
     }
   }
-  if (withGuide && trip.guide?.sections.length) {
+  const g = guideOf ? trip.days.find((d) => d.date === guideOf)?.guide : undefined;
+  if (g) {
     lines.push("");
-    lines.push("Guía del viaje (resumen de cada sección):");
-    for (const s of trip.guide.sections) lines.push(`${s.n}. ${s.title}: ${s.text.replace(/\s+/g, " ").trim().slice(0, 700)}`);
+    lines.push(`Guía del día ${guideOf} (ya escrita para el viajero):`);
+    lines.push(g.text.trim());
+  }
+  return lines.join("\n");
+}
+
+// Lo que el modelo recibe para escribir la guía de UN día: el viaje en dos
+// líneas, y ese día entero (lugar, de dónde se viene y a dónde se va, hotel,
+// agenda, respuestas del viajero).
+function dayGuideContext(trip: Trip, index: number, answers: Record<string, string>, lang: Lang): string {
+  const day = trip.days[index];
+  const prev = index > 0 ? trip.days[index - 1] : undefined;
+  const next = index + 1 < trip.days.length ? trip.days[index + 1] : undefined;
+  const lines: string[] = [];
+  const summary = placeSummary(trip);
+  lines.push(`Viaje: ${trip.name}${summary && summary !== trip.name ? ` (${summary})` : ""}`);
+  lines.push(`Fechas del viaje: del ${trip.start} al ${trip.end} (${trip.days.length} días)`);
+  if (trip.timezone) lines.push(`Zona horaria: ${trip.timezone}`);
+  const route = routeLine(trip);
+  if (route) lines.push(`Recorrido: ${route}`);
+  if (trip.notes) lines.push(`Notas del viaje: ${trip.notes}`);
+  lines.push("");
+  lines.push(`EL DÍA DE ESTA GUÍA: día ${index + 1} de ${trip.days.length} · ${dayLabel(day.date, lang)} (${day.date})`);
+  lines.push(`Lugar del día: ${day.place || "(no cargado: dedúcelo de la agenda y del recorrido)"}`);
+  if (!prev) lines.push("Es el primer día del viaje (día de llegada).");
+  else if (norm(prev.place ?? "") !== norm(day.place ?? "")) lines.push(`Viene de: ${prev.place || "(sin lugar cargado)"} (el día anterior) — es un día de LLEGADA a este lugar.`);
+  if (!next) lines.push("Es el último día del viaje (día de salida).");
+  else if (norm(next.place ?? "") !== norm(day.place ?? "")) lines.push(`Al día siguiente sigue a: ${next.place || "(sin lugar cargado)"} — es el último día en este lugar.`);
+  lines.push(`Hotel de esa noche: ${day.hotel || answers.hotel || "(no cargado)"}`);
+  if (day.note) lines.push(`Nota del día: ${day.note}`);
+  lines.push("");
+  lines.push("Agenda del día:");
+  if (!day.items.length) lines.push("  (nada cargado todavía)");
+  for (const it of day.items) lines.push(`  ${itemLine(it, lang)}`);
+  const said = Object.entries(answers).filter(([, v]) => v);
+  if (said.length) {
+    lines.push("");
+    lines.push("Lo que dijo el viajero para este día:");
+    for (const [k, v] of said) lines.push(`  ${k}: ${v}`);
   }
   return lines.join("\n");
 }
@@ -711,11 +875,22 @@ function guideSystem(lang: Lang): string {
   return [
     "Eres el autor de una guía de viaje a medida, hecha para leerse en un lector de tinta electrónica de pantalla chica, sin imágenes ni enlaces.",
     `Escribes en ${LANGUAGE_NAME[lang]}.`,
-    "Reglas de forma: texto plano en párrafos cortos separados por una línea en blanco; sin markdown, sin viñetas con asteriscos, sin encabezados, sin tablas, sin direcciones de internet. Para enumerar usa una línea por cosa, con el nombre primero y un guion. No repitas el título de la sección. No anuncies lo que vas a contar. Entra en materia desde la primera frase.",
-    "Reglas de fondo: concreto y verificable (nombres, direcciones o zonas, horarios, precios aproximados con moneda y de cuándo es el dato). Busca en internet lo que pueda haber cambiado (restaurantes, precios, horarios, feriados, clima) y di de cuándo son las reseñas o los datos que uses. Si algo no lo puedes confirmar, dilo en vez de inventarlo.",
-    "Tienes el viaje entero (fechas, agenda, alojamiento, lo que dijo el viajero): adapta cada sección a ESE viaje, no a un turista genérico.",
+    "Reglas de forma: texto plano en párrafos cortos separados por una línea en blanco; sin markdown, sin viñetas con asteriscos, sin encabezados, sin tablas, sin direcciones de internet. Para enumerar usa una línea por cosa, con el nombre primero y un guion. No anuncies lo que vas a contar. Entra en materia desde la primera frase.",
+    "Reglas de fondo: concreto y verificable (nombres, direcciones o zonas, horarios, precios aproximados con moneda y de cuándo es el dato). Busca en internet lo que pueda haber cambiado (restaurantes, precios, horarios, huelgas, feriados, clima) y di de cuándo son las reseñas o los datos que uses. Si algo no lo puedes confirmar, dilo en vez de inventarlo.",
+    "Escribes la guía de UN SOLO DÍA de un viaje de varios lugares: tienes el lugar de ese día, de dónde viene y a dónde sigue el viajero, su hotel, lo que ya tiene agendado y lo que te dijo. Adapta todo a ESE día en ESE lugar, no a un turista genérico ni al viaje entero.",
   ].join("\n");
 }
+
+const GUIDE_BRIEF = [
+  "Escribe la guía de ESE día. Entre 600 y 1000 palabras, sólo el texto. Tiene que cubrir, en este orden y sin encabezados:",
+  "- qué hay CERCA de cada cosa ya agendada (si hay Casa Batlló, qué hay alrededor a pie y qué conviene encadenar con ella);",
+  "- qué se estaría perdiendo uno en ese lugar ese día, dicho para que decida (dos o tres cosas, con el porqué);",
+  "- cómo moverse entre las cosas del día (a pie, metro, bus, taxi o app; tiempos y precios aproximados) y desde el hotel;",
+  "- dónde comer cerca de cada cosa (con reseñas recientes, di de cuándo son; horarios de comida del lugar);",
+  "- lo práctico de ESA fecha: horarios de apertura y cierres de ese día de la semana, entradas y si conviene reservar, huelgas, feriados o eventos que caigan ese día, y consejos según el clima previsto para esa fecha;",
+  "- si es un día de crucero, de isla o de tránsito (llegada, salida, tren, vuelo), qué entra de verdad en el tiempo disponible, contando traslados y esperas.",
+  "Si el día no tiene nada cargado, arma la propuesta a partir del lugar, del hotel y de los intereses del viajero.",
+].join("\n");
 
 // ---------------------------------------------------------------- helpers de texto
 
@@ -782,6 +957,17 @@ function parseFields(v: unknown): Record<string, string> | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+function parseAnswers(raw: unknown): Record<string, string> {
+  const answers: Record<string, string> = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const key = str(k, 20), val = str(v, 400);
+      if (key && val) answers[key] = val;
+    }
+  }
+  return answers;
+}
+
 // ---------------------------------------------------------------- rutas web
 
 export const tripsApi = new Hono<AppEnv>();   // GET /api/trips
@@ -811,8 +997,8 @@ tripApi.get("/", async (c) => {
   return c.json({ ok: true, today, trip: webView(trip, lang, active?.id === trip.id) });
 });
 
-// Crear o editar. Sin `id` crea; con `id` cambia nombre, lugar, fechas, hotel y
-// notas, y rearma los días sin perder lo cargado.
+// Crear o editar. Sin `id` crea; con `id` cambia nombre, resumen de lugares,
+// fechas, zona y notas, y rearma los días sin perder lo cargado.
 tripApi.post("/", async (c) => {
   const b = await readBody(c);
   const name = str(b.name, 80);
@@ -822,11 +1008,8 @@ tripApi.post("/", async (c) => {
   if (!isDate(start) || !isDate(end)) return c.json({ ok: false, error: "las fechas van como YYYY-MM-DD" }, 400);
   if (daysBetween(start, end) < 0) return c.json({ ok: false, error: "la vuelta es antes de la ida" }, 400);
   if (daysBetween(start, end) > MAX_DAYS) return c.json({ ok: false, error: `el viaje no puede pasar de ${MAX_DAYS} días` }, 400);
-  const lat = Number(b.lat), lon = Number(b.lon);
-  // `null` y "" NO son coordenadas (Number(null) es 0, y 0,0 es el golfo de Guinea).
-  const given = (v: unknown) => v !== null && v !== undefined && v !== "";
-  const hasCoords = given(b.lat) && given(b.lon) && Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
   const timezone = str(b.timezone, 64);
+  if (timezone && !tzOk(timezone)) return c.json({ ok: false, error: "zona horaria desconocida (va como Europe/Madrid)" }, 400);
 
   const res = await update(accountOf(c), (store) => {
     const id = (b.id ?? "").toString();
@@ -843,17 +1026,12 @@ tripApi.post("/", async (c) => {
     trip.name = name;
     trip.start = start;
     trip.end = end;
-    trip.place = str(b.place, 120) || name;
-    if (b.lat !== undefined || b.lon !== undefined) {
-      if (hasCoords) { trip.lat = lat; trip.lon = lon; }
-      else { delete trip.lat; delete trip.lon; }
-    }
+    // Vacío vale: el resumen se arma con los lugares de los días.
+    if (b.place !== undefined) trip.place = str(b.place, 120);
     if (b.timezone !== undefined) {
-      if (timezone && tzOk(timezone)) trip.timezone = timezone;
+      if (timezone) trip.timezone = timezone;
       else delete trip.timezone;
     }
-    const hotel = str(b.hotel, 120);
-    if (hotel) trip.hotel = hotel; else delete trip.hotel;
     const notes = str(b.notes, 1000);
     if (notes) trip.notes = notes; else delete trip.notes;
     if (b.active === true) {
@@ -909,22 +1087,34 @@ tripApi.post("/active", async (c) => {
   return ok ? c.json({ ok: true, id }) : c.json({ ok: false, error: "not found" }, 404);
 });
 
-// La nota del día ("día libre", "hay que estar 2 h antes").
+// El día: su lugar, el hotel de esa noche y la nota ("día libre", "hay que
+// estar 2 h antes"). Sólo se toca lo que viene en el cuerpo, así la hoja de la
+// nota no borra el lugar ni el editor del día borra la nota.
 tripApi.post("/day", async (c) => {
+  const acc = accountOf(c);
   const b = await readBody(c);
   const date = (b.date ?? "").toString();
   if (!isDate(date)) return c.json({ ok: false, error: "fecha inválida" }, 400);
-  const res = await update(accountOf(c), (store) => {
-    const trip = store.trips.find((t) => t.id === (b.tripId ?? "").toString());
+  const tripId = (b.tripId ?? "").toString();
+  const res = await update(acc, (store) => {
+    const trip = store.trips.find((t) => t.id === tripId);
     if (!trip) return false;
     const day = trip.days.find((d) => d.date === date);
     if (!day) return false;
-    const note = str(b.note, 300);
-    if (note) day.note = note;
-    else delete day.note;
+    const set = (key: "place" | "hotel" | "note", max: number) => {
+      if (b[key] === undefined) return;
+      const v = str(b[key], max);
+      if (v) day[key] = v;
+      else delete day[key];
+    };
+    set("place", 80);
+    set("hotel", 120);
+    set("note", 300);
     return true;
   });
-  return res ? c.json({ ok: true }) : c.json({ ok: false, error: "not found" }, 404);
+  if (!res) return c.json({ ok: false, error: "not found" }, 404);
+  if (b.place !== undefined) await syncCalendar(acc, tripId);  // el lugar del día va en los eventos sin lugar propio
+  return c.json({ ok: true });
 });
 
 // Un ítem del día: hora, título, tipo, lugar, código, nota y papel. Sin `id`
@@ -1098,18 +1288,21 @@ tripApi.post("/paper/delete", async (c) => {
   return gone ? c.json({ ok: true }) : c.json({ ok: false, error: "not found" }, 404);
 });
 
-tripApi.get("/guide/questions", async (c) => {
+// La guía de UN día, por la web: las preguntas, generar, leer.
+tripApi.get("/:id/day/:date/guide/questions", async (c) => {
   const lang = normalizeLang(c.req.query("lang"));
-  const trip = await getTrip(accountOf(c), (c.req.query("id") ?? "").toString());
+  const trip = await getTrip(accountOf(c), c.req.param("id"));
   if (!trip) return c.json({ ok: false, error: "not found" }, 404);
-  return c.json({ ok: true, questions: guideQuestions(trip, lang) });
+  const found = findDay(trip, c.req.param("date"));
+  if (!found) return c.json({ ok: false, error: T[lang].noDay }, 404);
+  return c.json({ ok: true, questions: dayGuideQuestions(trip, found.index, lang) });
 });
 
-tripApi.post("/guide/generate", async (c) => {
+tripApi.post("/:id/day/:date/guide", async (c) => {
   const b = await readBody(c);
   const lang = normalizeLang(c.req.query("lang"));
   try {
-    const jobId = await generateGuide(accountOf(c), (b.id ?? "").toString(), b.answers, lang);
+    const jobId = await generateDayGuide(accountOf(c), c.req.param("id"), c.req.param("date"), b.answers, lang);
     return c.json({ ok: true, jobId });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -1117,13 +1310,13 @@ tripApi.post("/guide/generate", async (c) => {
   }
 });
 
-tripApi.get("/guide/section", async (c) => {
-  const trip = await getTrip(accountOf(c), (c.req.query("id") ?? "").toString());
+tripApi.get("/:id/day/:date/guide", async (c) => {
+  const lang = normalizeLang(c.req.query("lang"));
+  const trip = await getTrip(accountOf(c), c.req.param("id"));
   if (!trip) return c.json({ ok: false, error: "not found" }, 404);
-  const n = Math.floor(Number(c.req.query("n")));
-  const s = trip.guide?.sections.find((x) => x.n === n);
-  if (!s) return c.json({ ok: false, error: "not found" }, 404);
-  return c.json({ ok: true, n: s.n, title: s.title, text: s.text });
+  const g = findDay(trip, c.req.param("date"))?.day.guide;
+  if (!g) return c.json({ ok: false, error: T[lang].noGuide }, 404);
+  return c.json({ ok: true, text: g.text.slice(0, MAX_GUIDE_TEXT), at: g.at, answers: g.answers });
 });
 
 // Reparación a mano: vuelve a escribir el espejo del viaje en el calendario.
@@ -1136,63 +1329,73 @@ tripApi.post("/sync", async (c) => {
   return c.json({ ok: true, events: n });
 });
 
-// ---------------------------------------------------------------- la guía (trabajo)
+// ---------------------------------------------------------------- la guía de un día (trabajo)
 
-async function generateGuide(accountId: number, id: string, rawAnswers: unknown, lang: Lang): Promise<string> {
+// Lo que se nombra en el rótulo "Buscando cerca de …": la primera cosa
+// agendada con lugar o título, si no el lugar del día, si no "tu día".
+function nearLabel(day: TripDay, lang: Lang): string {
+  const first = day.items.find((it) => it.kind !== "flight" && it.kind !== "train" && it.kind !== "hotel") ?? day.items[0];
+  return (first?.title || day.place || T[lang].yourDay).slice(0, 60);
+}
+
+async function generateDayGuide(accountId: number, id: string, date: string, rawAnswers: unknown, lang: Lang): Promise<string> {
   const trip = await getTrip(accountId, id);
   if (!trip) throw new Error("not found");
-  const answers: Record<string, string> = {};
-  if (rawAnswers && typeof rawAnswers === "object" && !Array.isArray(rawAnswers)) {
-    for (const [k, v] of Object.entries(rawAnswers as Record<string, unknown>)) {
-      const key = str(k, 20), val = str(v, 400);
-      if (key && val) answers[key] = val;
-    }
-  }
+  const found = findDay(trip, date);
+  if (!found) throw new Error(T[lang].noDay);
+  const { day, index } = found;
+  const answers = parseAnswers(rawAnswers);
   // Un trabajo en curso de hace menos de 20 minutos no se duplica.
-  if (trip.guideJob && Date.now() - trip.guideJob.at < 20 * 60 * 1000) return trip.guideJob.id;
+  if (day.guideJob && Date.now() - day.guideJob.at < 20 * 60 * 1000) return day.guideJob.id;
   // Sin clave se contesta acá, en el acto: arrancar un trabajo que muere en la
-  // primera sección deja al aparato sondeando `job.status` para leer lo mismo.
+  // primera llamada deja al aparato sondeando `job.status` para leer lo mismo.
   if (!(await config()).apps.key) throw new AppsLlmError(NO_KEY_MSG, "no_key");
-  const titles = GUIDE_TITLES[lang] ?? GUIDE_TITLES.es;
   const t = T[lang];
   const tripId = trip.id;
+  const when = longDate(day.date, lang);
 
-  const jobId = await startJob(accountId, t.section(1), async (job): Promise<JobFile[]> => {
+  const jobId = await startJob(accountId, t.guideStart(when), async (job): Promise<JobFile[]> => {
     const system: Anthropic.TextBlockParam[] = [
       { type: "text", text: guideSystem(lang) },
-      { type: "text", text: tripContext(trip, lang, answers), cache_control: { type: "ephemeral" } },
+      { type: "text", text: dayGuideContext(trip, index, answers, lang), cache_control: { type: "ephemeral" } },
     ];
-    const sections: GuideSection[] = [];
     const t0 = Date.now();
+    let lastProgress = 0;
     try {
-      for (let n = 1; n <= GUIDE_SECTIONS; n++) {
-        await job.setProgress(n, GUIDE_SECTIONS, t.section(n));
-        const r = await appsProseSearch({
-          accountId,
-          system,
-          user: [
-            `Escribe la sección ${n} de ${GUIDE_SECTIONS} de la guía, "${titles[n - 1]}": ${GUIDE_BRIEF[n - 1]}`,
-            sections.length ? `Ya están escritas: ${sections.map((s) => s.title).join(", ")}. No repitas lo que va en ellas.` : "",
-            "Largo: entre 500 y 900 palabras. Solo el texto de la sección.",
-          ].filter(Boolean).join("\n\n"),
-          maxTokens: 6000,
-          maxUses: n === 5 || n === 7 || n === 10 ? 6 : 3,
-        });
-        const text = r.text.replace(/\r/g, "").replace(/\*\*/g, "").replace(/^#+\s*/gm, "").trim().slice(0, MAX_SECTION_TEXT);
-        if (!text) throw new Error(`la sección ${n} salió vacía`);
-        sections.push({ n, title: titles[n - 1], text });
-        console.log(`viajes ${job.id}: sección ${n}/${GUIDE_SECTIONS} · ${text.length} caracteres · ${r.sources.length} fuentes · ${Math.round((Date.now() - t0) / 1000)} s`);
-      }
+      await job.setProgress(1, 3, t.searching(nearLabel(day, lang)));
+      const r = await appsProseSearch({
+        accountId,
+        system,
+        user: GUIDE_BRIEF,
+        maxTokens: 6000,
+        maxUses: 6,
+        // El progreso mientras escribe, sin escribir el documento a cada
+        // delta: una vez cada 3 s alcanza para que la pantalla se mueva.
+        onProgress: (chars) => {
+          const now = Date.now();
+          if (now - lastProgress < 3000) return;
+          lastProgress = now;
+          void job.setProgress(2, 3, t.writing(Math.round(chars / 6))).catch(() => {});
+        },
+      });
+      const text = r.text.replace(/\r/g, "").replace(/\*\*/g, "").replace(/^#+\s*/gm, "").trim().slice(0, MAX_GUIDE_TEXT);
+      if (!text) throw new Error("la guía salió vacía");
+      await job.setProgress(3, 3, t.saving);
       await update(accountId, (store) => {
         const tr = store.trips.find((x) => x.id === tripId);
-        if (!tr) return;
-        tr.guide = { at: Math.floor(Date.now() / 1000), answers, sections };
-        delete tr.guideJob;
+        const d = tr && tr.days.find((x) => x.date === date);
+        if (!d) return;
+        d.guide = { at: Math.floor(Date.now() / 1000), answers, text };
+        // Si el viajero acaba de decir dónde duerme, eso es el hotel del día.
+        if (!d.hotel && answers.hotel) d.hotel = answers.hotel.slice(0, 120);
+        delete d.guideJob;
       });
+      console.log(`viajes ${job.id}: guía del ${date} · ${text.length} caracteres · ${r.sources.length} fuentes · ${Math.round((Date.now() - t0) / 1000)} s`);
     } catch (err) {
       await update(accountId, (store) => {
         const tr = store.trips.find((x) => x.id === tripId);
-        if (tr) delete tr.guideJob;
+        const d = tr && tr.days.find((x) => x.date === date);
+        if (d) delete d.guideJob;
       });
       throw err;
     }
@@ -1200,7 +1403,8 @@ async function generateGuide(accountId: number, id: string, rawAnswers: unknown,
   });
   await update(accountId, (store) => {
     const tr = store.trips.find((x) => x.id === tripId);
-    if (tr) tr.guideJob = { id: jobId, at: Date.now() };
+    const d = tr && tr.days.find((x) => x.date === date);
+    if (d) d.guideJob = { id: jobId, at: Date.now() };
   });
   return jobId;
 }
@@ -1215,6 +1419,12 @@ async function needTrip(accountId: number, id: unknown): Promise<Trip> {
   const trip = await getTrip(accountId, argStr(id));
   if (!trip) throw new Error("no hay ningún viaje cargado");
   return trip;
+}
+
+function needDay(trip: Trip, date: unknown, lang: Lang): { day: TripDay; index: number } {
+  const found = findDay(trip, argStr(date, 10));
+  if (!found) throw new Error(T[lang].noDay);
+  return found;
 }
 
 const lista: Service = async (ctx) => {
@@ -1314,12 +1524,10 @@ const SUGERIR_SCHEMA = {
 
 const sugerir: Service = async (ctx, args) => {
   const trip = await needTrip(ctx.accountId, args.id);
-  const tz = trip.timezone && tzOk(trip.timezone) ? trip.timezone : await timeZoneOf(ctx.accountId);
-  const weather = trip.lat !== undefined && trip.lon !== undefined ? await weatherLineAt(trip.lat, trip.lon, tz, ctx.lang) : "";
   const raw = await appsJson<{ suggestions?: unknown }>({
     accountId: ctx.accountId,
-    system: `Eres quien ayuda a armar la valija para un viaje. Sugiere solo cosas concretas y útiles para ESTE viaje (destino, fechas y estación, clima, lo que hay en la agenda: un vuelo pide auriculares y almohada, una playa pide protector). Nada que ya esté en la lista. Los nombres van en ${LANGUAGE_NAME[ctx.lang]}.`,
-    user: `${tripContext(trip, ctx.lang)}${weather ? `\n\nClima ahora en el destino: ${weather}` : ""}\n\nSugiere hasta 12 cosas que faltan en la lista.`,
+    system: `Eres quien ayuda a armar la valija para un viaje. Sugiere solo cosas concretas y útiles para ESTE viaje (los lugares de cada día, las fechas y la estación, lo que hay en la agenda: un vuelo pide auriculares y almohada, una playa pide protector, un crucero pide lo suyo). Nada que ya esté en la lista. Los nombres van en ${LANGUAGE_NAME[ctx.lang]}.`,
+    user: `${tripContext(trip, ctx.lang)}\n\nSugiere hasta 12 cosas que faltan en la lista.`,
     schema: SUGERIR_SCHEMA,
     maxTokens: 800,
   });
@@ -1349,24 +1557,26 @@ const sugerirAgregar: Service = async (ctx, args) => {
 
 const guiaPreguntas: Service = async (ctx, args) => {
   const trip = await needTrip(ctx.accountId, args.id);
-  return { questions: guideQuestions(trip, ctx.lang) };
+  const { index } = needDay(trip, args.date, ctx.lang);
+  return { questions: dayGuideQuestions(trip, index, ctx.lang) };
 };
 
 const guiaGenerar: Service = async (ctx, args) => {
   const trip = await needTrip(ctx.accountId, args.id);
-  return { jobId: await generateGuide(ctx.accountId, trip.id, args.answers, ctx.lang) };
+  const { day } = needDay(trip, args.date, ctx.lang);
+  return { jobId: await generateDayGuide(ctx.accountId, trip.id, day.date, args.answers, ctx.lang) };
 };
 
-const guiaSeccion: Service = async (ctx, args) => {
+const guiaDia: Service = async (ctx, args) => {
   const trip = await needTrip(ctx.accountId, args.id);
-  const n = Math.floor(Number(args.n));
-  const s = trip.guide?.sections.find((x) => x.n === n);
-  if (!s) throw new Error("esa sección no está: la guía no se generó");
-  return { n: s.n, title: s.title, text: s.text };
+  const { day } = needDay(trip, args.date, ctx.lang);
+  if (!day.guide) throw new Error(T[ctx.lang].noGuide);
+  return { text: day.guide.text.slice(0, MAX_GUIDE_TEXT), at: day.guide.at };
 };
 
-// Preguntar: el viaje entero en el system (cacheado) y la pregunta con el día o
-// el ítem del que se habla. Busca en internet SOLO si el usuario lo dijo
+// Preguntar: el viaje entero en el system (cacheado), con el lugar y el hotel
+// de cada día y la guía del día del que se habla (o la de hoy), y la pregunta
+// con el día o el ítem. Busca en internet SOLO si el usuario lo dijo
 // ("busca…"): regla de la casa (1.5.103), la misma que en Hablar.
 const preguntar: Service = async (ctx, args) => {
   const trip = await needTrip(ctx.accountId, args.id);
@@ -1374,27 +1584,33 @@ const preguntar: Service = async (ctx, args) => {
   if (!question) throw new Error("no se dijo la pregunta");
   const date = argStr(args.date, 10);
   const itemId = argStr(args.itemId);
+  const tz = trip.timezone && tzOk(trip.timezone) ? trip.timezone : await timeZoneOf(ctx.accountId);
+  const today = todayIn(tz);
   const focus: string[] = [];
+  let guideOf = "";
   if (isDate(date)) {
-    const i = trip.days.findIndex((d) => d.date === date);
-    focus.push(`La pregunta es sobre el día ${i >= 0 ? i + 1 : "?"} (${dayLabel(date, ctx.lang)}, ${date}).`);
+    const f = findDay(trip, date);
+    focus.push(`La pregunta es sobre el día ${f ? f.index + 1 : "?"} (${dayLabel(date, ctx.lang)}, ${date})${f?.day.place ? `, en ${f.day.place}` : ""}.`);
+    guideOf = date;
   }
   if (itemId) {
     const f = findItem(trip, itemId);
-    if (f) focus.push(`La pregunta es sobre este ítem: ${f.item.at ?? ""} ${f.item.title}${f.item.place ? ` (${f.item.place})` : ""}${f.item.code ? `, código ${f.item.code}` : ""}, del ${f.day.date}.`);
+    if (f) {
+      focus.push(`La pregunta es sobre este ítem: ${f.item.at ?? ""} ${f.item.title}${f.item.place ? ` (${f.item.place})` : ""}${f.item.code ? `, código ${f.item.code}` : ""}, del ${f.day.date}.`);
+      if (!guideOf) guideOf = f.day.date;
+    }
   }
-  const tz = trip.timezone && tzOk(trip.timezone) ? trip.timezone : await timeZoneOf(ctx.accountId);
-  const today = todayIn(tz);
+  if (!guideOf && today && trip.days.some((d) => d.date === today)) guideOf = today;
   const system: Anthropic.TextBlockParam[] = [
     {
       type: "text",
       text: [
-        "Eres el asistente de viaje del lector: tienes su viaje entero (agenda, papeles, guía) y respondes con eso primero. Si lo que pregunta no está en el viaje, responde con lo que sabes y dilo.",
+        "Eres el asistente de viaje del lector: tienes su viaje entero (agenda con el lugar y el hotel de cada día, papeles, y la guía del día si la hay) y respondes con eso primero. Si lo que pregunta no está en el viaje, responde con lo que sabes y dilo.",
         `Respondes en ${LANGUAGE_NAME[ctx.lang]}, en texto plano, sin markdown ni listas con asteriscos, en pocas frases claras (la pantalla es chica).`,
         "Al final, en una línea aparte que empiece exactamente con 'HABLADO:', escribe una versión de la respuesta de hasta 200 caracteres para leerla en voz alta (solo lo esencial, sin códigos largos ni direcciones de internet).",
       ].join("\n"),
     },
-    { type: "text", text: tripContext(trip, ctx.lang, trip.guide?.answers ?? {}, true), cache_control: { type: "ephemeral" } },
+    { type: "text", text: tripContext(trip, ctx.lang, guideOf), cache_control: { type: "ephemeral" } },
   ];
   const user = [today ? `Hoy es ${today}.` : "", ...focus, `Pregunta: ${question}`].filter(Boolean).join("\n");
   const search = asksForSearch(question, ctx.lang);
@@ -1415,7 +1631,7 @@ const preguntar: Service = async (ctx, args) => {
   if (!answer) throw new Error("el modelo no respondió");
   if (!spoken) spoken = answer.replace(/\s+/g, " ");
   if (spoken.length > 220) spoken = spoken.slice(0, 217).replace(/\s+\S*$/, "") + "…";
-  console.log(`viajes preguntar: ${question.length} caracteres, web=${search ? "si" : "no"}`);
+  console.log(`viajes preguntar: ${question.length} caracteres, web=${search ? "si" : "no"}, guía=${guideOf || "no"}`);
   return { answer, spoken };
 };
 
@@ -1437,7 +1653,7 @@ export const VIAJES_SERVICES: Record<string, Service> = {
   "viajes.sugerir.agregar": sugerirAgregar,
   "viajes.guia.preguntas": guiaPreguntas,
   "viajes.guia.generar": guiaGenerar,
-  "viajes.guia.seccion": guiaSeccion,
+  "viajes.guia.dia": guiaDia,
   "viajes.preguntar": preguntar,
   "viajes.recordar": recordar,
 };

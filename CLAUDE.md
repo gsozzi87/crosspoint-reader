@@ -1905,6 +1905,51 @@ el contexto y respuesta hablada). Tres paquetes en paralelo, cada uno con su pru
 `/board` → Viajes y en el aparato Juegos → Viajes → Actualizar. **Pendiente de hardware**: red, micrófono y voz
 desde la app, y una guía generada de verdad con la clave de las apps cargada.
 
+## Viajes v2: cada día su lugar, y la guía por día y a pedido (1.5.112)
+
+Probando 1.5.111 el dueño dijo lo obvio: *"es un viaje de 13 días, obvio es de varios lugares… de ahí toma un
+crucero, visita islas, vuelve a Roma, de ahí a Madrid, boletos de tren, cada día en un hotel distinto"*, y *"la
+guía obviamente es por día, no para el viaje en general… sólo por petición del usuario por día"*. La v1 tenía UN
+destino, UN hotel, UN clima y UNA guía de diez secciones para todo el viaje. Contrato v2 en
+`docs/ws397/VIAJES_CONTRATO.md` (la sección 7 de `VIAJES_APP.md` queda como historia).
+
+- **Datos**: cada día lleva `place`, `hotel` y `guide {at, answers, text}`; el viaje pierde `hotel`, `guide`,
+  `weather`, `lat/lon` (queda `timezone`). `normalizeTrip` migra `/data/trips.json` al leer: el hotel del viaje
+  se copia a cada día si ninguno tenía, y la guía general se tira (no tiene día). El `place` del viaje es un
+  resumen ("Roma · crucero · Madrid"); vacío, se arma con los lugares distintos de los días.
+- **Servicios** (`VIAJES_SERVICES`): `viajes.guia.preguntas {id,date}` decide SIN modelo qué falta para ESE día
+  (`hotel` si no hay hotel, `llegada` si cambia de lugar y no hay vuelo ni tren cargado, `intereses` siempre);
+  `viajes.guia.generar {id,date,answers}` es un trabajo de UNA `appsProseSearch` (600-1000 palabras: qué hay
+  cerca de lo agendado —Casa Batlló → qué hay alrededor—, qué se está perdiendo uno, cómo moverse, dónde comer,
+  lo práctico de esa fecha; progreso "Buscando cerca de Casa Batlló…"); `viajes.guia.dia {id,date}` devuelve el
+  texto (≤ 24 KB) o `sin guía`. `viajes.guia.seccion` **no existe más**. `viajes.preguntar` lleva en el contexto
+  el lugar y el hotel de cada día y la guía del día preguntado. Rutas web nuevas
+  `GET|POST /api/trip/:id/day/:date/guide` y `…/guide/questions`; `POST /api/trip/day` acepta `place` y `hotel` y
+  sólo toca lo que viene en el cuerpo.
+- **Web**: la hoja del viaje ya no tiene buscador de destino ni hotel ni guía; cada tarjeta de día muestra
+  `📍 lugar · 🏨 hotel` y abre la hoja del día; debajo de los ítems, "Generar la guía de este día" / "Leer la
+  guía" / "Rehacer", con las preguntas del día como campos y la barra del trabajo (varios días a la vez).
+- **`viajes.lua`** (54 KB): se fue la guía general entera (y con ella el **error de la línea 763**: `k .. ". " ..
+  guia.titulos[k]` con `titulos` nil leído de la tarjeta). En Día y Hoy, fila "Guía de este día": en la tarjeta →
+  `cp.view`; en el servidor (`guide.ready`, hecha desde la web) → se baja directo; si no → preguntas por
+  `cp.listen` (Atrás salta) → trabajo → `job.status` cada 5 s → `guia-<date>.txt`. Con guía, "Rehacer la guía
+  del día" sin confirmar. Guía (7) es la lista de días con "guía lista" / "en el servidor" / "generando…";
+  Inicio dice "Guía · 3 de 13 días" y "Retomar la guía del día N" si quedó un trabajo (`cp.save` `job`,
+  `jobDate`, `jobTrip`). Hoy/Día muestran "Roma · Hotel Artemide"; Agenda, el lugar de cada día.
+  **Regla que sale del 763**: todo lo que viene de `cp.read`/`cp.load`/`cp.files`/servidor pasa por `s()` o
+  `n()` antes de concatenar, comparar o indexar. Los 60 `..` del archivo están auditados. El escenario nuevo
+  recorre un viaje de 13 días con días sin lugar y sin hotel, el flujo entero de la guía, Retomar tras
+  `fake.reload`, sin reloj, errores y un `viaje.json` deliberadamente incompleto (la clase del 763).
+  `on_open` ≈ 210 k instrucciones con un `viaje.json` de 38 KB (v1: 202 k; tope 400 k).
+- **La web ya no pide el token del aparato** ("eso nada que ver"): la tarjeta "Token del aparato" de Ajustes →
+  Avanzado sale sólo en un servidor sin cuentas (`!multi()`), y si `/auth/me` no contesta la entrada dice "No se
+  pudo conectar" en la pantalla de cuenta en vez de caer a la puerta del token. Con cuentas, el token lo acuña
+  el aparato y se vincula con el código; la web no lo toca.
+
+**Instalar**: copiar `examples/Apps/viajes.lua` a `/Apps` (modo memoria USB); las guías viejas (`guia-N.txt`)
+las ignora. **Pendiente de hardware**: el flujo de la guía con la clave de las apps cargada, y una guía
+generada de verdad desde la web.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
