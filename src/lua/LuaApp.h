@@ -98,12 +98,22 @@ class LuaApp {
     std::string c;
   };
 
-  // Una app instalada: el archivo y el nombre que se muestra.
+  // Una app instalada: el archivo, el nombre (el del archivo sin `.lua`), y lo
+  // que se MUESTRA: título y descripción, sacados del comentario que abre el
+  // archivo (`-- Reloj: la hora grande, la fecha debajo.`). Sin ese
+  // comentario, el título es el nombre con mayúscula y no hay descripción.
   struct Entry {
     std::string path;
     std::string name;
+    std::string title;
+    std::string description;
   };
   static std::vector<Entry> installed();
+  // Lee el título y la descripción de la primera línea de comentario del
+  // archivo. Pura: `header` es esa línea (o las primeras). Expuesta para que
+  // la lista y la app abierta usen la misma regla, y para probarla sin placa.
+  static void titleFromHeader(const std::string& header, const std::string& stem, std::string& title,
+                              std::string& description);
   static const char* dir();
 
   ~LuaApp();
@@ -114,6 +124,8 @@ class LuaApp {
   bool ok() const { return state_ != nullptr && error_.empty(); }
   const std::string& error() const { return error_; }
   const std::string& name() const { return name_; }
+  // El título que se muestra en los cabezales (ver Entry::title).
+  const std::string& title() const { return title_; }
   // El nombre saneado que da nombre a las carpetas y viaja al servidor como
   // `app` en cp.call (`librito.lua` → "librito").
   const std::string& appId() const { return dirName_; }
@@ -164,6 +176,7 @@ class LuaApp {
   lua_State* state_ = nullptr;
   std::string error_;
   std::string name_;
+  std::string title_;
   std::string dirName_;
   std::string path_;
   bool quit_ = false;

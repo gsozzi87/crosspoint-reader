@@ -316,7 +316,6 @@ void CalendarActivity::openToday() {
     return;
   }
   const bool cached = loadDayFromCache(date);
-  loadSuggestFromCache(date);
   buildTodayLines();
   requestUpdate();
   // Solo se prende el WiFi si de verdad falta algo: con el mes en la tarjeta y
@@ -361,93 +360,6 @@ void CalendarActivity::buildTodayLines() {
       pushWrapped(line, 0);
     }
   }
-
-  push("", 0);
-  push(tr(STR_SUGGEST_TITLE), 1);
-  if (!suggestError.empty()) {
-    pushWrapped(suggestError, 2);
-  } else if (suggestLines.empty()) {
-    pushWrapped(tr(STR_SUGGEST_EMPTY), 2);
-  } else {
-    for (const std::string& line : suggestLines) pushWrapped("• " + line, 0);
-    // Cuándo se calcularon: son de la última vez que se pidieron, no de ahora.
-    time_t now = 0;
-    if (suggestAt > 0 && halClock.getEpochUtc(now) && now > suggestAt) {
-      const long mins = static_cast<long>(now - suggestAt) / 60;
-      char buf[64];
-      if (mins < 60)
-        snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_MIN), static_cast<int>(mins));
-      else
-        snprintf(buf, sizeof(buf), tr(STR_SUGGEST_AGE_HOUR), static_cast<int>(mins / 60));
-      push(buf, 2);
-    }
-  }
-}
-
-// Las sugerencias del día viven en la misma caché del calendario, así que se
-// ven sin WiFi y no se vuelven a pedir por entrar y salir.
-bool CalendarActivity::loadSuggestFromCache(const std::string& date) {
-  suggestLines.clear();
-  suggestAt = 0;
-  suggestDate = date;
-  suggestError.clear();
-  JsonDocument doc;
-  if (!readCache(doc)) return false;
-  JsonVariantConst sv = doc["suggest"];
-  if (sv.isNull() || std::string(sv["date"] | "") != date) return false;
-  suggestAt = static_cast<time_t>(sv["at"] | (int64_t)0);
-  for (JsonVariantConst lv : sv["lines"].as<JsonArrayConst>()) {
-    const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
-    if (!line.empty()) suggestLines.push_back(line);
-  }
-  return !suggestLines.empty();
-}
-
-void CalendarActivity::saveSuggestToCache() const {
-  JsonDocument doc;
-  readCache(doc);
-  JsonObject sv = doc["suggest"].to<JsonObject>();
-  sv["date"] = suggestDate;
-  sv["at"] = static_cast<int64_t>(suggestAt);
-  JsonArray arr = sv["lines"].to<JsonArray>();
-  for (const std::string& line : suggestLines) arr.add(line);
-  writeCache(doc);
-}
-
-// GET /api/suggest/day. `refresh` solo cuando lo pidió el usuario con OK: cada
-// recálculo le cuesta plata al dueño del servidor.
-bool CalendarActivity::fetchSuggest(const bool refresh) {
-  int y = 0, m = 0, d = 0;
-  const std::string date = localToday(y, m, d) ? isoDate(y, m, d) : "";
-  std::string path = "/api/suggest/day?lang=" + std::string(uiLanguageCode());
-  if (!date.empty()) path += "&date=" + date;
-  if (refresh) path += "&refresh=1";
-  ServerClient::Response resp;
-  const ServerClient::Result r = SERVER_CLIENT.get(path, resp);
-  suggestError.clear();
-  if (r != ServerClient::Result::Ok) {
-    // 429 = el servidor no quiere gastar más búsquedas hoy; se dice tal cual.
-    suggestError = resp.status == 429 ? tr(STR_SUGGEST_BUDGET) : tr(STR_SUGGEST_FAILED);
-    LOG_ERR(TAG, "GET /api/suggest/day: %s %d", ServerClient::resultName(r), resp.status);
-    return false;
-  }
-  JsonDocument doc;
-  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
-    suggestError = tr(STR_SUGGEST_FAILED);
-    return false;
-  }
-  suggestLines.clear();
-  for (JsonVariantConst lv : doc["lines"].as<JsonArrayConst>()) {
-    const std::string line = lv.as<const char*>() ? lv.as<const char*>() : "";
-    if (!line.empty()) suggestLines.push_back(line);
-  }
-  suggestAt = static_cast<time_t>(doc["at"] | (int64_t)0);
-  suggestDate = date;
-  if (suggestLines.empty())
-    suggestError = tr(STR_SUGGEST_EMPTY);
-  else
-    saveSuggestToCache();
-  return !suggestLines.empty();
 }
 
 void CalendarActivity::onExit() {
@@ -1023,10 +935,7 @@ void CalendarActivity::onWifiSelectionComplete(const bool connected) {
       return;
     }
     state = afterLoad == TODAY ? TODAY : MONTH;
-    if (state == TODAY) {
-      suggestError = tr(STR_SERVER_WIFI_FAILED);
-      buildTodayLines();
-    }
+    if (state == TODAY) buildTodayLines();
     requestUpdate();
     return;
   }
@@ -1080,14 +989,6 @@ void CalendarActivity::loop() {
           buildTodayLines();
         }
         requestUpdate();
-      } else if (p == SUGGEST_FETCH) {
-        fetchSuggest(suggestRefresh);
-        suggestRefresh = false;
-        WiFi.setSleep(true);
-        state = TODAY;
-        todayTop = 0;
-        buildTodayLines();
-        requestUpdate();
       } else {
         state = MONTH;
         requestUpdate();
@@ -1111,9 +1012,11 @@ void CalendarActivity::loop() {
       break;
     }
     case TODAY: {
-      // Atrás mantenido dicta el día de hoy: OK ya está tomado por las
-      // sugerencias, y este es el lugar donde uno mira la jornada.
-      if (mappedInput.wasLongPressed(MappedInputManager::Button::Back, MENU_HOLD_MS)) {
+      // OK dicta el día de hoy (y Atrás mantenido también, como siempre): este
+      // es el lugar donde uno mira la jornada. Hasta 1.5.108 OK pedía las
+      // sugerencias, que se fueron con los viajes.
+      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm) ||
+          mappedInput.wasLongPressed(MappedInputManager::Button::Back, MENU_HOLD_MS)) {
         startDictation(REC_DAY);
         break;
       }
@@ -1126,15 +1029,6 @@ void CalendarActivity::loop() {
         todayTop = std::max(0, todayTop - todayPerPage);
         requestUpdate();
       });
-      // OK pide (o vuelve a pedir) las sugerencias: es la ÚNICA forma de que el
-      // servidor gaste una búsqueda, así no se van los pesos solos.
-      if (mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
-        suggestRefresh = !suggestLines.empty();
-        afterLoad = TODAY;
-        pending = SUGGEST_FETCH;
-        ensureConnected();
-        break;
-      }
       if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
         state = HOME;
         requestUpdate();
@@ -1584,10 +1478,7 @@ void CalendarActivity::render(RenderLock&&) {
 
   // El menú de la actividad se dibuja encima de todo y se queda con los botones.
   if (menuOpen && menu.processRender(renderer, mappedInput)) return;
-  // En Hoy, OK es lo único que le pide sugerencias al servidor, así que lo dice.
-  const char* okLabel = state == DAY     ? tr(STR_CAL_DICTATE)
-                        : state == TODAY ? (suggestLines.empty() ? tr(STR_SUGGEST_ASK) : tr(STR_SUGGEST_REDO))
-                                         : tr(STR_SELECT);
+  const char* okLabel = (state == DAY || state == TODAY) ? tr(STR_CAL_DICTATE) : tr(STR_SELECT);
   const auto labels = mappedInput.mapLabels(tr(STR_BACK), okLabel, tr(STR_DIR_UP), tr(STR_DIR_DOWN));
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   // La cadencia de refrescos limpios la lleva el coordinador del panel.

@@ -25,7 +25,6 @@ import { rss } from "./rss";
 import { deviceLog } from "./devicelog";
 import { assets } from "./assets";
 import { calendar } from "./calendar";
-import { suggest } from "./suggest";
 import { notes } from "./notes";
 import { apps } from "./apps";
 import { accountApi, pairStatus, startPairing } from "./accounts";
@@ -81,8 +80,8 @@ api.use("*", async (c, next) => withTimeZone(accountOf(c), () => next()));
 //
 // Las que faltaban: /api/bible/ask (chatText con hasta 40 KB de capítulo, la
 // llamada más cara del sistema) y /api/calendar/dictate (chatJson). Las dos
-// pasaban por afuera del tope y no sumaban nada. /api/suggest se cobra adentro
-// de suggest.ts, porque ahí hay caché y cobrar en la ruta cobraría los aciertos.
+// pasaban por afuera del tope y no sumaban nada. (/api/suggest se fue en 1.5.108
+// con las sugerencias de Mi día, que eran de los viajes.)
 const METERED: { path: string; llm: number; audio: boolean }[] = [
   { path: "/api/ask", llm: 1, audio: false },
   { path: "/api/voice", llm: 1, audio: true },
@@ -128,7 +127,6 @@ api.route("/news", news);             // paquete masticado, estado y actualizaci
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
 api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete, /dictate → calendario local
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
-api.route("/suggest", suggest);        // GET /api/suggest/day → sugerencias del día (cacheadas, con tope diario)
 api.route("/account", accountApi);  // POST /api/account/pair, /device/rename, /device/delete, /password (desde la web)
 api.route("/log", deviceLog);         // GET/POST/DELETE /api/log → el aparato sube su log; se lee en /board/log
 // POST /api/apps/call {app, service, args}; GET /api/apps/file/:id → la puerta

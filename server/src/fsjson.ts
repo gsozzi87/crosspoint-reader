@@ -10,7 +10,7 @@
 //
 // Además, acá está la ÚNICA bifurcación entre el modo de siempre (archivos) y
 // el modo multiusuario (Postgres): `readDoc` / `writeDoc` / `mutateDoc`. Los
-// módulos de datos (store, calendar, suggest, hub) reciben un
+// módulos de datos (store, calendar, hub) reciben un
 // `accountId` y llaman a estas tres; no saben ni les importa dónde termina el
 // JSON. Sin `DATABASE_URL` el `accountId` se ignora y todo va a los mismos
 // archivos de /data que hasta hoy.
@@ -78,7 +78,7 @@ export async function readJsonSafe<T>(path: string, fallback: T): Promise<T> {
 export type DocName =
   | "store"
   | "calendar"
-  | "suggest"
+  | "voice-context"
   | "hub-settings"
   | "hub-data"
   | "news"
@@ -87,7 +87,7 @@ export type DocName =
 const LEGACY_FILE: Record<DocName, string> = {
   store: process.env.STORE_FILE ?? "/data/store.json",
   calendar: process.env.CALENDAR_FILE ?? "/data/calendar.json",
-  suggest: process.env.SUGGEST_FILE ?? "/data/suggest.json",
+  "voice-context": process.env.VOICE_CONTEXT_FILE ?? "/data/voice-context.json",
   "hub-settings": process.env.HUB_SETTINGS_FILE ?? "/data/hub-settings.json",
   "hub-data": process.env.HUB_DATA_FILE ?? "/data/hub-data.json",
   news: process.env.NEWS_FILE ?? "/data/news.json",

@@ -12,6 +12,20 @@ Se copian con **Ajustes → Sistema → Modo memoria USB** (la tarjeta aparece c
 un disco) y se abren en **Juegos → Apps de la tarjeta**. Instalar es copiar,
 desinstalar es borrar.
 
+## El nombre que se ve
+
+La lista de apps y el cabezal de la app abierta muestran el **título** y la
+**descripción** que salen del comentario que abre el archivo, nunca la ruta:
+
+```lua
+-- Reloj: la hora grande, la fecha debajo.
+```
+
+La regla: la primera línea del archivo es un comentario `--`, y lo que hay
+antes del primer `:` o `.` (hasta 32 caracteres) es el título; el resto de esa
+línea es la descripción. Sin ese comentario el título es el nombre del archivo
+con mayúscula (`reloj.lua` → "Reloj") y no hay descripción.
+
 ## El contrato
 
 El script define lo que quiera de esto. Nada es obligatorio.

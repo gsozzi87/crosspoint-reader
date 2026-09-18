@@ -834,6 +834,53 @@ void callEntry(void* p) {
 
 const char* LuaApp::dir() { return APPS_DIR; }
 
+namespace {
+// Las primeras líneas de un archivo, para leerle el comentario de apertura.
+std::string readHead(const std::string& path, const size_t max = 512) {
+  HalFile f;
+  if (!Storage.openFileForRead("LUA", path, f)) return "";
+  std::string head;
+  head.resize(max);
+  const int n = f.read(reinterpret_cast<uint8_t*>(&head[0]), max);
+  f.close();
+  head.resize(n > 0 ? static_cast<size_t>(n) : 0);
+  return head;
+}
+
+std::string trimmed(std::string s) {
+  while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r' || s.back() == '.')) s.pop_back();
+  size_t i = 0;
+  while (i < s.size() && (s[i] == ' ' || s[i] == '\t')) ++i;
+  return s.substr(i);
+}
+}  // namespace
+
+// `-- Reloj: la hora grande, la fecha debajo.` → título "Reloj", descripción
+// "la hora grande, la fecha debajo". Vale `:` o `.` como separador, y sólo si
+// lo que queda antes es corto (hasta 32 caracteres): si no, el archivo no
+// tiene título y se usa el nombre con mayúscula. La descripción es el resto de
+// esa primera línea de comentario, nada más: la lista muestra un renglón.
+void LuaApp::titleFromHeader(const std::string& header, const std::string& stem, std::string& title,
+                             std::string& description) {
+  title = stem;
+  if (!title.empty() && title[0] >= 'a' && title[0] <= 'z') title[0] = static_cast<char>(title[0] - 'a' + 'A');
+  description.clear();
+  size_t start = 0;
+  while (start < header.size() && (header[start] == ' ' || header[start] == '\n' || header[start] == '\r')) ++start;
+  if (header.compare(start, 2, "--") != 0) return;
+  size_t end = header.find('\n', start);
+  std::string line = header.substr(start + 2, end == std::string::npos ? std::string::npos : end - start - 2);
+  line = trimmed(line);
+  if (line.empty()) return;
+  const size_t sep = line.find_first_of(":.");
+  if (sep == std::string::npos || sep == 0 || sep > 32) return;
+  title = trimmed(line.substr(0, sep));
+  description = trimmed(line.substr(sep + 1));
+  if (!description.empty() && description[0] >= 'a' && description[0] <= 'z') {
+    description[0] = static_cast<char>(description[0] - 'a' + 'A');
+  }
+}
+
 std::vector<LuaApp::Entry> LuaApp::installed() {
   std::vector<Entry> out;
   if (!Storage.exists(APPS_DIR)) return out;
@@ -844,6 +891,7 @@ std::vector<LuaApp::Entry> LuaApp::installed() {
     Entry e;
     e.path = std::string(APPS_DIR) + "/" + name;
     e.name = name.substr(0, name.size() - strlen(EXT));
+    titleFromHeader(readHead(e.path), e.name, e.title, e.description);
     out.push_back(e);
   }
   return out;
@@ -859,6 +907,10 @@ bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
   const size_t slash = path.find_last_of('/');
   name_ = slash == std::string::npos ? path : path.substr(slash + 1);
   if (name_.size() > strlen(EXT)) name_ = name_.substr(0, name_.size() - strlen(EXT));
+  {
+    std::string description;
+    titleFromHeader(readHead(path), name_, title_, description);
+  }
   g_appStem = name_;
   // La carpeta de la app sale del nombre saneado: lo que no es [A-Za-z0-9._-]
   // pasa a `_`, y un nombre que empiece con punto no puede hacer carpeta oculta.

@@ -1819,6 +1819,36 @@ Sacarle la batería no lo arregló. **No estaba colgado**: el log lo dice, y hay
   ciclo de corriente y sigue mudo`, mirar la línea `AXP2101 rieles:` (LDO(90) sin los bits 0-2 = riel apagado)
   y, si el riel está bien, es hardware: el panel o su cable plano.
 
+## Hablar sin segunda pantalla, palabras de orden y lo que sobraba (1.5.109)
+
+Pedidos del dueño sobre 1.5.108, todos hechos:
+
+- **Se fue la pantalla "¿quieres preguntar algo más?"**: respuesta, Atrás, y al hub (o a la pantalla que abrió
+  Hablar). **El contexto vive en el servidor, por cuenta, 24 h** (`voice-context` en `fsjson`, últimos 8 turnos
+  de PREGUNTAS; sobrevive al redeploy). Antes era un `Map` en memoria atado a un `conversationId` que sólo
+  servía mientras el aparato se quedaba en esa pantalla. El `conversation=` de los aparatos viejos se ignora.
+- **Palabras de orden estrictas** (`CMD` en `voice.ts`, una tabla por idioma que viaja en el system prompt):
+  `recuérdame` → recordatorio, `memoriza` → memoria, `busca` → internet, `compra` → compras, `tarea` → tarea,
+  `nota` → nota, `pon N minutos` → temporizador, `alarma` → alarma, `traduce` → traducción; sin palabra de orden
+  es pregunta. **Un recuérdame NUNCA es memoria**, y hay guardia del servidor además del prompt: una acción
+  `memory` sin la raíz "memoriz" en lo dicho (`saysMemorize`) se descarta y se anota en el log. La pantalla de
+  Hablar muestra los ejemplos con esas palabras (`STR_VOICE_SAY_*`, nueva fila Buscar).
+- **Respuesta vacía del servidor**: el log del aparato ahora dice qué vino (`respuesta vacía: text=… saved=…`), y
+  el servidor ya no manda una reply vacía: "Listo, guardado." si guardó algo, "No entendí" si no.
+- **Las sugerencias de Mi día se fueron** (eran de los viajes): `suggest.ts`, `/api/suggest`, el documento
+  `suggest`, 8 claves × 7 idiomas y todo el código en `CalendarActivity`. En Hoy, **OK dicta el día** (antes OK
+  pedía sugerencias y dictar sólo se podía con Atrás mantenido).
+- **Apps de Lua con nombre de verdad**: la lista y el cabezal muestran el título y la descripción del comentario
+  que abre el archivo (`-- Reloj: la hora grande, la fecha debajo.`, `LuaApp::titleFromHeader`), y nunca la
+  ruta. Sin comentario, el nombre del archivo con mayúscula. Documentado en `docs/ws397/APPS_LUA.md`.
+- **Pedo mío en los rieles, visto en el log de 1.5.108**: `ALDO1-4=1C 1C 19 0D`, o sea que **ALDO3 va a 3,0 V de
+  fábrica** (0x19), no a 3,3, y ALDO4 a 1,8. `PowerKey::begin()` de 1.5.107 escribía 0x1C a los tres al volver
+  del sueño: le habría subido 0,3 V a un chip que no sabemos cuál es. Ahora **sólo se tocan los bits de
+  encendido** de 0x90; las tensiones quedan como las dejó la fábrica (el PMIC no se resetea con el ESP).
+- **Sin red**: no se traba. `FriendlyWifi` prueba las guardadas (9 s cada una, cinco como mucho) y escanea; si
+  ninguna está, cae al selector de redes ("No hay redes disponibles" o la lista con la clave por el teléfono) y
+  Atrás ahí muestra "No se pudo conectar al WiFi" y vuelve. Sin ninguna red guardada, directo al selector.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

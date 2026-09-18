@@ -45,10 +45,6 @@
 //   POST /api/calendar/event/delete  {id}
 //          Los dos salen por `postOrQueue`: el cambio se ve en el acto y el
 //          POST espera en la cola si no hay WiFi.
-//   GET /api/suggest/day?date=YYYY-MM-DD&lang=xx[&refresh=1]
-//       -> {ok, at, ageS, stale, lines:[...]}   sugerencias del día (server/src/suggest.ts)
-//          Cuestan plata (el servidor busca en internet), así que NUNCA se piden
-//          solas: se muestran las cacheadas y solo OK las recalcula (`refresh=1`).
 // Todo se cachea en /.crosspoint/calendar.json, como el clima y las noticias.
 class CalendarActivity final : public Activity {
  public:
@@ -99,7 +95,7 @@ class CalendarActivity final : public Activity {
 
  private:
   enum State { HOME, TODAY, MONTH, DAY, DICTATING, TIME_EDIT, CONNECTING, LOADING, FAILED };
-  enum Pending { NONE, MONTH_FETCH, DAY_FETCH, SUGGEST_FETCH, DICTATE_SEND, TITLE_SEND };
+  enum Pending { NONE, MONTH_FETCH, DAY_FETCH, DICTATE_SEND, TITLE_SEND };
   // Qué se está grabando: el día entero o el título de una actividad.
   enum RecordMode { REC_DAY, REC_TITLE };
   // Filas del menú de entrada.
@@ -134,12 +130,8 @@ class CalendarActivity final : public Activity {
   StrId failureId = StrId::STR_ASK_FAILED;
   std::string failureDetail;
 
-  // --- Hoy y las sugerencias ------------------------------------------------
-  std::vector<std::string> suggestLines;
-  std::string suggestDate;      // de qué día son las sugerencias que tenemos
-  time_t suggestAt = 0;         // cuándo las calculó el servidor (epoch UTC)
-  bool suggestRefresh = false;  // el próximo pedido es un recálculo pedido con OK
-  std::string suggestError;
+  // --- Hoy -------------------------------------------------------------------
+  // (Las sugerencias del día se fueron en 1.5.108: eran de los viajes.)
   std::vector<Line> todayLines;
   int todayTop = 0;  // primer renglón en pantalla
   int todayPerPage = 1;
@@ -148,9 +140,6 @@ class CalendarActivity final : public Activity {
   void goToCurrentMonth();
   void openToday();
   void buildTodayLines();
-  bool fetchSuggest(bool refresh);
-  bool loadSuggestFromCache(const std::string& date);
-  void saveSuggestToCache() const;
   void renderHome();
   void renderToday();
 

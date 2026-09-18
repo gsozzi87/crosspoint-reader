@@ -39,9 +39,7 @@ constexpr uint8_t REG_INTSTS3 = 0x4A;
 // Rieles: bit0-2 de 0x90 = ALDO1-3 (bit3 ALDO4, bit4-5 BLDO1-2, bit6 CPUSLDO,
 // bit7 DLDO1); 0x92-0x94 = tensión de ALDO1-3, 0x1C = 3,3 V (0,5 V + n·0,1 V).
 constexpr uint8_t REG_LDO_ONOFF0 = 0x90;
-constexpr uint8_t REG_ALDO1_VOLT = 0x92;
 constexpr uint8_t ALDO123_MASK = 0x07;
-constexpr uint8_t ALDO_3V3 = 0x1C;
 constexpr uint8_t CHIP_ID = 0x4A;
 
 // 0x27: IrqLevel 1 s (0 << 4): LONG latches one second into a hold, anchoring
@@ -157,9 +155,11 @@ void PowerKey::begin() {
   if (readReg(REG_LDO_ONOFF0, ldo)) {
     const uint8_t missing = static_cast<uint8_t>(~ldo & ALDO123_MASK);
     if (missing != 0) {
-      for (uint8_t i = 0; i < 3; ++i) {
-        if (missing & (1u << i)) writeReg(static_cast<uint8_t>(REG_ALDO1_VOLT + i), ALDO_3V3);
-      }
+      // SOLO el bit de encendido: la tensión de cada ALDO queda como la dejó la
+      // fábrica. El volcado de 1.5.108 mostró ALDO1-4 = 1C 1C 19 0D, o sea que
+      // ALDO3 va a 3,0 V y no a 3,3: escribirle 0x1C, como hacía 1.5.107,
+      // habría subido 0,3 V a un chip que no sabemos cuál es. El PMIC no se
+      // resetea con el ESP, así que esos registros no se pierden entre sueños.
       writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK));
       delay(20);  // que los LDO suban y el panel salga de su reset antes de display.begin()
       railsRestored_ = missing;
@@ -281,7 +281,7 @@ bool PowerKey::railsCycle(uint16_t offMs) const {
   if (!readReg(REG_LDO_ONOFF0, ldo)) return false;
   if (!writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo & ~ALDO123_MASK))) return false;
   delay(offMs);
-  for (uint8_t i = 0; i < 3; ++i) writeReg(static_cast<uint8_t>(REG_ALDO1_VOLT + i), ALDO_3V3);
+  // Sólo se vuelven a encender: las tensiones siguen siendo las de fábrica.
   const bool ok = writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK));
   delay(50);
   uint8_t check = 0xEE;

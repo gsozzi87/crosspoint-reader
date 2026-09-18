@@ -607,7 +607,7 @@ void LuaAppsActivity::renderListening() {
   const int pageWidth = renderer.getScreenWidth();
   const int mid = renderer.getScreenHeight() / 2;
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, app->name().c_str());
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, app->title().c_str());
   int y = metrics.topPadding + metrics.headerHeight + 24;
   const int lineH = renderer.getTextHeight(UI_12_FONT_ID) + 6;
   for (const std::string& line : wrapLines(UI_12_FONT_ID, current.a, pageWidth - 2 * SIDE, 4)) {
@@ -624,7 +624,7 @@ void LuaAppsActivity::renderWaiting(const char* text) {
   const int pageWidth = renderer.getScreenWidth();
   const int mid = renderer.getScreenHeight() / 2;
   renderer.clearScreen();
-  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, app->name().c_str());
+  GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, app->title().c_str());
   if (phase == Phase::Connecting) {
     FriendlyWifi::drawStatus(renderer, wifi, mid);
   } else {
@@ -654,8 +654,11 @@ void LuaAppsActivity::renderList() {
       const int i = scroll + row;
       const int y = top + row * listui::ROW2_H;
       listui::RowSpec spec;
-      spec.title = apps[i].name.c_str();
-      spec.detail = apps[i].path.c_str();
+      // Título y descripción del comentario que abre el archivo; nunca la ruta,
+      // que es un dato de la tarjeta y no de la app ("Apps/reloj.lua" no es
+      // un nombre).
+      spec.title = apps[i].title.c_str();
+      spec.detail = apps[i].description.c_str();
       spec.selected = i == selected;
       spec.bold = true;
       listui::row(renderer, SIDE, y, rowW, listui::ROW2_H, spec);
@@ -675,7 +678,7 @@ void LuaAppsActivity::renderError() {
 
   int y = metrics.topPadding + metrics.headerHeight + 32;
   if (app) {
-    renderer.drawText(UI_12_FONT_ID, SIDE, y, app->name().c_str(), true, EpdFontFamily::BOLD);
+    renderer.drawText(UI_12_FONT_ID, SIDE, y, app->title().c_str(), true, EpdFontFamily::BOLD);
     y += 40;
     // El mensaje del intérprete tal cual: es lo único que le dice al que
     // escribió la app dónde está el problema, y viene con archivo y línea.
