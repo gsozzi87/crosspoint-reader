@@ -7,6 +7,8 @@
 #include <Logging.h>
 #include <Utf8.h>
 #include <esp_heap_caps.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 #include <algorithm>
 #include <cstring>
@@ -40,6 +42,22 @@ GfxRenderer* g_renderer = nullptr;
 bool g_quit = false;
 std::string g_appStem;
 char g_nativeText[LuaApp::TEXT_CAP + 1] = {};
+
+// UN SOLO HILO ADENTRO DE LA VM (1.5.110). `on_draw` corre desde la tarea de
+// render (ActivityManager::renderTaskLoop) y `on_tick`/`on_key` desde el loop de
+// Arduino, y cada uno abre su propio worker sobre el MISMO lua_State. Sin
+// candado, un tick de 120 ms caía en el medio de un on_draw de 275 ms y las dos
+// llamadas pisaban la pila de Lua a la vez: el Librito murió con "librito:53:
+// attempt to compare nil with number" en una línea donde el nil no puede venir
+// de ningún lado (`cp.textw` devuelve siempre un entero). Recursivo porque
+// cancelQueued() llama a onHeard()/onReplyError(), que vuelven a tomarlo.
+SemaphoreHandle_t g_vmLock = xSemaphoreCreateRecursiveMutex();
+struct VmGuard {
+  VmGuard() { xSemaphoreTakeRecursive(g_vmLock, portMAX_DELAY); }
+  ~VmGuard() { xSemaphoreGiveRecursive(g_vmLock); }
+  VmGuard(const VmGuard&) = delete;
+  VmGuard& operator=(const VmGuard&) = delete;
+};
 char g_logLine[LuaApp::LOG_CAP + 1] = {};
 
 // La cola de pedidos al host y lo que `cp.busy()` responde. Viven acá y no en
@@ -902,6 +920,7 @@ std::vector<LuaApp::Entry> LuaApp::installed() {
 LuaApp::~LuaApp() { close(); }
 
 bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
+  VmGuard guard;
   close();
   path_ = path;
   const size_t slash = path.find_last_of('/');
@@ -979,6 +998,7 @@ bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
 }
 
 void LuaApp::close() {
+  VmGuard guard;
   luasandbox::destroy(state_);
   state_ = nullptr;
   g_renderer = nullptr;
@@ -990,6 +1010,7 @@ void LuaApp::close() {
 bool LuaApp::callback(const char* fn, const char* arg) { return callbackWith(fn, nullptr, const_cast<char*>(arg)); }
 
 bool LuaApp::callbackWith(const char* fn, int (*push)(lua_State*, void*), void* ctx) {
+  VmGuard guard;
   if (!state_ || !error_.empty()) return false;
   CallJob job;
   job.L = state_;
@@ -1032,17 +1053,25 @@ std::string LuaApp::dataDir() const { return std::string(DATA_ROOT) + "/" + dirN
 std::string LuaApp::booksDir() const { return std::string(BOOKS_ROOT) + "/" + dirName_; }
 
 bool LuaApp::takeRequest(Request& out) {
+  VmGuard guard;  // g_requests la llena el worker de un callback y la vacía el loop
   if (g_requests.empty()) return false;
   out = std::move(g_requests.front());
   g_requests.pop_front();
   return true;
 }
 
-bool LuaApp::hasRequests() const { return !g_requests.empty(); }
+bool LuaApp::hasRequests() const {
+  VmGuard guard;
+  return !g_requests.empty();
+}
 
-void LuaApp::setBusy(const bool busy) { g_hostBusy = busy; }
+void LuaApp::setBusy(const bool busy) {
+  VmGuard guard;
+  g_hostBusy = busy;
+}
 
 bool LuaApp::cancelQueued() {
+  VmGuard guard;
   bool repaint = false;
   while (!g_requests.empty()) {
     Request r = std::move(g_requests.front());
@@ -1060,6 +1089,7 @@ bool LuaApp::cancelQueued() {
 }
 
 bool LuaApp::onHeard(const char* textOrNull) {
+  VmGuard guard;
   if (!state_) return false;
   // Sin on_heard no es error: la app pidió escuchar y no le interesa el texto.
   lua_getglobal(state_, "on_heard");
@@ -1135,6 +1165,7 @@ int pushReply(lua_State* L, void* p) {
 }  // namespace
 
 bool LuaApp::onReply(const int id, const std::string& json) {
+  VmGuard guard;
   if (!state_) return false;
   lua_getglobal(state_, "on_reply");
   const bool has = lua_isfunction(state_, -1);
@@ -1145,6 +1176,7 @@ bool LuaApp::onReply(const int id, const std::string& json) {
 }
 
 bool LuaApp::onReplyError(const int id, const char* error) {
+  VmGuard guard;
   if (!state_) return false;
   lua_getglobal(state_, "on_reply");
   const bool has = lua_isfunction(state_, -1);
@@ -1155,6 +1187,7 @@ bool LuaApp::onReplyError(const int id, const char* error) {
 }
 
 bool LuaApp::onReplyBytes(const int id, const size_t bytes) {
+  VmGuard guard;
   if (!state_) return false;
   lua_getglobal(state_, "on_reply");
   const bool has = lua_isfunction(state_, -1);
