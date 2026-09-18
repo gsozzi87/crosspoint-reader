@@ -181,6 +181,10 @@ void LuaAppsActivity::runningLoop() {
         return;
       }
       if (mappedInput.wasPressed(MappedInputManager::Button::Confirm) || !recorder->isRecording()) {
+        // La suelta de ese mismo OK llega un cuadro después; si la toma fue
+        // demasiado corta la app ya está en Idle y la leería como un "ok" que
+        // nadie dio (y en Librito eso es "Seguir" sin mirar lo entendido).
+        mappedInput.absorbHeldButton(MappedInputManager::Button::Confirm);
         endListen(/*cancelled=*/false);
         return;
       }

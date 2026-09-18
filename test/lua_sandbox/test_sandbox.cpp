@@ -666,6 +666,11 @@ int main() {
     check(err.empty(), (std::string("reloj: 50 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
   }
 
+  // El último directorio temporal de los archivos falsos no lo borra nadie más.
+  if (!g_fsRoot.empty()) {
+    const std::string cmd = "rm -rf '" + g_fsRoot + "'";
+    if (system(cmd.c_str()) != 0) printf("(no se pudo borrar %s)\n", g_fsRoot.c_str());
+  }
   printf("\n%s (%d fallas)\n", failures == 0 ? "TODO BIEN" : "HAY FALLAS", failures);
   return failures == 0 ? 0 : 1;
 }
