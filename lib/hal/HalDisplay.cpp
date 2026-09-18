@@ -7,6 +7,9 @@ HalDisplay display;
 
 #define SD_SPI_MISO 7
 
+// Tope de una espera de BUSY en la ws397 (ms). Ver el comentario en begin().
+static constexpr uint32_t BUSY_TIMEOUT_MS = 5000;
+
 HalDisplay::HalDisplay() : einkDisplay(EPD_SCLK, EPD_MOSI, EPD_CS, EPD_DC, EPD_RST, EPD_BUSY) {}
 
 HalDisplay::~HalDisplay() {}
@@ -15,6 +18,18 @@ void HalDisplay::begin(bool seamless) {
   // Set X3-specific panel mode before initializing.
   if (gpio.deviceIsX3()) {
     einkDisplay.setDisplayX3();
+  }
+
+  // TOPE DE LA ESPERA DE BUSY (1.5.108). El SDK espera hasta 30 s a que BUSY
+  // baje, y un panel que se quedó con BUSY en alto (riel apagado, controlador
+  // trabado, FPC) no lo baja nunca: el init pagaba 90 s (tres esperas) y cada
+  // pintada 30 s, que desde afuera es un aparato colgado que "a los años"
+  // reacciona. La onda más larga medida en este panel es el FULL, 2,2 s; con
+  // 5 s hay margen de sobra para el frío y el aparato sigue usable —lento,
+  // pero usable— mientras el log dice qué pasa (ver checkPanelHealth en
+  // main.cpp). Va ANTES de begin() porque el init ya espera BUSY.
+  if (BoardConfig::isWS397()) {
+    einkDisplay.setBusyTimeoutMs(BUSY_TIMEOUT_MS);
   }
 
   einkDisplay.begin();

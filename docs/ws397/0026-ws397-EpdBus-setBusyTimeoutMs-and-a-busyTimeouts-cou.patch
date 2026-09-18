@@ -1,0 +1,150 @@
+From 1335752c9149423dbfb12c25a6b379419fd7b2cc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 18 Sep 2026 16:40:56 +0000
+Subject: [PATCH] ws397: EpdBus::setBusyTimeoutMs and a busyTimeouts() counter
+
+The BUSY wait had a hard-coded 30 s bound in the three waitBusy loops and
+in the refresh semaphore. A controller whose BUSY line is stuck busy (rail
+off, latched up, broken FPC) never releases it, so init paid 90 s and
+every frame 30 s: the device reads as frozen. Hosts that know their
+longest healthy waveform can now lower the bound, and busyTimeouts()
+counts the waits that hit it so firmware can tell "the panel does not
+answer" from "slow" and log it. Default unchanged (30 s); UcIdleHigh still
+has no bound, as before.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016HQ6nZag75VgtH5Z2WUGoF
+---
+ .../FreeInkDisplay/include/FreeInkDisplay.h   |  7 ++++++
+ .../display/FreeInkDisplay/src/bus/EpdBus.cpp | 24 +++++++++++++++----
+ libs/display/FreeInkDisplay/src/bus/EpdBus.h  | 15 ++++++++++++
+ 3 files changed, 41 insertions(+), 5 deletions(-)
+
+diff --git a/libs/display/FreeInkDisplay/include/FreeInkDisplay.h b/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
+index 873f8ca..8c9c8e3 100644
+--- a/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
++++ b/libs/display/FreeInkDisplay/include/FreeInkDisplay.h
+@@ -290,6 +290,13 @@ class FreeInkDisplay {
+     _bus.setBusyWaitSliceHook(sliceHook);
+   }
+ 
++  // Upper bound for one BUSY wait and the count of waits that hit it since
++  // boot. See EpdBus::setBusyTimeoutMs: a panel with BUSY stuck busy blocks
++  // every command for the bound, so a host that knows its longest healthy
++  // waveform can trade the 30 s default for something it can survive.
++  void setBusyTimeoutMs(uint32_t ms) { _bus.setBusyTimeoutMs(ms); }
++  uint32_t busyTimeouts() const { return _bus.busyTimeouts(); }
++
+   // Access to frame buffer
+   uint8_t* getFrameBuffer() const { return frameBuffer; }
+   bool framebufferReady() const { return frameBuffer != nullptr; }
+diff --git a/libs/display/FreeInkDisplay/src/bus/EpdBus.cpp b/libs/display/FreeInkDisplay/src/bus/EpdBus.cpp
+index 177e015..38da68f 100644
+--- a/libs/display/FreeInkDisplay/src/bus/EpdBus.cpp
++++ b/libs/display/FreeInkDisplay/src/bus/EpdBus.cpp
+@@ -211,6 +211,7 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
+   bool longWait = false;
+   bool hookFired = false;
+   bool x3SawLow = false;
++  bool timedOut = false;
+ 
+   if (p == BusyPolarity::ActiveHigh) {
+     while (digitalRead(_pins.busy) == HIGH) {
+@@ -222,7 +223,10 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
+           _busyWaitBeginHook();
+         }
+       }
+-      if (millis() - start > 30000) break;
++      if (millis() - start > _busyTimeoutMs) {
++        timedOut = true;
++        break;
++      }
+     }
+   } else if (p == BusyPolarity::ActiveLow) {
+     bool busy = digitalRead(_pins.busy) == LOW;
+@@ -245,7 +249,10 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
+             _busyWaitBeginHook();
+           }
+         }
+-        if (millis() - start > 30000) break;
++        if (millis() - start > _busyTimeoutMs) {
++          timedOut = true;
++          break;
++        }
+       } while (digitalRead(_pins.busy) == LOW);
+     }
+   } else if (p == BusyPolarity::UcIdleHigh) {
+@@ -281,11 +288,15 @@ void EpdBus::waitBusy(BusyPolarity p, const char* tag) {
+             _busyWaitBeginHook();
+           }
+         }
+-        if (millis() - start > 30000) break;
++        if (millis() - start > _busyTimeoutMs) {
++          timedOut = true;
++          break;
++        }
+       }
+     }
+   }
+ 
++  if (timedOut) _busyTimeouts++;
+   if (hookFired && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+   if (p == BusyPolarity::X3TwoPhase && !x3SawLow) return;
+ 
+@@ -308,7 +319,7 @@ void EpdBus::waitRefreshComplete(const char* tag) {
+   // never calls it. Bypassing the hook costs that host its power policy (~9% more
+   // per refresh, measured ~29 mC vs ~26.5 mC on X3), and is a latent hazard: edge
+   // interrupts do not fire during light sleep, so a completion edge taken while the
+-  // host is slept would be missed and the wait would stall to its 30 s timeout. The
++  // host is slept would be missed and the wait would stall to its BUSY timeout (30 s by default). The
+   // slice hook already delivers GPIO-precise wake, so the ISR path buys these hosts
+   // nothing — fall back to the hooked poll.
+   if (_busyWaitSliceHook != nullptr) {
+@@ -366,7 +377,10 @@ void EpdBus::waitRefreshComplete(const char* tag) {
+   const bool hook = (_busyWaitBeginHook != nullptr);
+   if (hook) _busyWaitBeginHook();
+   while (digitalRead(_pins.busy) != doneLevel) {
+-    if (xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(30000)) != pdTRUE) break;
++    if (xSemaphoreTake(s_epdRefreshDone, pdMS_TO_TICKS(_busyTimeoutMs)) != pdTRUE) {
++      _busyTimeouts++;
++      break;
++    }
+   }
+   if (hook && _busyWaitEndHook != nullptr) _busyWaitEndHook();
+ 
+diff --git a/libs/display/FreeInkDisplay/src/bus/EpdBus.h b/libs/display/FreeInkDisplay/src/bus/EpdBus.h
+index 7c9f307..b3ae6f5 100644
+--- a/libs/display/FreeInkDisplay/src/bus/EpdBus.h
++++ b/libs/display/FreeInkDisplay/src/bus/EpdBus.h
+@@ -94,6 +94,18 @@ class EpdBus {
+   // instead of polling, without the SDK knowing the wake mechanics.
+   void setBusyWaitSliceHook(bool (*sliceHook)(int8_t busyPin, uint8_t busyLevel)) { _busyWaitSliceHook = sliceHook; }
+ 
++  // Upper bound for a single BUSY wait, in milliseconds (default 30 s). A
++  // controller whose BUSY line is stuck at the busy level (rail off, latched
++  // up, broken FPC) never releases it, and every command then blocks for the
++  // full bound: with the default that is a 90 s init and a 30 s stall per
++  // frame, which reads as a frozen device. Hosts that know their panel's
++  // longest healthy waveform can lower it. UcIdleHigh ignores it on purpose
++  // (see waitBusy). busyTimeouts() counts the waits that hit the bound since
++  // boot, so host firmware can tell "the panel does not answer" from "slow".
++  void setBusyTimeoutMs(uint32_t ms) { _busyTimeoutMs = ms; }
++  uint32_t busyTimeoutMs() const { return _busyTimeoutMs; }
++  uint32_t busyTimeouts() const { return _busyTimeouts; }
++
+   // Send `ramCmd` then `plane` Y-flipped (gate order, bottom row first) as ONE
+   // CS-low data burst — required by UC8253 DTM writes which must not toggle CS
+   // mid-stream. (cmd uses its own CS pulse, matching the OEM sequence.)
+@@ -128,6 +140,9 @@ class EpdBus {
+     delay(fallbackDelayMs);
+   }
+ 
++  uint32_t _busyTimeoutMs = 30000;
++  uint32_t _busyTimeouts = 0;
++
+   EpdPins _pins{-1, -1, -1, -1, -1, -1};
+   SPISettings _spi;
+   BusyPolarity _busy = BusyPolarity::ActiveHigh;
+-- 
+2.43.0
+

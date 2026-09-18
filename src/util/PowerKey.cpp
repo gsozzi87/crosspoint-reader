@@ -275,6 +275,22 @@ bool PowerKey::railsOffForSleep() const {
   return check == after;
 }
 
+bool PowerKey::railsCycle(uint16_t offMs) const {
+  if (!available_) return false;
+  uint8_t ldo = 0;
+  if (!readReg(REG_LDO_ONOFF0, ldo)) return false;
+  if (!writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo & ~ALDO123_MASK))) return false;
+  delay(offMs);
+  for (uint8_t i = 0; i < 3; ++i) writeReg(static_cast<uint8_t>(REG_ALDO1_VOLT + i), ALDO_3V3);
+  const bool ok = writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK));
+  delay(50);
+  uint8_t check = 0xEE;
+  readReg(REG_LDO_ONOFF0, check);
+  LOG_INF(TAG, "ciclo de corriente a ALDO1-3 (panel, códec, amplificador): %u ms apagados, 90: %02X -> %02X", offMs,
+          ldo, check);
+  return ok && (check & ALDO123_MASK) == ALDO123_MASK;
+}
+
 void PowerKey::logSnapshot() const {
   if (!snapshotValid_) return;
   LOG_INF(TAG, "AXP2101 regs at boot: 10=%02X 20=%02X 21=%02X 22=%02X 27=%02X 40=%02X 41=%02X 42=%02X 48=%02X 49=%02X 4A=%02X",
