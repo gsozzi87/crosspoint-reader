@@ -56,6 +56,13 @@ class MappedInputManager {
   // until it is released) and, while it is still down, swallows the release
   // that ends the hold. No-op on the release side when it is already up.
   void absorbHeldButton(Button button) const;
+  // Lo mismo pero SÓLO la parte de la pulsación larga: la suelta sigue valiendo
+  // como toque. Es para el botón que despertó del reposo (light sleep): ese
+  // toque tiene que seguir pasando la página o eligiendo —casi toda vuelta de
+  // página en el lector viene del reposo—, pero mantenerlo no puede volverse
+  // el gesto largo de la pantalla que aparece (Atrás mantenido en el hub =
+  // sincronizar = levantar la red sin que nadie lo pidiera).
+  void ignoreHeldLongPress(Button button) const;
   bool isPressed(Button button) const;
   bool hasTouch() const;
   bool wasScreenTapped(int& x, int& y) const;

@@ -28,9 +28,15 @@
 
 namespace {
 constexpr const char* TAG = "VOICE_ACT";
-// El servidor contesta en 1,5-5 s (stt+llm+tts, medido en el log); 90 s de tope
-// eran 90 s mirando "pensando" cada vez que una conexión se quedaba muda.
-constexpr uint32_t VOICE_TIMEOUT_MS = 40000;
+// El servidor contesta en 1,5-5 s sin búsqueda, pero UNA PREGUNTA CON BÚSQUEDA
+// EN INTERNET son 20-60 s de modelo (el propio servidor le da 90 s). Con el
+// tope de 40 s de 1.5.101 esa pregunta vencía en el aparato, ServerClient la
+// mandaba dos veces más y el dueño miraba "Pensando" dos minutos: "se trabó
+// luego de que le pregunté algo que tenía que buscar". Los 40 s existían por
+// la conexión muda, y de esa se ocupa el keepalive desde 1.5.103 (la corta a
+// los ~14 s): el tope ya no la protege de nada, así que vuelve a lo que el
+// servidor puede tardar de verdad.
+constexpr uint32_t VOICE_TIMEOUT_MS = 90000;
 // Tope de seguridad por si el audio nunca termina, NO el largo esperado de la
 // lectura: quien decide que termino es !speech.isPlaying(). Con 15 s el modo
 // "leer siempre" cortaba a la mitad cualquier respuesta larga.

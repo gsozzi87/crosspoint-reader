@@ -23,6 +23,9 @@ class VoiceActivity final : public Activity {
   void render(RenderLock&&) override;
   bool skipLoopDelay() override { return state == RECORDING; }
   bool preventAutoSleep() override { return state != REPLY && state != FOLLOW_UP && state != FAILED; }
+  // La red queda arriba mientras dura la conversación; la sincronización
+  // oportunista NO se mete acá (ver Activity::allowsBackgroundSync).
+  bool allowsBackgroundSync() const override { return false; }
 
  private:
   // SPEAKING: la respuesta se está reproduciendo y hay algo que hacer después.
