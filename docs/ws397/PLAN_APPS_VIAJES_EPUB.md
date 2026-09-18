@@ -198,3 +198,77 @@ los vouchers.
    heap entero y hoy funciona así con Preguntarle al libro. Se puede vivir con eso.
 5. **Largo del librito**: 15 minutos ≈ 3.000 palabras, 5-7 capítulos. Si se quiere "corto / normal / largo",
    es una pregunta más en el flujo. **Recomiendo fijo en 15 minutos** para la primera versión.
+
+---
+
+## Decisiones tomadas (2026-09-18)
+
+1. Vouchers como **texto** extraído. 2. La guía **busca en internet** sola. 3. Opus 5 para libritos, Sonnet 5
+para guías, cambiable desde la web. 4. Al cerrar el EPUB se vuelve al hub. 5. Largo **mínimo 15 minutos**; el
+usuario **elige los capítulos** (los saca, los agrega, pide más temas) antes de escribir.
+
+## Contrato v1 (fase 0 + Librito) — lo que firmware, servidor y app tienen que cumplir
+
+### `cp` — lo nuevo (todo lo que espera es ASÍNCRONO: se pide y llega por callback)
+
+| Función | Devuelve | Qué pasa |
+|---|---|---|
+| `cp.listen(seg [, pregunta])` | `true` si empezó | El firmware muestra su pantalla de escucha con `pregunta` arriba (pitido, "OK termina · Atrás cancela"), graba hasta `seg` s, transcribe por el servidor y llama **`on_heard(texto)`** (`nil` si canceló o falló). Después repinta. |
+| `cp.call(servicio, args)` | `id` (entero) o `nil` si ya hay 4 en vuelo | `POST /api/apps/call` `{app, service, args}` con el Bearer del aparato y `?lang=`. Llama **`on_reply(id, ok, tabla)`**: `tabla` es el JSON del servidor (con `ok=false`, `tabla.error` es el texto). Después repinta. |
+| `cp.download(fileId, nombre [, destino])` | `id` o `nil` | Baja `GET /api/apps/file/<fileId>` a la carpeta de la app (`destino="app"`, por omisión) o a `/Books/<App>/` (`destino="books"`). **`on_reply(id, ok, {bytes=n})`**. |
+| `cp.busy()` | `true`/`false` | Hay una escucha, llamada o descarga en curso. Mientras, la app puede dibujar "esperando". |
+| `cp.files()` | tabla de nombres | Sólo `/Apps/data/<app>/`. |
+| `cp.read(nombre [, desde, largo])` | texto o `nil` | Entero si entra en 48 KB; con rango para archivos grandes. |
+| `cp.write(nombre, texto)` | `true`/`false` | Tope 64 KB, escritura atómica (`.tmp` y renombrar). |
+| `cp.remove(nombre)`, `cp.size(nombre)` | | |
+| `cp.view(nombre [, titulo])` | `true` si existía | Abre el `.txt` en el visor paginado del sistema; al salir, vuelve a la app y repinta. |
+| `cp.open_book(nombre)` | `true` si existía | Abre `/Books/<App>/<nombre>` en el lector. **La app se cierra**; al cerrar el libro se vuelve al hub. |
+
+- `<App>` = nombre del archivo sin `.lua` (`librito.lua` → `/Apps/data/librito/`, `/Books/librito/`).
+  Los nombres de archivo que pasa la app: `[A-Za-z0-9._-]{1,48}`, sin punto inicial, sin barras.
+- WiFi: `cp.listen`, `cp.call` y `cp.download` levantan la red con `FriendlyWifi` la primera vez (pantalla de
+  conexión del sistema si tarda) y la dejan arriba hasta que la app se cierra. Sin red guardada → el selector.
+  Sin token del aparato → `on_reply(id, false, {error="sin vincular"})`.
+- Mientras hay algo en curso (`cp.busy()`), `on_key` **no se llama** salvo para `back`, que cancela lo que está
+  en curso y llama a `on_heard(nil)` / `on_reply(id, false, {error="cancelado"})`. `on_tick` sigue.
+- Las llamadas son **de a una**: se encolan hasta 4 y salen en orden. El tope de instrucciones de Lua no corre
+  mientras el firmware espera a la red (la espera es del host, no del script).
+- Todo lo de red lo hace el **host** (`LuaAppsActivity`) desde su `loop()`, nunca desde el worker de Lua (32 KB
+  de stack; TLS no entra ahí).
+
+### Servidor — `/api/apps/*` (Bearer del aparato, como todo `/api`)
+
+- `POST /api/apps/call?lang=xx` `{app, service, args}` → JSON `{ok:true, …}` o `{ok:false, error}` (HTTP 200
+  igual; 4xx sólo si falta el Bearer o el cuerpo es ilegible). **Toda respuesta síncrona en menos de 25 s** (el
+  aparato corta a los 40). Lo que tarde más es un trabajo.
+- Servicio común `job.status {id}` → `{ok, state:"running"|"done"|"failed", step, total, label, files:[{id,
+  name, bytes}], error}`. Trabajos en `/data/apps-jobs.json` por cuenta, se podan a las 24 h; archivos en
+  `/data/apps-files/<cuenta>/<id>`.
+- `GET /api/apps/file/:id` → el archivo (Content-Type por extensión; `.epub` = `application/epub+zip`).
+- Config: `config.apps = { key, model }` (`model` por omisión `claude-opus-5`; se elige desde la web entre
+  `claude-opus-5` y `claude-sonnet-5`). La clave **no se devuelve** (`hasKey`). Sin clave, todo servicio que la
+  necesite contesta `{ok:false, error:"Carga la clave de las apps en la web (Ajustes → Apps de Lua)"}`.
+  Cliente propio en `server/src/appsLlm.ts` (`@anthropic-ai/sdk`, `thinking: {type:"adaptive"}`, streaming
+  para prosa larga, `output_config.format` json_schema para lo estructurado). Contabiliza en `usage.ts` bajo
+  `apps`.
+
+### Servicios del Librito (`server/src/librito.ts`)
+
+| Servicio | args | Devuelve |
+|---|---|---|
+| `librito.enfoque` | `{tema}` | `{ok, tema, enfoques:[{id, titulo, linea}]}` — tres formas de encarar el tema (`tema` viene normalizado: título corto) |
+| `librito.indice` | `{tema, enfoque, minutos?}` | `{ok, titulo, minutos, capitulos:[{n, titulo, linea, palabras}]}` — 5 a 8 capítulos; `minutos` ≥ 15 (200 palabras/min) |
+| `librito.ajustar` | `{tema, enfoque, capitulos:[{titulo, linea, activo}], pedido, minutos?}` | Igual que `indice`, con el pedido dictado aplicado ("agregá uno sobre…", "más temas", "más corto el 3"). Los inactivos se descartan y el resto se recalibra para que el total **no baje de 15 minutos** |
+| `librito.escribir` | `{titulo, tema, enfoque, capitulos:[{titulo, linea, palabras}], minutos}` | `{ok, jobId}`; el trabajo escribe capítulo por capítulo (system: índice entero + resumen de lo ya escrito, prosa de divulgación seria, sin listas ni markdown, en el idioma del aparato) y arma el EPUB a mano (`mimetype`, `container.xml`, `content.opf`, `toc.ncx`, un XHTML por capítulo, portada de texto, "Para seguir leyendo" al final). `files:[{id, name:"<slug>.epub", bytes}]` |
+
+### Prueba de escritorio (contrato entre el harness y las apps)
+
+`test/lua_sandbox/test_sandbox.cpp` provee un `cp` falso completo. Un escenario es un archivo
+`test/lua_sandbox/scenarios/<app>.lua` que corre DESPUÉS de cargar `examples/Apps/<app>.lua` y puede:
+- `fake.heard = "texto"` → la próxima `cp.listen` llama a `on_heard` con eso en el siguiente `fake.step()`;
+- `fake.reply["librito.enfoque"] = function(args) return true, {…} end` → la próxima `cp.call` de ese servicio
+  llama a `on_reply` con eso en el siguiente `fake.step()`; `fake.reply["job.status"]` puede devolver distinto en
+  cada llamada (closure con contador);
+- `fake.key("ok")`, `fake.tick()`, `fake.step()` (entrega lo pendiente), `fake.draw()` (corre `on_draw` y
+  devuelve el texto dibujado como lista de strings) y `assert`.
+Los archivos van a un directorio temporal. El harness corre todos los escenarios y falla si alguno lanza.
