@@ -3,7 +3,7 @@
 // que publica mucho se come el paquete y los otros no aparecen nunca.
 import { expect, test } from "bun:test";
 
-import { carryUnavailable, interleave, rollingWindow, type PackItem } from "../../server/src/news";
+import { carryUnavailable, interleave, rollingWindow, splitTitledAnswer, type PackItem } from "../../server/src/news";
 
 const feed = (id: number, name: string, n: number) => ({
   feed: name,
@@ -137,4 +137,35 @@ test("un paquete viejo sin whenAt no se pierde ni se cuelga", () => {
 test("la ventana con lo que no entra vacía y con listas vacías", () => {
   expect(rollingWindow([], 12, 40)).toEqual([]);
   expect(rollingWindow([nota("1-a", 1)], 12, 0)).toEqual([]);
+});
+
+// La respuesta del modelo para un paper viene con el título traducido en la
+// primera línea. El formato de una respuesta del modelo es lo primero que se
+// rompe, y romperse acá NO puede costar la traducción del cuerpo.
+test("separa el título traducido del cuerpo", () => {
+  const out = splitTitledAnswer("TÍTULO: Ensayo aleatorizado de semaglutida\n\nMÉTODOS: 1961 adultos...");
+  expect(out.title).toBe("Ensayo aleatorizado de semaglutida");
+  expect(out.text).toBe("MÉTODOS: 1961 adultos...");
+});
+
+test("aguanta las formas en que el modelo se sale del formato", () => {
+  // sin tilde, en minúsculas, con negrita de markdown y con comillas
+  expect(splitTitledAnswer('**TITULO: "Estudio X"**\n\ncuerpo').title).toBe("Estudio X");
+  expect(splitTitledAnswer("**TÍTULO:** Estudio W\n\ncuerpo").title).toBe("Estudio W");
+  expect(splitTitledAnswer("TITLE: Estudio V\n\ncuerpo").title).toBe("Estudio V");
+  expect(splitTitledAnswer("titulo:   Estudio Y  \n\ncuerpo").title).toBe("Estudio Y");
+  // línea en blanco de más entre el título y el cuerpo
+  expect(splitTitledAnswer("TÍTULO: Z\n\n\n   cuerpo largo").text).toBe("cuerpo largo");
+});
+
+test("sin la primera línea marcada, el cuerpo entero se conserva", () => {
+  // Es lo que hace que un modelo que ignora el formato no rompa la nota: el
+  // título se deja como estaba y la traducción no se pierde.
+  const cuerpo = "Traducción sin título delante, con todas sus frases.";
+  const out = splitTitledAnswer(cuerpo);
+  expect(out.title).toBe("");
+  expect(out.text).toBe(cuerpo);
+  // Y un título SIN cuerpo no se lleva puesta la nota: el cuerpo queda vacío y
+  // el llamador se queda con el texto de antes (hay un piso de 200 caracteres).
+  expect(splitTitledAnswer("TÍTULO: solo el titulo")).toEqual({ title: "solo el titulo", text: "" });
 });

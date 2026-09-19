@@ -161,13 +161,31 @@ resuelve por DNS y no se baja. `isMedicalFeed(url)` es la única forma válida d
 **No pide cuenta, ni clave, ni correo.** E-utilities contesta a cualquiera; se manda sólo `tool`, que es la
 etiqueta con la que NCBI pide que las aplicaciones se presenten. No hay nada que configurar.
 
-**El resumen sale en el idioma del aparato.** El abstract viene siempre en inglés, así que el modelo
-traduce y resume en el mismo paso, con prompt clínico (`medicalPrompt(lang)` en `news.ts`): mantiene el
-registro médico, conserva sin traducir fármacos, dosis, HR/RR/OR, IC95%, NNT y unidades, y separa
-asociación de causalidad. Antes el prompt era sólo en español y en cualquier otro idioma la nota médica
-caía al prompt de noticias común, que la simplifica para público general. `MEDICAL_SUMMARY_VERSION`
-(`medical.ts`) sube cuando ese prompt cambia: los cuerpos ya guardados se vuelven a masticar en vez de
-quedar congelados en el idioma viejo.
+**Un paper se TRADUCE, no se mastica.** Con una noticia de diario el modelo reescribe para pantalla
+chica; con un paper no puede, porque el que lee es un médico. Regla del dueño: *"tienen que tener el
+lenguaje técnico con el que fueron escritos, no cambiar palabras sino traducirlas"*. `medicalPrompt(lang)`
+(`news.ts`) pide una traducción fiel al término que usan los médicos en el idioma de destino, deja en
+inglés lo que no tiene equivalente aceptado, conserva sin tocar fármacos, dosis, HR/RR/OR, IC95%, p, NNT,
+unidades, siglas de escalas y de ensayos, PMID y DOI, mantiene las secciones del abstract y **no acorta**.
+Antes era un resumen clínico, y sólo en español: en los otros cinco idiomas la nota médica caía al prompt
+de noticias común, que la simplifica para público general.
+
+- **El título también se traduce**, en la MISMA llamada: la respuesta trae `TÍTULO: …` en la primera
+  línea y el cuerpo debajo (`splitTitledAnswer`, pura y probada). Si el modelo ignora el formato, el
+  título queda como estaba y la traducción del cuerpo no se pierde. La etiqueta `[NEJM · RCT]` es una
+  marca nuestra: no se le manda al modelo y se vuelve a poner acá.
+- **`srcTitle` guarda el título original.** El de la nota pasa a ser la traducción, así que sin esto cada
+  pasada lo vería distinto del que trae PubMed y volvería a traducir todo cada hora.
+- **Los papers tienen presupuesto de modelo PROPIO** (`NEWS_MEDICAL_DIGEST`, 12), aparte de
+  `NEWS_DIGEST_PER_RUN`. Una noticia sin masticar se lee igual; un paper sin traducir llega **en inglés**,
+  que es justo lo que no se quiere. El gasto está topeado solo: PubMed aporta como mucho
+  `NEWS_MEDICAL_ITEMS` por pasada y lo ya traducido no se vuelve a pagar.
+- **El piso de 400 caracteres para masticar no aplica a un paper** (es 120): ese piso existe para no gastar
+  el modelo reescribiendo un párrafo que ya se lee bien, y un abstract corto en inglés no se lee bien en
+  español. El paquete igual pide 200 caracteres de cuerpo para aceptar una nota, que es otra cosa.
+
+`MEDICAL_SUMMARY_VERSION` (`medical.ts`) sube cuando ese prompt cambia: los cuerpos ya guardados se
+vuelven a traducir en vez de quedar congelados con el prompt viejo.
 
 `NEWS_MEDICAL_ITEMS` (10, tope 12) es cuántos artículos aporta por pasada.
 

@@ -699,7 +699,7 @@ function noticiasView() {
   // fuente más de la lista de abajo (se renombra, se prueba y se borra igual).
   if (med.url && !med.added) {
     html += '<button class="wide" data-act="feed-add-medical" style="margin-top:8px">🩺 Agregar ' + esc(med.name || "Medicina · PubMed") + '</button>' +
-      '<p class="hint">Evidencia clínica reciente, elegida y resumida por el servidor en el idioma del aparato.</p>';
+      '<p class="hint">Papers recientes, elegidos por señal clínica y <b>traducidos</b> al idioma del aparato conservando el lenguaje técnico. Es para leerlos como médico, no resumidos para público general.</p>';
   }
   html += '<ul class="rows" style="margin-top:8px">';
   if (!S.feeds.length) html += '<li class="empty">No hay fuentes cargadas.</li>';
@@ -747,7 +747,7 @@ function feedSheet(f) {
   openSheet(f.name,
     field("Nombre", input("name", f.name, 'maxlength="40" autofocus')) +
     (esMed
-      ? '<p class="muted" style="font-size:13px">Papers recientes de PubMed, elegidos por señal clínica y resumidos en el idioma del aparato. No hace falta cuenta ni clave.</p>'
+      ? '<p class="muted" style="font-size:13px">Papers recientes de PubMed, elegidos por señal clínica. El servidor los <b>traduce</b> al idioma del aparato conservando el lenguaje técnico (fármacos, dosis, HR, IC95%, siglas): no los simplifica para público general. No hace falta cuenta ni clave.</p>'
       : '<p class="muted mono" style="word-break:break-all;font-size:13px">' + esc(f.url) + "</p>") +
     '<button class="ghost wide" data-act="feed-test" data-id="' + f.id + '">Probar el feed</button>',
     {

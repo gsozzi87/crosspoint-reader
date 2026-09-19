@@ -2289,7 +2289,7 @@ manifiesto de noticias.
 *Pensando*, que PWR durante una descarga deje `CANCELAR por PWR` y enseguida el `PWR soltado … se suspende`
 de siempre, y que la línea `[ERR] [LOOP]` traiga un número de bombeos grande.
 
-## PubMed es un feed más, y un host caído volteaba el servidor (servidor, después de 1.5.118)
+## PubMed es un feed más y los papers se TRADUCEN (servidor, después de 1.5.118)
 
 Pedido del dueño: *"no vamos a usar ningun mail, si ya trae las noticias no veo para qué loguearse ni nada…
 sólo que quede como opción en la web si lo quieren o no como un feed más… arregla lo del prompt pues, ya
@@ -2307,12 +2307,30 @@ dame las noticias o papers traducidos y masticados"*. **Nada de firmware**: es t
   siempre; el parche de la semana pasada fue ponerle `NEWS_MEDICAL=0`, que ya no hace falta.
 - **No pide cuenta, ni clave, ni correo.** `addIdentity()` manda sólo `tool=ws397-paper`, que es cómo NCBI
   pide que las aplicaciones se presenten. Se sacaron `NCBI_EMAIL` y `NCBI_API_KEY`.
-- **El resumen sale en el idioma del aparato.** El abstract de PubMed viene siempre en inglés y el prompt
-  clínico estaba escrito SÓLO en español, así que en cualquier otro idioma la nota médica caía al prompt de
-  noticias común, que la simplifica para público general. `medicalPrompt(lang)` traduce y resume en el mismo
-  paso en los seis idiomas, manteniendo el registro clínico y dejando **sin traducir** fármacos, dosis,
-  HR/RR/OR, IC95%, NNT y unidades. `MEDICAL_SUMMARY_VERSION` sube con el prompt y **invalida lo ya
-  masticado**: sin eso los cuerpos guardados quedaban congelados en el idioma viejo.
+- **Un paper se TRADUCE, no se mastica** (y esto costó dos vueltas). El abstract viene siempre en inglés y
+  el prompt clínico estaba escrito SÓLO en español, así que en los otros cinco idiomas la nota médica caía
+  al prompt de noticias común, que la simplifica para público general. La primera corrección lo hizo
+  multilingüe pero seguía siendo un RESUMEN, y el dueño lo cortó en seco: *"no las quiero para público en
+  general, las quiero para un médico, tienen que tener el lenguaje técnico con el que fueron escritos, no
+  cambiar palabras sino traducirlas"*. `medicalPrompt(lang)` pide ahora una **traducción fiel**: el término
+  que usan los médicos en el idioma de destino ("ensayo clínico aleatorizado", no "un estudio en el que se
+  sorteó a los pacientes"), lo que no tiene equivalente aceptado se queda en inglés, y no se tocan fármacos,
+  dosis, HR/RR/OR, IC95%, p, NNT, unidades, siglas de escalas y de ensayos, PMID ni DOI. **No acorta**:
+  un abstract ya es corto, y simplificarlo lo rompe — el que lo lee necesita el término exacto para
+  buscarlo después.
+- **El título también se traduce, en la MISMA llamada** (`TÍTULO: …` en la primera línea, cuerpo debajo;
+  `splitTitledAnswer` es pura y está probada). Tenerlo en inglés con el cuerpo en español era la mitad de
+  un arreglo, que es peor que ninguno porque parece hecho. Si el modelo ignora el formato, el título queda
+  como estaba y la traducción NO se pierde. La etiqueta `[NEJM · RCT]` es marca nuestra: no se le manda al
+  modelo y se vuelve a poner acá. `PackItem.srcTitle` guarda el título original, porque si no cada pasada
+  vería la traducción distinta de lo que trae PubMed y volvería a traducir todo cada hora.
+- **Los papers tienen presupuesto de modelo PROPIO** (`NEWS_MEDICAL_DIGEST`, 12), aparte del de los
+  diarios, y el piso de 400 caracteres para masticar les baja a 120. Los dos huecos eran el mismo: una
+  noticia sin masticar se lee igual, pero un paper sin traducir **llega en inglés**, que es justo lo que no
+  se quiere. Topeado solo: PubMed aporta como mucho `NEWS_MEDICAL_ITEMS` por pasada y lo ya traducido no se
+  vuelve a pagar.
+- `MEDICAL_SUMMARY_VERSION` sube con el prompt (va en 4) y **invalida lo ya masticado**: sin eso los
+  cuerpos guardados quedaban congelados con el prompt viejo.
 - **En la web**: `/board` → Ajustes → Noticias tiene un botón "🩺 Agregar Medicina · PubMed" (no se pega una
   URL) que desaparece una vez agregada, y después es una fila más — se renombra, se prueba y se borra igual.
   La hoja no muestra `pubmed:` crudo, que no significa nada, sino qué es la fuente. `POST /feed/test` sobre
