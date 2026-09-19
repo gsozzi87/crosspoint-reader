@@ -3,6 +3,11 @@
 Project: Open-source e-reader firmware for Xteink X4 (ESP32-C3)
 Mission: Provide a lightweight, high-performance reading experience focused on EPUB rendering on constrained hardware.
 
+## WS397 Multi-Agent Coordination
+
+When working on branch `ws397`, read `AI_REVIEW_PROTOCOL.md` completely before changing code. It is the durable shared memory between the reviewer agent and executor agent. Update the relevant REV item and Session Log with evidence after meaningful investigation or implementation. Do not erase another agent's findings or assume old line numbers/HEAD SHAs are still current.
+
+
 ## AI Agent Identity and Cognitive Rules
 
 * Role: Senior Embedded Systems Engineer (ESP-IDF/Arduino-ESP32 specialized).
