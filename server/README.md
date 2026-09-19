@@ -128,6 +128,25 @@ Idiomas soportados (`lang`): `es`, `en`, `fr`, `de`, `pt`, `ru`. El aparato mand
 la transcripción escucha en ese idioma, las respuestas salen en ese idioma y el traductor traduce desde ese
 idioma al que se pida (si no se dice, al inglés; desde inglés, al español).
 
+**El italiano es la excepción, y sólo del Traductor** (1.5.118): NO es idioma de la interfaz, ni de la
+Biblia, ni del paquete de contenido. Vive en `TranslateLang`/`SpeechLang`/`TtsLang` (`Lang | "it"`), con su
+voz de Piper bajada aparte en el Dockerfile (`it_IT-paola-medium`). Agregar otro idioma sólo-traductor es
+repetir esos cuatro lugares; convertirlo en idioma de la interfaz es otra cosa y mucho más grande.
+
+### La fuente médica de PubMed es VIRTUAL y se apaga con `NEWS_MEDICAL=0`
+
+`src/medical.ts` agrega "Medicina · PubMed" al paquete de **toda** cuenta, aunque no haya cargado un solo
+RSS (por eso `rebuild()` ya no corta temprano con cero feeds). Cada pasada horaria son dos viajes a NCBI
+—`esearch` y `efetch`, 15 s de tope cada uno— más las llamadas al modelo de lo que mastique, y eso lo paga
+la cuenta aunque nadie lo haya pedido. `NEWS_MEDICAL=0` la apaga sin tocar código.
+
+Conviene poner **`NCBI_EMAIL`** (y `NCBI_API_KEY` si se tiene): NCBI pide identificarse y sin eso limita
+más fuerte. Sin clave el tope son 3 pedidos por segundo para toda la IP de Railway.
+
+Ojo con las pruebas: `./test/news_pack/run.sh` dice "sin red" y tiene que seguir siéndolo, así que
+`rebuild.test.ts` pone `NEWS_MEDICAL=0`. Sin eso el archivo sale a PubMed de verdad y se cae donde no hay
+salida (el sandbox) o queda colgado de que NCBI conteste (CI).
+
 ## Listas: son dos, y la pizarra de mensajes ya no existe
 
 Dos cambios que sacan cosas del producto, los dos pedidos por el usuario.

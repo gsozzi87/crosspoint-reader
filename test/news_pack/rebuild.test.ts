@@ -16,6 +16,10 @@ const dir = mkdtempSync(join(tmpdir(), "news-pack-"));
 process.env.STORE_FILE = join(dir, "store.json");
 process.env.NEWS_FILE = join(dir, "news.json");
 process.env.HUB_SETTINGS_FILE = join(dir, "hub-settings.json");
+// La fuente médica es VIRTUAL y sale a PubMed sola, aunque la cuenta no tenga
+// feeds: sin esto, este archivo deja de ser "sin red" y se cae donde no hay
+// salida (acá el proxy la bloquea) o queda a merced de que NCBI conteste.
+process.env.NEWS_MEDICAL = "0";
 
 const SRC = join(import.meta.dir, "../../server/src");
 const T0 = Date.parse("2026-09-19T12:00:00Z");
