@@ -2080,6 +2080,17 @@ nombre." Tres cosas y las tres eran ciertas:
 - **La pantalla con el sistema visual**: márgenes de 24, grilla de 8, cabezal UI_14 con filete, barras con
   marco de 1 px y relleno macizo, filas con `cp.selection`. Coordenadas enteras, que el harness ahora exige.
 
+## "Esperando servidor… No entendí" en todas las apps: la red fantasma (1.5.115)
+
+Del log: `[STT] POST /api/transcribe: 25424 bytes` → `no se transcribió: no network (0) (31 ms)`, en la
+mascota, la Biblioteca y el Escritor, y sin una sola línea de `friendly wifi` antes. **La app mandaba la toma
+sin haber levantado la radio.** `LuaAppsActivity` es UNA Activity (el catálogo) y `wifi` (`FriendlyWifi`) es un
+miembro suyo: al cerrar una app, `shutdownRadio()` apagaba la radio pero `wifi` quedaba en `Connected`, así que
+la app siguiente veía `isDone()`, se salteaba `begin()`, `pump()` devolvía Connected y el POST moría en el acto.
+Ayer "anduvo" porque la red seguía arriba de una sincronización anterior. Ahora `shutdownRadio()` reinicia el
+objeto, y `beginListen()`/`ensureConnected()` comprueban `WiFi.status()` antes de creerle a un Connected viejo.
+La OTA a 1.5.114 que "falló" fue una bajada cortada: el binario del servidor estaba entero (mismo hash).
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

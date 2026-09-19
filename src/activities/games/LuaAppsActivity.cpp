@@ -76,6 +76,11 @@ void LuaAppsActivity::onExit() {
 // catálogo) sigue viva y no necesita el heap entero. El único que lo necesita
 // es el lector, y ése tiene su propio camino en openBook().
 void LuaAppsActivity::shutdownRadio() {
+  // El estado de `wifi` se reinicia SIEMPRE, se haya levantado la radio o no:
+  // hasta 1.5.114 quedaba en Connected después de apagar la radio al cerrar
+  // una app, y la app siguiente (misma Activity, mismo objeto) creía que había
+  // red, no conectaba y el POST moría en el acto con "no network (0)" en 30 ms.
+  wifi = FriendlyWifi();
   if (!wifiActivated) return;
   wifiActivated = false;
   WiFi.disconnect(false);
@@ -368,6 +373,7 @@ void LuaAppsActivity::beginListen() {
   }
   // La radio se levanta ANTES de abrir el micrófono y se conecta mientras se
   // habla (copiado de Hablar en 1.5.103). Si ya está arriba, no hace nada.
+  if (wifi.phase() == FriendlyWifi::Phase::Connected && WiFi.status() != WL_CONNECTED) wifi = FriendlyWifi();
   if (wifi.phase() == FriendlyWifi::Phase::Idle || (!wifi.isDone() && wifi.phase() != FriendlyWifi::Phase::Idle)) {
     if (wifi.phase() == FriendlyWifi::Phase::Idle) wifi.begin();
     wifiActivated = true;
@@ -407,6 +413,10 @@ void LuaAppsActivity::endListen(const bool cancelled) {
 
 void LuaAppsActivity::ensureConnected() {
   wifiPicker = false;
+  // Lo que diga `wifi` vale sólo si la radio de verdad está asociada: si dice
+  // Connected y WiFi.status() no, se vuelve a empezar (misma guardia que la
+  // de arriba, por si alguien apaga la radio por otro camino).
+  if (wifi.phase() == FriendlyWifi::Phase::Connected && WiFi.status() != WL_CONNECTED) wifi = FriendlyWifi();
   if (wifi.phase() == FriendlyWifi::Phase::Idle) wifi.begin();
   wifiActivated = true;
   phase = Phase::Connecting;
