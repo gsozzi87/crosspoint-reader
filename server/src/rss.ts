@@ -39,7 +39,7 @@ const MAX_ITEMS = 15;
 const MAX_TEXT = 30_000;
 const MAX_DESC = 8_000;              // el <content:encoded> sirve de artículo cuando la página no se puede leer
 
-export type Item = { id: number; title: string; when: string; whenAt: number; link: string; desc: string };
+export type Item = { id: number; title: string; when: string; whenAt: number; link: string; desc: string; sourceLink?: string };
 type FeedCache = { at: number; items: Item[]; error?: string };
 // La clave es la URL, NO el id del feed: los ids son de cada cuenta (el feed 5
 // de una casa no es el feed 5 de otra) y con el id de clave una cuenta veía los
