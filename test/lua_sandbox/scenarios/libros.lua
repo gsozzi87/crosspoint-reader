@@ -7,9 +7,11 @@
 -- descripción → Bajar EPUB con job.status running (label, paso/total) → done →
 -- cp.download a "books" con nombre seguro → Listo → Abrir en el lector →
 -- bajados.json → recargar: Inicio lista el bajado y OK lo abre; Atrás largo lo
--- saca → ficha sin formato → sin resultados y OK vuelve a escuchar → trabajo
--- que falla → Reintentar → descarga que falla → Reintentar → un bajados.json
--- INCOMPLETO por Inicio → salir.
+-- saca → ficha sin formato → sin resultados: Deletrear el nombre (spelled =
+-- true, la palabra armada y la corrección en el cabezal), Reintentar conserva
+-- el deletreo, corrección sin resultados, y Buscar de nuevo vuelve a dictar →
+-- trabajo que falla → Reintentar → descarga que falla → Reintentar → un
+-- bajados.json INCOMPLETO por Inicio → salir.
 
 local function contiene(lista, sub)
   for _, s in ipairs(lista) do
@@ -46,13 +48,20 @@ local function ultimoAbierto()
   return o and o.name or nil, o and o.kind or nil
 end
 
--- cp.download se envuelve para ver con qué se llamó (el harness no lo anota).
+-- cp.download y cp.listen se envuelven para ver con qué se llamaron (el
+-- harness no lo anota).
 local descargas = {}
+local escuchas = {}
 do
   local orig = cp.download
   cp.download = function(fileId, nombre, destino)
     descargas[#descargas + 1] = {id = fileId, name = nombre, dest = destino}
     return orig(fileId, nombre, destino)
+  end
+  local origListen = cp.listen
+  cp.listen = function(seg, pregunta)
+    escuchas[#escuchas + 1] = {seg = seg, pregunta = pregunta}
+    return origListen(seg, pregunta)
   end
 end
 
@@ -76,7 +85,7 @@ local DESC = "Muchos años después, frente al pelotón de fusilamiento, el coro
 
 -- ------------------------------------------------------------- inicio
 on_open()
-espera("Libros")
+espera("LIBRARY")
 espera("Presiona OK y di el título o el autor")
 espera("Buscar por voz")
 noEspera("Bajados")
@@ -86,11 +95,14 @@ assert(not cp.busy(), "abrir la app no pide nada a la red")
 fake.heard = "cien años de soledad"
 fake.key("ok")                    -- Buscar por voz
 assert(cp.busy(), "OK tenía que pedir el micrófono")
+assert(#escuchas == 1 and escuchas[1].seg == 10 and escuchas[1].pregunta == "¿Qué libro buscas?",
+       "dictar: 10 s con la pregunta de siempre")
 fake.step()                       -- on_heard → cp.call buscar
 local buscadas = 0
 fake.reply["libros.buscar"] = function(args)
   buscadas = buscadas + 1
   assert(args.q == "cien años de soledad", "buscar: q " .. tostring(args.q))
+  assert(args.spelled == nil, "dictado: sin spelled")
   return false, {error = "Conecta Telegram en la web (Ajustes → Avanzado → Telegram)", code = "no_telegram"}
 end
 espera("Esperando al servidor")
@@ -118,7 +130,8 @@ espera("sin conexión con el servidor (0)")
 fake.reply["libros.buscar"] = function(args)
   buscadas = buscadas + 1
   assert(args.q == "cien años de soledad", "reintentar: la misma q")
-  return true, {ok = true, results = LISTA}
+  -- El servidor corrigió lo dicho con el modelo y buscó con eso: lo dice.
+  return true, {ok = true, results = LISTA, corrected = "Cien años de soledad (García Márquez)"}
 end
 fake.key("ok")                    -- Reintentar (primera fila)
 fake.step()
@@ -126,6 +139,8 @@ assert(buscadas == 3, "tres búsquedas: " .. buscadas)
 
 -- ------------------------------------------------------------- resultados
 espera("cien años de soledad")    -- lo dicho, como cabezal
+espera("Buscando «Cien años de soledad (García Márquez)»")
+noEspera("Deletreado")
 espera("10 resultados")
 espera("Los cien pájaros")
 espera("Cien años de soledad")
@@ -288,26 +303,85 @@ assert(not cp.busy(), "y no pide nada")
 
 -- ------------------------------------------------------------- sin resultados
 fake.reply["libros.buscar"] = function(args)
-  assert(args.q == "un libro que no existe", "buscar: q " .. tostring(args.q))
+  assert(args.q == "angeles mastretas", "buscar: q " .. tostring(args.q))
   return true, {ok = true, results = {}}
 end
 fake.key("down")
 fake.key("ok")                    -- Otra búsqueda
-fake.heard = "un libro que no existe"
+fake.heard = "angeles mastretas"  -- lo que entendió el transcriptor (el caso del dueño)
 fake.step()
 fake.step()
-espera("No encontré nada con «un libro que no existe»")
+espera("No encontré nada con «angeles mastretas»")
+espera("deletrear el nombre letra por letra")
+espera("Deletrear el nombre")
 espera("Buscar de nuevo")
+noEspera("Buscando «")
+assert(posicion("Deletrear el nombre") < posicion("Buscar de nuevo"), "Deletrear va primero")
+
+-- Deletrear: 20 s con su pregunta, y lo dicho va con spelled = true.
+local LETRAS = "a, ene, ge, e, ele, e, ese, espacio, eme, a, ese, te, erre, e, te, te, a"
+fake.key("ok")                    -- Deletrear el nombre (primera fila)
+assert(cp.busy(), "Deletrear tenía que pedir el micrófono")
+assert(escuchas[#escuchas].seg == 20 and escuchas[#escuchas].pregunta == "Deletrea letra por letra",
+       "deletrear: 20 s y la pregunta de deletrear")
+fake.heard = LETRAS
+fake.step()                       -- on_heard → buscar {q = LETRAS, spelled = true}
+local deletreos = 0
+fake.reply["libros.buscar"] = function(args)
+  deletreos = deletreos + 1
+  assert(args.q == LETRAS, "deletrear: q " .. tostring(args.q))
+  assert(args.spelled == true, "deletrear: spelled " .. tostring(args.spelled))
+  if deletreos == 1 then return false, {error = "sin conexión con el servidor (0)"} end
+  return true, {ok = true, spelled = "angeles mastretta", corrected = "Ángeles Mastretta",
+                results = {{title = "Arráncame la vida", code = "/bAm1"}, {title = "Mal de amores", code = "/bAm2"}}}
+end
+fake.step()
+espera("sin conexión con el servidor (0)")
+fake.key("ok")                    -- Reintentar conserva el deletreo (spelled = true)
+fake.step()
+assert(deletreos == 2, "dos búsquedas deletreadas: " .. deletreos)
+espera("Deletreado: angeles mastretta")
+espera("Buscando «Ángeles Mastretta»")
+espera("2 resultados")
+espera("Arráncame la vida")
+espera("Mal de amores")
+noEspera("a, ene, ge")            -- el cabezal es la palabra armada, no la ristra de letras
+assert(posicion("Deletreado: angeles mastretta") < posicion("Buscando «Ángeles Mastretta»"), "deletreado, después la corrección")
+fake.key("back")                  -- resultados → inicio
+espera("Buscar por voz")
+
+-- Corregido pero igual sin resultados: se dice con qué buscó, y siguen las dos filas.
+fake.reply["libros.buscar"] = function(args)
+  assert(args.q == "un libro que no existe", "buscar: q " .. tostring(args.q))
+  assert(args.spelled == nil, "después de Atrás, dictar vuelve a ser sin spelled")
+  return true, {ok = true, results = {}, corrected = "Un libro que sí existe"}
+end
+fake.heard = "un libro que no existe"
+fake.key("ok")                    -- Buscar por voz
+fake.step()
+fake.step()
+espera("Buscando «Un libro que sí existe»")
+espera("No encontré nada con «Un libro que sí existe»")
+noEspera("Deletreado")
+espera("Deletrear el nombre")
+espera("Buscar de nuevo")
+
+-- Buscar de nuevo (segunda fila) vuelve a dictar, 10 s, sin spelled.
 fake.reply["libros.buscar"] = function(args)
   assert(args.q == "cien años de soledad", "buscar de nuevo: q " .. tostring(args.q))
+  assert(args.spelled == nil, "buscar de nuevo: sin spelled")
   return true, {ok = true, results = LISTA}
 end
-fake.key("ok")                    -- OK vuelve a escuchar
-assert(cp.busy(), "OK sin resultados tenía que pedir el micrófono")
+fake.key("down")
+fake.key("ok")                    -- Buscar de nuevo → escucha
+assert(cp.busy(), "Buscar de nuevo tenía que pedir el micrófono")
+assert(escuchas[#escuchas].seg == 10, "buscar de nuevo: 10 s")
 fake.heard = "cien años de soledad"
 fake.step()
 fake.step()
 espera("10 resultados")
+noEspera("Deletreado")
+noEspera("Buscando «")            -- sin corrección no hay renglón
 -- Y Atrás desde los resultados vuelve a Inicio.
 fake.key("back")
 espera("Buscar por voz")

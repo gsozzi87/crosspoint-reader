@@ -133,3 +133,84 @@ export function fileNameFor(botName: string | null | undefined, title: string, f
   if (!ext || ext.length > 5) ext = fold(format).replace(/[^a-z0-9]/g, "") || "epub";
   return `${slugify(title)}.${ext}`;
 }
+
+// ---------------------------------------------------------------- deletreo
+
+// Lo que dice el usuario cuando deletrea un nombre ("a, ene, ge, e, ele, e,
+// ese, espacio, eme, a, ese…" o "a-n-g-e-l-e-s"), vuelto palabra SIN el
+// modelo. Se parte por comas, espacios y guiones; cada trozo es el nombre de
+// una letra (en español o en inglés), una letra suelta, un número, "espacio"
+// o "guion", o —si no es nada de eso y tiene más de una letra— una palabra
+// entera que el usuario dijo en el medio ("cien, espacio, a, eñe, o, ese").
+// Antes de partir se juntan los nombres de dos palabras ("doble uve", "i
+// griega", "double you") y se tiran los que no son letras ("mayúscula").
+// Lo que sale va en minúsculas: quien pone acentos y mayúsculas es el
+// corrector, si hay modelo; sin él, el bot igual busca sin mirar mayúsculas.
+
+const LETTERS_ES: Record<string, string> = {
+  a: "a", be: "b", ce: "c", de: "d", e: "e", efe: "f", ge: "g", hache: "h", i: "i", jota: "j", ka: "k",
+  ele: "l", eme: "m", ene: "n", "eñe": "ñ", o: "o", pe: "p", cu: "q", erre: "r", ere: "r", ese: "s", te: "t",
+  u: "u", uve: "v", ve: "v", equis: "x", ye: "y", zeta: "z", ceta: "z",
+  espacio: " ", guion: "-", "guión": "-",
+};
+
+const LETTERS_EN: Record<string, string> = {
+  ay: "a", bee: "b", see: "c", cee: "c", dee: "d", e: "e", ee: "e", ef: "f", eff: "f", gee: "g", aitch: "h",
+  aych: "h", i: "i", eye: "i", jay: "j", kay: "k", el: "l", ell: "l", em: "m", en: "n", oh: "o", o: "o", pee: "p",
+  cue: "q", queue: "q", ar: "r", es: "s", ess: "s", tee: "t", you: "u", u: "u", vee: "v", ex: "x", why: "y",
+  zee: "z", zed: "z", a: "a",
+  space: " ", dash: "-", hyphen: "-",
+};
+
+// Nombres de más de una palabra → una sola ficha, ANTES de partir. Los de
+// "doble" van con sus dos órdenes ("uve doble" también se dice).
+const PHRASES: [RegExp, string][] = [
+  [/\b(?:doble\s+(?:uve|ve|u)|(?:uve|ve|u)\s+doble|double\s+(?:you|u|yoo))\b/giu, " w "],
+  [/\b(?:i\s+griega|y\s+griega)\b/giu, " y "],
+  [/\bi\s+latina\b/giu, " i "],
+  [/\b(?:be|b)\s+(?:larga|grande|alta)\b/giu, " b "],
+  [/\b(?:ve|v|uve)\s+(?:corta|chica|baja|pequeña)\b/giu, " v "],
+  [/\bcon\s+(?:acento|tilde)\b/giu, " "],
+];
+
+// Fichas que no son una letra ni una palabra del nombre: se tiran.
+const IGNORE = new Set(["mayúscula", "mayúsculas", "minúscula", "minúsculas", "acento", "tilde", "letra",
+  "capital", "uppercase", "lowercase", "coma", "punto"]);
+
+/**
+ * El nombre deletreado, letra por letra, vuelto palabra: "a, ene, ge, e, ele,
+ * e, ese, espacio, eme, a, ese, te, erre, e, te, te, a" → "angeles mastretta".
+ * `lang` decide qué tabla manda cuando un nombre vale en las dos ("de" es d en
+ * español; "el" es l en inglés). Vacío si no hay nada que armar.
+ */
+export function lettersToWord(text: string, lang = "es"): string {
+  let t = ` ${text.toLowerCase()} `;
+  for (const [re, rep] of PHRASES) t = t.replace(re, rep);
+  const table = lang === "en" ? { ...LETTERS_ES, ...LETTERS_EN } : { ...LETTERS_EN, ...LETTERS_ES };
+  const words: string[] = [];
+  let cur = "";
+  const flush = () => {
+    if (cur) words.push(cur);
+    cur = "";
+  };
+  for (const raw of t.split(/[\s,;:¡!¿?"«»()/\-–—]+/u)) {
+    const tok = raw.replace(/^[.'’]+|[.'’]+$/g, "");
+    if (!tok) continue;
+    if (IGNORE.has(tok)) continue;
+    // Primero tal cual (así "eñe" no se confunde con "ene"), después sin acentos.
+    const mapped = table[tok] ?? table[fold(tok)];
+    if (mapped === " ") {
+      flush();
+    } else if (mapped !== undefined) {
+      cur += mapped;
+    } else if ([...tok].length === 1 || /^\d+$/.test(tok)) {
+      cur += tok;
+    } else {
+      // Una palabra entera dicha en el medio: va suelta, entre espacios.
+      flush();
+      words.push(tok);
+    }
+  }
+  flush();
+  return words.join(" ").replace(/\s+/g, " ").trim();
+}

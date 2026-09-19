@@ -232,6 +232,13 @@ fake.advance = function(ms) fake.ms = fake.ms + ms end
 cp.save = function(t) saved = tostring(t):sub(1, 4096); return true end
 cp.load = function() return saved end
 cp.text = function(x, y, s) fake.drawn[#fake.drawn + 1] = tostring(s) end
+cp.image = function(x, y, w, h, bits, escala)
+  assert(type(bits) == "string", "cp.image: bits tiene que ser un string")
+  assert(w >= 1 and h >= 1 and w <= 256 and h <= 256, "cp.image: tamaño fuera de rango")
+  assert(#bits >= ((w + 7) // 8) * h, "cp.image: faltan bytes")
+  fake.images = fake.images or {}
+  fake.images[#fake.images + 1] = { x = x, y = y, w = w, h = h, bytes = #bits, escala = escala or 1 }
+end
 
 cp.busy = function() return #pending > 0 end
 

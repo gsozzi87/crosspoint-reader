@@ -6,7 +6,15 @@
 //
 // Servicios (`LIBROS_SERVICES`, se enchufan en apps.ts como los de viajes):
 //   libros.estado          → {connected, bot}
-//   libros.buscar {q}      → {results:[{title, code}]}   (hasta 10; [] si no encontró)
+//   libros.buscar {q, spelled?} → {results:[{title, code}], corrected?, spelled?}
+//                            (hasta 10; [] si no encontró). Lo dictado llega con
+//                            errores de transcripción ("angeles mastretas"): si
+//                            el bot no encuentra nada, el modelo barato corrige
+//                            el nombre y se busca otra vez (`corrected` dice con
+//                            qué). Con `spelled:true` lo dicho es el nombre
+//                            deletreado: se arma la palabra sin modelo
+//                            (lettersToWord) y se pasa por el corrector ANTES de
+//                            buscar (`spelled` es la palabra armada).
 //   libros.ficha  {code}   → {title, author, year, pages, genre, desc, formats}
 //   libros.bajar  {code, format?} → {jobId}  (trabajo: ficha → botón → archivo → saveFile, tope 40 MB)
 //
@@ -29,8 +37,9 @@ import type { Lang } from "./lang";
 import { normalizeLang } from "./lang";
 import { readBody } from "./net";
 import { accountOf, viaOf, type AppEnv } from "./tenant";
-import { fileNameFor, formatOfLabel, parseCard, parseList, fold, type Card } from "./librosParse";
-import { askBot, getStatus, logOut, saveConfig, sendCode, signIn, TelegramError, withBot, type BotMessage } from "./telegram";
+import { chatText } from "./llm";
+import { fileNameFor, formatOfLabel, lettersToWord, parseCard, parseList, fold, type Card } from "./librosParse";
+import { askBot, getStatus, logOut, saveConfig, sendCode, signIn, TelegramError, withBot, type BotMessage, type BotSession } from "./telegram";
 
 const REPLY_TIMEOUT_MS = 20_000;
 const FILE_TIMEOUT_MS = 120_000;
@@ -202,9 +211,50 @@ function pickCard(msgs: BotMessage[]): BotMessage | null {
   return best;
 }
 
-export async function search(accountId: number, q: string): Promise<{ title: string; code: string }[]> {
-  const msgs = await askBot(accountId, q, { timeoutMs: REPLY_TIMEOUT_MS });
+type Results = { title: string; code: string }[];
+
+async function searchWith(s: BotSession, q: string): Promise<Results> {
+  const msgs = await s.waitReply(await s.send(q), { timeoutMs: REPLY_TIMEOUT_MS });
   return parseList(msgs.map((m) => m.text).join("\n")).slice(0, MAX_RESULTS);
+}
+
+export async function search(accountId: number, q: string): Promise<Results> {
+  return withBot(accountId, (s) => searchWith(s, q));
+}
+
+// ---------------------------------------------------------------- el corrector
+
+// El aparato no tiene teclado: el nombre entra por voz y el transcriptor no
+// conoce a los autores ("ángeles mastretta" → "angeles mastretas"). El modelo
+// barato de siempre (chatText, el mismo proveedor que Hablar) sí los conoce.
+// Se le pide SOLO la consulta corregida; cualquier otra cosa (sin clave, fallo
+// del proveedor, una respuesta que no parece una consulta) devuelve null y la
+// búsqueda sigue como si el corrector no existiera: nunca falla por él.
+const CORRECT_PROMPT = [
+  "The user dictated a book title and/or author name to search a library.",
+  "Fix obvious transcription errors using your knowledge of real authors and books",
+  "(e.g. 'angeles mastretas' → 'Ángeles Mastretta').",
+  "Return ONLY the corrected query, nothing else: no quotes, no explanation.",
+  "If it already looks right, return it unchanged.",
+].join(" ");
+
+function sameQuery(a: string, b: string): boolean {
+  const norm = (s: string) => fold(s).replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  return norm(a) === norm(b);
+}
+
+/** La consulta corregida por el modelo, o null si no cambia o no se pudo. */
+export async function correctQuery(q: string, lang: Lang): Promise<string | null> {
+  try {
+    const raw = await chatText({ system: CORRECT_PROMPT, user: q, maxTokens: 80, search: "off", lang });
+    const out = raw.trim().split("\n")[0].trim().replace(/^["'«»“”‘’]+|["'«»“”‘’.]+$/g, "").trim();
+    if (!out || out.length > 200 || out.length > q.length * 3 + 20) return null;
+    if (sameQuery(out, q)) return null;
+    return out;
+  } catch (err) {
+    console.log(`libros: corrector sin usar: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------- servicios
@@ -214,12 +264,42 @@ const estado: Service = async (ctx) => {
   return { connected: st.loggedIn && st.configured, bot: st.bot };
 };
 
+// Todo adentro de UN withBot: el candado de la cuenta cubre las dos búsquedas
+// (y la llamada al modelo entre medio), así otro pedido no se cuela entre la
+// consulta cruda y la corregida.
 const buscar: Service = async (ctx, args) => {
-  const q = argStr(args.q, 200);
-  if (!q) return { ok: false, error: T[ctx.lang].noQuery, code: "no_query" };
-  const results = await search(ctx.accountId, q);
-  console.log(`libros: cuenta ${ctx.accountId}: "${q.slice(0, 60)}" → ${results.length} resultados`);
-  return { results };
+  const raw = argStr(args.q, 200);
+  if (!raw) return { ok: false, error: T[ctx.lang].noQuery, code: "no_query" };
+  const isSpelled = args.spelled === true || args.spelled === "true" || args.spelled === 1;
+  const who = `libros: cuenta ${ctx.accountId}`;
+  const out: Record<string, unknown> = {};
+  let q = raw;
+  let corrected: string | null = null;
+  if (isSpelled) {
+    const word = lettersToWord(raw, ctx.lang);
+    if (!word) return { ok: false, error: T[ctx.lang].noQuery, code: "no_query" };
+    q = word;
+    out.spelled = word;
+    // Un nombre deletreado sigue siendo ruidoso (letras que faltan, minúsculas):
+    // el corrector va ANTES de la primera búsqueda.
+    corrected = await correctQuery(word, ctx.lang);
+    if (corrected) q = corrected;
+    console.log(`${who}: deletreado "${raw.slice(0, 80)}" → "${word}"${corrected ? ` → "${corrected}"` : ""}`);
+  }
+  const results = await withBot(ctx.accountId, async (s) => {
+    let r = await searchWith(s, q);
+    console.log(`${who}: "${q.slice(0, 60)}" → ${r.length} resultados`);
+    if (!r.length && !corrected) {
+      corrected = await correctQuery(q, ctx.lang);
+      if (corrected) {
+        r = await searchWith(s, corrected);
+        console.log(`${who}: corregido a "${corrected.slice(0, 60)}" → ${r.length} resultados`);
+      }
+    }
+    return r;
+  });
+  if (corrected) out.corrected = corrected;
+  return { ...out, results };
 };
 
 const ficha: Service = async (ctx, args) => {

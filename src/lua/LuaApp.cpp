@@ -186,6 +186,48 @@ int cpLine(lua_State* L) {
   return 0;
 }
 
+
+// cp.image(x, y, w, h, bits [, escala]): un bitmap de 1 bit empaquetado por
+// filas (MSB primero, 1 = tinta, cada fila redondeada a byte). Se pinta píxel a
+// píxel con drawPixel para que la orientación del panel se aplique sola
+// (drawImage del renderer no rota los bits). `escala` entera de 1 a 8 agranda
+// cada píxel a un cuadrado. Existe para las apps con dibujitos (la mascota):
+// 64 × 64 son 512 bytes, que caben de sobra en un string de Lua.
+int cpImage(lua_State* L) {
+  if (!g_renderer) return 0;
+  const int screenW = g_renderer->getScreenWidth();
+  const int screenH = g_renderer->getScreenHeight();
+  const int x = clampCoord(luaL_checkinteger(L, 1), screenW);
+  const int y = clampCoord(luaL_checkinteger(L, 2), screenH);
+  const int w = static_cast<int>(luaL_checkinteger(L, 3));
+  const int h = static_cast<int>(luaL_checkinteger(L, 4));
+  size_t len = 0;
+  const char* bits = luaL_checklstring(L, 5, &len);
+  int scale = static_cast<int>(luaL_optinteger(L, 6, 1));
+  if (scale < 1) scale = 1;
+  if (scale > 8) scale = 8;
+  if (w < 1 || h < 1 || w > 256 || h > 256) return luaL_error(L, "cp.image: tamaño fuera de rango (1-256)");
+  const size_t stride = static_cast<size_t>((w + 7) / 8);
+  if (len < stride * static_cast<size_t>(h)) return luaL_error(L, "cp.image: faltan bytes (%d de %d)", (int)len, (int)(stride * h));
+  const auto* p = reinterpret_cast<const uint8_t*>(bits);
+  for (int row = 0; row < h; row++) {
+    const int py = y + row * scale;
+    if (py >= screenH) break;
+    const uint8_t* line = p + row * stride;
+    for (int col = 0; col < w; col++) {
+      if (((line[col >> 3] >> (7 - (col & 7))) & 1) == 0) continue;
+      const int px = x + col * scale;
+      if (px >= screenW) break;
+      if (scale == 1) {
+        g_renderer->drawPixel(px, py, true);
+      } else {
+        g_renderer->fillRect(px, py, scale, scale, true);
+      }
+    }
+  }
+  return 0;
+}
+
 // El resalte del sistema visual (docs/ws397/DISENO.md): pestaña, marco y
 // franjas SÓLO en los márgenes. Se expone para que una app con una lista se vea
 // como el resto del aparato en vez de inventar su propio negro macizo.
@@ -772,6 +814,7 @@ const luaL_Reg CP_API[] = {
     {"texth", cpTextHeight},
     {"rect", cpRect},
     {"line", cpLine},
+    {"image", cpImage},
     {"selection", cpSelection},
     {"width", cpWidth},
     {"height", cpHeight},

@@ -1,4 +1,4 @@
--- Viajes: la agenda, los papeles y la guía de cada día.
+-- CONCIERGE: la agenda, los papeles y la guía de cada día.
 -- Todo se lee de la tarjeta (/Apps/data/viajes/): viaje.json es la vista
 -- compacta que baja Actualizar, papel-<id>.txt y guia-<fecha>.txt se bajan una
 -- vez y quedan, y pendientes.json guarda los tildes hechos sin red, que
