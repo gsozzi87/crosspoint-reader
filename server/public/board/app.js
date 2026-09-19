@@ -654,10 +654,9 @@ function ajustesIndexView() {
   const item = (href, ic, label, sub) => '<li><a href="' + href + '"><span class="ic">' + ic + '</span><span class="lbl">' + esc(label) + (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="chev">›</span></a></li>';
   // La fila de Telegram dice si está conectado: se pide una vez por carga.
   if (tg === null) { tg = "loading"; tgLoad().then(() => { if (parts()[0] === "ajustes" && !parts()[1]) render(); }); }
-  const autoFeeds = (S.automaticFeeds || []).length;
-  const newsSources = S.feeds.length + autoFeeds;
+  const newsSources = S.feeds.length;
   const newsSub = newsSources
-    ? newsSources + " fuente" + (newsSources === 1 ? "" : "s") + (autoFeeds ? " · " + autoFeeds + " automática" + (autoFeeds === 1 ? "" : "s") : "")
+    ? newsSources + " fuente" + (newsSources === 1 ? "" : "s")
     : "Ninguna fuente";
   let html = ajustesAparatoView();
   html += '<ul class="menu">' +
@@ -692,16 +691,23 @@ function previewFeeds(items) {
 }
 
 function noticiasView() {
-  const automatic = S.automaticFeeds || [];
-  const totalSources = S.feeds.length + automatic.length;
-  let html = '<div class="card"><h2>Fuentes</h2><p class="hint">Las fuentes automáticas las mantiene el servidor. También puedes agregar diarios o feeds RSS/Atom propios.</p>' +
-    '<form data-form="feed-add"><div class="addbar"><input name="url" placeholder="https://diario.com/rss" autocomplete="off" inputmode="url"><button>Agregar</button></div><input name="name" placeholder="Nombre (opcional)" maxlength="40" style="margin-top:-2px"></form>' +
-    '<ul class="rows" style="margin-top:8px">';
-  for (const f of automatic) {
-    html += '<li><span class="kind">🩺</span><div class="body"><span class="title">' + esc(f.name) + '</span><span class="sub ellip">Automática · ' + esc(f.description || "") + '</span></div></li>';
+  const med = S.medical || {};
+  const totalSources = S.feeds.length;
+  let html = '<div class="card"><h2>Fuentes</h2><p class="hint">Diarios o feeds RSS/Atom. El servidor los recorre cada hora y arma el paquete que lee el aparato.</p>' +
+    '<form data-form="feed-add"><div class="addbar"><input name="url" placeholder="https://diario.com/rss" autocomplete="off" inputmode="url"><button>Agregar</button></div><input name="name" placeholder="Nombre (opcional)" maxlength="40" style="margin-top:-2px"></form>';
+  // PubMed no se agrega pegando una URL: es un botón. Una vez agregada es una
+  // fuente más de la lista de abajo (se renombra, se prueba y se borra igual).
+  if (med.url && !med.added) {
+    html += '<button class="wide" data-act="feed-add-medical" style="margin-top:8px">🩺 Agregar ' + esc(med.name || "Medicina · PubMed") + '</button>' +
+      '<p class="hint">Evidencia clínica reciente, elegida y resumida por el servidor en el idioma del aparato.</p>';
   }
-  if (!S.feeds.length && !automatic.length) html += '<li class="empty">No hay fuentes cargadas.</li>';
-  for (const f of S.feeds) html += '<li><span class="kind">📰</span><div class="body" data-act="feed-open" data-id="' + f.id + '"><span class="title">' + esc(f.name) + '</span><span class="sub ellip">' + esc(f.url) + "</span></div><span class=\"chev\">›</span></li>";
+  html += '<ul class="rows" style="margin-top:8px">';
+  if (!S.feeds.length) html += '<li class="empty">No hay fuentes cargadas.</li>';
+  for (const f of S.feeds) {
+    const esMed = String(f.url || "").toLowerCase().startsWith("pubmed:");
+    const sub = esMed ? "PubMed · evidencia clínica reciente" : f.url;
+    html += '<li><span class="kind">' + (esMed ? "🩺" : "📰") + '</span><div class="body" data-act="feed-open" data-id="' + f.id + '"><span class="title">' + esc(f.name) + '</span><span class="sub ellip">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
+  }
   html += "</ul></div>";
 
   if (totalSources) {
@@ -728,16 +734,21 @@ function noticiasView() {
           return '<li><div class="body">' + (it.link ? '<a href="' + attr(it.link) + '" target="_blank" rel="noopener" style="text-decoration:none">' + inside + "</a>" : inside) + "</div></li>";
         }).join("") + "</ul>";
       }
-    } else html += '<p class="hint">Es exactamente el paquete que recibe el aparato, incluida la selección médica de PubMed.</p>';
+    } else html += '<p class="hint">Es exactamente el paquete que recibe el aparato: cada fuente cargada, PubMed incluida si la agregaste.</p>';
     html += "</div>";
   }
   return html;
 }
 
 function feedSheet(f) {
+  // La de PubMed no tiene URL que mostrar (su "url" es el centinela pubmed:),
+  // así que en su lugar va lo que hace. Todo lo demás es igual a cualquier feed.
+  const esMed = String(f.url || "").toLowerCase().startsWith("pubmed:");
   openSheet(f.name,
     field("Nombre", input("name", f.name, 'maxlength="40" autofocus')) +
-    '<p class="muted mono" style="word-break:break-all;font-size:13px">' + esc(f.url) + "</p>" +
+    (esMed
+      ? '<p class="muted" style="font-size:13px">Papers recientes de PubMed, elegidos por señal clínica y resumidos en el idioma del aparato. No hace falta cuenta ni clave.</p>'
+      : '<p class="muted mono" style="word-break:break-all;font-size:13px">' + esc(f.url) + "</p>") +
     '<button class="ghost wide" data-act="feed-test" data-id="' + f.id + '">Probar el feed</button>',
     {
       save: async (root) => {
@@ -1241,6 +1252,15 @@ document.addEventListener("click", async (ev) => {
       }
 
       // Notas / memoria / feeds
+      case "feed-add-medical": {
+        const med = S.medical || {};
+        if (!med.url) break;
+        toast("Agregando…");
+        await change(() => api("/api/board/feed", { url: med.url, name: med.name }), "Agregada");
+        rssCache = null;
+        newsPack = null;
+        break;
+      }
       case "note-open": { const n = S.notes.find((x) => x.id === Number(d.id)); if (n) noteEditor(n); break; }
       case "memory-open": { const m = S.memories.find((x) => x.id === Number(d.id)); if (m) memorySheet(m); break; }
       case "feed-open": { const f = S.feeds.find((x) => x.id === Number(d.id)); if (f) feedSheet(f); break; }
