@@ -654,9 +654,14 @@ function ajustesIndexView() {
   const item = (href, ic, label, sub) => '<li><a href="' + href + '"><span class="ic">' + ic + '</span><span class="lbl">' + esc(label) + (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="chev">›</span></a></li>';
   // La fila de Telegram dice si está conectado: se pide una vez por carga.
   if (tg === null) { tg = "loading"; tgLoad().then(() => { if (parts()[0] === "ajustes" && !parts()[1]) render(); }); }
+  const autoFeeds = (S.automaticFeeds || []).length;
+  const newsSources = S.feeds.length + autoFeeds;
+  const newsSub = newsSources
+    ? newsSources + " fuente" + (newsSources === 1 ? "" : "s") + (autoFeeds ? " · " + autoFeeds + " automática" + (autoFeeds === 1 ? "" : "s") : "")
+    : "Ninguna fuente";
   let html = ajustesAparatoView();
   html += '<ul class="menu">' +
-    item("#ajustes/noticias", "📰", "Noticias", S.feeds.length ? S.feeds.length + " feed" + (S.feeds.length === 1 ? "" : "s") : "Ningún feed cargado") +
+    item("#ajustes/noticias", "📰", "Noticias", newsSub) +
     item("#ajustes/memoria", "🧠", "Memoria del asistente", S.memories.length + " datos") +
     (multi() ? item("#ajustes/aparatos", "📟", "Aparatos", (me.devices || []).length + " vinculado" + ((me.devices || []).length === 1 ? "" : "s")) : "") +
     "</ul>";
@@ -671,14 +676,35 @@ function ajustesIndexView() {
 }
 
 // ── Noticias ────────────────────────────────────────────────────────────────
+function previewFeeds(items) {
+  const feeds = [];
+  const byName = new Map();
+  for (const it of (items || [])) {
+    let feed = byName.get(it.feed);
+    if (!feed) {
+      feed = { name: it.feed, items: [] };
+      byName.set(it.feed, feed);
+      feeds.push(feed);
+    }
+    feed.items.push(it);
+  }
+  return feeds;
+}
+
 function noticiasView() {
-  let html = '<div class="card"><h2>Feeds</h2><p class="hint">Pega la dirección del diario o del feed (RSS o Atom). Se prueba antes de guardarlo. El aparato los lee en Noticias.</p>' +
+  const automatic = S.automaticFeeds || [];
+  const totalSources = S.feeds.length + automatic.length;
+  let html = '<div class="card"><h2>Fuentes</h2><p class="hint">Las fuentes automáticas las mantiene el servidor. También puedes agregar diarios o feeds RSS/Atom propios.</p>' +
     '<form data-form="feed-add"><div class="addbar"><input name="url" placeholder="https://diario.com/rss" autocomplete="off" inputmode="url"><button>Agregar</button></div><input name="name" placeholder="Nombre (opcional)" maxlength="40" style="margin-top:-2px"></form>' +
     '<ul class="rows" style="margin-top:8px">';
-  if (!S.feeds.length) html += '<li class="empty">No hay feeds cargados.</li>';
+  for (const f of automatic) {
+    html += '<li><span class="kind">🩺</span><div class="body"><span class="title">' + esc(f.name) + '</span><span class="sub ellip">Automática · ' + esc(f.description || "") + '</span></div></li>';
+  }
+  if (!S.feeds.length && !automatic.length) html += '<li class="empty">No hay fuentes cargadas.</li>';
   for (const f of S.feeds) html += '<li><span class="kind">📰</span><div class="body" data-act="feed-open" data-id="' + f.id + '"><span class="title">' + esc(f.name) + '</span><span class="sub ellip">' + esc(f.url) + "</span></div><span class=\"chev\">›</span></li>";
   html += "</ul></div>";
-  if (S.feeds.length) {
+
+  if (totalSources) {
     if (newsPack === null) {
       newsPack = "loading";
       api("/api/news/status").then((r) => { newsPack = r; if (parts()[0] === "ajustes" && parts()[1] === "noticias") render(); })
@@ -687,17 +713,22 @@ function noticiasView() {
     const packText = newsPack === "loading" ? "Consultando…" : newsPack.error ? newsPack.error :
       newsPack.items + " noticias listas · " + newsPack.chewed + " resumidas" + (newsPack.building ? " · preparando…" : "");
     html += '<div class="card"><h2><span class="grow">Paquete del lector</span><button class="ghost small" data-act="news-pack-refresh">Preparar ahora</button></h2>' +
-      '<p class="hint">El servidor baja los artículos, limpia menús y publicidad y resume los que puede con la IA. El lector recibe este paquete y puede abrirlo sin conexión.</p>' +
+      '<p class="hint">El servidor prepara los artículos y papers, y el lector recibe este paquete para abrirlo sin conexión.</p>' +
       '<p class="' + (newsPack.error ? "bad" : "muted") + '">' + esc(packText) + '</p></div>';
-    html += '<div class="card"><h2><span class="grow">Titulares</span>' + (rssCache ? '<button class="ghost small" data-act="rss-reload">Actualizar</button>' : '<button class="ghost small" data-act="rss-load">Ver</button>') + "</h2>";
-    if (rssCache === "loading") html += '<p class="loading">Bajando los feeds…</p>';
+
+    html += '<div class="card"><h2><span class="grow">Titulares del paquete</span>' + (rssCache ? '<button class="ghost small" data-act="rss-reload">Actualizar</button>' : '<button class="ghost small" data-act="rss-load">Ver</button>') + "</h2>";
+    if (rssCache === "loading") html += '<p class="loading">Leyendo el paquete…</p>';
     else if (rssCache) {
-      for (const f of rssCache.feeds) {
+      const feeds = previewFeeds(rssCache.items);
+      if (!feeds.length) html += '<p class="muted">El paquete todavía está vacío.</p>';
+      for (const f of feeds) {
         html += "<h3 style=\"margin-top:10px\">" + esc(f.name) + "</h3>";
-        if (f.error) html += '<p class="hint bad">' + esc(f.error) + "</p>";
-        html += '<ul class="rows">' + f.items.slice(0, 8).map((it) => '<li><div class="body"><a href="' + attr(it.link) + '" target="_blank" rel="noopener" style="text-decoration:none"><span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(it.when || "") + "</span></a></div></li>").join("") + "</ul>";
+        html += '<ul class="rows">' + f.items.slice(0, 10).map((it) => {
+          const inside = '<span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(it.when || "") + (it.chewed ? " · resumido" : "") + "</span>";
+          return '<li><div class="body">' + (it.link ? '<a href="' + attr(it.link) + '" target="_blank" rel="noopener" style="text-decoration:none">' + inside + "</a>" : inside) + "</div></li>";
+        }).join("") + "</ul>";
       }
-    } else html += '<p class="hint">Lo mismo que va a ver el aparato, para comprobar que los feeds traen algo.</p>';
+    } else html += '<p class="hint">Es exactamente el paquete que recibe el aparato, incluida la selección médica de PubMed.</p>';
     html += "</div>";
   }
   return html;
@@ -1220,7 +1251,7 @@ document.addEventListener("click", async (ev) => {
       }
       case "rss-load": case "rss-reload": {
         rssCache = "loading"; render();
-        try { rssCache = await api("/api/rss"); } catch (e) { rssCache = null; toast(e.message); }
+        try { rssCache = await api("/api/news/preview?lang=es"); } catch (e) { rssCache = null; toast(e.message); }
         render();
         break;
       }
