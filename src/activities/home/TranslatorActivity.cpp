@@ -31,7 +31,8 @@ struct LangInfo {
   const char* name;
 };
 const LangInfo LANGS[] = {{"es", "Español"}, {"en", "English"},   {"fr", "Français"},
-                          {"de", "Deutsch"}, {"pt", "Português"}, {"ru", "Русский"}};
+                          {"de", "Deutsch"}, {"pt", "Português"}, {"ru", "Русский"},
+                          {"it", "Italiano"}};
 
 // Word-wraps into at most maxLines lines for the two text panes.
 void drawWrapped(const GfxRenderer& renderer, int font, int x, int y, int w, int lineH, int maxLines,

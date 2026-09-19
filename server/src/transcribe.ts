@@ -252,13 +252,16 @@ function consumedByHallucinations(folded: string): boolean {
 
 // El texto que se le muestra (y se le dice) al usuario cuando no habló.
 export const NO_SPEECH = "no_speech";
-export const NO_SPEECH_MSG: Record<Lang, string> = {
+export type SpeechLang = Lang | "it";
+
+export const NO_SPEECH_MSG: Record<SpeechLang, string> = {
   es: "No escuché nada, inténtalo de nuevo.",
   en: "I didn't hear anything, please try again.",
   fr: "Je n'ai rien entendu, essaie encore.",
   de: "Ich habe nichts gehört, versuche es noch einmal.",
   pt: "Não ouvi nada, tenta de novo.",
   ru: "Я ничего не услышал, попробуй ещё раз.",
+  it: "Non ho sentito nulla, riprova.",
 };
 
 // Error propio: los llamadores lo distinguen de un fallo del STT.
@@ -268,7 +271,7 @@ export class NoSpeechError extends Error {
   }
 }
 
-export async function transcribeWav(audio: ArrayBuffer, lang: Lang = "es"): Promise<string> {
+export async function transcribeWav(audio: ArrayBuffer, lang: SpeechLang = "es"): Promise<string> {
   const stt = (await config()).stt;
   if (!stt.key) throw new Error("falta la clave de transcripción (web → Ajustes)");
   const url = checkUrl(stt.baseUrl, { allowLocal: true });

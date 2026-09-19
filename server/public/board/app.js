@@ -786,6 +786,7 @@ function memorySheet(m) {
 
 // ── Ajustes ─────────────────────────────────────────────────────────────────
 const LANGS = [["es", "Español"], ["en", "English"], ["fr", "Français"], ["de", "Deutsch"], ["pt", "Português"], ["ru", "Русский"]];
+const TRANSLATOR_LANGS = LANGS.concat([["it", "Italiano"]]);
 let placeResults = null;
 
 function ajustesAparatoView() {
@@ -795,7 +796,7 @@ function ajustesAparatoView() {
     field("Idioma del aparato", select("lang", LANGS, s.lang)) +
     field("Voz hablada", select("speak", [["none", "Nunca: solo escribe"], ["short", "Respuestas cortas"], ["all", "Siempre"]], s.speak)) +
     field("Sonidos de la interfaz", select("uiSound", [["off", "Apagados"], ["soft", "Suaves"], ["normal", "Normales"]], s.uiSound || "normal")) +
-    field("Traductor: el otro idioma", select("translatorLang", LANGS, s.translatorLang)) +
+    field("Traductor: el otro idioma", select("translatorLang", TRANSLATOR_LANGS, s.translatorLang)) +
     field("Volumen (voz, música y avisos): <b class=\"volOut\">" + s.musicVolume + " %</b>", '<input type="range" name="musicVolume" min="0" max="100" step="5" value="' + s.musicVolume + '">', true) +
     '<button class="wide">Guardar ajustes</button></form></div>';
 

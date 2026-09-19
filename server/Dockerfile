@@ -40,7 +40,7 @@ RUN mkdir -p /opt/apps && cd /opt/apps \
        done \
     && ls -l /opt/apps
 
-# Voces (rhasspy/piper-voices en Hugging Face): es, en, fr, de, pt, ru
+# Voces de la interfaz (rhasspy/piper-voices): es, en, fr, de, pt, ru.
 ARG HF=https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c
 RUN cd /opt/piper/voices && for v in \
       es/es_MX/claude/high/es_MX-claude-high \
@@ -51,6 +51,14 @@ RUN cd /opt/piper/voices && for v in \
       ru/ru_RU/irina/medium/ru_RU-irina-medium ; do \
       n=$(basename $v); curl -fsSL --retry 3 --retry-delay 2 -o $n.onnx $HF/$v.onnx \
       && curl -fsSL --retry 3 --retry-delay 2 -o $n.onnx.json $HF/$v.onnx.json ; done
+
+# Italiano existe sólo como idioma del Traductor; no forma parte de la UI.
+ARG HF_IT=https://huggingface.co/rhasspy/piper-voices/resolve/375a0fe641dea077c2a47b4e9a056d6da521eed3
+RUN cd /opt/piper/voices \
+    && curl -fsSL --retry 3 --retry-delay 2 -o it_IT-paola-medium.onnx \
+       $HF_IT/it/it_IT/paola/medium/it_IT-paola-medium.onnx \
+    && curl -fsSL --retry 3 --retry-delay 2 -o it_IT-paola-medium.onnx.json \
+       $HF_IT/it/it_IT/paola/medium/it_IT-paola-medium.onnx.json
 
 # Biblias (thiagobodruk/bible, JSON): es, en, fr, de, pt, ru (~27 MB)
 RUN mkdir -p /opt/bible && cd /opt/bible && for f in es_rvr en_kjv fr_apee de_schlachter pt_aa ru_synodal; do \

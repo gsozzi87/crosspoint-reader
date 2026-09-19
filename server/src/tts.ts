@@ -29,19 +29,22 @@ const PIPER_TIMEOUT_MS = 60_000;
 // Tope duro de lo que se acepta decodificar: dos minutos de audio.
 const MAX_DECODE_SAMPLES = TARGET_RATE * 120;
 
-export const VOICES: Record<Lang, string> = {
+export type TtsLang = Lang | "it";
+
+export const VOICES: Record<TtsLang, string> = {
   es: "es_MX-claude-high",  // femenina, español neutro latino
   en: "en_US-lessac-medium",
   fr: "fr_FR-siwis-medium",
   de: "de_DE-thorsten-medium",
   pt: "pt_BR-faber-medium",
   ru: "ru_RU-irina-medium",
+  it: "it_IT-paola-medium",
 };
 
 type Worker = { proc: ChildProcess; queue: ((line: string) => void)[]; buffer: string };
-const workers = new Map<Lang, Worker>();
+const workers = new Map<TtsLang, Worker>();
 
-export function ttsAvailable(lang: Lang): boolean {
+export function ttsAvailable(lang: TtsLang): boolean {
   if (!ENABLED || !existsSync(PIPER_BIN)) return false;
   // Existir no alcanza: un 404 en el build dejaría una página de error de 2 KB
   // con nombre de modelo y Piper se moriría en cada pedido.
@@ -52,7 +55,7 @@ export function ttsAvailable(lang: Lang): boolean {
   }
 }
 
-function worker(lang: Lang): Worker {
+function worker(lang: TtsLang): Worker {
   const existing = workers.get(lang);
   if (existing && existing.proc.exitCode === null) return existing;
   const proc = spawn(PIPER_BIN, ["--model", `${VOICES_DIR}/${VOICES[lang]}.onnx`, "--json-input", "--output_dir", OUT_DIR], {
@@ -84,7 +87,7 @@ function worker(lang: Lang): Worker {
 
 // Piper escribe un WAV por línea y avisa la ruta por stdout. Serializado por
 // idioma: una frase a la vez, en orden.
-async function piperWav(text: string, lang: Lang): Promise<Buffer | null> {
+async function piperWav(text: string, lang: TtsLang): Promise<Buffer | null> {
   await mkdir(OUT_DIR, { recursive: true });
   const w = worker(lang);
   const path = await new Promise<string>((resolve) => {
@@ -237,12 +240,12 @@ export function decodeAdpcm(data: Uint8Array): Int16Array {
 const shortCache = new Map<string, Uint8Array>();
 const SHORT_CACHE_MAX = 40;
 
-export async function synthesize(text: string, lang: Lang, maxSeconds = 180): Promise<Uint8Array | null> {
+export async function synthesize(text: string, lang: TtsLang, maxSeconds = 180): Promise<Uint8Array | null> {
   if (!ttsAvailable(lang)) return null;
   // speakable() junta los separadores de miles, pasa los números a palabras y
   // estira las unidades: si no, Piper lee "384 000 km" como "trescientos ochenta
   // y cuatro cero cero cero ka eme".
-  const clean = speakable(text, lang).replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
+  const clean = (lang === "it" ? text : speakable(text, lang)).replace(/\s+/g, " ").trim().slice(0, MAX_CHARS);
   if (!clean) return null;
   const key = `${lang}|${VOICES[lang]}|${clean}`;
   const cached = clean.length <= 60 ? shortCache.get(key) : undefined;
