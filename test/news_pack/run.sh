@@ -6,3 +6,4 @@ bun test ../test/news_pack/pack.test.ts
 bun test ../test/news_pack/rebuild.test.ts
 
 bun test ../test/news_pack/medical.test.ts
+bun test ../test/news_pack/medical_pack.test.ts

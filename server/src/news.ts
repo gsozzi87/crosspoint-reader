@@ -75,6 +75,11 @@ const FAIL_MAX = 500;
 const NEW_PER_FEED = Number(process.env.NEWS_NEW_PER_FEED ?? 12);
 const NEW_PER_RUN = Number(process.env.NEWS_NEW_PER_RUN ?? 30);
 const DIGEST_PER_RUN = Number(process.env.NEWS_DIGEST_PER_RUN ?? 10);
+// Presupuesto de modelo de los PAPERS, aparte del de los diarios: una noticia
+// sin masticar se lee igual, un paper sin traducir llega en inglés. Está topeado
+// por arriba de todos modos, porque PubMed aporta como mucho NEWS_MEDICAL_ITEMS
+// (10, tope 12) por pasada y lo ya traducido no se vuelve a traducir.
+const MEDICAL_DIGEST_PER_RUN = Number(process.env.NEWS_MEDICAL_DIGEST ?? 12);
 const REFRESH_MS = Number(process.env.NEWS_REFRESH_MS ?? 60 * 60 * 1000);
 const ARTICLE_BUDGET_MS = 12000;
 // Un cuerpo de más de esto no entra cómodo en el aparato ni aporta nada: son
@@ -98,6 +103,11 @@ export type PackItem = {
   // Versión del formato de resumen médico. No viaja al aparato; sólo invalida
   // el cuerpo guardado cuando cambia el prompt clínico.
   medicalVersion?: number;
+  // El título ORIGINAL de PubMed (en inglés), cuando `title` es la traducción.
+  // No viaja al aparato: existe para comparar contra lo que trae el feed y
+  // saber si la nota cambió. Sin esto, traducir el título haría que cada pasada
+  // lo viera distinto del original y volviera a traducir todo cada hora.
+  srcTitle?: string;
 };
 
 type Body = { id: string; title: string; feed: string; when: string; text: string };
@@ -142,55 +152,104 @@ const PROMPT: Record<Lang, string> = {
   ru: "Перепиши эту новость для маленького экрана: что произошло, где, кого касается и почему это важно. Короткие фразы, без мнений, ничего не выдумывай. Пять-десять фраз, простой текст.",
 };
 
-// El abstract de PubMed viene SIEMPRE en inglés, así que acá el modelo hace dos
-// cosas a la vez: traducir al idioma del aparato y resumir en clínico. Antes
-// esto era un solo prompt en español y en cualquier otro idioma la nota médica
-// caía al prompt de noticias común, que la simplifica para público general.
+// El abstract de PubMed viene SIEMPRE en inglés y el que lee es UN MÉDICO, así
+// que acá el modelo NO hace lo mismo que con un diario. Con una noticia se
+// reescribe para pantalla chica; con un paper se TRADUCE y nada más.
+//
+// Regla del dueño, textual: "no las quiero para público en general, las quiero
+// para un médico, tienen que tener el lenguaje técnico con el que fueron
+// escritos, no cambiar palabras sino traducirlas". O sea: "ensayo clínico
+// aleatorizado", no "un estudio en el que se sorteó a los pacientes"; y lo que
+// no tiene equivalente aceptado se queda en inglés. Simplificar un abstract es
+// romperlo: el que lo lee necesita el término exacto para buscarlo después.
+//
 // `MEDICAL_SUMMARY_VERSION` (medical.ts) sube cuando esto cambia, así los
-// cuerpos ya guardados se vuelven a masticar en vez de quedar en español.
-const MEDICAL_TARGET: Record<Lang, string> = {
-  es: "español neutro",
-  en: "English",
-  fr: "français",
-  de: "Deutsch",
-  pt: "português",
-  ru: "русский язык",
+// cuerpos ya guardados se vuelven a traducir en vez de quedar con el prompt
+// viejo.
+const MEDICAL_TARGET: Record<Lang, { name: string; say: string }> = {
+  es: { name: "español neutro", say: "Escribe en español neutro." },
+  en: { name: "inglés", say: "Write in English." },
+  fr: { name: "francés", say: "Rédige en français." },
+  de: { name: "alemán", say: "Schreibe auf Deutsch." },
+  pt: { name: "português", say: "Escreve em português." },
+  ru: { name: "ruso", say: "Пиши на русском языке." },
 };
 
+// La primera línea de la respuesta es el título traducido. Va en el mismo
+// pedido y no en uno aparte: son dos llamadas al modelo por paper si se separan,
+// y el título tiene que traducirse con la MISMA regla que el cuerpo.
+const TITLE_TAG = "TÍTULO:";
+
 function medicalPrompt(lang: Lang): string {
+  const target = MEDICAL_TARGET[lang];
   return [
-    `El texto que sigue es el abstract de un artículo médico, en inglés. Tradúcelo y resúmelo en ${MEDICAL_TARGET[lang]}.`,
-    "Es para un MÉDICO: mantén el lenguaje clínico y metodológico y no lo simplifiques para público general.",
-    "Incluye, sólo si están reportados: diseño y población, tamaño muestral, intervención y comparador,",
-    "endpoint primario, magnitud del efecto con IC/p cuando figure, eventos adversos relevantes y limitaciones explícitas.",
-    "Conserva SIN traducir los nombres de fármacos, las dosis, HR/RR/OR, IC95%, NNT, las unidades y las siglas de escalas.",
-    "Distingue asociación de causalidad.",
-    "Si están presentes, conserva PMID y DOI en una última frase breve.",
-    "No extrapoles más allá del abstract, no declares que cambia la práctica si el estudio no lo demuestra y no inventes datos.",
-    "De 6 a 12 frases, texto plano y compacto para una pantalla pequeña.",
+    `El texto que sigue es el abstract de un artículo médico y va dirigido a UN MÉDICO. Tradúcelo a ${target.name}.`,
+    "Es una TRADUCCIÓN, no un resumen para público general ni una reescritura.",
+    "REGLA PRINCIPAL: no cambies las palabras, tradúcelas. Cada término técnico va al término que usan los médicos",
+    `en ${target.name} ("ensayo clínico aleatorizado", no "un estudio en el que se sorteó a los pacientes").`,
+    "Si un término no tiene equivalente aceptado, déjalo en inglés.",
+    "Conserva EXACTAMENTE y sin traducir: nombres de fármacos y moléculas, dosis y vías, HR/RR/OR, IC95%, valores de p,",
+    "NNT, unidades, siglas de escalas y de ensayos, nombres propios de estudios, genes, microorganismos, PMID y DOI.",
+    "Conserva todas las cifras como están y la estructura del abstract con sus secciones",
+    "(antecedentes, métodos, resultados, conclusiones) cuando las traiga.",
+    "No agregues nada, no interpretes, no saques conclusiones propias y no digas que cambia la práctica.",
+    "NO lo acortes: un abstract ya es corto. Saca sólo lo repetido y las frases de relleno.",
+    "Si ya está en el idioma pedido, devuélvelo tal cual, sin reescribirlo.",
+    `La PRIMERA línea es "${TITLE_TAG} " y el título traducido con la misma regla; después una línea en blanco y la traducción.`,
+    "Texto plano, sin markdown.",
+    target.say,
   ].join(" ");
 }
 
-// Una nota masticada. Si el modelo falla, se devuelve el texto limpiado a mano:
-// el paquete NUNCA queda sin la nota por culpa del modelo.
+// Parte la respuesta del modelo en título y cuerpo. Pura a propósito: el
+// formato de una respuesta del modelo es lo primero que se rompe y esto se
+// prueba sin red (./test/news_pack/run.sh). Sin la primera línea marcada, el
+// título se deja como estaba y el texto entero es el cuerpo — nunca se pierde
+// la traducción por culpa del formato.
+export function splitTitledAnswer(out: string): { title: string; text: string } {
+  const clean = out.replace(/\r\n/g, "\n").trim();
+  const nl = clean.indexOf("\n");
+  // Los asteriscos se sacan ANTES de mirar la línea: el modelo escribe
+  // "**TÍTULO:** X" bastante seguido y buscarlos dentro del patrón deja el
+  // título con las marcas pegadas. `TITLE` también, por si contesta en inglés.
+  const firstLine = (nl < 0 ? clean : clean.slice(0, nl)).replace(/\*/g, "").trim();
+  const m = /^(?:T[ÍI]TULO|TITLE)\s*:\s*(.+)$/i.exec(firstLine);
+  if (!m) return { title: "", text: clean };
+  const title = m[1]!.trim().replace(/^["“]|["”]$/g, "").trim();
+  const text = nl < 0 ? "" : clean.slice(nl + 1).trim();
+  return { title, text };
+}
+
+// Lo que el modelo le hace a una nota. Con un diario es masticar (reescribir
+// para pantalla chica); con un paper es traducir sin tocar el registro. Si el
+// modelo falla se devuelve el texto limpiado a mano: el paquete NUNCA queda sin
+// la nota por culpa del modelo — en el caso médico eso significa que llega en
+// inglés, que es como está escrito, y no que no llegue.
 async function chew(
   accountId: number,
   text: string,
   lang: Lang,
   medical = false,
-): Promise<{ text: string; chewed: boolean }> {
+  title = "",
+): Promise<{ text: string; chewed: boolean; title: string }> {
   const raw = text.slice(0, MAX_BODY);
-  if (raw.length < 400) return { text: raw, chewed: false };
+  // Un abstract corto igual hay que traducirlo: el piso de 400 existe para no
+  // gastar el modelo reescribiendo un párrafo de diario que ya se lee bien, y
+  // eso no aplica a un texto que está en otro idioma.
+  if (raw.length < (medical ? 120 : 400)) return { text: raw, chewed: false, title: "" };
   try {
     const system = medical ? medicalPrompt(lang) : PROMPT[lang];
-    const out = await chatText({ system, user: raw, maxTokens: medical ? 1100 : 900 });
+    const user = medical && title ? `${TITLE_TAG} ${title}\n\n${raw}` : raw;
+    // Traducir entero necesita más lugar que resumir: el cuerpo llega hasta
+    // MAX_BODY (6000) y el español y el ruso se estiran contra el inglés.
+    const out = await chatText({ system, user, maxTokens: medical ? 2600 : 900 });
     await addUsage(accountId, { llm: 1 });
-    const clean = out.trim();
-    if (clean.length > 200) return { text: clean, chewed: true };
+    const parsed = medical ? splitTitledAnswer(out) : { title: "", text: out.trim() };
+    if (parsed.text.length > 200) return { text: parsed.text, chewed: true, title: parsed.title };
   } catch (err) {
     console.error("news chew:", String(err).slice(0, 120));
   }
-  return { text: raw, chewed: false };
+  return { text: raw, chewed: false, title: "" };
 }
 
 // Uno de cada feed y después la segunda vuelta, en vez de los primeros N de la
@@ -337,6 +396,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   const items: PackItem[] = [];
   const bodies: Record<string, Body> = {};
   let chewedCount = 0;
+  let medicalChewed = 0;   // los papers tienen presupuesto propio
   // Por medio: cuántas entraron, cuántas se bajaron del diario en esta pasada
   // (el costo) y cuántas se descartaron por no tener cuerpo (el diagnóstico:
   // "ese diario aporta poco" y "de ese diario no se puede sacar el texto" son
@@ -360,7 +420,10 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     // eso es lo que hace que la pasada de cada hora sea barata.
     const antes = conocido.get(id);
     const medical = medicalIds.has(feedId);
-    if (antes && antes.title === item.title && previo.bodies[id] && (!medical || antes.medicalVersion === MEDICAL_SUMMARY_VERSION)) {
+    // Para un paper, `antes.title` es la TRADUCCIÓN: lo que hay que comparar
+    // con el feed es el título de origen.
+    const tituloPrevio = antes?.srcTitle ?? antes?.title;
+    if (antes && tituloPrevio === item.title && previo.bodies[id] && (!medical || antes.medicalVersion === MEDICAL_SUMMARY_VERSION)) {
       // El `whenAt` completa los paquetes armados antes de la ventana rodante.
       items.push(antes.whenAt ? antes : { ...antes, whenAt: item.whenAt });
       bodies[id] = previo.bodies[id];
@@ -403,16 +466,29 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
       continue;
     }
 
-    const puedeMasticar = !sinCupo && chewedCount < DIGEST_PER_RUN;
-    const { text: final, chewed } = puedeMasticar ? await chew(accountId, text, lang, medical) : { text: text.slice(0, MAX_BODY), chewed: false };
-    if (chewed) chewedCount++;
+    // Los papers tienen su PROPIO presupuesto de modelo, aparte del de los
+    // diarios. Una noticia sin masticar se lee igual (es el texto del diario,
+    // en el idioma del aparato); un paper sin traducir llega EN INGLÉS, que es
+    // justo lo que no se quiere. Y el gasto está topeado solo: PubMed aporta
+    // como mucho NEWS_MEDICAL_ITEMS por pasada, y lo ya traducido no se vuelve
+    // a traducir.
+    const puedeMasticar = !sinCupo && (medical ? medicalChewed < MEDICAL_DIGEST_PER_RUN : chewedCount < DIGEST_PER_RUN);
+    // El prefijo de la etiqueta ([NEJM · RCT]) no se manda al modelo y se
+    // vuelve a poner acá: es una marca nuestra, no parte del título.
+    const etiqueta = medical ? (/^\[[^\]]*\]\s*/.exec(item.title)?.[0] ?? "") : "";
+    const plano = medical ? item.title.slice(etiqueta.length) : "";
+    const { text: final, chewed, title: traducido } = puedeMasticar
+      ? await chew(accountId, text, lang, medical, plano)
+      : { text: text.slice(0, MAX_BODY), chewed: false, title: "" };
+    if (chewed) { if (medical) medicalChewed++; else chewedCount++; }
+    const titulo = traducido ? `${etiqueta}${traducido}`.slice(0, 500) : item.title;
     delete fallidas[id];
-    const body: Body = { id, title: item.title, feed, when: whenLabel(item.whenAt, tz), text: final };
+    const body: Body = { id, title: titulo, feed, when: whenLabel(item.whenAt, tz), text: final };
     bodies[id] = body;
     items.push({
       id,
       feed,
-      title: item.title,
+      title: titulo,
       when: whenLabel(item.whenAt, tz),
       sha: (await sha256Hex(final)).slice(0, 16),
       bytes: final.length,
@@ -420,6 +496,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
       link: item.sourceLink ?? item.link ?? "",
       whenAt: item.whenAt,
       medicalVersion: medical ? MEDICAL_SUMMARY_VERSION : undefined,
+      srcTitle: medical ? item.title : undefined,
     });
     suma(aceptadas, feedId);
   }
@@ -469,7 +546,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     .join(" · ");
   console.log(
     `news: cuenta ${accountId}, ${ventana.length} notas de ${porFeed.length} medios ` +
-      `(${chewedCount} masticadas${sinCupo ? ", sin cupo" : ""}${bajadasTotal >= NEW_PER_RUN ? ", tope de bajadas de la pasada" : ""})` +
+      `(${chewedCount} masticadas${medicalChewed ? `, ${medicalChewed} papers traducidos` : ""}${sinCupo ? ", sin cupo" : ""}${bajadasTotal >= NEW_PER_RUN ? ", tope de bajadas de la pasada" : ""})` +
       (porMedio ? ` — ${porMedio}` : ""),
   );
   return ventana.length;

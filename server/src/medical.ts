@@ -32,7 +32,8 @@ export function isMedicalFeed(url: string | undefined | null): boolean {
 
 // Sube cuando cambia el prompt clínico: invalida el cuerpo guardado y lo vuelve
 // a masticar. 3 = resúmenes en el idioma del aparato, no siempre en español.
-export const MEDICAL_SUMMARY_VERSION = 3;
+// 4 = TRADUCCIÓN técnica en vez de resumen, y el título también traducido.
+export const MEDICAL_SUMMARY_VERSION = 4;
 
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 const MAX_XML = 4_000_000;
