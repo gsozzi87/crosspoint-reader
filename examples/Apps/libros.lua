@@ -1,4 +1,4 @@
--- LIBRARY: dime un título y te lo bajo.
+-- Biblioteca: dime un título y te lo bajo.
 -- Dicta un título o un autor, el servidor se lo pide a un bot de Telegram
 -- (como la cuenta del dueño, conectada desde /board) y devuelve la lista;
 -- eliges uno, ves la ficha y "Bajar EPUB" baja el archivo a /Books/libros/.
@@ -768,7 +768,7 @@ end
 function on_draw()
   local fin = cp.height() - 88
   if st == "inicio" then
-    local y = cabezal("LIBRARY")
+    local y = cabezal("Biblioteca")
     y = parrafo(y + 8, "Presiona OK y di el título o el autor. El servidor se lo pide al bot y el libro " ..
                 "queda en la tarjeta, en Leer.", 12, 4)
     lista(filas(), y + 16, fin)
