@@ -60,6 +60,7 @@ Es lo único que una app ve del aparato.
 | `cp.texth([tam])` | Alto de un renglón |
 | `cp.rect(x, y, w, h [, lleno] [, grosor])` | Rectángulo |
 | `cp.line(x1, y1, x2, y2 [, grosor])` | Línea |
+| `cp.image(x, y, w, h, bits [, escala])` | Un bitmap de 1 bit: `bits` es un string con las filas empaquetadas (MSB primero, **1 = tinta**, cada fila redondeada a byte, `ceil(w/8)` bytes por fila), hasta 256 × 256. `escala` entera de 1 a 8 agranda cada píxel a un cuadrado. Es la puerta de los dibujitos: 64 × 64 son 512 bytes, se llevan bien como `"\xFF\x00…"` o decodificando un string hexa al abrir |
 | `cp.selection(x, y, w, h)` | El resalte del sistema visual (ver `DISENO.md`) |
 | `cp.width()`, `cp.height()` | Tamaño de la pantalla: 480 × 800 |
 

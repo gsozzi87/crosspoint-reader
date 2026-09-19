@@ -2,7 +2,7 @@
 // tal cual los muestra Telegram: la línea que abre la lista, cada título con
 // su comando, y la ficha con "Publicado: 1967 | 345 páginas".
 import { describe, expect, test } from "bun:test";
-import { fileNameFor, formatOfLabel, parseCard, parseList, slugify } from "../../server/src/librosParse";
+import { fileNameFor, formatOfLabel, lettersToWord, parseCard, parseList, slugify } from "../../server/src/librosParse";
 
 const LISTA_PADRE = [
   "Ahí van algunos libros que coinciden con tu búsqueda:",
@@ -141,5 +141,49 @@ describe("formatos y nombres", () => {
     for (const n of [fileNameFor("libro con espacios.mobi", "Ø", "epub"), fileNameFor("", "a".repeat(80), "epub")]) {
       expect(/^[A-Za-z0-9][A-Za-z0-9._-]{0,47}$/.test(n)).toBe(true);
     }
+  });
+});
+
+describe("lettersToWord (deletreo)", () => {
+  test("Ángeles Mastretta deletreado en español, con comas y «espacio»", () => {
+    expect(lettersToWord("a, ene, ge, e, ele, e, ese, espacio, eme, a, ese, te, erre, e, te, te, a", "es"))
+      .toBe("angeles mastretta");
+  });
+
+  test("letras sueltas con guiones o espacios, como las escribe el transcriptor", () => {
+    expect(lettersToWord("a-n-g-e-l-e-s", "es")).toBe("angeles");
+    expect(lettersToWord("A N G E L E S", "es")).toBe("angeles");
+    expect(lettersToWord("A. N. G.", "es")).toBe("ang");
+  });
+
+  test("eñe no se confunde con ene; hache, jota, equis, i griega, doble uve", () => {
+    expect(lettersToWord("a, eñe, o", "es")).toBe("año");
+    expect(lettersToWord("hache, jota, equis, i griega, doble uve, zeta, ye", "es")).toBe("hjxywzy");
+    expect(lettersToWord("uve doble, be larga, ve corta", "es")).toBe("wbv");
+  });
+
+  test("en inglés: Hemingway letra por letra", () => {
+    expect(lettersToWord("aitch, e, em, i, en, gee, double you, ay, why", "en")).toBe("hemingway");
+    expect(lettersToWord("bee, oh, oh, kay, space, tee, e, e, dee", "en")).toBe("book teed");
+    expect(lettersToWord("zed, zee, ex, cue", "en")).toBe("zzxq");
+  });
+
+  test("una palabra entera en el medio queda entera; números y guion pasan", () => {
+    expect(lettersToWord("cien, espacio, a, eñe, o, ese", "es")).toBe("cien años");
+    expect(lettersToWord("uno, espacio, nueve, ocho, cuatro", "es")).toBe("uno nueve ocho cuatro");
+    expect(lettersToWord("1, 9, 8, 4", "es")).toBe("1984");
+    expect(lettersToWord("ce, o, guion, ce, o", "es")).toBe("co-co");
+    expect(lettersToWord("mastretta, espacio, a mayúscula, ene", "es")).toBe("mastretta an");
+  });
+
+  test("vacío y sin nada útil", () => {
+    expect(lettersToWord("", "es")).toBe("");
+    expect(lettersToWord("  ,  ,  ", "es")).toBe("");
+    expect(lettersToWord("mayúscula", "es")).toBe("");
+  });
+
+  test("qué tabla manda: «de» es d en español y «el» es l en inglés, pero los dos valen en las dos", () => {
+    expect(lettersToWord("de, el", "es")).toBe("dl");
+    expect(lettersToWord("dee, el, de", "en")).toBe("dld");
   });
 });

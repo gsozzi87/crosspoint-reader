@@ -1,8 +1,12 @@
--- Libros: dime un título y te lo bajo.
+-- LIBRARY: dime un título y te lo bajo.
 -- Dicta un título o un autor, el servidor se lo pide a un bot de Telegram
 -- (como la cuenta del dueño, conectada desde /board) y devuelve la lista;
 -- eliges uno, ves la ficha y "Bajar EPUB" baja el archivo a /Books/libros/.
 -- Lo bajado queda anotado en bajados.json y se abre desde Inicio.
+-- El transcriptor no conoce a los autores ("angeles mastretas"): si el bot no
+-- encuentra nada, el servidor corrige el nombre con el modelo y busca otra vez
+-- (`corrected`), y la pantalla sin resultados ofrece "Deletrear el nombre":
+-- se dice letra por letra y va con `spelled = true` (`spelled` = la palabra).
 --
 -- La app NO levanta la red al abrir: la primera cp.listen / cp.call lo hace.
 -- Pantallas: inicio → (escucha) → resultados → ficha → bajando → listo (o error).
@@ -19,12 +23,17 @@ local BAJADOS = "bajados.json"
 local FICHA_TXT = "ficha.txt"
 local MAX_BAJADOS = 30
 local PREGUNTA = "¿Qué libro buscas?"
+local PREGUNTA_LETRAS = "Deletrea letra por letra"
 local SIN_TELEGRAM = "Conecta Telegram en la web (Ajustes → Avanzado → Telegram)"
 
 local st = "inicio"
 local sel = 1
 local bajados = {}                -- {name, title, author, at}
 local q = ""                      -- lo dictado
+local porLetras = false           -- q es el nombre deletreado (spelled = true)
+local escuchandoLetras = false    -- la escucha abierta es la de deletrear
+local corregido = ""              -- con qué buscó el servidor si corrigió lo dicho
+local deletreado = ""             -- la palabra que armó el servidor con las letras
 local res = {}                    -- {title, code}
 local elegido = 0                 -- índice en res del que se abrió
 local ficha = nil                 -- {code, title, author, year, pages, genre, desc, formats}
@@ -321,6 +330,7 @@ local function pedir(servicio, args, que)
 end
 
 local function escuchar()
+  escuchandoLetras = false
   if not cp.listen(10, PREGUNTA) then
     cp.beep("error")
     return false
@@ -328,7 +338,20 @@ local function escuchar()
   return false  -- el host muestra su propia pantalla de escucha
 end
 
-local function buscar() return pedir("libros.buscar", {q = q}, "buscar") end
+-- Deletrear: más tiempo (un nombre son veinte letras) y el servidor arma la palabra.
+local function escucharLetras()
+  escuchandoLetras = true
+  if not cp.listen(20, PREGUNTA_LETRAS) then
+    escuchandoLetras = false
+    cp.beep("error")
+    return false
+  end
+  return false
+end
+
+local function buscar()
+  return pedir("libros.buscar", porLetras and {q = q, spelled = true} or {q = q}, "buscar")
+end
 local function pedirFicha(code) return pedir("libros.ficha", {code = code}, "ficha") end
 local function pedirBajar(formato)
   if not ficha then return false end
@@ -390,6 +413,7 @@ end
 
 function on_open()
   st, sel, q, res, elegido, ficha, job, libro, calls = "inicio", 1, "", {}, 0, nil, {}, nil, {}
+  porLetras, escuchandoLetras, corregido, deletreado = false, false, "", ""
   cargarBajados()
 end
 
@@ -419,7 +443,8 @@ local function filas()
     end
   elseif st == "resultados" then
     if #res == 0 then
-      f[1] = {t = "Buscar de nuevo", h = ROW1, act = "dictar"}
+      f[1] = {t = "Deletrear el nombre", h = ROW1, act = "deletrear"}
+      f[2] = {t = "Buscar de nuevo", h = ROW1, act = "dictar"}
     else
       for i, r in ipairs(res) do f[#f + 1] = {t = r.title, h = ROW1, act = "elegir", i = i} end
     end
@@ -449,6 +474,8 @@ local function accion(it)
   local a = it and it.act
   if a == "dictar" then
     return escuchar()
+  elseif a == "deletrear" then
+    return escucharLetras()
   elseif a == "abrirBajado" then
     local b = bajados[it.i]
     if not b then return false end
@@ -489,7 +516,7 @@ local function atras()
   if st == "inicio" then
     cp.quit()
     return false
-  elseif st == "resultados" then st = "inicio"
+  elseif st == "resultados" then st, porLetras = "inicio", false
   elseif st == "ficha" then
     st, sel = "resultados", math.max(1, elegido)  -- vuelve sobre el elegido
     cp.beep("back")
@@ -558,8 +585,10 @@ function on_tick()
 end
 
 function on_heard(texto)
+  local letras = escuchandoLetras
+  escuchandoLetras = false
   if type(texto) ~= "string" or texto:match("^%s*$") then return end
-  q = s(texto)
+  q, porLetras, corregido, deletreado = s(texto), letras, "", ""
   st, sel = "inicio", 1
   buscar()
 end
@@ -568,6 +597,7 @@ end
 
 local function llegoBusqueda(t)
   local lista = type(t.results) == "table" and t.results or {}
+  corregido, deletreado = s(t.corrected), s(t.spelled)
   res = {}
   for _, r in ipairs(lista) do
     if type(r) == "table" and s(r.title) ~= "" and s(r.code) ~= "" then
@@ -738,17 +768,29 @@ end
 function on_draw()
   local fin = cp.height() - 88
   if st == "inicio" then
-    local y = cabezal("Libros")
+    local y = cabezal("LIBRARY")
     y = parrafo(y + 8, "Presiona OK y di el título o el autor. El servidor se lo pide al bot y el libro " ..
                 "queda en la tarjeta, en Leer.", 12, 4)
     lista(filas(), y + 16, fin)
     pie(#bajados > 0 and "OK: buscar o abrir · Atrás: salir" or "OK: buscar por voz · Atrás: salir")
   elseif st == "resultados" then
-    local y = cabezal(q ~= "" and q or "Resultados")
+    -- Deletreado, el cabezal es la palabra armada y no la ristra de letras.
+    local dicho = deletreado ~= "" and deletreado or q
+    local y = cabezal(dicho ~= "" and dicho or "Resultados")
+    local ancho = cp.width() - 2 * SIDE
+    if deletreado ~= "" then
+      cp.text(SIDE, y + 8, fit("Deletreado: " .. deletreado, ancho, 10), 10)
+      y = y + cp.texth(10) + 4
+    end
+    if corregido ~= "" then
+      cp.text(SIDE, y + 8, fit("Buscando «" .. corregido .. "»", ancho, 10), 10)
+      y = y + cp.texth(10) + 4
+    end
     if #res == 0 then
-      y = parrafo(y + 8, "No encontré nada con «" .. q .. "».", 12, 4)
+      y = parrafo(y + 8, "No encontré nada con «" .. (corregido ~= "" and corregido or dicho) .. "». " ..
+                  "Puedes deletrear el nombre letra por letra.", 12, 4)
       lista(filas(), y + 16, fin)
-      pie("OK: buscar de nuevo · Atrás: volver")
+      pie("OK: elegir · Atrás: volver")
     else
       cp.text(SIDE, y + 8, #res .. (#res == 1 and " resultado" or " resultados"), 10)
       lista(filas(), y + 40, fin)

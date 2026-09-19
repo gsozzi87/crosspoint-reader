@@ -1,4 +1,4 @@
--- Librito: dicta un tema y el servidor escribe un libro corto (unos 15 minutos
+-- GHOSTWRITER: dicta un tema y el servidor escribe un libro corto (unos 15 minutos
 -- de lectura) que se abre en el lector. Muestra el contrato asíncrono de las
 -- apps: cp.listen / cp.call / cp.download piden algo y la respuesta llega por
 -- on_heard y on_reply; el trabajo largo (escribir) se consulta desde on_tick
