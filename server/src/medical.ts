@@ -275,7 +275,18 @@ export function parseMedicalXml(xml: string, limit = clampItems()): Item[] {
   return candidates.slice(0, limit).map((c) => c.item);
 }
 
+// Interruptor. Esta fuente es VIRTUAL: aparece en toda cuenta aunque el usuario
+// no haya cargado un solo RSS, y cada pasada son dos viajes a PubMed (esearch +
+// efetch, 15 s de tope cada uno) más las llamadas al modelo de lo que mastique.
+// Con `NEWS_MEDICAL=0` no sale a la red y devuelve vacío, que es lo que hace
+// falta para (a) apagarla desde Railway sin tocar código y (b) que
+// `./test/news_pack/run.sh` siga siendo lo que dice ser: lógica pura, sin red.
+export function medicalEnabled(): boolean {
+  return (process.env.NEWS_MEDICAL ?? "1").trim() !== "0";
+}
+
 export async function readMedicalFeed(): Promise<{ items: Item[]; title: string }> {
+  if (!medicalEnabled()) return { items: [], title: MEDICAL_FEED_NAME };
   const limit = clampItems();
   const search = new URL(`${EUTILS}/esearch.fcgi`);
   search.searchParams.set("db", "pubmed");
