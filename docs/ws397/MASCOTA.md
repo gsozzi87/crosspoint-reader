@@ -1,53 +1,63 @@
-# Mascota: la mascota de bolsillo (`examples/Apps/mascota.lua`)
+# Mascota: la perrita salchicha de bolsillo (`examples/Apps/mascota.lua`)
 
 Un tamagotchi básico como app de Lua (`docs/ws397/APPS_LUA.md`). El pedido del dueño fue,
 textual: *"hazme una pequeña mascota virtual, un tamagotchi básico con imágenes bonitas, no las
-generes tú, busca de por ahí alguna que aparezca en la web"*. Así que **ningún dibujo es nuestro**:
-todos salen de dos conjuntos abiertos que están en la web, y esta página deja escrito de dónde,
-de quién y con qué licencia.
+generes tú, busca de por ahí alguna que aparezca en la web"*, y después: *"pero quiero una perrita
+salchicha"*. Así que **ningún dibujo es nuestro**: todos salen de dos conjuntos abiertos que están
+en la web, y esta página deja escrito de dónde, de quién y con qué licencia.
 
 ## Los dibujos: de dónde salen
 
 | Qué | Conjunto | Autor | Licencia | Enlace |
 | --- | --- | --- | --- | --- |
-| El gato (8 cuadros: quieto ×2, contento ×2, triste ×2, dormida, se fue) | **Tiny Kitten Game Sprite** | **Segel** | **CC0** (dominio público) | https://opengameart.org/content/tiny-kitten-game-sprite (archivo `tiny_cat_sprite.zip`, 1,2 MB) |
+| La perrita (8 cuadros: quieta ×2, contenta ×2, triste ×2, dormida, se fue) | **openclaw-tamagotchi**, la mascota `dachshund` ("Alegra"): `pets/dachshund/sprites/{idle,walk,sleep}.png` | **Artem Katolikov** (`katolikov`) | **MIT** (Copyright (c) 2026 Artem Katolikov; el `LICENSE` del repo cubre todo lo que trae, y el README dice que el arte de las mascotas es propio, no sacado de OpenClaw) | https://github.com/katolikov/openclaw-tamagotchi (commit `4b3afac`, 2026-05-04) |
 | Los iconos de la botonera (comida, pelota, balde, info), la caca y el huevo (2 cuadros) | **OpenCritter** (`gfx/bitmaps/icons`, `gfx/bitmaps/critters/egg_*.bmp`) | **SuperMechaCow** | **MIT** (Copyright (c) 2017 SuperMechaCow) | https://github.com/SuperMechaCow/OpenCritter |
 
-CC0 no exige atribución; MIT exige conservar el aviso de copyright, que va en el comentario de
-cabecera de la app y acá. Ninguno de los dos restringe el uso comercial.
+MIT exige conservar el aviso de copyright, que va en el comentario de cabecera de la app y acá.
+No restringe el uso comercial.
 
 ### Qué cuadro se usa para qué
 
-El original de Segel es un gato de plataformas (Idle, Run, Jump, Hurt, Dead), no un tamagotchi,
-así que los estados se mapean:
+El original es una perra salchicha negra de perfil (silueta con el ojo y las patas de otro
+color), en celdas de 32 × 32 con tres animaciones: **idle** (8 cuadros, mueve la cola), **walk**
+(6) y **sleep** (4, echada). No hay pose triste ni de muerta, así que se mapea:
 
 | Estado en la app | Cuadros del original |
 | --- | --- |
-| Quieta (`idle1`, `idle2`) | `01_Idle/__Cat_Idle_000` y `_006` |
-| Contenta (`feliz1`, `feliz2`) | `03_Jump/01_Up/__Cat_JumpUp_002` y `02_Run/__Cat_Run_004` |
-| Triste / con hambre / sucia / agotada (`triste1`, `triste2`) | `04_Hurt/__Cat_Hurt_001` y `_004` (los ojos `> <`) |
-| Dormida (`duerme`) | `05_Dead/__Cat_Dead_001` (de pie, ojos cerrados) más una "z Z" en texto |
-| Se fue (`sefue`) | `05_Dead/__Cat_Dead_007` (acostada) |
+| Quieta (`idle1`, `idle2`) | `idle` 0 y 2 (la cola arriba y abajo) |
+| Contenta (`feliz1`, `feliz2`) | `walk` 0 y 3 |
+| Triste / con hambre / sucia / agotada (`triste1`, `triste2`) | `sleep` 0 y 2 (echada, sin la "z Z") |
+| Dormida (`duerme`) | `sleep` 1 más una "z Z" en texto |
+| Se fue (`sefue`) | `idle` 0 **dado vuelta** (patas para arriba): es una transformación del cuadro, no un dibujo nuevo |
 | Comiendo / limpiando / recién jugó | el cuadro que toque más el icono de OpenCritter al lado |
 | El huevo de la pantalla del nombre | `egg_idle.bmp` y `egg_main.bmp` de OpenCritter, a escala 6 |
 
 ### Cómo se convirtieron
 
 `convert.py` (Pillow), guardado junto con los originales en el scratchpad de la sesión
-(`scratchpad/mascota/`): cada cuadro PNG (489 × 461, con transparencia) se compone sobre blanco,
-se escala **por el alto del gato de pie a 120 px** (la misma escala para todos, así el que salta o
-la acostada guardan la proporción), se **umbraliza en 70 sobre 255**: por debajo es tinta. El
-gris del cuerpo queda blanco y sobrevive sólo el contorno negro, que es lo que se lee bien en
-tinta electrónica (un tramado del gris se veía sucio). Se recorta al contenido, ancho múltiplo de
-8, lienzo de 120 px alineado abajo. Resultado: **88 × 120** (la acostada, 128 × 120), 11 bytes por
-fila, 1320 bytes por cuadro. Los iconos son BMP de 1 bit y van tal cual (16 × 16 y 32 × 32).
+(`scratchpad/mascota/`, con el clon del repo en `orig/openclaw-tamagotchi`): de cada celda de
+32 × 32 se recortan las filas 8 a 23 (la perra vive ahí) → **32 × 16**, y se pasa a 1 bit **por
+paleta, no por umbral**: el cuerpo `(35,28,25)` y las patas `(175,100,45)` son tinta y el ojo
+`(10,8,6)` queda blanco — por luminancia el ojo es más oscuro que el cuerpo y desaparecía. Son 4
+bytes por fila, **64 bytes por cuadro**, 1856 caracteres hexa en total; el archivo entero pesa
+**24 KB** (el tope es 64). Los iconos son BMP de 1 bit y van tal cual (16 × 16 y 32 × 32). Todo
+empaquetado MSB primero, 1 = tinta, como pide `cp.image()`, y decodificado una vez con `gsub`
+sobre una tabla de 256 entradas, que corre en C.
 
-Todo se empaqueta MSB primero, 1 = tinta, como pide `cp.image()`, y va dentro del `.lua` como
-strings hexa (`SPRITES` al principio del archivo): 23 KB de hexa, 45 KB el archivo entero (el tope
-es 64). Se decodifican una vez con `gsub` sobre una tabla de 256 entradas, que corre en C.
+**En pantalla la perra se dibuja a escala 7: 224 × 112 px** en el panel de 480 × 800 (unos 24 × 12 mm
+a 235 ppp), con la pinta de píxel grande que le corresponde. Los iconos de la botonera a escala 2
+(32 px) y los de al lado de la perra a escala 3 (48 px).
 
-**En pantalla el gato se dibuja a escala 2: 176 × 240 px** en el panel de 480 × 800 (unos 18 × 25 mm
-a 235 ppp). Los iconos de la botonera a escala 2 (32 px) y los de al lado del gato a escala 3 (48 px).
+### Lo que se miró y se descartó
+
+- **"Dachshund" de zwonky, OpenGameArt, CC0** (16 × 16, sit/stand/run): licencia perfecta, pero a
+  1 bit un perro de 16 px con tres colores queda en dos manchas; no se reconoce. Está bajado en
+  `orig/zwonky-dachshund.png` por si el dueño prefiere ese estilo a color en otra pantalla.
+- **Tiny Kitten de Segel (CC0)**: era la versión anterior de esta app (un gato); se cambió a pedido.
+- **picotamachibi** (Kevin McAleer): sprites de 1 bit perfectos para tamagotchi, **sin licencia**.
+- **Matagotchi / Dragotchi** (Flipper): GPL-3. **Pet Mobile de ToffeeCraft**: sólo uso personal.
+  **Pixel Dogs de Benvictus**: licencia informal ("créditos si no donas") y sin salchicha declarado.
+- No hay salchicha en los packs de animales de Kenney (Animal Pack Redux trae "dog" genérico).
 
 ## Cómo se juega
 
@@ -84,7 +94,7 @@ Estado guardado con `cp.save` (una línea, `;` como separador):
 ## Probar sin aparato
 
 `./test/lua_sandbox/run.sh` corre `test/lua_sandbox/scenarios/mascota.lua`: nombre por voz, el
-gato en pantalla con los bytes que corresponden (`fake.images`), alimentar, el juego entero,
+perra en pantalla con los bytes que corresponden (`fake.images`), alimentar, el juego entero,
 dormir y despertar, limpiar, seis horas de reloj, recargar desde `cp.save`, el tope de 12 h con
 30 h fuera, sin reloj, descuido largo hasta la despedida, huevo nuevo, el recorte del nombre, los
 dos gestos (prestándole un `cp.motion` al harness) y cincuenta ticks quietos sin repintar.
@@ -96,6 +106,5 @@ decodificación única de los sprites), `on_tick` ≈ 160, `on_key` ≈ 50.
 ## Instalar
 
 Copiar `examples/Apps/mascota.lua` a `/Apps` de la tarjeta (modo memoria USB) y abrirla en
-**Juegos → Mascota**. Pendiente de hardware: verla en el vidrio (el tamaño a escala 2 es una
-decisión a ojo; si queda chica, `dibujo(g, px, py, 2)` en `dibujarCasa` admite escala 3 y el
-`py` baja), el micrófono para el nombre y los dos gestos.
+**Juegos → Mascota**. Pendiente de hardware: verla en el vidrio (la escala 7 es una decisión a ojo:
+`ESCALA` al principio de la parte de juego, de 1 a 8), el micrófono para el nombre y los dos gestos.
