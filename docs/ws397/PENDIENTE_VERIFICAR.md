@@ -182,15 +182,19 @@ Cargar dos o tres feeds en `/board` → Ajustes → Noticias, esperar un minuto 
 
 ### 8. La web (1.5.78)
 
-- [ ] Cinco pestañas: Hoy · Agenda · Listas · Notas · Ajustes (Viajes salió en 1.5.93).
+- [ ] Cinco pestañas: Hoy · Agenda · Listas · Notas · Ajustes.
 - [ ] Ajustes es una pantalla con secciones, no un cajón de filas iguales.
 - [ ] Una dirección vieja guardada en el teléfono (`#mas/…`) sigue llevando a algún lado.
 
-### 8 bis. Viajes salió del producto (1.5.93)
+### 8 bis. Viajes salió del producto (1.5.93, y otra vez después de 1.5.115)
+
+Salió dos veces: la pantalla compilada en 1.5.93 y la app de Lua con su pestaña web después de 1.5.115
+(*"no me va a servir"*). No queda nada de ninguna de las dos.
 
 - [ ] "Mi día" tiene **dos** filas: Hoy y Calendario. No hay Viajes.
 - [ ] En `/board`, cinco pestañas y ninguna de Viajes. Una dirección vieja (`#viajes`, `#mas/viajes`) lleva a Hoy.
 - [ ] En el calendario del aparato no aparecen más los ítems que espejaba el viaje.
+- [ ] En Juegos (las apps de Lua) no hay ningún "Gurú de viaje".
 
 ---
 

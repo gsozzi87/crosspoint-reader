@@ -1,9 +1,10 @@
--- Sudoku: nueve por nueve, con la palanca o dictando.
+-- Sudoku: nueve por nueve, sólo con la palanca.
 --
--- Cuatro teclas y el micrófono, nada más. La palanca recorre las celdas
--- VACÍAS en orden de lectura (las dadas se saltan), OK va pasando el número de
--- la celda (1, 2 … 9, vacía) y Atrás abre el menú: dictar ("fila tres, columna
--- cinco, siete"), verificar, pista, partida nueva, salir.
+-- Tres teclas y nada más: no hay micrófono, no hay dictado y la app no levanta
+-- la red nunca (no llama a cp.listen, cp.call ni cp.download). La palanca
+-- recorre las celdas VACÍAS en orden de lectura (las dadas se saltan), OK va
+-- pasando el número de la celda (1, 2 … 9, vacía) y Atrás abre el menú:
+-- verificar, pista, partida nueva, salir.
 --
 -- Los tableros no se generan en el aparato: comprobar que un sudoku tiene una
 -- sola solución cuesta más de lo que el cajón deja por llamada (400.000
@@ -123,10 +124,10 @@ local menuCursor = 1
 local nivelCursor = 1
 local inicioCursor = 1
 
-local MENU = { "Dictar", "Verificar", "Pista", "Nuevo", "Salir" }
+local MENU = { "Verificar", "Pista", "Nuevo", "Salir" }
 
 -- ---------------------------------------------------------------------------
--- Guardas para lo que viene de afuera (cp.load, el micrófono)
+-- Guardas para lo que viene de afuera (cp.load)
 
 local function s(v)
   if type(v) == "string" then return v end
@@ -382,156 +383,6 @@ local function pista()
 end
 
 -- ---------------------------------------------------------------------------
--- Dictado: "fila tres columna cinco siete", "tres cinco siete",
--- "borra fila dos columna cuatro", "siete" (en la celda del cursor).
-
-local NUMEROS = {
-  cero = 0, uno = 1, un = 1, una = 1, dos = 2, tres = 3, cuatro = 4, cinco = 5,
-  seis = 6, siete = 7, ocho = 8, nueve = 9,
-}
-local BORRAR = {
-  borra = true, borrar = true, borrala = true, quita = true, quitar = true,
-  quitala = true, limpia = true, limpiar = true, vacia = true, vaciar = true,
-  saca = true, sacar = true, nada = true, vacio = true,
-}
-local FILA = { fila = true, filas = true, renglon = true, linea = true, horizontal = true }
-local COLUMNA = { columna = true, columnas = true, col = true, vertical = true }
--- Palabras que pueden venir entre "fila" y su cifra sin que signifiquen nada.
-local RELLENO = {
-  la = true, el = true, lo = true, de = true, del = true, en = true, y = true, e = true,
-  numero = true, num = true, pon = true, poner = true, pone = true, escribe = true,
-  mete = true, celda = true, casilla = true, a = true, al = true, con = true, valor = true,
-  cifra = true, digito = true, es = true, coloca = true, marca = true, que = true,
-}
-
-local ACENTOS = {
-  ["á"] = "a", ["é"] = "e", ["í"] = "i", ["ó"] = "o", ["ú"] = "u", ["ü"] = "u", ["ñ"] = "n",
-  ["Á"] = "a", ["É"] = "e", ["Í"] = "i", ["Ó"] = "o", ["Ú"] = "u", ["Ü"] = "u", ["Ñ"] = "n",
-}
-
-local function normalizar(texto)
-  texto = s(texto):gsub("[\195][\128-\191]", function(ch) return ACENTOS[ch] or ch end)
-  return texto:lower()
-end
-
--- Convierte lo dicho en palabras y números sueltos. "357" se abre en 3, 5, 7.
-local function partir(texto)
-  local fichas = {}
-  for palabra in normalizar(texto):gmatch("[%a%d]+") do
-    if palabra:match("^%d+$") then
-      for i = 1, #palabra do fichas[#fichas + 1] = palabra:byte(i) - 48 end
-    else
-      fichas[#fichas + 1] = palabra
-    end
-  end
-  return fichas
-end
-
-local function esNumero(f)
-  return type(f) == "number" or NUMEROS[f] ~= nil
-end
-
-local function valorDe(f)
-  if type(f) == "number" then return f end
-  return NUMEROS[f]
-end
-
--- Devuelve true, fila, columna, valor (valor nil = sólo mover el cursor;
--- fila y columna nil = la celda del cursor), o false y el motivo.
-local function interpretar(texto)
-  local fichas = partir(texto)
-  local fila, col, borrar = nil, nil, false
-  local sueltos = {}
-  local esperando = nil   -- "fila" o "col": la próxima cifra va ahí
-  for i, f in ipairs(fichas) do
-    if type(f) == "string" and FILA[f] then
-      esperando = "fila"
-    elseif type(f) == "string" and COLUMNA[f] then
-      esperando = "col"
-    elseif type(f) == "string" and BORRAR[f] then
-      borrar = true
-    elseif esNumero(f) then
-      -- "un siete" es un siete, no un uno y un siete.
-      local articulo = (f == "un" or f == "una") and esNumero(fichas[i + 1])
-      if not articulo then
-        local v = valorDe(f)
-        if esperando == "fila" and not fila then
-          fila = v
-        elseif esperando == "col" and not col then
-          col = v
-        else
-          sueltos[#sueltos + 1] = v
-        end
-        esperando = nil
-      end
-    elseif esperando and not (type(f) == "string" and RELLENO[f]) then
-      -- "fila doce": después de "fila" vino algo que no es una cifra. Mejor
-      -- no entender que poner un número en otra celda.
-      return false, "No entendí"
-    end
-  end
-  -- Sin "fila"/"columna": los números sueltos van en orden fila, columna, valor.
-  local k = 1
-  if fila == nil and col == nil then
-    if #sueltos >= 3 then
-      fila, col = sueltos[1], sueltos[2]
-      k = 3
-    elseif #sueltos == 2 then
-      fila, col = sueltos[1], sueltos[2]
-      k = 3
-    end
-  elseif fila ~= nil and col == nil and #sueltos >= 1 then
-    col = sueltos[1]
-    k = 2
-  elseif fila == nil and col ~= nil and #sueltos >= 1 then
-    fila = sueltos[1]
-    k = 2
-  end
-  local valor = sueltos[k]
-  if borrar then valor = 0 end
-  if fila == nil and col == nil and valor == nil then return false, "No entendí" end
-  if (fila ~= nil) ~= (col ~= nil) then return false, "No entendí" end
-  if fila and (fila < 1 or fila > 9 or col < 1 or col > 9) then return false, "Fila y columna van de 1 a 9" end
-  if valor and (valor < 0 or valor > 9) then return false, "El número va de 1 a 9" end
-  return true, fila, col, valor
-end
-
-function on_heard(texto)
-  if pantalla ~= "juego" then return end
-  if texto == nil or s(texto) == "" then
-    aviso = "No entendí"
-    cp.beep("error")
-    return
-  end
-  local ok, fila, col, valor = interpretar(texto)
-  if not ok then
-    -- `fila` trae el motivo. Se muestra lo oído: así se ve si el micrófono
-    -- entendió otra cosa o si fue la frase.
-    aviso = fila .. ": " .. s(texto)
-    cp.beep("error")
-    return
-  end
-  local i
-  if fila then i = (fila - 1) * 9 + col else i = cursor end
-  if dadas[i] ~= 0 then
-    aviso = "La celda " .. ((i - 1) // 9 + 1) .. "," .. ((i - 1) % 9 + 1) .. " viene dada"
-    cp.beep("error")
-    return
-  end
-  cursor = i
-  if valor ~= nil then
-    ponerEn(i, valor)
-    if not resuelto then
-      aviso = (valor == 0 and "Borrada" or ("Puesto " .. valor)) .. " en fila " .. ((i - 1) // 9 + 1)
-        .. ", columna " .. ((i - 1) % 9 + 1)
-    end
-  else
-    aviso = "Cursor en fila " .. ((i - 1) // 9 + 1) .. ", columna " .. ((i - 1) % 9 + 1)
-  end
-  cp.beep("ok")
-end
-
--- ---------------------------------------------------------------------------
 -- Teclas
 
 function on_open()
@@ -603,13 +454,7 @@ local function teclaMenu(k)
   elseif k == "ok" then
     local opcion = MENU[menuCursor]
     pantalla = "juego"
-    if opcion == "Dictar" then
-      if resuelto then
-        aviso = "Ya está resuelto"
-      elseif not cp.listen(8, "Di fila, columna y número") then
-        aviso = "El micrófono está ocupado"
-      end
-    elseif opcion == "Verificar" then
+    if opcion == "Verificar" then
       if resuelto then aviso = nil else verificar() end
     elseif opcion == "Pista" then
       if not resuelto then pista() end
@@ -710,15 +555,6 @@ local function centrado(texto, y, tam, negrita)
   cp.text((cp.width() - cp.textw(texto, tam)) // 2, y, texto, tam, negrita)
 end
 
--- Acorta con "…" lo que no entra en `ancho` píxeles (lo oído puede ser largo).
-local function recortar(texto, ancho, tam)
-  if cp.textw(texto, tam) <= ancho then return texto end
-  while #texto > 0 and cp.textw(texto .. "…", tam) > ancho do
-    texto = texto:sub(1, (utf8.offset(texto, -1) or 2) - 1)
-  end
-  return texto .. "…"
-end
-
 local function lista(y, items, cur, alto)
   for i, item in ipairs(items) do
     local fy = y + (i - 1) * alto
@@ -803,7 +639,7 @@ function on_draw()
     return
   end
   if aviso then
-    cp.text(24, abajo + 8, recortar(aviso, cp.width() - 48, 12), 12)
+    cp.text(24, abajo + 8, aviso, 12)
   else
     cp.text(24, abajo + 8, "Fila " .. ((cursor - 1) // 9 + 1) .. ", columna " .. ((cursor - 1) % 9 + 1), 10)
   end

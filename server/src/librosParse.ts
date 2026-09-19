@@ -5,6 +5,16 @@
 //   - La lista: cada línea `Título /comando` es un resultado; las demás
 //     ("Ahí van algunos libros que coinciden con tu búsqueda:") se ignoran.
 //     Las entidades de Telegram no hacen falta: el comando está en el texto.
+//     Una entrada puede ser un AUTOR y no un libro: el bot la manda con la
+//     cuenta de libros entre corchetes (`Ángeles Mastretta [11] /a7kE`), que
+//     sale como `count` y NO se queda pegada al título.
+//   - Lo que contesta el bot a un comando puede ser una ficha O OTRA LISTA
+//     (el catálogo de ese autor). `classifyReply` lo decide antes de parsear:
+//     leer una lista como ficha deja el catálogo entero metido adentro de la
+//     descripción, que es justo lo que pasaba.
+//   - La lista larga viene PAGINADA, con botones de flecha (⏮ ◀ ▶ ⏭). Cuáles
+//     son de navegación lo dice `navOfLabel`, y no se puede confundir con los
+//     botones de formato (`formatOfLabel`), que son los que dan el archivo.
 //   - La ficha: `Título - Autor` en la primera línea (se parte por el ÚLTIMO
 //     " - ", porque un título puede llevar guiones), "Publicado: 1967 | 345
 //     páginas", después el género (la línea siguiente sin números) y el resto
@@ -12,7 +22,13 @@
 //     parecen un formato de archivo; el resto ("Información", "Reportar
 //     error") no viaja al aparato.
 
-export type ListResult = { title: string; code: string };
+export type ListResult = { title: string; code: string; count?: number };
+
+/** Hacia dónde lleva un botón de navegación de una lista paginada. */
+export type NavDir = "first" | "prev" | "next" | "last";
+
+/** Qué es lo que contestó el bot a un comando: una ficha o otra lista. */
+export type ReplyKind = "card" | "list";
 
 export type Card = {
   title: string;
@@ -25,6 +41,14 @@ export type Card = {
 };
 
 const LINE_RE = /^(.+?)\s+(\/[A-Za-z0-9_]+)\s*$/;
+// "Ángeles Mastretta [11]" → el título y cuántos libros tiene ese autor.
+// SÓLO corchetes: un título entre paréntesis termina en el año muchas veces
+// ("Cien años de soledad (1967)") y eso no es una cuenta de libros.
+const COUNT_RE = /^(.*\S)\s*\[(\d{1,4})\]$/;
+// La línea del año de una ficha ("Publicado: 1967 | 345 páginas"), en los seis
+// idiomas del producto. Se usa para parsear la ficha Y para reconocerla.
+const PUB_RE = /^(publicad|publish|publi|veröffentlicht|erschien|опубликован|издан|a[ñn]o|year|ann[ée]e|jahr|год)/i;
+const PAGES_RE = /(\d+)\s*p[aá]g/i;
 const MAX_DESC = 2048;
 
 // Lo que cuenta como formato de libro en el texto de un botón, en minúsculas y
@@ -51,9 +75,17 @@ export function parseList(text: string): ListResult[] {
     if (seen.has(code)) continue;
     seen.add(code);
     // Un bot puede numerar o poner viñeta: "1. Título /abc", "• Título /abc".
-    const title = m[1].replace(/^(?:[-•*·]|\d+[.)])\s+/, "").trim();
+    let title = m[1].replace(/^(?:[-•*·]|\d+[.)])\s+/, "").trim();
+    // Un AUTOR viene con cuántos libros tiene: "Ángeles Mastretta [11]". El
+    // número sale aparte; si sacarlo dejara el título vacío, se deja tal cual.
+    let count: number | undefined;
+    const c = COUNT_RE.exec(title);
+    if (c && c[1].trim() && Number(c[2]) > 0) {
+      title = c[1].trim();
+      count = Number(c[2]);
+    }
     if (!title) continue;
-    out.push({ title, code });
+    out.push(count === undefined ? { title, code } : { title, code, count });
   }
   return out;
 }
@@ -82,7 +114,7 @@ export function parseCard(text: string, buttonLabels: string[]): Card {
 
   // "Publicado: 1967 | 345 páginas", o parecido en otro idioma: el año va en
   // esa línea; las páginas pueden ir ahí o en cualquier otra.
-  const pubIdx = ls.findIndex((l, i) => i > 0 && /^(publicad|publish|publi|veröffentlicht|erschien|опубликован|издан|a[ñn]o|year|ann[ée]e|jahr|год)/i.test(fold(l)) && /\d{4}/.test(l));
+  const pubIdx = ls.findIndex((l, i) => i > 0 && PUB_RE.test(fold(l)) && /\d{4}/.test(l));
   if (pubIdx > 0) {
     const y = /(\d{4})/.exec(ls[pubIdx]);
     if (y) year = Number(y[1]);
@@ -94,7 +126,7 @@ export function parseCard(text: string, buttonLabels: string[]): Card {
     }
   }
   for (let i = 1; i < ls.length; i++) {
-    const p = /(\d+)\s*p[aá]g/i.exec(ls[i]);
+    const p = PAGES_RE.exec(ls[i]);
     if (p) {
       pages = Number(p[1]);
       break;
@@ -111,6 +143,93 @@ export function parseCard(text: string, buttonLabels: string[]): Card {
   formats.sort((a, b) => (a === "epub" ? -1 : b === "epub" ? 1 : 0));
 
   return { title, author, year, pages, genre, desc, formats };
+}
+
+// ------------------------------------------------- lista o ficha, y páginas
+
+/**
+ * ¿Ese texto tiene forma de FICHA? Alcanza con la línea del año ("Publicado:
+ * 1967") o con las páginas ("345 páginas"): una lista de resultados no las
+ * lleva. Se usa sólo para desempatar; el que manda es el botón de formato.
+ */
+export function looksLikeCard(text: string): boolean {
+  const ls = lines(text).filter((l) => l.length > 0);
+  for (let i = 1; i < ls.length; i++) {
+    if (PUB_RE.test(fold(ls[i])) && /\d{4}/.test(ls[i])) return true;
+    if (PAGES_RE.test(ls[i])) return true;
+  }
+  return false;
+}
+
+/**
+ * Qué contestó el bot al comando de un resultado: la ficha de un libro, o
+ * OTRA LISTA (el catálogo de un autor, que en la lista de búsqueda viene como
+ * `Ángeles Mastretta [11] /a7kE`).
+ *
+ * El que manda es el BOTÓN: sólo una ficha ofrece el archivo, así que un
+ * botón de formato (Epub, PDF…) la decide sin mirar el texto. Sin ninguno,
+ * dos o más líneas `Título /comando` son una lista, salvo que el texto además
+ * tenga forma de ficha (año o páginas), que es cuando la descripción de un
+ * libro nombra otros comandos.
+ *
+ * Una lista de UNA sola entrada (el autor con un solo libro) se lee como
+ * ficha: distinguirla de una ficha cuya última línea termina en `/algo` no se
+ * puede sin adivinar, y equivocarse para ese lado deja un resultado que al
+ * abrirlo vuelve a la misma pantalla.
+ */
+export function classifyReply(text: string, buttonLabels: string[]): ReplyKind {
+  for (const label of buttonLabels) if (formatOfLabel(label)) return "card";
+  if (parseList(text).length >= 2 && !looksLikeCard(text)) return "list";
+  return "card";
+}
+
+// Las flechas con las que un bot pagina una lista. Los dobles van ANTES que
+// los simples: "«" y "<<" son el primero, no el anterior.
+const NAV_SYMBOLS: [string, NavDir][] = [
+  ["\u23ee", "first"], ["\u23ea", "first"], ["\u00ab", "first"], ["<<", "first"], ["|<", "first"],
+  ["\u23ed", "last"], ["\u23e9", "last"], ["\u00bb", "last"], [">>", "last"], [">|", "last"],
+  ["\u25c0", "prev"], ["\u2b05", "prev"], ["\u2190", "prev"], ["\u2039", "prev"], ["<", "prev"],
+  ["\u25b6", "next"], ["\u27a1", "next"], ["\u2192", "next"], ["\u203a", "next"], [">", "next"],
+];
+
+// La etiqueta ENTERA, sin acentos ni símbolos: se compara completa a
+// propósito. Palabra por palabra, "Más información" sería "siguiente".
+const NAV_PHRASES: Record<string, NavDir> = {
+  primera: "first", "primera pagina": "first", primero: "first", first: "first", "first page": "first",
+  inicio: "first", principio: "first",
+  anterior: "prev", anteriores: "prev", "pagina anterior": "prev", atras: "prev", prev: "prev",
+  previous: "prev", "previous page": "prev", back: "prev", "ver anteriores": "prev",
+  siguiente: "next", siguientes: "next", "pagina siguiente": "next", next: "next", "next page": "next",
+  mas: "next", "ver mas": "next", "mas resultados": "next", more: "next", "show more": "next", adelante: "next",
+  ultima: "last", "ultima pagina": "last", ultimo: "last", last: "last", "last page": "last", final: "last",
+};
+
+/**
+ * Hacia dónde lleva el botón de una lista paginada ("▶" o "Siguiente" →
+ * "next"), o "" si no es de navegación. Un botón de FORMATO nunca lo es: eso
+ * se comprueba primero, así "PDF ▶" no se lee como una flecha.
+ */
+export function navOfLabel(label: string): NavDir | "" {
+  const raw = (label ?? "").trim();
+  if (!raw || formatOfLabel(raw)) return "";
+  const words = fold(raw).replace(/[^a-z0-9]+/g, " ").trim();
+  if (words) {
+    const dir = NAV_PHRASES[words];
+    return dir ?? "";
+  }
+  for (const [sym, dir] of NAV_SYMBOLS) if (raw.includes(sym)) return dir;
+  return "";
+}
+
+/** "2/5", "Página 2 de 5", "2 de 5" → `{at:2, of:5}`; cualquier otra cosa, null. */
+export function pageOfLabel(label: string): { at: number; of: number } | null {
+  const t = fold(label ?? "").replace(/[^a-z0-9/]+/g, " ").trim();
+  const m = /^(?:pagina|page|pag|seite|strona|pagina)?\s*(\d{1,4})\s*(?:\/|de|of|von|sur)\s*(\d{1,4})$/.exec(t);
+  if (!m) return null;
+  const at = Number(m[1]);
+  const of = Number(m[2]);
+  if (!(at > 0 && of > 0 && at <= of)) return null;
+  return { at, of };
 }
 
 /** "Cien años de soledad" → "cien-anos-de-soledad" (letras y números ASCII, tope 40). */

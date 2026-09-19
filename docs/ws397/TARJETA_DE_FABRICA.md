@@ -39,21 +39,25 @@ no van en la tarjeta.
 
 ### `/Apps` — las apps de Lua
 
-Las tres de fábrica se descargan automáticamente desde el paquete de contenido
+Las cinco de fábrica se descargan automáticamente desde el paquete de contenido
 del servidor. Para una imagen de microSD que deba funcionar sin red desde el
 primer arranque, también pueden copiarse de `examples/Apps/`:
 
 ```
-/Apps/reloj.lua
 /Apps/ahorcado.lua
-/Apps/tresenraya.lua
+/Apps/librito.lua
+/Apps/libros.lua
+/Apps/mascota.lua
+/Apps/sudoku.lua
 ```
 
 Se abren en **Juegos**. No hace falta nada más: cada app es un archivo suelto y
 el estado que guarde va a `/Apps/.state/<app>.txt`, que se crea solo.
 
-`contador.lua` y `dados.lua` NO van en la tarjeta del aparato que se vende: son
-ejemplos para leer, no apps terminadas. El contrato está en `APPS_LUA.md`.
+Son **esas cinco y nada más** (decisión del dueño). Las que había antes
+—`reloj`, `tresenraya`, `contador`, `dados` y `viajes`— se borraron del repo, y
+el aparato limpia de `/Apps` lo que el paquete le instaló y ya no anuncia. El
+contrato está en `APPS_LUA.md`.
 
 ## Lo que NO va
 

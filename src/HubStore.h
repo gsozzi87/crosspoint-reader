@@ -135,6 +135,11 @@ class HubStore : public PersistableStore<HubStore> {
   std::string assetsLang;      // idioma con el que se bajó (los audios cambian con el idioma)
   int assetsFiles = 0;         // archivos del paquete guardados en la tarjeta
   bool assetsPending = false;  // se instalo firmware nuevo: falta bajar el contenido
+  // Hasta que numero de purga se limpio /Apps. Sube cuando el producto SACA una
+  // app que la gente pudo haber copiado a mano (el paquete solo sabe borrar lo
+  // que el mismo instalo). Se guarda para no pelearle para siempre al que la
+  // vuelva a copiar a proposito.
+  int appsPurge = 0;
   uint8_t speakMode = 1;       // spoken replies: 0 never, 1 short ones, 2 always (Settings)
   // Sonidos de la interfaz (Ajustes → Sistema, `src/voice/UiSound.h`): 0 apagados,
   // 1 suaves, 2 normales. Apagados de fábrica: nadie quiere que el aparato

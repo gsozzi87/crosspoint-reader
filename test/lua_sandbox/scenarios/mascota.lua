@@ -51,14 +51,17 @@ local function ultimaImagen()
   return im
 end
 
--- La perra en pantalla: la imagen más grande que se dibujó (los iconos son de 16).
+-- La perra en pantalla: la imagen más grande que se dibujó (los iconos son de
+-- 16) y, de pie, el parche de la cola que va encima (27 de ancho).
 local function perraEnPantalla()
   fake.images = {}
   fake.draw()
-  local perra
-  for _, i in ipairs(fake.images) do if i.w >= 100 then perra = i end end
+  local perra, cola
+  for _, i in ipairs(fake.images) do
+    if i.w >= 100 then perra = i elseif i.w == 27 then cola = i end
+  end
   if not perra then error("no se dibujó la perra") end
-  return perra
+  return perra, cola
 end
 
 local HORA = 3600
@@ -96,12 +99,16 @@ assert(contiene(d, "Alimentar") and contiene(d, "Jugar") and contiene(d, "Dormir
    and contiene(d, "Limpiar") and contiene(d, "Info"), "las cinco filas")
 assert(contiene(d, "Hambre") and contiene(d, "Higiene"), "las barras con etiqueta")
 
--- La perra: la silueta parada es 150 x 56 a escala 2 → 19 bytes por fila, 300 px de ancho.
-local perra = perraEnPantalla()
-assert(perra.w == 150 and perra.h == 56, "la silueta parada es 150 x 56, es " .. perra.w .. "x" .. perra.h)
-assert(perra.escala == 2 and perra.bytes >= 19 * 56, "a escala 2 con " .. perra.bytes .. " bytes")
-assert(perra.x == (480 - 300) // 2, "la perra va centrada")
-assert(perra.y >= 96 and perra.y + 112 <= 304, "la perra queda dentro de su zona")
+-- La perra: el cuerpo de pie es 187 x 103 a escala 2 → 24 bytes por fila,
+-- 374 px de ancho, y encima va el parche de la cola (27 x 32) en COLA_X/COLA_Y.
+local perra, cola = perraEnPantalla()
+assert(perra.w == 187 and perra.h == 103, "el cuerpo es 187 x 103, es " .. perra.w .. "x" .. perra.h)
+assert(perra.escala == 2 and perra.bytes >= 24 * 103, "a escala 2 con " .. perra.bytes .. " bytes")
+assert(perra.x == (480 - 374) // 2, "la perra va centrada")
+assert(perra.y >= 96 and perra.y + 206 <= 304, "la perra queda dentro de su zona")
+assert(cola, "de pie se dibuja el parche de la cola encima del cuerpo")
+assert(cola.w == 27 and cola.h == 32 and cola.escala == 2, "la cola es 27 x 32 a escala 2")
+assert(cola.x == perra.x + 160 * 2 and cola.y == perra.y + 52 * 2, "la cola cae en su hueco del cuerpo")
 
 -- ------------------------------------------------------------- alimentar
 local hambre0 = stat("Hambre")
@@ -138,17 +145,20 @@ local animo1 = stat("Ánimo")
 assert(animo1 > animo0, "jugar sube el ánimo: " .. animo0 .. " → " .. animo1)
 -- Contenta y recién jugó: el cuadro es la silueta parada, no la dormida.
 perra = perraEnPantalla()
-assert(perra.h == 56, "contenta se dibuja parada")
+assert(perra.h == 103, "contenta se dibuja parada")
 
 -- ------------------------------------------------------------- dormir y despertar
 fake.key("down"); fake.key("down")   -- fila 3: Dormir
 fake.key("ok")
 d = espera("Duerme")
 assert(contiene(d, "Despertar"), "dormida, la fila dice Despertar")
--- Dormida es la perra enroscada: 120 x 81 a escala 2 (240 px de ancho).
-perra = perraEnPantalla()
-assert(perra.w == 120 and perra.h == 81 and perra.escala == 2, "dormida: 120 x 81 a escala 2, es " .. perra.w .. "x" .. perra.h)
-assert(perra.x == (480 - 240) // 2, "la dormida también va centrada")
+-- Dormida es la MISMA perra (con los ojos cerrados y la cola caída), así que
+-- mide lo mismo que de pie y va en un solo dibujo, sin parche de cola: la
+-- mascota no cambia de tamaño ni de personaje al dormirse.
+perra, cola = perraEnPantalla()
+assert(perra.w == 187 and perra.h == 103 and perra.escala == 2, "dormida: 187 x 103 a escala 2, es " .. perra.w .. "x" .. perra.h)
+assert(perra.x == (480 - 374) // 2, "la dormida también va centrada")
+assert(not cola, "la dormida ya trae la cola en el dibujo, sin parche")
 -- Dormida no come.
 fake.key("up"); fake.key("up"); fake.key("ok")
 espera("despiértala primero")
@@ -250,9 +260,10 @@ end
 assert(seFue, "con días de descuido se tenía que ir")
 d = fake.draw()
 assert(contiene(d, "Vivió"), "la pantalla de despedida cuenta los días")
--- El cuadro de despedida es la silueta espejada y más chica: 100 x 38 a escala 2.
-perra = perraEnPantalla()
-assert(perra.w == 100 and perra.h == 38 and perra.escala == 2, "se fue: 100 x 38 a escala 2, es " .. perra.w .. "x" .. perra.h)
+-- El cuadro de despedida es la misma perra espejada y más chica: 140 x 78 a escala 2.
+perra, cola = perraEnPantalla()
+assert(perra.w == 140 and perra.h == 78 and perra.escala == 2, "se fue: 140 x 78 a escala 2, es " .. perra.w .. "x" .. perra.h)
+assert(not cola, "la que se va tampoco lleva parche")
 assert(not fake.key("up"), "en la despedida la palanca no hace nada")
 -- Guardado como ida: al recargar sigue ida.
 fake.reload()

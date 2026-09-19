@@ -5,7 +5,7 @@ es tocar el firmware, compilar y actualizar. Esto es para que eso no haga falta.
 
 Una app es **un archivo** en `/Apps` de la tarjeta:
 
-    /Apps/reloj.lua
+    /Apps/sudoku.lua
     /Apps/cuenta.lua
 
 Se copian con **Ajustes → Sistema → Modo memoria USB** (la tarjeta aparece como
@@ -24,7 +24,7 @@ La lista de apps y el cabezal de la app abierta muestran el **título** y la
 La regla: la primera línea del archivo es un comentario `--`, y lo que hay
 antes del primer `:` o `.` (hasta 32 caracteres) es el título; el resto de esa
 línea es la descripción. Sin ese comentario el título es el nombre del archivo
-con mayúscula (`reloj.lua` → "Reloj") y no hay descripción.
+con mayúscula (`cuenta.lua` → "Cuenta") y no hay descripción.
 
 ## El contrato
 
@@ -97,8 +97,9 @@ recién sacada de la caja.
 Y una advertencia que no es de la API sino del vidrio: si lo que mostrás cambia
 con el tiempo, repintá **cuando cambia el dato**, no en cada `on_tick`. Devolver
 `true` diez veces por segundo es un refresco parcial cada 120 ms, o sea un
-refresco completo cada segundo y medio, para siempre. `reloj.lua` lo hace bien:
-mira el minuto y repinta sólo cuando cambió.
+refresco completo cada segundo y medio, para siempre. `mascota.lua` lo hace
+bien: el cuadro de la animación cambia cada cuatro segundos y el resto de los
+`on_tick` devuelven `false`.
 
 Los gestos que devuelve `cp.motion()` son los mismos de todo el aparato:
 `TiltLeft`, `TiltRight`, `TiltForward`, `TiltBack`, `Shake`, `Rotate`, `Level`,
@@ -108,9 +109,9 @@ Los gestos que devuelve `cp.motion()` son los mismos de todo el aparato:
 
 Una app también puede escuchar, hablar con el servidor de la cuenta, bajar
 archivos, guardar lo suyo en la tarjeta y abrir lo que bajó en los visores del
-aparato. Es lo que hacen el Librito (`examples/Apps/librito.lua`) y lo que va a
-hacer Viajes. La regla es la misma que la del cajón: **nada de URLs ni de
-rutas**; la app nombra un servicio o un archivo, y a dónde va eso lo decide el
+aparato. Es lo que hacen el Librito (`examples/Apps/librito.lua`) y la
+Biblioteca (`examples/Apps/libros.lua`). La regla es la misma que la del cajón:
+**nada de URLs ni de rutas**; la app nombra un servicio o un archivo, y a dónde va eso lo decide el
 firmware.
 
 | Llamada | Devuelve | Qué hace |

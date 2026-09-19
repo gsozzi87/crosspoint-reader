@@ -318,8 +318,9 @@ pre.log {
 .stripe { height: 3px; background: linear-gradient(90deg, transparent, var(--accent), transparent); background-size: 200% 100%; animation: stripe 1s linear infinite; position: fixed; top: 0; left: 0; right: 0; z-index: 50; }
 @keyframes stripe { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
-/* Seis pestañas entran, pero justo: a 360 px de ancho cada una tiene 60 px y
-   "Ajustes" mide ~44 a 11 px. Por debajo de eso se achica la etiqueta en vez de
+/* Cinco pestañas (fueron seis con Viajes, entre 1.5.111 y 1.5.115). Con seis, a
+   360 px cada una tenía 60 px y "Ajustes" mide ~44 a 11 px; con cinco sobra,
+   pero la regla queda: por debajo de 380 px se achica la etiqueta en vez de
    partirla en dos renglones, que es lo que rompía la altura de la barra. */
 .nav a { min-width: 0; }
 .nav a span, .nav a { white-space: nowrap; }

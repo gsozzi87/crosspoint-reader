@@ -377,15 +377,22 @@ export async function hasSessionFile(accountId: number): Promise<boolean> {
 
 export type BotButton = { text: string; data: Uint8Array };
 export type BotDocument = { fileName: string | null; fileSize: number; mimeType: string; raw: Document };
-export type BotMessage = { id: number; text: string; buttons: BotButton[]; document: BotDocument | null };
+export type BotMessage = { id: number; text: string; buttons: BotButton[]; document: BotDocument | null; editedAt: number };
 
 export type BotSession = {
   /** Manda un texto al bot y devuelve el id del mensaje enviado. */
   send(text: string): Promise<number>;
   /** Espera mensajes ENTRANTES con id mayor que `afterId`; con `wantDocument`, hasta que alguno traiga un archivo. */
   waitReply(afterId: number, opts: { timeoutMs: number; wantDocument?: boolean }): Promise<BotMessage[]>;
+  /** Relee un mensaje del chat por su id (para sus botones), o null si ya no está. */
+  read(messageId: number): Promise<BotMessage | null>;
   /** Aprieta un botón en línea de un mensaje del bot. */
   press(messageId: number, data: Uint8Array): Promise<void>;
+  /**
+   * Lo que cambió después de apretar un botón: el MISMO mensaje editado (lo
+   * normal al paginar) o uno nuevo, lo que llegue primero. Ver `waitChange`.
+   */
+  waitChange(messageId: number, before: BotMessage, opts: { timeoutMs: number }): Promise<BotMessage>;
   /** Baja el archivo; `too_big` si pasa el tope. */
   download(doc: BotDocument, maxBytes: number): Promise<Uint8Array>;
 };
@@ -406,7 +413,7 @@ function toBotMessage(m: Message): BotMessage {
   const document = media && media.type === "document"
     ? { fileName: media.fileName, fileSize: media.fileSize ?? 0, mimeType: media.mimeType, raw: media }
     : null;
-  return { id: m.id, text: m.text, buttons, document };
+  return { id: m.id, text: m.text, buttons, document, editedAt: m.editDate ? m.editDate.getTime() : 0 };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -437,7 +444,10 @@ export async function withBot<T>(accountId: number, fn: (s: BotSession) => Promi
     }
     const peer = entry.peer;
 
-    const session: BotSession = {
+    // `waitChange` usa `session.read` como respaldo, así que la referencia
+    // tiene que existir antes de armar el objeto (se resuelve al llamarla).
+    let session: BotSession;
+    session = {
       send: async (text) => {
         try {
           const sent = await withTimeout(client.sendText(peer, text), 20_000, "Telegram no contestó al mandar el mensaje");
@@ -470,6 +480,45 @@ export async function withBot<T>(accountId: number, fn: (s: BotSession) => Promi
             throw new TelegramError(opts.wantDocument ? "no_file" : "no_reply", opts.wantDocument ? "El bot no mandó el archivo" : "El bot no contestó");
           }
           await sleep(POLL_MS);
+        }
+      },
+      read: async (messageId) => {
+        try {
+          const got = await withTimeout(client.getMessages(peer, [messageId]), 20_000, "Telegram no contestó al leer el mensaje");
+          const m = got[0];
+          return m ? toBotMessage(m) : null;
+        } catch (err) {
+          return handleRpcFailure(accountId, err);
+        }
+      },
+      // Al apretar una flecha, un bot de listas EDITA el mismo mensaje (otra
+      // página, otros botones) en vez de mandar uno nuevo; otros mandan uno
+      // nuevo. Los dos caminos se miran en cada vuelta y gana el que llegue:
+      // el historial trae el mensaje editado Y los nuevos, así que una sola
+      // llamada alcanza casi siempre (la relectura por id es el respaldo para
+      // cuando el mensaje ya quedó fuera de las últimas diez).
+      waitChange: async (messageId, before, opts) => {
+        const deadline = Date.now() + opts.timeoutMs;
+        for (;;) {
+          await sleep(POLL_MS);
+          let history: Message[];
+          try {
+            history = await withTimeout(client.getHistory(peer, { limit: 10 }), 20_000, "Telegram no contestó al leer el chat");
+          } catch (err) {
+            return handleRpcFailure(accountId, err);
+          }
+          // La EDICIÓN se mira primero: si el bot edita y además manda algo
+          // ("Buscando…"), lo que hay que leer es el mensaje editado.
+          const same = history.find((m) => m.id === messageId);
+          const now = same ? toBotMessage(same) : await session.read(messageId);
+          if (now && (now.editedAt > before.editedAt || now.text !== before.text)) return now;
+          const nuevos = history
+            .filter((m) => !m.isOutgoing && m.id > messageId)
+            .map(toBotMessage)
+            .filter((m) => m.text || m.buttons.length)
+            .sort((a, b) => a.id - b.id);
+          if (nuevos.length) return nuevos[nuevos.length - 1];
+          if (Date.now() >= deadline) throw new TelegramError("no_reply", "El bot no cambió la lista");
         }
       },
       press: async (messageId, data) => {

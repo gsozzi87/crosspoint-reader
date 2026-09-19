@@ -60,7 +60,10 @@ bool devicesync::ifDue(const unsigned long idleMs) {
   // El orden es el de F03: primero SUBIR lo pendiente y recién después bajar, o
   // la instantánea que queda guardada es la de antes de aplicar la cola.
   const int subidos = SERVER_CLIENT.flushQueue();
-  const int noticias = newspack::sync(/*budget=*/4);
+  // Ocho y no cuatro: el paquete pasó a ser de hasta 40 notas. Sigue siendo la
+  // mitad del tope de HubSyncActivity a propósito: esto se cuela en la ventana
+  // de red de OTRA pantalla y bloquea el loop mientras baja.
+  const int noticias = newspack::sync(/*budget=*/8);
 
   bool hub = false;
   const char* quien = activityManager.currentActivityName();

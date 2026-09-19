@@ -6,82 +6,114 @@ generes tú, busca de por ahí alguna que aparezca en la web"*, y después: *"pe
 salchicha"*. Así que **ningún dibujo es nuestro**: todos salen de fuentes abiertas que están en la
 web, y esta página deja escrito de dónde, de quién y con qué licencia.
 
-## La segunda versión (1.5.114): siluetas, nombre en pantalla y terminación
+## La tercera versión: caricatura CON CONTORNO, no una mancha
 
-La primera versión (1.5.113) fue con sprites de 32 × 16 píxeles escalados ×7, y en el vidrio el
-dueño la vio así: *"mascota se ve horrible, no parece ni parecido un salchicha, busca una imagen
-mejor, pésima terminación, todo mal, encima se llama pipo, ni cambiarle el nombre, malísimo"*.
-Tres cosas, y las tres se cambiaron:
+La segunda versión eran **siluetas negras macizas** y el dueño las rechazó con todas las letras:
+*"la mascota salchicha se ve pésimo, busca una caricatura de salchicha, algo más bonito, no esa
+mancha negra, no quiero mancha quiero que esté dibujado el contorno tipo caricatura"*. Es la
+tercera vez que rechaza el dibujo, así que la regla ahora está escrita: **la perra va dibujada con
+línea de contorno y el interior blanco** — ojo, hocico, oreja, patas y cola que se lean —, nunca un
+pictograma relleno.
 
-1. **Dibujos**: en tinta de 1 bit un sprite de 32 píxeles a escala 7 son manchas. Ahora son
-   **siluetas vectoriales** (CC0 de openclipart.org) reducidas a 150 px de ancho y pintadas a
-   escala 2: **300 px de ancho en el vidrio**, con la forma entera del perro (cuerpo largo, patas
-   cortas, oreja caída, cola).
-2. **Nombre**: el bautizo por voz fallaba y la perra quedaba "Pipo" sin remedio. Ahora la primera
-   vez hay una **pantalla** que pregunta ("¿Cómo se llama tu perrita?") con dos filas: *Decir el
-   nombre* (micrófono) y *Se llama Pipo* (sin hablar). Una escucha que no se entiende **vuelve a
-   esa pantalla** con "No entendí, intenta otra vez"; nunca bautiza sola. Y en **Info** hay una
-   fila *Cambiar el nombre* que escucha otra vez.
-3. **Terminación**: la pantalla principal sigue el sistema visual (`docs/ws397/DISENO.md`): margen
-   de 24 px, grilla de 8, cabezal UI_14 con regla de 1 px (nombre · día), la perra centrada en una
-   zona blanca de 208 px, las cuatro barras con marco de 1 px y relleno macizo (nunca trama bajo
-   texto), un renglón de estado UI_12 y las acciones como **lista** con el resalte del sistema
-   (`cp.selection`), no cajas sueltas.
+**Todos los cuadros salen de UN SOLO dibujo**, y eso importa tanto como el contorno: en la primera
+versión de esta tanda la dormida venía de otro autor y parecía otro perro (hocico en punta, orejas
+paradas). La mascota tiene que ser **el mismo personaje** en los cinco cuadros, así que la dormida
+también sale del mismo dibujo.
+
+### Por qué el dibujo de línea obliga a trabajar cerca de la resolución final
+
+Una silueta maciza se puede reducir todo lo que uno quiera: sigue siendo una mancha con la forma
+correcta. Un trazo de contorno no: si al reducir queda de medio píxel, el umbral lo rompe y la
+línea aparece cortada. Por eso el cuerpo se pinta a **escala 2** desde un bitmap de 187 px (374 px
+en el vidrio) y no a escala 6 desde uno de 32, y por eso el trazo del SVG se **engorda** antes de
+reducir (`STROKE = 1.75` contra el 1.417 del original) hasta que en el bitmap final mide 2 px, que
+en el vidrio son 4. Se probaron anchos de 150 a 256 con trazos de 1,4 a 3,1 y se miraron todos.
 
 ## Los dibujos: de dónde salen
 
-| Qué | Archivo | Autor | Licencia | Enlace |
-| --- | --- | --- | --- | --- |
-| La perrita parada (`quieta1`, `quieta2`, `feliz`, `triste`) y "se fue" (`sefue`) | **"Dachshund"** (openclipart 340936): silueta negra de perfil con collar | **eevee93** | **CC0 1.0** (todo openclipart es dominio público; la página del clip enlaza `creativecommons.org/publicdomain/zero/1.0/`) | https://openclipart.org/detail/340936/dachshund |
-| La perrita dormida (`duerme`) | **"Resting/sleeping dog"** (openclipart 163699): perro enroscado durmiendo, silueta con las líneas interiores en blanco | **f_featherbrain** | **CC0 1.0** | https://openclipart.org/detail/163699/restingsleeping-dog |
-| Los iconos de al lado de la perra (comida, pelota, balde, caca) y el huevo (2 cuadros) | **OpenCritter** (`gfx/bitmaps/icons`, `gfx/bitmaps/critters/egg_*.bmp`) | **SuperMechaCow** | **MIT** (Copyright (c) 2017 SuperMechaCow) | https://github.com/SuperMechaCow/OpenCritter |
+| Qué | Autor | Licencia | Enlace |
+| --- | --- | --- | --- |
+| **La perra entera**, los cinco cuadros (`cuerpo` + las seis colas, `duerme`, `sefue`) | **oksmith** (subido de publicdomainq.net) | **CC0 1.0** (todo openclipart es dominio público) | https://openclipart.org/detail/315296/dachshund |
+| Los iconos de al lado de la perra (comida, pelota, balde, caca) y el huevo (2 cuadros) | **SuperMechaCow**, proyecto **OpenCritter** (`gfx/bitmaps`) | **MIT** (Copyright (c) 2017 SuperMechaCow) | https://github.com/SuperMechaCow/OpenCritter |
 
-CC0 no exige nada; MIT exige conservar el aviso de copyright, que va en el comentario de cabecera
-de la app y acá. Ninguna restringe el uso comercial.
+CC0 no exige nada y **permite modificar** (que es lo que hacemos: doblar la cola, cerrar los ojos,
+espejar); MIT exige conservar el aviso de copyright, que va en el comentario de cabecera de la app,
+en la pantalla de Info y acá. Ninguna restringe el uso comercial. Lo de openclipart está escrito en
+su propia página (https://openclipart.org/share): *"We use the Creative Commons Zero 1.0 Public
+Domain License every time an artist uploads a piece of clipart… for anyone to use for any reason,
+even commercially"*, y *"there is no need to cite Openclipart"* — igual citamos al autor.
+
+**Por qué ese dibujo y no otro.** El SVG de oksmith trae, por cada forma, un camino **relleno** y
+otro **sólo de trazo** (`fill-opacity="0" stroke="#1A1919"`). Poniendo los rellenos en **blanco** y
+dejando los trazos negros queda exactamente el dibujo de línea, y los rellenos blancos siguen
+tapando lo que va detrás, así que las patas del otro lado no se transparentan. Los dos únicos
+rellenos que quedan negros son los puntos de los ojos.
+
+Se miraron y se descartaron: 317830 y 325158 (dachshunds de openclipart sin trazos: son formas
+oscuras apiladas, el "contorno" es el borde de la de abajo y a 1 bit quedan manchas); 194259,
+276116 y 311178 (color plano sin línea); 32473 y `Dachshund (PSF)` de Commons (grabados: el tramado
+se vuelve ruido); 337983, 337986 y 334378 (línea hecha a mano, con moños, grifos y birretes);
+**329276 "Dog dreams" de liftarn** (CC0, una salchicha dormida en su camita, que llegó a estar en
+una versión de esta tanda) — se cayó porque **es otro perro**: al lado de la de oksmith parece un
+zorro y rompe lo único que la mascota no puede romper, que es ser siempre la misma.
 
 ### Qué cuadro se usa para qué, y qué es transformación
 
-De la silueta parada hay UN solo dibujo. Los cuadros son **transformaciones del original**, no
-dibujos nuevos, y conviene decirlo: la cola —todo lo que queda a la izquierda de su raíz, en
-x = 248 de los 1008 px del render— se **gira alrededor de la raíz** (pivote 248, 135):
+De la perra hay **un solo dibujo**. Todos los cuadros son **transformaciones** de ese original:
 
-| Cuadro | Qué es | Tamaño (px de bitmap → en el vidrio) |
+| Cuadro | Qué es | Tamaño (bitmap → en el vidrio) |
 | --- | --- | --- |
-| `quieta1` | la silueta tal cual | 150 × 56 → 300 × 112 |
-| `quieta2` | la cola 12° más arriba (el segundo cuadro de la animación) | 150 × 56 |
-| `feliz` | la cola 38° arriba, casi horizontal | 150 × 56 |
-| `triste` | la cola 14° más abajo, entre las patas | 150 × 56 |
-| `duerme` | la silueta enroscada de f_featherbrain, con las líneas interiores engordadas antes de reducir (`MaxFilter(13)` sobre el render de 1200 px) para que sobrevivan a 120 px; la app le pone la "z Z" al lado | 120 × 81 → 240 × 162 |
-| `sefue` | la silueta parada **espejada** y a 100 px: se va caminando para el otro lado | 100 × 38 → 200 × 76 |
+| `cuerpo` | el dibujo tal cual, con el hueco de la cola en blanco | 187 × 103 → 374 × 206 |
+| `cola_quieta1` / `cola_quieta2` | la cola a 0° y a −12°: la animación tranquila | 27 × 32 (parche) |
+| `cola_feliz` / `cola_feliz2` | la cola a −46° y −30°: **las dos arriba** | 27 × 32 |
+| `cola_triste` / `cola_triste2` | la cola a +22° y +11°: **las dos abajo** | 27 × 32 |
+| `duerme` | la misma perra con los **ojos cerrados** (los dos puntos aplastados a una rayita: `scale(1.9, 0.40)` alrededor de su centro) y la cola caída; la app le pone la "z Z" al lado | 187 × 103 → 374 × 206 |
+| `sefue` | la misma **espejada** y más chica, yéndose; se rinde con el trazo más grueso (2.2) para que al achicarla no adelgace | 140 × 78 → 280 × 156 |
 | el huevo | `egg_idle.bmp` y `egg_main.bmp` de OpenCritter, a escala 6 | 32 × 32 → 192 × 192 |
 
-No hay silueta de salchicha sentada ni echada con licencia libre en Wikimedia Commons, openclipart,
-freesvg ni publicdomainvectors (se buscó en los cuatro; svgrepo devolvió 429 desde el sandbox).
-Los dibujos lineales antiguos que sí hay (liftarn: "Tired dog", "Dog with bow"; j4p4n: "Dog
-dreams") se descartaron: a 280 px de ancho el trazo se rompe y traen accesorios (un grifo, un
-moño, una cama con huesos). El grabado de Pearson Scott Foresman (`Dachshund (PSF).png`, Commons,
-dominio público) es precioso pero su tramado se vuelve ruido a 1 bit.
+**La cola se DOBLA, no se recorta y se pega.** Un recorte girado deja una juntura en la base, que a
+este tamaño se ve como un error de dibujo. Acá el giro **crece con la distancia a la raíz**: es 0
+hasta 46 px (del render de 900) y entero a partir de 145, así que los píxeles de la base **no se
+mueven ni uno** y la unión con el lomo es continua; lo que se ve es la cola doblándose, que es lo
+que hace una cola. El polígono que la selecciona está medido a mano sobre el render de 900 px
+(`cand3/tail_zoom2.png`) y excluye la línea del muslo, que pasa a 12 px de la cola.
+
+**Por qué los dos cuadros de cada humor van para el mismo lado**: si uno de los dos fuera el neutro,
+la mitad del tiempo la perra contenta se vería idéntica a la tranquila, y el juego distingue esos
+dos estados. Contenta mueve la cola entre −46° y −30°; triste, entre +22° y +11°.
+
+**El cuerpo se guarda una sola vez.** Los seis cuadros de pie son el mismo cuerpo con otra cola, así
+que se guarda el cuerpo (con el hueco de la cola en blanco) y encima se pinta el **parche** de la
+cola que toca, en `COLA_X, COLA_Y`. `cp.image` no pinta los ceros, así que uno no borra al otro. Las
+seis colas juntas pesan 768 bytes, contra los ~15 KB que costarían seis cuerpos enteros.
 
 ### Cómo se convirtieron
 
-`convert2.py` (resvg-py + Pillow), guardado junto con los SVG en el scratchpad de la sesión
-(`scratchpad/mascota/`, con los candidatos en `cand/`): render del SVG a 1200 px de ancho, recorte
-al contenido, giro de la cola, reducción LANCZOS al ancho del bitmap, umbral a 128, recorte de las
-filas blancas y empaquetado MSB primero, 1 = tinta, `ceil(w/8)` bytes por fila, como pide
-`cp.image()`. Los cuatro cuadros parados son 1064 bytes cada uno, el dormido 1215, el ido 494:
-**12,6 KB de hexa** en total y el archivo entero pesa **38,5 KB** (el tope es 64). Los iconos son
-BMP de 1 bit y van tal cual (16 × 16 y 32 × 32). Todo se decodifica una vez con `gsub` sobre una
-tabla de 256 entradas, que corre en C.
+`convert3.py` (las fuentes y las transformaciones) y `gen_final.py` (arma la tabla `SPRITES` y la
+hoja de contacto), guardados con los SVG en el scratchpad de la sesión (`scratchpad/mascota/`, los
+candidatos en `cand/`): render del SVG a 1800 px de ancho con los rellenos en blanco, doblado de la
+cola, recorte **común a todos los cuadros** (para que la perra no salte al cambiar de humor),
+reducción `BOX` al ancho final, umbral en 190 y empaquetado MSB primero, 1 = tinta, `ceil(w/8)`
+bytes por fila, como pide `cp.image()`. El cuerpo y la dormida son 2472 bytes cada uno, cada cola
+128 y la que se va 1404: **15,0 KB de hexa** en total, y el archivo entero pesa **42,2 KB** (el tope
+del cargador es 64). Los iconos son BMP de 1 bit y van tal cual. Todo se decodifica una vez con
+`gsub` sobre una tabla de 256 entradas, que corre en C: `on_open` entra con 2.000 instrucciones y
+`on_draw` con 4.000, contra el tope de 400.000.
 
-Vista previa de todas las pantallas (compuesta con un `cp` falso que anota las llamadas de dibujo y
-Pillow con DejaVu en lugar de Ubuntu): `scratchpad/mascota/preview.png` (la casa) y
-`scratchpad/mascota/preview/preview_*.png` (nombre, dormida, triste, Info, se fue).
+**La vista previa se mira antes de entregar.** `preview/driver.c` corre la app de verdad con un `cp`
+falso que anota cada llamada de dibujo y `preview/render.py` las pinta como un panel de 480 × 800:
+`scratchpad/mascota/preview/sheet.png` es la hoja con las ocho pantallas (los dos cuadros de la
+animación contenta, tranquila, dormida, comiendo, el nombre, Info y la despedida) y
+`preview/preview_*.png` cada una suelta. Si el contorno se rompe o parece una mancha, se ve ahí.
 
 ## La pantalla principal
 
     y  40  cabezal: nombre (UI_14 negrita) · "Día N" a la derecha (UI_12)
     y  78  regla de 1 px, de margen a margen (24 → 456)
-    y  96  zona de la perra, 208 px de alto; la silueta va centrada en los dos ejes
+    y  96  zona de la perra, 208 px de alto; el dibujo (374 × 206) va centrado en los dos
+           ejes y la llena: por eso lo que la acompaña va en las ESQUINAS DE ARRIBA, que es
+           donde el dibujo tiene blanco — la "z Z" o el icono de lo que acaba de pasar
+           (comida, pelota, balde) a la derecha, la caca a la izquierda
     y 312  estado (UI_12 negrita, centrado): "Está feliz", "Tiene hambre", "Duerme"…
     y 340  aviso de 4 s (UI_10, centrado): "Ñam, ñam", "Se durmió", "Te esperó 5 h"…
     y 376  cuatro barras cada 36 px: etiqueta UI_10 en x = 24, marco de 256 × 16 en x = 128
@@ -93,6 +125,15 @@ Pillow con DejaVu en lugar de Ubuntu): `scratchpad/mascota/preview.png` (la casa
 
 Las pantallas sin barras (el nombre, "se fue") suben su lista a y = 400. Todas las coordenadas son
 enteras (`//`, nunca `/`): el `cp` del aparato rechaza un float con fracción, y el harness también.
+
+La **pantalla del nombre** (desde 1.5.114) sale la primera vez y con cada huevo nuevo: antes el
+bautizo por voz fallaba y la perra quedaba "Pipo" sin remedio, así que ahora es una pantalla con
+dos filas —*Decir el nombre* y *Se llama Pipo*— y una escucha que no se entiende **vuelve a
+preguntar**; nunca bautiza sola. Y en **Info** hay una fila *Cambiar el nombre*.
+
+Todo sigue el sistema visual (`docs/ws397/DISENO.md`): margen de 24, grilla de 8, cabezal UI_14 con
+regla de 1 px, barras con marco de 1 px y relleno macizo (nunca trama bajo texto) y las acciones
+como lista con el resalte del sistema (`cp.selection`), no cajas sueltas.
 
 ## Cómo se juega
 
@@ -125,7 +166,8 @@ enteras (`//`, nunca `/`): el `cp` del aparato rechaza un float con fracción, y
   guarda con cada acción y cada 5 minutos.
 - **Cuándo repinta**: `on_tick` compara una firma de lo que se ve (cuadro, estado, aviso, barras
   redondeadas, día, nombre) y devuelve `true` sólo si cambió. La animación alterna cuadro **cada
-  4 s**; los avisos duran 4 s. Con el aparato quieto, cincuenta ticks seguidos no repintan.
+  4 s** (y lo único que cambia entre los dos es la cola, así que el parcial es chico); los avisos
+  duran 4 s. Con el aparato quieto, cincuenta ticks seguidos no repintan.
 
 Estado guardado con `cp.save` (una línea, `;` como separador):
 `mascota1;<nombre>;<hambre>;<ánimo>;<energía>;<higiene>;<duerme>;<descuido s>;<edad s>;<epoch>;<viva>`.
@@ -135,8 +177,9 @@ El formato no cambió respecto de 1.5.113: una mascota guardada sigue viva al ac
 
 `./test/lua_sandbox/run.sh` corre `test/lua_sandbox/scenarios/mascota.lua`: la pantalla del nombre
 (una escucha que no entiende se queda; la segunda bautiza "Luna" limpiando "se llama Luna, la
-perrita."), la perra en pantalla con el tamaño y los bytes que corresponden (`fake.images`: 150 × 56 a
-escala 2, centrada, dentro de su zona; dormida 120 × 81; ida 100 × 38), alimentar, el juego entero,
+perrita."), la perra en pantalla con el tamaño y los bytes que corresponden (`fake.images`: el
+cuerpo 187 × 103 a escala 2, centrado, dentro de su zona, **con el parche de la cola encima** en
+`COLA_X, COLA_Y`; dormida 187 × 103 y sin parche; ida 140 × 78), alimentar, el juego entero,
 dormir y despertar, limpiar, seis horas de reloj, recargar desde `cp.save`, el tope de 12 h con
 30 h fuera, sin reloj, **cambiar el nombre desde Info** (una escucha vacía no lo toca; "Canela" sí
 y se guarda), descuido largo hasta la despedida, huevo nuevo con el nombre de fábrica, Atrás durante
@@ -146,6 +189,7 @@ cincuenta ticks quietos sin repintar.
 ## Instalar
 
 Copiar `examples/Apps/mascota.lua` a `/Apps` de la tarjeta (modo memoria USB) y abrirla en
-**Juegos → Mascota**. Pendiente de hardware: ver las siluetas en el vidrio (si la parada queda
-grande o chica, `ESCALA` al principio de la parte de juego, 1 o 2; a 3 no entra en la zona), el
-micrófono para el nombre y los dos gestos.
+**Juegos → Mascota**. Pendiente de hardware: ver el contorno en el vidrio —si el trazo de 4 px
+quedara fino o grueso hay que volver a generar los bitmaps con otro `STROKE`, no cambiar `ESCALA`,
+que a 1 la perra queda diminuta y a 3 no entra en la zona—, el micrófono para el nombre y los dos
+gestos.

@@ -12,7 +12,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 
 - **Root Directory**: `server` (Settings → Source → Root Directory). Con eso Railway solo mira esta carpeta.
 - **Build**: hay `Dockerfile` (Railway lo usa solo): Bun + Piper con las seis voces (~400 MB de imagen). Start = `bun run src/index.ts`.
-- **Volumen** montado en `/data` (firmware subido, `store.json`, `calendar.json`, `trips.json`, `hub-settings.json`, `hub-data.json`).
+- **Volumen** montado en `/data` (firmware subido, `store.json`, `calendar.json`, `hub-settings.json`, `hub-data.json`).
 - Variables:
 
 | Variable | Para qué |
@@ -20,7 +20,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `OTA_TOKEN` | Bearer que usa `release.sh` / `release.ps1` para subir el `.bin` (`PUT /firmware`). |
 | `DEVICE_TOKEN` | Bearer del aparato para todo `/api/*` (web UI del aparato → Servidor → token). |
 | `ANTHROPIC_API_KEY` | Claude (preguntas y clasificador de voz). Nunca va al aparato. |
-| `APPS_ANTHROPIC_KEY` | Clave de Anthropic **de las apps de Lua** (Librito, Viajes), aparte de la de Hablar; también se carga desde `/board` → Ajustes → Avanzado → Apps de Lua. `APPS_FILES_DIR` (default `/data/apps-files`) guarda lo que generan. |
+| `APPS_ANTHROPIC_KEY` | Clave de Anthropic **de las apps de Lua** (el Escritor), aparte de la de Hablar; también se carga desde `/board` → Ajustes → Avanzado → Apps de Lua. `APPS_FILES_DIR` (default `/data/apps-files`) guarda lo que generan. |
 | `STT_API_KEY` (o `OPENAI_API_KEY`) | Transcripción por un endpoint compatible con OpenAI. |
 | `STT_BASE_URL`, `STT_MODEL` | Opcionales. Groq: `https://api.groq.com/openai/v1` + `whisper-large-v3-turbo`. |
 | `ASK_MODEL`, `VOICE_MODEL` | Opcionales, default `claude-haiku-4-5`. |
@@ -74,7 +74,7 @@ cuentas de correo y contraseña y aparatos vinculados por un código de 6 dígit
 | `GET /api/assets/file?id=` | aparato | Un archivo del paquete, con `Range` para reanudar. |
 | `GET /api/assets/status`, `POST /api/assets/build` | web | Cómo va la generación del paquete y cómo forzarla. |
 | `GET /api/board/costs` | web | Cuánto sale cada consulta con cada modelo (tarjeta de la pestaña IA). |
-| `POST /api/apps/call?lang=xx` | aparato (`cp.call`) | `{app, service, args}` → siempre 200 con `{ok:true, …}` o `{ok:false, error}`. Servicios con nombre: `job.status`, `librito.*`, `viajes.*`, `libros.*` (ver `src/apps.ts`, `src/librito.ts`, `src/viajes.ts`, `src/libros.ts`). |
+| `POST /api/apps/call?lang=xx` | aparato (`cp.call`) | `{app, service, args}` → siempre 200 con `{ok:true, …}` o `{ok:false, error}`. Servicios con nombre: `job.status`, `librito.*`, `libros.*` (ver `src/apps.ts`, `src/librito.ts`, `src/libros.ts`). |
 | `GET /api/apps/file/:id` | aparato (`cp.download`) | Un archivo generado por un trabajo (el EPUB del librito, el libro que mandó el bot), solo de la propia cuenta. Se poda a las 24 h. |
 | `GET /api/board/telegram` | web | Estado de la sesión de Telegram de la cuenta (app Libros): `configured`, `loggedIn`, `phone`, `bot`, `hasHash`, `user`, `awaitingCode`, `awaitingPassword`. El api hash no vuelve nunca. |
 | `POST /api/board/telegram/{config,code,signin,logout,test}` | web | Los pasos del login: guardar `{apiId, apiHash, phone, bot}`, mandar el código, entrar con `{code}` (y `{password}` si Telegram pide la de dos pasos), cerrar la sesión, y una búsqueda de prueba `{q}`. Ver "Libros" más abajo. |
@@ -356,8 +356,9 @@ se conservan tal cual; un evento con forma rara se descarta y los demás siguen.
 
 Qué sale en el calendario: los eventos de `calendar.json`, los **recordatorios de `store.json`
 proyectados** (se leen, no se copian: el dueño sigue siendo `store.ts` y se tildan con
-`POST /api/hub/done`). Los eventos con `tripId` —el espejo del viaje, que salió en 1.5.93— se
-descartan al leer: ya no hay quien los edite ni los borre.
+`POST /api/hub/done`). Los eventos con `tripId` —el espejo del viaje, que salió del producto en 1.5.93,
+volvió en 1.5.111 y volvió a salir, esta vez entero— se descartan al leer: ya no hay quien los edite ni
+los borre.
 
 | Ruta | Qué devuelve |
 |---|---|
@@ -402,41 +403,6 @@ el día elegido abajo con todo lo que cae ahí, y el formulario de alta/edición
 elegible de una lista. El texto de la repetición se ve **mientras se edita** y lo escribe el servidor
 (`GET /api/calendar/repeat`), o sea que es exactamente el mismo que después muestra el aparato. Los
 recordatorios de la pestaña Pizarra usan los mismos controles y se pueden editar con "Editar".
-
-## Viajes (`src/viajes.ts`, documento `trips` → `/data/trips.json`)
-
-Volvió después de 1.5.93, esta vez como **pestaña de `/board` + servicios para la app de Lua `viajes`**
-(contrato en `docs/ws397/VIAJES_CONTRATO.md`, hoy en su **v2**). Sin adjuntos: los papeles son **texto** pegado
-desde el correo (título, fecha, tipo, campos "Etiqueta: valor" y el texto entero). Un viaje son VARIOS lugares
-(Roma, crucero, islas, Madrid), así que **cada día tiene su `place` y su `hotel`**, y la guía es **por día y sólo a
-pedido** (`day.guide = {at, answers, text}`): no hay guía general, ni clima ni coordenadas del viaje. Lo que la v1
-guardó a nivel de viaje se migra al leer (`normalizeTrip`): el `hotel` pasa a cada día que no tenga el suyo; la
-guía general, `weather`, `lat` y `lon` se descartan; `timezone` se queda (es la de los recordatorios).
-
-Rutas de la web (Bearer o sesión, montadas en `api.ts`): `GET /api/trips`, `GET /api/trip?id=`, `POST /api/trip`
-(alta/edición: nombre, resumen de lugares, fechas, zona horaria, notas, activo), `/api/trip/delete`, `/active`,
-`/day` (`{tripId, date, place?, hotel?, note?}`: sólo se toca lo que viene), `/day/item`, `/day/item/delete`,
-`/packing`, `/paper`, `/paper/delete`, `GET /api/trip/:id/day/:date/guide/questions`,
-`POST /api/trip/:id/day/:date/guide {answers}` → `{jobId}` (se sigue con `job.status` por `/api/apps/call`),
-`GET /api/trip/:id/day/:date/guide` → `{text, at}` y `POST /sync`.
-
-Servicios de la app (`POST /api/apps/call`, `app: "viajes"`): `viajes.lista` (`guideReady` = algún día tiene guía,
-más `guideDays` y `dayCount`), `viajes.activar`, `viajes.viaje` (la vista compacta, ≤ 40 KB: cada día con `place`,
-`hotel` y `guide:{ready,at}`, `place` del viaje como resumen y `today` en su zona), `viajes.papel`, `viajes.llevar`
-(`toggle`/`remove`/`add`; `add` recibe lo DICHO y el modelo lo parte en altas y bajas, sin duplicar), `viajes.sugerir`
-y `viajes.sugerir.agregar`, `viajes.guia.preguntas {id, date}` (0-3 preguntas del día decididas sin modelo: `hotel`
-si el día no tiene hotel, `llegada` si cambia de lugar y no hay vuelo ni tren, `intereses` siempre),
-`viajes.guia.generar {id, date, answers}` (trabajo: UNA guía de 600-1000 palabras de ese día con búsqueda web,
-`appsProseSearch`, progreso "Buscando cerca de …" / "Escribiendo…"; la respuesta `hotel` se guarda en el día si no
-tenía), `viajes.guia.dia {id, date}` → `{text, at}` o `{ok:false, error:"sin guía"}`, `viajes.preguntar` (el viaje
-entero en el system con `cache_control`, con el lugar y el hotel de cada día y la guía del día del que se habla o de
-hoy; busca en internet **solo si la pregunta dice "busca"**; devuelve `answer` y `spoken` ≤ 220 caracteres) y
-`viajes.recordar` (recordatorio 2 h antes en `store.json`, con la hora del ítem pasada de la zona del viaje a la de
-la cuenta). Todo lo que llama al modelo usa la clave de las apps (`config.apps`) y cuenta como `apps_calls`.
-
-Los ítems **con hora** se espejan en `/data/calendar.json` como eventos con `tripId` (kind `trip` en
-`GET /api/calendar`; el lugar del evento es el del ítem o, si no tiene, el del día); el espejo se rehace entero al
-guardar el viaje y se borra al borrarlo.
 
 ## Libros: un bot de Telegram manda el libro (`src/telegram.ts`, `src/libros.ts`, `src/librosParse.ts`)
 
@@ -687,7 +653,6 @@ Cada archivo JSON de hoy pasa a ser una fila `docs(account_id, name)` con **el m
 | `/data/voice-context.json` | `docs(1, "voice-context")` |
 | `/data/hub-settings.json` | `docs(1, "hub-settings")` |
 | `/data/hub-data.json` | `docs(1, "hub-data")` |
-| `/data/trips.json` | `docs(1, "trips")` |
 
 Por eso `store.ts`, `calendar.ts` y compañía **no cambiaron su lógica**: cambió de dónde leen y
 escriben. Las tablas son `accounts`, `devices`, `pairings`, `docs`, `usage` y `server_meta`; se crean solas al

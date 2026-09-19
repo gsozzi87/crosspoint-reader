@@ -16,7 +16,6 @@ import { jobFile, jobStatus } from "./appsJobs";
 import { AppsLlmError } from "./appsLlm";
 import { LIBRITO_SERVICES } from "./librito";
 import { LIBROS_SERVICES } from "./libros";
-import { VIAJES_SERVICES } from "./viajes";
 import { limitBody, redactSecrets } from "./net";
 import { normalizeLang, type Lang } from "./lang";
 import { accountOf, type AppEnv } from "./tenant";
@@ -41,7 +40,6 @@ const jobStatusService: Service = async (ctx, args) => {
 const SERVICES: Record<string, Service> = {
   "job.status": jobStatusService,
   ...LIBRITO_SERVICES,
-  ...VIAJES_SERVICES,
   ...LIBROS_SERVICES,
 };
 

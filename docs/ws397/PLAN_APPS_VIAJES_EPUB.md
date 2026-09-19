@@ -1,17 +1,20 @@
-# Plan: dos apps de Lua con modelo — Viajes y Librito (EPUB a medida)
+# Plan: las puertas de las apps de Lua y el Escritor (EPUB a medida)
 
 Pedido del dueño (2026-09-18): *"Quiero dos app de LUA: una para viajes (calendario de viaje, lugar, documentos
 tipo vouchers, guía con mejores lugares, restaurantes, reseñas, historia de la ciudad, todo lo que necesita una
 mente curiosa) y otra que genere epubs de un tema en específico, profesional y guiada, para leer en unos 15
 minutos. El token de Anthropic para esto se carga en la web, solo para las apps de Lua."*
 
-Viajes ya existió como pantalla compilada y se sacó en 1.5.93 con la nota *"vuelve como app de Lua más
-adelante"*. Éste es ese regreso, y con más cosas.
+**Viajes salió del producto y este plan ya no la cubre.** Fue pantalla compilada hasta 1.5.93, volvió como app
+de Lua en 1.5.111 y el dueño la sacó otra vez, entera: *"la app de viajes se va, no la quiero ni en el aparato
+ni en la web, no me va a servir"*. Lo que queda acá y **sigue valiendo** es la **fase 0** —las puertas de `cp`
+(micrófono, servidor, archivos, visor, lector), `/api/apps/*` y `appsLlm.ts`, que las usan todas las apps— y la
+**fase 1**, el **Escritor** (`librito.lua`). Lo de viajes se sacó de este documento; está en el historial.
 
 ## Lo que hay hoy y lo que falta
 
 Una app de Lua hoy es un archivo en `/Apps`, dibuja, lee botones y gestos, guarda 4 KB de estado y nada más
-(`docs/ws397/APPS_LUA.md`). **No tiene red, no tiene micrófono, no tiene archivos y no abre el lector.** Las dos
+(`docs/ws397/APPS_LUA.md`). **No tiene red, no tiene micrófono, no tiene archivos y no abre el lector.** Las
 apps pedidas necesitan las cuatro cosas. Así que el plan tiene una **fase 0 de firmware y servidor** que les da
 a TODAS las apps de Lua esas cuatro puertas —con la misma disciplina del cajón: nada de URLs ni rutas libres—, y
 después cada app es Lua puro en la tarjeta, que se puede corregir sin recompilar ni publicar firmware.
@@ -48,7 +51,7 @@ Reglas que mandan sobre todo el diseño:
 | Función | Qué hace | Por dónde pasa |
 |---|---|---|
 | `cp.listen(seg)` | Graba hasta `seg` segundos y devuelve el texto transcrito, o `nil` | `VoiceRecorder` + `SpeechToText`, los de siempre |
-| `cp.call(servicio, tabla)` | Llama a **un servicio con nombre** del servidor (`viajes.guia`, `librito.indice`…) y devuelve una tabla | `ServerClient` con el Bearer del aparato; el nombre se valida en el servidor |
+| `cp.call(servicio, tabla)` | Llama a **un servicio con nombre** del servidor (`librito.indice`, `libros.buscar`…) y devuelve una tabla | `ServerClient` con el Bearer del aparato; el nombre se valida en el servidor |
 | `cp.download(id, nombre)` | Baja un archivo generado a la carpeta de la app | `HttpDownloader::downloadToFile`, el mismo que usa la OTA y las fuentes |
 | `cp.files()`, `cp.read(nombre, desde, largo)`, `cp.write(nombre, texto)`, `cp.remove(nombre)` | Archivos **sólo** dentro de `/Apps/data/<app>/`, sin rutas, con tope de tamaño | `Storage` del SDK |
 | `cp.view(nombre [, título])` | Abre un `.txt` de la app en el **visor paginado del sistema** (`DictionaryDefinitionActivity`) y vuelve a la app al salir | El visor que ya usan Hablar, la Biblia y las notas |
@@ -110,67 +113,6 @@ Es la app más chica y valida el camino entero (voz → trabajo → archivo → 
 índice, tocar "Escribir", y el aparato lo baja en la próxima sincronización. El diálogo es el mismo; cambia el
 teclado por el micrófono. Sirve para temas largos y para hacerlo con el aparato en la mochila.
 
-## Fase 2 — **Viajes**
-
-Tres cosas distintas que la app junta: **la agenda del viaje**, **los papeles** y **la guía**. Las dos primeras
-se cargan desde el teléfono, la tercera la escribe el modelo.
-
-### El viaje en la web (`/board` → Viajes, vuelve como pestaña)
-
-- Alta: destino (buscador de lugares, el mismo del clima), fechas, notas. Varios viajes; uno "activo".
-- **Agenda por día**: vuelos, hoteles, trenes, reservas, visitas. Cada ítem tiene día, hora, título, lugar,
-  código de reserva y **un papel adjunto opcional**.
-- **Papeles**: se sube el PDF, la foto o el correo del voucher. El servidor **lo lee y lo convierte a texto
-  estructurado** con el modelo (aerolínea, vuelo, terminal, hora, localizador, dirección del hotel, check-in,
-  política de cancelación, teléfono) y guarda **eso**: en tinta electrónica de 480 px una foto de un voucher es
-  ilegible, el texto no. El original queda en el volumen del servidor por si hay que mostrarlo en el teléfono.
-  Con el texto extraído además **se completa la agenda solo**: subir el voucher del vuelo crea el ítem del vuelo
-  con su hora. Lectura de PDF con `pdf-parse` (puro JS; nada de `mupdf`/`sharp`, que se sacaron en 1.5.93 por
-  algo) y para fotos, el modelo con visión directamente sobre la imagen.
-- Los ítems con hora **se espejan como eventos del calendario** del aparato (ya existe `calendar.ts`), así el
-  hub y "Mi día" dicen "hoy 14:30 vuelo a Lima" sin abrir la app, y un recordatorio suena dos horas antes si se
-  pide. Marcados con `tripId`, y esta vez con dueño: se borran con el viaje.
-
-### La guía (trabajo en el servidor, `viajes.guia`)
-
-Se arma **una vez por viaje** (y se puede rehacer), en secciones que son archivos de texto sueltos, uno por tema,
-para que en el aparato se abran de a uno con `cp.view` y no haya que bajar 200 KB de golpe:
-
-| Sección | Qué lleva |
-|---|---|
-| Para entender el lugar | Historia de la ciudad en tres o cuatro épocas, qué la hizo lo que es, cómo se llama la gente, qué idioma, qué moneda, cómo se saluda |
-| Barrios | Qué barrio es qué, dónde dormir, dónde no ir de noche |
-| Imperdibles | Lo que hay que ver sí o sí y **por qué**, con el dato curioso que uno cuenta después |
-| Para una mente curiosa | Lo que no está en las guías: personajes, leyendas, el edificio raro, la historia que nadie cuenta |
-| Comer | Platos del lugar y dónde comerlos, con **reseñas recientes**; horarios raros; qué se pide y qué no |
-| Moverse | Aeropuerto → centro, transporte, tarjeta, taxis, apps, propinas |
-| Ojo con | Estafas típicas, zonas, clima de esas fechas, feriados que caen en el viaje |
-| Un día perfecto | Un itinerario a pie para el primer día |
-
-- **Reseñas y "recientes" salen de la búsqueda web** (la herramienta `web_search` de Anthropic, con tope de
-  usos por sección). Es la única app donde la búsqueda va **encendida sin que el usuario diga "busca"**, porque
-  la guía se pide una vez y sin datos recientes los restaurantes están cerrados. Se anota como excepción a la
-  regla del dueño, y con su costo a la vista en la web (unas 10-15 búsquedas por guía).
-- La guía se genera en el idioma del aparato y **con las fechas del viaje** (feriados, clima esperado, qué
-  estación es).
-- Se guarda en el servidor y se baja al aparato en `/Apps/data/viajes/<viaje>/<seccion>.txt`.
-
-### La app en el aparato (`viajes.lua`)
-
-- Pantalla 1: **el viaje activo**: destino, "faltan 12 días" o "día 3 de 9", y tres entradas: Agenda · Papeles ·
-  Guía. Con más de un viaje, ABAJO largo cambia.
-- **Agenda**: lista por día con la hora y el título; OK abre el ítem con su papel si lo tiene (`cp.view`).
-- **Papeles**: todos los vouchers del viaje, a texto, ordenados por fecha. OK abre. Es lo que se mira en el
-  mostrador del aeropuerto, y funciona sin WiFi.
-- **Guía**: las ocho secciones; OK abre en el visor. La primera vez, si no está bajada, la baja (barra de
-  progreso, una sección por vez).
-- **Preguntar por voz** (Atrás largo en cualquier pantalla): "¿a qué hora es el check-in?" o "¿qué como cerca del
-  hotel el martes?" → `viajes.preguntar` con la guía y la agenda del viaje en el contexto del modelo (cacheado
-  con `cache_control`, como el capítulo del libro en Preguntarle al libro). Respuesta en el visor y hablada
-  con Piper, como Hablar.
-- Sincronización: al entrar a la app con WiFi, `viajes.estado` devuelve qué cambió (ítems, papeles, guía) y se
-  baja sólo lo nuevo, por sha, como el paquete de noticias.
-
 ## Orden, tamaño y qué se puede probar sin aparato
 
 | Paso | Qué | Dónde se prueba |
@@ -178,20 +120,15 @@ para que en el aparato se abran de a uno con `cp.view` y no haya que bajar 200 K
 | 0a | Clave y tope de las apps en la web; `appsLlm.ts`; trabajos (`/api/apps/job`) | `bunx tsc`, servidor local con clave de prueba |
 | 0b | `cp.listen`, `cp.call`, `cp.download`, archivos, `cp.view`, `cp.open_book`; doc en `APPS_LUA.md` | `./test/lua_sandbox/run.sh` con `cp` falso; lo real, en el aparato |
 | 1 | `librito.ts` + `librito.lua` + pestaña Libritos en la web | EPUB validado con el parser del lector de escritorio; flujo entero en el sandbox |
-| 2a | Viajes en la web: alta, agenda, papeles con extracción a texto, espejo en calendario | Playwright a 360 px como el resto de `/board`; extracción con PDFs de muestra |
-| 2b | `viajes.guia` con búsqueda; `viajes.lua` | Guía real generada en Railway y leída de escritorio antes de tocar la app |
-| 2c | Preguntar por voz dentro del viaje | Sandbox con respuestas grabadas |
 
 Cada paso termina en un release y una prueba en el aparato **antes** del siguiente: la fase 0 es la que más
-puede morder (red y archivos desde Lua) y conviene verla andar con el librito, que es chico, antes de meterle
-los vouchers.
+puede morder (red y archivos desde Lua) y conviene verla andar con el librito, que es chico.
 
 ## Decisiones que hay que tomar antes de empezar (con mi recomendación)
 
-1. **Los vouchers se guardan como texto extraído, no como imagen.** En el aparato se lee mejor y no hace falta
-   volver a meter `sharp`/`mupdf`. El original queda en el servidor para el teléfono. **Recomiendo texto.**
-2. **La guía busca en internet sola** (reseñas, horarios, cierres) aunque la regla general sea "sólo con
-   busca". Cuesta unos centavos por guía. **Recomiendo sí, sólo en la guía**, con el costo a la vista en la web.
+1. *(Era de Viajes: los vouchers como texto extraído. Se fue con la app.)*
+2. *(Era de Viajes: la guía buscando sola en internet. Se fue con la app; la regla general —buscar **sólo**
+   cuando el usuario dice "busca"— vale para todo lo demás.)*
 3. **Modelo para la prosa**: `claude-opus-5` escribe mejor y cuesta más; `claude-sonnet-5` alcanza para la guía.
    **Recomiendo Opus para los libritos y Sonnet para las guías**, ambos cambiables desde la web.
 4. **Al abrir el EPUB desde la app, al cerrar el libro se vuelve al hub y no a la app**: el lector necesita el
@@ -203,9 +140,9 @@ los vouchers.
 
 ## Decisiones tomadas (2026-09-18)
 
-1. Vouchers como **texto** extraído. 2. La guía **busca en internet** sola. 3. Opus 5 para libritos, Sonnet 5
-para guías, cambiable desde la web. 4. Al cerrar el EPUB se vuelve al hub. 5. Largo **mínimo 15 minutos**; el
-usuario **elige los capítulos** (los saca, los agrega, pide más temas) antes de escribir.
+1 y 2 eran de Viajes y se fueron con la app. 3. Opus 5 para los libritos, cambiable desde la web. 4. Al
+cerrar el EPUB se vuelve al hub. 5. Largo **mínimo 15 minutos**; el usuario **elige los capítulos** (los saca,
+los agrega, pide más temas) antes de escribir.
 
 ## Contrato v1 (fase 0 + Librito) — lo que firmware, servidor y app tienen que cumplir
 

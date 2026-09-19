@@ -73,18 +73,27 @@ local function ok(n) for _ = 1, n do assert(fake.key("ok") == true, "OK repinta"
 local function menu(opcion)
   assert(fake.key("back") == true, "Atrás abre el menú")
   assert(dibujado("Verificar"), "el menú está en pantalla")
-  local orden = { Dictar = 1, Verificar = 2, Pista = 3, Nuevo = 4, Salir = 5 }
+  local orden = { Verificar = 1, Pista = 2, Nuevo = 3, Salir = 4 }
   for _ = 2, orden[opcion] do fake.key("down") end
   return fake.key("ok")
 end
 
-local PALABRA = { "uno", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve" }
-local function dictar(texto)
-  menu("Dictar")
-  assert(cp.busy(), "Dictar abre el micrófono")
-  fake.heard = texto
-  assert(fake.step(), "se entrega lo oído")
-  assert(not cp.busy())
+-- Dónde está el cursor, leído del renglón que la app pinta bajo el tablero.
+local function cursorEn()
+  for _, t in ipairs(fake.draw()) do
+    local f, c = t:match("^Fila (%d+), columna (%d+)$")
+    if f then return (tonumber(f) - 1) * 9 + tonumber(c) end
+  end
+  return nil
+end
+
+-- La única forma de mover el cursor es la palanca: no hay dictado.
+local function irA(destino)
+  for _ = 1, 82 do
+    if cursorEn() == destino then return end
+    assert(fake.key("down") == true, "la palanca mueve")
+  end
+  error("no se llegó a la celda " .. destino)
 end
 
 -- 1. Sin partida guardada arranca en el selector de nivel; OK = Fácil.
@@ -127,44 +136,18 @@ assert(p[v[2]] == so[v[2]])
 menu("Verificar")
 assert(dibujado("Todo bien hasta ahora · faltan 42"), "verificar cuenta lo que falta")
 
--- 4. Dictado: fila, columna y número con palabras, y con dígitos sueltos.
-local celda = v[3]
-local fr, fc = (celda - 1) // 9 + 1, (celda - 1) % 9 + 1
-dictar("fila " .. PALABRA[fr] .. " columna " .. PALABRA[fc] .. " " .. PALABRA[so[celda]])
-c, d, so, p = partida()
-assert(p[celda] == so[celda], "dictado con palabras")
-assert(dibujado("Puesto " .. so[celda] .. " en fila " .. fr .. ", columna " .. fc))
-dictar("borra fila " .. fr .. " columna " .. fc)
-c, d, so, p = partida()
-assert(p[celda] == 0, "borrar por voz")
-dictar(fr .. " " .. fc .. " " .. so[celda])
-c, d, so, p = partida()
-assert(p[celda] == so[celda], "dictado con dígitos sueltos")
-dictar("en la fila " .. PALABRA[fr] .. ", columna " .. PALABRA[fc] .. ", pon un " .. PALABRA[so[celda] % 9 + 1])
-c, d, so, p = partida()
-assert(p[celda] == so[celda] % 9 + 1, "'pon un siete' es un siete")
--- Sólo el número: va a la celda del cursor (que el dictado dejó en `celda`).
-dictar(PALABRA[so[celda]])
-c, d, so, p = partida()
-assert(p[celda] == so[celda], "un número suelto va al cursor")
+-- 4. El menú no ofrece dictar: esta app no usa el micrófono.
+assert(fake.key("back") == true, "Atrás abre el menú")
+for _, t in ipairs(fake.draw()) do
+  assert(not t:find("Dictar", 1, true), "el menú ya no tiene Dictar")
+end
+assert(dibujado("Verificar") and dibujado("Pista") and dibujado("Nuevo") and dibujado("Salir"),
+  "quedan las cuatro que sí hacen algo")
+assert(fake.key("back") == true, "Atrás cierra el menú")
+assert(cp.busy() == false, "la app nunca deja nada en curso: ni micrófono ni red")
 
--- Una dada no se toca, y lo que no se entiende lo dice.
-local dada
-for i = 1, 81 do if d[i] ~= 0 then dada = i break end end
-dictar("fila " .. ((dada - 1) // 9 + 1) .. " columna " .. ((dada - 1) % 9 + 1) .. " cinco")
-assert(dibujado("viene dada"), "una dada no se pisa")
-dictar("hola qué tal")
-assert(dibujado("No entendí: hola qué tal"), "basura = no entendí, con lo oído")
-dictar("fila doce columna tres cinco")
-assert(dibujado("No entendí"), "'doce' no es una cifra")
-menu("Dictar")
-fake.heard = nil
-fake.step()
-assert(dibujado("No entendí"), "escucha cancelada = no entendí")
-
--- 5. Pista pone el dígito correcto en el cursor.
-dictar("fila " .. PALABRA[(v[4] - 1) // 9 + 1] .. " columna " .. PALABRA[(v[4] - 1) % 9 + 1])
-assert(dibujado("Cursor en fila"), "sólo fila y columna mueve el cursor")
+-- 5. Pista pone el dígito correcto en la celda del cursor.
+irA(v[4])
 c, d, so, p = partida()
 assert(p[v[4]] == 0)
 menu("Pista")
@@ -173,7 +156,7 @@ assert(p[v[4]] == so[v[4]], "la pista es la solución")
 assert(dibujado("Pista: " .. so[v[4]]))
 
 -- 6. La partida entera: desde la primera vacía, cada celda con OK y abajo.
-dictar("fila " .. ((v[1] - 1) // 9 + 1) .. " columna " .. ((v[1] - 1) % 9 + 1))
+irA(v[1])
 for k, i in ipairs(v) do
   c, d, so, p = partida()
   ok((so[i] - p[i]) % 10)

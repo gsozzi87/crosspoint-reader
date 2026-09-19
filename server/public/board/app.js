@@ -5,10 +5,10 @@
 // entero y se repinta: así nunca queda una parte vieja y otra nueva en la
 // misma pantalla, que era la queja de la página anterior.
 //
-// Pantallas (barra de abajo): Hoy · Agenda · Listas · Notas · Viajes · Ajustes.
-// Debajo de Ajustes: Noticias, Memoria, Aparatos y, en Avanzado, IA, Contenido
-// y Log. Viajes salió en 1.5.93 y volvió como pestaña para cargar lo que la app
-// de Lua `viajes` lee en el aparato (sin adjuntos: los papeles son texto).
+// Pantallas (barra de abajo): Hoy · Agenda · Listas · Notas · Ajustes.
+// Debajo de Ajustes: Noticias, Memoria, Aparatos y, en Avanzado, IA, Contenido,
+// Telegram y Log. (Viajes tuvo su pestaña entre 1.5.111 y 1.5.115; salió del
+// producto por segunda vez y esta vez entera, app de Lua incluida.)
 //
 // Todo lo que se edita se edita en una "hoja" que sube desde abajo (sheet):
 // tocar una fila la abre con todos los campos y el botón de borrar.
@@ -23,7 +23,6 @@ const CAL = {};      // caché del calendario por mes: "2026-09" -> {days, event
 const DAY = {};      // caché del día: "2026-09-12" -> items
 let calMonth = "";   // mes visible "YYYY-MM"
 let calSel = "";     // día elegido "YYYY-MM-DD"
-let tripCache = {};  // id -> viaje entero
 let rssCache = null;
 let newsPack = null; // estado del paquete masticado que descarga el aparato
 
@@ -172,7 +171,6 @@ function fmtStamp(iso) {
   if (isNaN(d.getTime())) return iso;
   return fmtDay(isoOf(d)) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
 }
-function kb(b) { return b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
 
 // ── Hoja (editor) ───────────────────────────────────────────────────────────
 let sheetOpts = null;
@@ -424,18 +422,18 @@ function calendarView() {
 
   const items = m.events.filter((e) => e.date === calSel);
   html += '<div class="card"><h2><span class="grow">' + fmtDayLong(calSel) + '</span><button class="ghost small" data-act="ev-new" data-date="' + calSel + '">+ Evento</button></h2><ul class="rows">';
-  if (!items.length) html += '<li class="empty">Nada agendado. Salen los eventos, los recordatorios con hora y los ítems de viaje.</li>';
+  if (!items.length) html += '<li class="empty">Nada agendado. Salen los eventos y los recordatorios con hora.</li>';
   for (const o of items) html += occurrenceRow(o);
   html += "</ul></div>";
   return html;
 }
 
 function occurrenceRow(o) {
-  const icon = o.kind === "reminder" ? "⏰" : o.kind === "trip" ? "✈️" : "📅";
+  const icon = o.kind === "reminder" ? "⏰" : "📅";
   const when = o.allDay ? (o.days > 1 ? "día " + o.dayIndex + " de " + o.days : "todo el día") : o.time + (o.endTime && o.endTime !== o.time ? "–" + o.endTime : "");
   const sub = [when, o.place, o.repeat && o.repeat.kind !== "none" ? o.repeatText : ""].filter(Boolean).join(" · ");
-  const act = o.kind === "reminder" ? "rem-open" : o.kind === "trip" ? "trip-go" : "ev-open";
-  const extra = o.kind === "trip" ? ' data-trip="' + attr(o.tripId || "") + '"' : ' data-key="' + attr(o.key) + '"';
+  const act = o.kind === "reminder" ? "rem-open" : "ev-open";
+  const extra = ' data-key="' + attr(o.key) + '"';
   return '<li><span class="kind">' + icon + '</span><div class="body" data-act="' + act + '" data-id="' + o.id + '"' + extra + '><span class="title">' + esc(o.title) + '</span><span class="sub">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
 }
 
@@ -648,7 +646,7 @@ function hoyView() {
   return html;
 }
 
-// ── Más ─────────────────────────────────────────────────────────────────────
+// ── Ajustes (el índice) ─────────────────────────────────────────────────────
 // Ajustes es una PANTALLA DE SECCIONES, no un cajón de filas iguales. Lo que se
 // usa seguido (el aparato, la voz, el clima) está acá mismo; lo que se toca una
 // vez al año cuelga de Avanzado.
@@ -672,7 +670,7 @@ function ajustesIndexView() {
   return html;
 }
 
-// ── Fotos ───────────────────────────────────────────────────────────────────
+// ── Noticias ────────────────────────────────────────────────────────────────
 function noticiasView() {
   let html = '<div class="card"><h2>Feeds</h2><p class="hint">Pega la dirección del diario o del feed (RSS o Atom). Se prueba antes de guardarlo. El aparato los lee en Noticias.</p>' +
     '<form data-form="feed-add"><div class="addbar"><input name="url" placeholder="https://diario.com/rss" autocomplete="off" inputmode="url"><button>Agregar</button></div><input name="name" placeholder="Nombre (opcional)" maxlength="40" style="margin-top:-2px"></form>' +
@@ -861,12 +859,12 @@ function iaView() {
     '<label class="inline"><input type="checkbox" name="searchOn" ' + (se.enabled ? "checked" : "") + "> Buscar en internet cuando lo pido (\"busca...\")</label>" +
     field("Buscador", select("searchProvider", [["free", "Gratis (Google Noticias + DuckDuckGo)"], ["tavily", "Tavily (con clave)"], ["brave", "Brave (con clave)"]], se.provider)) +
     '<div class="two">' + field("Máximo por respuesta", input("searchMax", se.maxUses, 'type="number" min="1" max="10"')) + field("Clave" + keyState(se.hasKey, "sin clave"), input("searchKey", "", 'type="password" placeholder="vacía = no cambiarla" autocomplete="off"'), true) + "</div></div>";
-  // Las apps de Lua (Librito, Viajes) escriben con su propia clave de Anthropic
+  // Las apps de Lua (el Escritor) escriben con su propia clave de Anthropic
   // y su propio modelo: el gasto va aparte del de Hablar y no entra en su tope.
   const ap = cfg.apps || { model: "claude-opus-5", hasKey: false, models: ["claude-opus-5", "claude-sonnet-5"] };
   const apModels = (ap.models || []).slice();
   if (ap.model && apModels.indexOf(ap.model) < 0) apModels.unshift(ap.model);
-  html += '<div class="card"><h2>Apps de Lua</h2><p class="hint">Las apps de la tarjeta que escriben con el modelo (Librito, Viajes). Usan una clave de Anthropic propia y se cuentan aparte de Hablar. Elige Opus para la mejor prosa o Sonnet para gastar menos.</p>' +
+  html += '<div class="card"><h2>Apps de Lua</h2><p class="hint">Las apps de la tarjeta que escriben con el modelo (el Escritor). Usan una clave de Anthropic propia y se cuentan aparte de Hablar. Elige Opus para la mejor prosa o Sonnet para gastar menos.</p>' +
     field("Modelo", select("appsModel", apModels.map((m) => [m, m]), ap.model)) +
     field("Clave de Anthropic" + keyState(ap.hasKey), input("appsKey", "", 'type="password" placeholder="vacía = no cambiarla" autocomplete="off"'), true) +
     "</div>";
@@ -1039,291 +1037,6 @@ async function copyText(text) {
   toast("Copiado");
 }
 
-// ── Viajes ──────────────────────────────────────────────────────────────────
-// Un viaje son sus días (del primero al último), cada uno con su LUGAR y el
-// HOTEL de esa noche (un viaje son varios lugares: Roma, crucero, islas,
-// Madrid), lo que se hace cada día con hora, los papeles (el correo de la
-// reserva pegado como texto), la lista para llevar y, en cada día, su guía:
-// la escribe el modelo con búsqueda en internet, sólo a pedido y sólo para ese
-// día. No hay guía general. Todo se edita en hojas. El aparato lo baja entero
-// con la app de Lua `viajes`.
-//
-// Regla de datos, la misma que el resto: después de cada cambio se vuelve a
-// pedir el viaje ENTERO (`tripChange`) y se repinta.
-const TRIP_KINDS = [["flight", "Vuelo", "✈️"], ["train", "Tren", "🚆"], ["hotel", "Hotel", "🏨"], ["ticket", "Entrada", "🎟"], ["meal", "Comida", "🍽"], ["visit", "Visita", "📍"], ["other", "Otro", "•"]];
-function kindIcon(k) { const f = TRIP_KINDS.find((x) => x[0] === k); return f ? f[2] : "•"; }
-let trips = null;
-let guideJobs = {};  // jobId -> {label, step, total} mientras se genera la guía de un día
-
-async function loadTrips() { trips = (await api("/api/trips?lang=es")).trips; return trips; }
-async function loadTrip(id) { const r = await api("/api/trip?id=" + encodeURIComponent(id) + "&lang=es"); tripCache[id] = r.trip; return r.trip; }
-function forgetTrips() { trips = null; tripCache = {}; clearCal(); }
-function dayUrl(t, date, tail) { return "/api/trip/" + encodeURIComponent(t.id) + "/day/" + encodeURIComponent(date) + tail; }
-
-// Un cambio en un viaje: se hace, se vuelve a pedir el viaje y la lista, y se
-// repinta. Lo que falle se muestra y se propaga (la hoja decide si se cierra).
-async function tripChange(id, fn, okMsg) {
-  busy(true);
-  try {
-    const out = await fn();
-    forgetTrips();
-    if (id) await loadTrip(id);
-    render();
-    if (okMsg) toast(okMsg);
-    return out;
-  } catch (e) {
-    toast("No se pudo: " + e.message, 3500);
-    throw e;
-  } finally {
-    busy(false);
-  }
-}
-
-function viajesView() {
-  if (!trips) { loadTrips().then(render).catch((e) => toast(e.message)); return '<p class="loading">Cargando…</p>'; }
-  let html = '<div class="card"><h2>Viajes</h2><p class="hint">Un viaje son sus días, cada uno con su lugar y su hotel, lo que se hace cada día con su hora, los papeles (el correo de la reserva, pegado) y la lista para llevar. Los ítems con hora aparecen también en el calendario del aparato. El <b>viaje activo</b> es el que abre la app del aparato.</p><ul class="rows">';
-  if (!trips.length) html += '<li class="empty">Todavía no hay viajes. Con el + de abajo creas uno.</li>';
-  for (const t of trips) {
-    const state = t.active ? "activo" : t.state === "now" ? "en curso" : t.state === "past" ? "pasado" : "";
-    const bits = [t.when, t.place && t.place !== t.name ? t.place : "", t.itemCount + (t.itemCount === 1 ? " cosa" : " cosas"), t.paperCount ? t.paperCount + (t.paperCount === 1 ? " papel" : " papeles") : "", t.guideDays ? "guía de " + t.guideDays + " de " + t.dayCount + " días" : "", state];
-    html += '<li><span class="kind">✈️</span><div class="body" data-act="trip-go" data-trip="' + attr(t.id) + '"><span class="title">' + esc(t.name) + '</span><span class="sub">' + esc(bits.filter(Boolean).join(" · ")) + "</span></div><span class=\"chev\">›</span></li>";
-  }
-  return html + "</ul></div>";
-}
-
-// Alta y edición del viaje: nombre, resumen de lugares, fechas, zona horaria,
-// notas, activo. El lugar y el hotel de verdad van en cada día.
-function tripEditor(t) {
-  const isNew = !t;
-  openSheet(isNew ? "Viaje nuevo" : "Viaje",
-    field("Nombre", input("name", t ? t.name : "", 'autofocus maxlength="80" placeholder="Italia y España"')) +
-    field("Lugares (resumen)", input("place", t ? t.place : "", 'maxlength="120" placeholder="Roma · crucero · Madrid"')) +
-    '<p class="hint" style="margin:-4px 0 10px">El lugar de cada día se carga en el día. Si dejas esto vacío, el resumen se arma solo con los lugares de los días.</p>' +
-    '<div class="two">' + field("Ida", input("start", t ? t.start : "", 'type="date"')) + field("Vuelta", input("end", t ? t.end : "", 'type="date"')) + "</div>" +
-    field("Zona horaria (para los recordatorios)", input("timezone", t ? t.timezone : "", 'maxlength="64" placeholder="Europe/Madrid" autocapitalize="off"')) +
-    field("Notas", '<textarea name="notes" maxlength="1000" style="min-height:60px">' + esc(t ? t.notes : "") + "</textarea>") +
-    (isNew ? "" : '<label class="inline"><input type="checkbox" name="active" ' + (t.active ? "checked" : "") + "> Viaje activo (el que abre el aparato)</label>"),
-    {
-      save: async (root) => {
-        const body = {
-          id: t ? t.id : undefined, name: val(root, "name").trim(), place: val(root, "place").trim(), start: val(root, "start"), end: val(root, "end"),
-          timezone: val(root, "timezone").trim(), notes: val(root, "notes").trim(),
-        };
-        if (!isNew && val(root, "active")) body.active = true;
-        if (!body.name || !body.start || !body.end) { sheetStatus("Faltan el nombre o las fechas", "bad"); return false; }
-        try {
-          const r = await tripChange(t ? t.id : "", () => api("/api/trip", body), "Guardado");
-          location.hash = "#viajes/" + r.id;
-          return true;
-        } catch (e) { sheetStatus(e.message, "bad"); return false; }
-      },
-      del: isNew ? null : async () => {
-        if (!sure("¿Borrar el viaje «" + t.name + "» con sus días, sus papeles y sus guías?")) return false;
-        await tripChange("", () => api("/api/trip/delete", { id: t.id }), "Borrado");
-        location.hash = "#viajes";
-        return true;
-      },
-    });
-}
-
-function tripView(id) {
-  const t = tripCache[id];
-  if (!t) { loadTrip(id).then(render).catch((e) => { toast(e.message); location.hash = "#viajes"; }); return '<p class="loading">Cargando…</p>'; }
-  let html = '<div class="card"><h2><span class="grow">' + esc(t.name) + '</span>' + (t.active ? '<span class="muted" style="font-size:13px;margin-right:8px">activo</span>' : '<button class="ghost small" data-act="trip-activate">Activar</button>') + '<button class="ghost small" data-act="trip-edit">Editar</button></h2>' +
-    '<p class="muted">' + esc([t.when, t.placeSummary && t.placeSummary !== t.name ? t.placeSummary : ""].filter(Boolean).join(" · ")) + "</p>" + (t.notes ? '<p class="hint">' + esc(t.notes) + "</p>" : "") + "</div>";
-
-  for (const d of t.days) {
-    html += '<div class="card"><h2><span class="grow">' + esc(d.label) + '</span><button class="ghost small" data-act="titem-new" data-date="' + d.date + '">+</button></h2>';
-    // El lugar y el hotel del día: tocarlos abre la hoja del día.
-    const where = [d.place ? "📍 " + d.place : "", d.hotel ? "🏨 " + d.hotel : ""].filter(Boolean).join(" · ");
-    html += '<p class="dayline" data-act="tday-edit" data-date="' + d.date + '"><span class="grow">' + (where ? esc(where) : "Lugar y hotel del día") + '</span><span class="chev">›</span></p>';
-    if (d.note) html += '<p class="hint" data-act="tday-edit" data-date="' + d.date + '">' + esc(d.note) + "</p>";
-    html += '<ul class="rows">';
-    if (!d.items.length) html += '<li class="empty">Libre.</li>';
-    for (const it of d.items) {
-      const paper = it.paperId ? t.papers.find((p) => p.id === it.paperId) : null;
-      const sub = [it.at, it.kindLabel, it.place, it.code ? "código " + it.code : "", paper ? "📎 " + paper.title : "", it.reminderId ? "⏰ 2 h antes" : ""].filter(Boolean).join(" · ");
-      html += '<li><span class="kind">' + kindIcon(it.kind) + '</span><div class="body" data-act="titem-open" data-date="' + d.date + '" data-id="' + attr(it.id) + '"><span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
-    }
-    html += "</ul>";
-    // La guía de ESTE día: leerla y rehacerla, o generarla.
-    const g = d.guide;
-    if (g.job) {
-      const j = guideJobs[g.job.id] || {};
-      html += '<p class="muted dayguide-status">Generando la guía del día… ' + esc(j.label || "empieza") + '</p><div class="bar"><i style="width:' + (j.total ? Math.max(3, Math.round((j.step / j.total) * 100)) : 3) + '%"></i></div>';
-      pollGuide(t.id, d.date, g.job.id);
-    } else if (g.ready) {
-      html += '<div class="dayguide"><span class="muted grow">Guía del día · ' + esc(fmtStamp(new Date(g.at * 1000).toISOString())) + '</span><button class="ghost small" data-act="tguide-read" data-date="' + d.date + '">Leer la guía</button><button class="ghost small" data-act="tguide-gen" data-date="' + d.date + '">Rehacer</button></div>';
-    } else {
-      html += '<div class="dayguide"><button class="ghost small" data-act="tguide-gen" data-date="' + d.date + '">Generar la guía de este día</button></div>';
-    }
-    html += "</div>";
-  }
-
-  html += '<div class="card"><h2><span class="grow">Papeles</span><button class="ghost small" data-act="tpaper-new">+ Papel</button></h2><p class="hint">Pega el correo del vuelo, la reserva o la entrada. Queda como texto en el aparato: es lo que se muestra en el mostrador, sin WiFi.</p><ul class="rows">';
-  if (!t.papers.length) html += '<li class="empty">Sin papeles.</li>';
-  for (const p of t.papers) {
-    const sub = [p.date ? fmtDay(p.date) : "", p.kindLabel, p.line].filter(Boolean).join(" · ");
-    html += '<li><span class="kind">' + kindIcon(p.kind) + '</span><div class="body" data-act="tpaper-open" data-id="' + attr(p.id) + '"><span class="title">' + esc(p.title) + '</span><span class="sub">' + esc(sub) + "</span></div><span class=\"chev\">›</span></li>";
-  }
-  html += "</ul></div>";
-
-  html += '<div class="card"><h2>Para llevar' + (t.packing.length ? ' <span class="muted" style="font-weight:400;font-size:14px">· ' + t.packDone + " de " + t.packTotal + "</span>" : "") + '</h2><form class="addbar" data-form="pack-add" data-trip="' + attr(t.id) + '"><input name="text" placeholder="Cargador, pasaporte…" maxlength="120" autocomplete="off"><button>Agregar</button></form><ul class="rows">';
-  if (!t.packing.length) html += '<li class="empty">Nada anotado.</li>';
-  for (const p of t.packing) html += '<li class="' + (p.done ? "done" : "") + '"><button class="tick' + (p.done ? " on" : "") + '" data-act="pack-tick" data-id="' + attr(p.id) + '" data-done="' + (p.done ? 1 : 0) + '"><i></i></button><div class="body" data-act="pack-open" data-id="' + attr(p.id) + '"><span class="title">' + esc(p.text) + "</span></div><span class=\"chev\">›</span></li>";
-  html += "</ul></div>";
-  return html;
-}
-
-// Sondea `job.status` de la guía de un día cada 5 s; al terminar vuelve a
-// pedir el viaje entero (la guía y, si la contestó, el hotel del día).
-let guidePolling = {};  // jobId -> true mientras se sondea
-function pollGuide(tripId, date, jobId) {
-  if (guidePolling[jobId]) return;
-  guidePolling[jobId] = true;
-  const tick = async () => {
-    if (!guidePolling[jobId]) return;
-    try {
-      const r = await api("/api/apps/call?lang=es", { app: "viajes", service: "job.status", args: { id: jobId } });
-      if (r.state === "running") {
-        guideJobs[jobId] = { label: r.label || "", step: r.step || 0, total: r.total || 0 };
-        if (parts()[0] === "viajes" && parts()[1] === tripId) render();
-        setTimeout(tick, 5000);
-        return;
-      }
-      delete guidePolling[jobId];
-      delete guideJobs[jobId];
-      forgetTrips();
-      if (parts()[0] === "viajes" && parts()[1] === tripId) { await loadTrip(tripId); render(); }
-      toast(r.state === "done" ? "Guía del " + fmtDay(date) + " lista" : "La guía falló: " + (r.error || "sin detalle"), 5000);
-    } catch (e) {
-      delete guidePolling[jobId];
-      toast("No se pudo consultar la guía: " + e.message, 3500);
-    }
-  };
-  setTimeout(tick, 1500);
-}
-
-// Antes de generar la guía de un día, las mismas preguntas que la app hace por
-// voz (sólo lo que falta: hotel, llegada, intereses), como campos.
-async function dayGuideEditor(t, d) {
-  let qs_ = [];
-  try { qs_ = (await api(dayUrl(t, d.date, "/guide/questions?lang=es"))).questions; } catch (e) { toast(e.message); return; }
-  const prev = d.guide.answers || {};
-  let html = '<p class="hint">' + esc((d.place ? d.place + " · " : "") + fmtDay(d.date)) + ". " + (d.guide.ready ? "Se vuelve a escribir entera (unos minutos y varias búsquedas en internet)." : "Lo que el itinerario no dice de ese día. Puedes dejar en blanco lo que no sepas.") + "</p>";
-  for (const q of qs_) html += field(q.text, input("q_" + q.key, prev[q.key] || "", 'maxlength="400"'));
-  openSheet(d.guide.ready ? "Rehacer la guía del día" : "Guía de este día", html, {
-    saveLabel: "Generar",
-    save: async (root) => {
-      const answers = {};
-      for (const q of qs_) { const v = val(root, "q_" + q.key).trim(); if (v) answers[q.key] = v; }
-      try {
-        await tripChange(t.id, () => api(dayUrl(t, d.date, "/guide?lang=es"), { answers }), "Generando la guía del " + fmtDay(d.date));
-        return true;
-      } catch (e) { sheetStatus(e.message, "bad"); return false; }
-    },
-  });
-}
-
-// La guía del día, tal cual la lee el aparato.
-async function dayGuideSheet(t, d) {
-  let g;
-  try { g = await api(dayUrl(t, d.date, "/guide")); } catch (e) { toast(e.message); return; }
-  openSheet("Guía del " + fmtDay(d.date) + (d.place ? " · " + d.place : ""), '<div class="prose">' + esc(g.text) + "</div>", {});
-}
-
-function tripItemEditor(t, date, it) {
-  const isNew = !it;
-  const papers = [["", "Sin papel"]].concat(t.papers.map((p) => [p.id, p.title + (p.date ? " · " + fmtDay(p.date) : "")]));
-  openSheet(isNew ? "Agregar el " + fmtDay(date) : "Ítem del " + fmtDay(date),
-    field("Qué", input("title", it ? it.title : "", 'autofocus maxlength="120" placeholder="Vuelo IB6251 MAD → LIS"')) +
-    '<div class="two">' + field("Hora", input("at", it ? it.at : "", 'type="time"')) + field("Tipo", select("kind", TRIP_KINDS.map((k) => [k[0], k[1]]), it ? it.kind : "other")) + "</div>" +
-    field("Día", input("date", date, 'type="date"')) +
-    field("Dónde", input("place", it ? it.place : "", 'maxlength="100" placeholder="T4, puerta 12"')) +
-    field("Código o localizador", input("code", it ? it.code : "", 'maxlength="40" placeholder="ABC123"')) +
-    field("Notas", '<textarea name="note" maxlength="400" style="min-height:60px">' + esc(it ? it.note : "") + "</textarea>") +
-    field("Papel", select("paperId", papers, it ? it.paperId : "")) +
-    (it && it.at ? '<label class="inline"><input type="checkbox" name="remind" ' + (it.reminderId ? "checked" : "") + "> Recordatorio 2 h antes (suena en el aparato)</label>" : ""),
-    {
-      save: async (root) => {
-        const body = { tripId: t.id, id: it ? it.id : undefined, date: val(root, "date"), at: val(root, "at"), kind: val(root, "kind"), title: val(root, "title").trim(), place: val(root, "place"), code: val(root, "code"), note: val(root, "note"), paperId: val(root, "paperId") };
-        if (!body.title) { sheetStatus("Falta el título", "bad"); return false; }
-        try {
-          await tripChange(t.id, async () => {
-            const r = await api("/api/trip/day/item?lang=es", body);
-            if (it && it.at && body.at) {
-              const want = !!val(root, "remind");
-              if (want !== !!it.reminderId) await api("/api/apps/call?lang=es", { app: "viajes", service: "viajes.recordar", args: { id: t.id, itemId: r.id, on: want } });
-            }
-            return r;
-          }, "Guardado");
-          return true;
-        } catch (e) { sheetStatus(e.message, "bad"); return false; }
-      },
-      del: isNew ? null : async () => {
-        if (!sure("¿Borrar «" + it.title + "»?")) return false;
-        await tripChange(t.id, () => api("/api/trip/day/item/delete", { tripId: t.id, date, id: it.id }), "Borrado");
-        return true;
-      },
-    });
-}
-
-// El día: dónde se está, dónde se duerme esa noche y la nota.
-function dayEditor(t, date) {
-  const d = t.days.find((x) => x.date === date) || { place: "", hotel: "", note: "" };
-  openSheet("Día · " + fmtDay(date),
-    field("Lugar (dónde estás ese día)", input("place", d.place, 'autofocus maxlength="80" placeholder="Barcelona, crucero, Santorini…"')) +
-    field("Hotel (dónde duermes esa noche)", input("hotel", d.hotel, 'maxlength="120" placeholder="Hotel Artemide"')) +
-    field("Nota del día", '<textarea name="note" maxlength="300" style="min-height:70px" placeholder="Día libre, hay que estar 2 h antes…">' + esc(d.note) + "</textarea>"),
-    {
-      save: async (root) => {
-        await tripChange(t.id, () => api("/api/trip/day", { tripId: t.id, date, place: val(root, "place").trim(), hotel: val(root, "hotel").trim(), note: val(root, "note") }), "Guardado");
-        return true;
-      },
-    });
-}
-
-function packEditor(t, p) {
-  openSheet("Para llevar", field("Cosa", input("text", p.text, 'autofocus maxlength="120"')) + '<label class="inline"><input type="checkbox" name="done" ' + (p.done ? "checked" : "") + "> Ya está</label>", {
-    save: async (root) => {
-      await tripChange(t.id, () => api("/api/trip/packing", { tripId: t.id, id: p.id, text: val(root, "text").trim(), done: val(root, "done") }));
-      return true;
-    },
-    del: async () => {
-      await tripChange(t.id, () => api("/api/trip/packing", { tripId: t.id, id: p.id, action: "delete" }));
-      return true;
-    },
-  });
-}
-
-function paperEditor(t, p) {
-  const isNew = !p;
-  const fieldsText = p ? Object.entries(p.fields || {}).map(([k, v]) => k + ": " + v).join("\n") : "";
-  const items = [["", "Sin ítem"]];
-  for (const d of t.days) for (const it of d.items) items.push([it.id, fmtDay(d.date) + (it.at ? " " + it.at : "") + " · " + it.title]);
-  openSheet(isNew ? "Papel nuevo" : "Papel",
-    field("Título", input("title", p ? p.title : "", 'autofocus maxlength="120" placeholder="Vuelo IB6251"')) +
-    '<div class="two">' + field("Fecha", input("date", p ? p.date : "", 'type="date"')) + field("Tipo", select("kind", TRIP_KINDS.map((k) => [k[0], k[1]]), p ? p.kind : "other")) + "</div>" +
-    field("Campos (uno por línea, Etiqueta: valor)", '<textarea name="fields" maxlength="2000" style="min-height:70px" placeholder="Localizador: ABC123&#10;Terminal: T4&#10;Check-in: 15:00">' + esc(fieldsText) + "</textarea>") +
-    field("Texto (pega el correo)", '<textarea name="text" maxlength="24000" style="min-height:140px">' + esc(p ? p.text : "") + "</textarea>") +
-    field("Ítem de la agenda", select("itemId", items, p ? p.itemId : "")),
-    {
-      save: async (root) => {
-        const body = { tripId: t.id, id: p ? p.id : undefined, title: val(root, "title").trim(), date: val(root, "date"), kind: val(root, "kind"), fields: val(root, "fields"), text: val(root, "text"), itemId: val(root, "itemId") };
-        if (!body.title) { sheetStatus("Falta el título", "bad"); return false; }
-        try {
-          await tripChange(t.id, () => api("/api/trip/paper", body), "Guardado");
-          return true;
-        } catch (e) { sheetStatus(e.message, "bad"); return false; }
-      },
-      del: isNew ? null : async () => {
-        if (!sure("¿Borrar el papel «" + p.title + "»?")) return false;
-        await tripChange(t.id, () => api("/api/trip/paper/delete", { tripId: t.id, id: p.id }), "Borrado");
-        return true;
-      },
-    });
-}
-
 // ── Agregar rápido (el +) ───────────────────────────────────────────────────
 function quickAdd(kind) {
   const KINDS = [["reminder", "Recordatorio"], ["task", "Tarea"], ["shop", "Compra"], ["note", "Nota"], ["event", "Evento"]];
@@ -1359,7 +1072,7 @@ function quickAdd(kind) {
 function parts() { return (location.hash.replace(/^#/, "") || "hoy").split("/"); }
 function screenId() { return parts()[0]; }
 
-const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", viajes: "Viajes", noticias: "Noticias", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", telegram: "Telegram", log: "Log del aparato" };
+const TITLES = { hoy: "Hoy", agenda: "Agenda", listas: "Listas", notas: "Notas", noticias: "Noticias", memoria: "Memoria", ajustes: "Ajustes", aparatos: "Aparatos", ia: "Inteligencia artificial", contenido: "Contenido", telegram: "Telegram", log: "Log del aparato" };
 
 function render() {
   if (!entered || !S) return;
@@ -1378,10 +1091,6 @@ function render() {
     }
     else if (p[0] === "listas") html = listsView();
     else if (p[0] === "notas") html = notesView();
-    else if (p[0] === "viajes") {
-      if (p[1]) { back = "#viajes"; title = (tripCache[p[1]] && tripCache[p[1]].name) || "Viaje"; html = tripView(p[1]); }
-      else html = viajesView();
-    }
     else if (p[0] === "ajustes") {
       if (!p[1]) { html = ajustesIndexView(); fab = false; }
       else {
@@ -1398,10 +1107,13 @@ function render() {
         else html = '<p class="loading">No existe esa pantalla.</p>';
       }
     }
-    // Las direcciones viejas (#mas/...) siguen andando: alguien puede tener una
-    // guardada en la pantalla de inicio del teléfono.
+    // Las direcciones viejas siguen andando: alguien puede tener una guardada
+    // en la pantalla de inicio del teléfono. Viajes salió del producto (y su
+    // `#mas/viajes` es de cuando la quinta pestaña era un cajón), así que las
+    // dos formas van a Hoy en vez de dejar la pantalla en blanco.
+    else if (p[0] === "viajes") { location.hash = "#hoy"; return; }
     else if (p[0] === "mas") {
-      const dest = p[1] === "viajes" ? "#viajes" + (p[2] ? "/" + p[2] : "")
+      const dest = p[1] === "viajes" ? "#hoy"
                  : p[1] === "ajustes" ? "#ajustes"
                  : p[1] ? "#ajustes/" + p[1]
                  : "#ajustes";
@@ -1428,8 +1140,6 @@ document.addEventListener("click", async (ev) => {
   if (!b) return;
   const act = b.dataset.act;
   const d = b.dataset;
-  const tripId = parts()[0] === "viajes" ? parts()[1] : "";
-  const trip = tripId ? tripCache[tripId] : null;
   try {
     switch (act) {
       case "sheet-close": closeSheet(); break;
@@ -1475,7 +1185,6 @@ document.addEventListener("click", async (ev) => {
         break;
       }
 
-      case "trip-go": location.hash = "#viajes/" + d.trip; break;
 
       // Listas
       case "list-seg": localStorage.setItem("listSeg", d.key); render(); break;
@@ -1559,19 +1268,6 @@ document.addEventListener("click", async (ev) => {
       case "log-reload": logText = null; render(); break;
       case "log-copy": await copyText(logText || ""); break;
       case "log-clear": if (sure("¿Vaciar el log del aparato?")) { await apiText("/api/log", "DELETE"); logText = null; await loadState(); render(); } break;
-
-      // Viajes
-      case "trip-edit": tripEditor(trip); break;
-      case "trip-activate": await tripChange(trip.id, () => api("/api/trip/active", { id: trip.id }), "Ahora es el viaje activo"); break;
-      case "titem-new": tripItemEditor(trip, d.date, null); break;
-      case "titem-open": { const day = trip.days.find((x) => x.date === d.date); const it = day && day.items.find((i) => i.id === d.id); if (it) tripItemEditor(trip, d.date, it); break; }
-      case "tday-edit": dayEditor(trip, d.date); break;
-      case "pack-tick": await tripChange(trip.id, () => api("/api/trip/packing", { tripId: trip.id, id: d.id, done: d.done !== "1" })); break;
-      case "pack-open": { const p = trip.packing.find((x) => x.id === d.id); if (p) packEditor(trip, p); break; }
-      case "tpaper-new": paperEditor(trip, null); break;
-      case "tpaper-open": { const p = trip.papers.find((x) => x.id === d.id); if (p) paperEditor(trip, p); break; }
-      case "tguide-gen": { const day = trip.days.find((x) => x.date === d.date); if (day) await dayGuideEditor(trip, day); break; }
-      case "tguide-read": { const day = trip.days.find((x) => x.date === d.date); if (day) await dayGuideSheet(trip, day); break; }
       default: break;
     }
   } catch (e) {
@@ -1650,10 +1346,6 @@ document.addEventListener("submit", async (ev) => {
       try { tgTest = await api("/api/board/telegram/test", { q }); }
       catch (e) { tgTest = { error: e.message }; }
       render();
-    } else if (kind === "pack-add") {
-      const text = f.text.value.trim();
-      if (!text) return;
-      await tripChange(f.dataset.trip, () => api("/api/trip/packing", { tripId: f.dataset.trip, text }));
     }
   } catch (e) {
     if (!/^No se pudo/.test(String(e.message))) toast("No se pudo: " + e.message, 3500);
@@ -1673,15 +1365,13 @@ document.addEventListener("input", (ev) => {
 $("sheetBg").addEventListener("click", closeSheet);
 document.addEventListener("keydown", (ev) => { if (ev.key === "Escape" && sheetOpts) closeSheet(); });
 $("backBtn").addEventListener("click", () => { location.hash = $("backBtn").dataset.to || "#ajustes"; });
-$("reloadBtn").addEventListener("click", () => { clearCal(); trips = null; tripCache = {}; rssCache = null; tg = null; refresh(); });
+$("reloadBtn").addEventListener("click", () => { clearCal(); rssCache = null; tg = null; refresh(); });
 $("fab").addEventListener("click", () => {
   const p = parts();
   if (p[0] === "listas") quickAdd(listSeg() === "Compras" ? "shop" : "task");
   else if (p[0] === "notas") noteEditor(null);
   else if (p[0] === "agenda" && p[1] === "cal") eventEditor(null, calSel || todayIso());
   else if (p[0] === "agenda") reminderEditor(null);
-  else if (p[0] === "viajes" && p[1]) { const t = tripCache[p[1]]; if (t) tripItemEditor(t, t.days[0] ? t.days[0].date : t.start, null); }
-  else if (p[0] === "viajes") tripEditor(null);
   else quickAdd("reminder");
 });
 window.addEventListener("hashchange", () => { window.scrollTo(0, 0); render(); });

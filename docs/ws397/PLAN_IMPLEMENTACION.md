@@ -27,7 +27,7 @@ Punto de partida: **1.5.70**. Maquetas en `docs/ws397/maquetas/`, generadores en
 
 Verificado: existe `UITheme` (macro `GUI`) con cuatro temas registrados y el default es Lyra — de ahí
 el `[UI] Using Lyra theme` del log. Pero **las pantallas nuestras no lo usan**. HubActivity,
-AgendaActivity, NotesActivity, Noticias, Biblia, Calendario, Viajes y los juegos dibujan con
+AgendaActivity, NotesActivity, Noticias, Biblia, Calendario y los juegos dibujan con
 `src/activities/ListStyle.h` (`listui`, constantes fijas: margen 24, filas de 48/72) y con
 `src/components/Selection.h`. Del tema consumen tres cosas y nada más: `GUI.drawHeader`,
 `GUI.drawButtonHints` y cuatro números (`topPadding`, `headerHeight`, `buttonHintsHeight`,
@@ -70,15 +70,10 @@ Sin dependencias. Es lo primero porque son todas molestias visibles.
    la región (la caja y el texto ya están en pantalla), de 1200 a 3000 ms = 9 parciales chicos.
    `src/main.cpp` → `drawPowerHoldBanner()` y `handlePowerHold()`.
    *Listo cuando:* la barra se llena de 0 a 100 sin escalones y soltar a mitad suspende.
-2. **Viajes deja de reconocer un viaje borrado.** Tres arreglos:
-   - `server/src/trips.ts` → `getTrip()`: no devolver `trips[0]` cuando el llamador pidió un id.
-     `suggest.ts` línea 358 cae hoy en ese fallback.
-   - `server/src/trips.ts` → `POST /api/trip/delete`: purgar las entradas `trip:<id>:*` de
-     `/data/suggest.json`, igual que ya purga calendario y adjuntos.
-   - `src/activities/home/TripActivity.cpp` → `fetchTrips()`: si `tripId` o `suggestTripId` no están
-     en la lista nueva, limpiarlos y guardar la caché.
-   *Listo cuando:* se borra un viaje en la web, se entra a Viajes y no aparece ni en la lista ni en
-   las sugerencias, con y sin WiFi.
+2. ~~**Viajes deja de reconocer un viaje borrado.**~~ **Sin objeto.** Viajes salió del producto en
+   1.5.93 (`trips.ts`, `TripActivity`), volvió como app de Lua en 1.5.111 y volvió a salir, entera,
+   después de 1.5.115. Las sugerencias (`suggest.ts`) se fueron en 1.5.108 con "Mi día". No queda
+   nada que arreglar acá.
 3. **El OTA repinta cada 10 %, no cada 2 %.** 50 refrescos → 10.
 4. **Documentación al día.** `CLAUDE.md` describía un "Modo de energía" con tres opciones con nombre
    (Ahorro / Normal / Siempre encendido) que **nunca llegó al árbol**: lo que hay es la fila de
@@ -235,6 +230,8 @@ medias.
 
 20. **Seis pestañas**: Hoy · Agenda · Listas · Notas · Viajes · Ajustes. Viajes sube al primer nivel
     porque es lo único con contenido propio que se usa seguido; Fotos ya no existe.
+    *(Quedaron **cinco**: Viajes salió del producto en 1.5.93, volvió en 1.5.111 y salió otra vez
+    después de 1.5.115.)*
 21. **Ajustes deja de ser un cajón**: pantalla con secciones (Aparato, Voz y sonido, Clima, Noticias,
     Memoria, Cuenta) y un bloque **Avanzado** (IA, Contenido, Log) sólo para admin.
     `POST /api/board/settings` mergea campo por campo, así que partir el formulario **no toca el
@@ -245,7 +242,7 @@ medias.
     barra de `index.html:52-58`.
 23. **Cerrar las excepciones a "un solo estado".** Hoy la cumplen Hoy, Agenda, Listas y Notas; Viajes
     (`tripCache`) y el Log (`logText`) tienen caché propia al margen de `S`, y de ahí salen las
-    inconsistencias que ya se habían quejado.
+    inconsistencias que ya se habían quejado. *(`tripCache` se fue con Viajes; queda el Log.)*
 
 ---
 
@@ -347,8 +344,9 @@ agregar gestos, es que los que hay no molesten. Propuestas, todas **sin desperta
   IMU (Boox, reMarkable, Bangle.js, Watchy, Followup). Lo que está escrito arriba sobre el IMU sale
   de lo confirmado del ZecTrix Note 4 y del reTerminal Sticky, que es lo que se preguntó; el resto
   queda para completar.
-- **Próximo paso concreto:** Ola 1, paso 1 (la barrita del PWR) y paso 2 (el viaje fantasma), que no
-  dependen de nada y ya tienen la causa localizada con archivo y línea.
+- **Próximo paso concreto:** Ola 1, paso 1 (la barrita del PWR), que no depende de nada y ya tiene la
+  causa localizada con archivo y línea. (El paso 2, el viaje fantasma, quedó sin objeto: Viajes salió
+  del producto.)
 
 
 ## Lo que falta probar en el aparato de la Ola 3

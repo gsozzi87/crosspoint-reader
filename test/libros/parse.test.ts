@@ -2,7 +2,7 @@
 // tal cual los muestra Telegram: la línea que abre la lista, cada título con
 // su comando, y la ficha con "Publicado: 1967 | 345 páginas".
 import { describe, expect, test } from "bun:test";
-import { fileNameFor, formatOfLabel, lettersToWord, parseCard, parseList, slugify } from "../../server/src/librosParse";
+import { classifyReply, fileNameFor, formatOfLabel, lettersToWord, looksLikeCard, navOfLabel, pageOfLabel, parseCard, parseList, slugify } from "../../server/src/librosParse";
 
 const LISTA_PADRE = [
   "Ahí van algunos libros que coinciden con tu búsqueda:",
@@ -31,6 +31,36 @@ const FICHA = [
 ].join("\n");
 
 const BOTONES = ["Información", "Leer online", "Epub", "Reportar error"];
+
+// La captura del 19-09-2026: el dueño buscó "Ángeles Mastretta" y entre los
+// resultados vino el AUTOR, con cuántos libros tiene entre corchetes.
+const BUSQUEDA_AUTOR = [
+  "Ahí van algunos libros que coinciden con tu búsqueda:",
+  "",
+  "Arráncame la vida /b9F1E",
+  "Ángeles Mastretta [11] /aMst1",
+  "Mujeres de ojos grandes /b9N6E",
+].join("\n");
+
+// Y esto es lo que contestó el bot al comando del autor: OTRA LISTA (su
+// catálogo), no una ficha. Hasta 1.5.114 esto entraba entero en la
+// descripción del libro. Viene paginada: los botones son flechas.
+const LISTA_AUTOR = [
+  "Aquí van los libros que he encontrado para Ángeles Mastretta:",
+  "",
+  "Arráncame la vida /b9F1E",
+  "El cielo de los leones /bzL2E",
+  "El mundo iluminado /bBL2E",
+  "Mal de amores /bh51y2",
+  "Mujeres de ojos grandes /b9N6E",
+  "Puerto libre /bDL2E",
+  "La emoción de las cosas /bXa2E",
+  "Maridos /bWa2E",
+  "El viento de las horas /bAL2E",
+  "Ninguna eternidad como la mía /bCL2E",
+].join("\n");
+
+const FLECHAS = ["⏮", "◀", "📅", "▶", "⏭"];
 
 describe("parseList", () => {
   test("la lista de Padre rico: tres resultados con su comando, la cabecera se ignora", () => {
@@ -66,6 +96,103 @@ describe("parseList", () => {
       { title: "Dos", code: "/bb" },
       { title: "Tres", code: "/cc" },
     ]);
+  });
+});
+
+describe("el autor entre los resultados", () => {
+  test("«Ángeles Mastretta [11]» es el autor: el número sale aparte y no se queda pegado al título", () => {
+    const r = parseList(BUSQUEDA_AUTOR);
+    expect(r.length).toBe(3);
+    expect(r[1]).toEqual({ title: "Ángeles Mastretta", code: "/aMst1", count: 11 });
+    // Los libros de al lado siguen sin `count`.
+    expect(r[0]).toEqual({ title: "Arráncame la vida", code: "/b9F1E" });
+  });
+
+  test("un paréntesis con el año NO es una cuenta de libros", () => {
+    expect(parseList("Cien años de soledad (1967) /b0E_D")).toEqual([
+      { title: "Cien años de soledad (1967)", code: "/b0E_D" },
+    ]);
+    // Corchetes vacíos, con cero o sin título delante: se dejan como están.
+    expect(parseList("[11] /aX")).toEqual([{ title: "[11]", code: "/aX" }]);
+    expect(parseList("Tomo [0] /aY")).toEqual([{ title: "Tomo [0]", code: "/aY" }]);
+    expect(parseList("Algo [] /aZ")).toEqual([{ title: "Algo []", code: "/aZ" }]);
+  });
+
+  test("el catálogo del autor: diez títulos con su comando", () => {
+    const r = parseList(LISTA_AUTOR);
+    expect(r.length).toBe(10);
+    expect(r[0]).toEqual({ title: "Arráncame la vida", code: "/b9F1E" });
+    expect(r[3]).toEqual({ title: "Mal de amores", code: "/bh51y2" });
+    expect(r[9]).toEqual({ title: "Ninguna eternidad como la mía", code: "/bCL2E" });
+  });
+});
+
+describe("classifyReply: una lista no es una ficha", () => {
+  test("el catálogo del autor con flechas es una LISTA", () => {
+    expect(classifyReply(LISTA_AUTOR, FLECHAS)).toBe("list");
+    expect(classifyReply(LISTA_AUTOR, [])).toBe("list");
+  });
+
+  test("la ficha de verdad sigue siendo una ficha", () => {
+    expect(classifyReply(FICHA, BOTONES)).toBe("card");
+    // Sin botones tampoco se confunde: tiene año y páginas.
+    expect(classifyReply(FICHA, [])).toBe("card");
+    expect(looksLikeCard(FICHA)).toBe(true);
+    expect(looksLikeCard(LISTA_AUTOR)).toBe(false);
+  });
+
+  test("el botón de formato manda: si ofrece el archivo, es una ficha", () => {
+    expect(classifyReply(LISTA_AUTOR, ["Información", "📕 EPUB"])).toBe("card");
+  });
+
+  test("una ficha cuyo texto nombra comandos, pero trae año o páginas, sigue siendo ficha", () => {
+    const t = "Obras completas - Autor\nPublicado: 1990 | 900 páginas\nTomo I /bAa1\nTomo II /bAa2";
+    expect(classifyReply(t, [])).toBe("card");
+  });
+
+  test("una sola entrada se lee como ficha: no se puede distinguir sin adivinar", () => {
+    expect(classifyReply("Único libro /bZz1", [])).toBe("card");
+  });
+});
+
+describe("las flechas de la lista paginada", () => {
+  test("las de la captura: ⏮ ◀ 📅 ▶ ⏭", () => {
+    expect(FLECHAS.map(navOfLabel)).toEqual(["first", "prev", "", "next", "last"]);
+  });
+
+  test("variantes de texto y de símbolo", () => {
+    expect(navOfLabel("Siguiente")).toBe("next");
+    expect(navOfLabel("»")).toBe("last");
+    expect(navOfLabel("«")).toBe("first");
+    expect(navOfLabel(">>")).toBe("last");
+    expect(navOfLabel("<")).toBe("prev");
+    expect(navOfLabel(">")).toBe("next");
+    expect(navOfLabel("Página anterior")).toBe("prev");
+    expect(navOfLabel("Next page")).toBe("next");
+    expect(navOfLabel("Prev")).toBe("prev");
+    expect(navOfLabel("Última")).toBe("last");
+    expect(navOfLabel("Ver más")).toBe("next");
+  });
+
+  test("un botón de FORMATO nunca es una flecha, y una etiqueta larga tampoco", () => {
+    for (const l of ["Epub", "📕 EPUB", "Bajar en PDF", "PDF ▶"]) expect(navOfLabel(l)).toBe("");
+    // "Más información" lleva "más" adentro y NO es la página siguiente.
+    expect(navOfLabel("Más información")).toBe("");
+    expect(navOfLabel("Información")).toBe("");
+    expect(navOfLabel("Leer online")).toBe("");
+    expect(navOfLabel("Reportar error")).toBe("");
+    expect(navOfLabel("")).toBe("");
+  });
+
+  test("el número de página, del botón del medio o de una línea del texto", () => {
+    expect(pageOfLabel("2/5")).toEqual({ at: 2, of: 5 });
+    expect(pageOfLabel("Página 2 de 5")).toEqual({ at: 2, of: 5 });
+    expect(pageOfLabel("1 / 3")).toEqual({ at: 1, of: 3 });
+    expect(pageOfLabel("Page 3 of 7")).toEqual({ at: 3, of: 7 });
+    expect(pageOfLabel("📅")).toBeNull();
+    expect(pageOfLabel("Epub")).toBeNull();
+    expect(pageOfLabel("Arráncame la vida /b9F1E")).toBeNull();
+    expect(pageOfLabel("9 de 3")).toBeNull();   // no existe
   });
 });
 

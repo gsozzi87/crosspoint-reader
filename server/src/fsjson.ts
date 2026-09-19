@@ -83,7 +83,6 @@ export type DocName =
   | "hub-data"
   | "news"
   | "apps-jobs"
-  | "trips"
   | "telegram";
 
 const LEGACY_FILE: Record<DocName, string> = {
@@ -94,7 +93,6 @@ const LEGACY_FILE: Record<DocName, string> = {
   "hub-data": process.env.HUB_DATA_FILE ?? "/data/hub-data.json",
   news: process.env.NEWS_FILE ?? "/data/news.json",
   "apps-jobs": process.env.APPS_JOBS_FILE ?? "/data/apps-jobs.json",
-  trips: process.env.TRIPS_FILE ?? "/data/trips.json",
   telegram: process.env.TELEGRAM_FILE ?? "/data/telegram.json",
 };
 
@@ -147,7 +145,8 @@ export async function mutateDoc<D, R>(
 // El accountId es un número, así que ninguna ruta puede escaparse del directorio.
 // `PHOTOS_DIR`/`photosDir()` se borraron en 1.5.91 (las fotos salieron en
 // 1.5.74) y `ATTACHMENTS_DIR`/`attachmentsDir()` en 1.5.93, con los viajes: el
-// que los usaba era el único que había.
+// que los usaba era el único que había. El documento `trips` se fue con la app
+// de Viajes, que salió por segunda vez y esta vez entera.
 const DEVICE_LOG_FILE = process.env.DEVICE_LOG_FILE ?? "/data/device.log";
 const ACCOUNTS_DIR = process.env.ACCOUNTS_DIR ?? "/data/accounts";
 

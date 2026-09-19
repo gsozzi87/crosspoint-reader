@@ -8,6 +8,13 @@
 -- (`corrected`), y la pantalla sin resultados ofrece "Deletrear el nombre":
 -- se dice letra por letra y va con `spelled = true` (`spelled` = la palabra).
 --
+-- Un resultado puede ser un AUTOR y no un libro ("Ángeles Mastretta [11]"): al
+-- elegirlo el bot contesta con SU catálogo, y el servidor lo dice con
+-- kind = "list" en vez de "card". Entonces se abre otra pantalla de resultados
+-- (la de antes queda en `pila`, y Atrás vuelve a ella). Esas listas vienen
+-- paginadas: `nav` dice si hay más, y "Ver más" / "Página anterior" llaman a
+-- libros.mas, que aprieta la flecha del mismo mensaje en Telegram.
+--
 -- La app NO levanta la red al abrir: la primera cp.listen / cp.call lo hace.
 -- Pantallas: inicio → (escucha) → resultados → ficha → bajando → listo (o error).
 -- Contrato: docs/ws397/LIBROS_CONTRATO.md. Estilo y helpers: librito.lua.
@@ -34,7 +41,14 @@ local porLetras = false           -- q es el nombre deletreado (spelled = true)
 local escuchandoLetras = false    -- la escucha abierta es la de deletrear
 local corregido = ""              -- con qué buscó el servidor si corrigió lo dicho
 local deletreado = ""             -- la palabra que armó el servidor con las letras
-local res = {}                    -- {title, code}
+local res = {}                    -- {title, code, count}
+local resTit = ""                 -- cabezal de la lista si NO es la búsqueda (el autor)
+local resCuenta = 0               -- cuántos libros dijo el bot que tiene ese autor
+local nav = {}                    -- {first=,prev=,next=,last=} de la lista en pantalla
+local navMsg = 0                  -- el mensaje de Telegram que tiene las flechas
+local pagina = nil                -- {at, of} si el bot dice en qué página va
+local ultimaDir = "next"          -- la última flecha pedida (para Reintentar)
+local pila = {}                   -- listas de las que se entró (Atrás vuelve a la de abajo)
 local elegido = 0                 -- índice en res del que se abrió
 local ficha = nil                 -- {code, title, author, year, pages, genre, desc, formats}
 local job = {}                    -- {id, format, step, total, label, file}
@@ -353,6 +367,15 @@ local function buscar()
   return pedir("libros.buscar", porLetras and {q = q, spelled = true} or {q = q}, "buscar")
 end
 local function pedirFicha(code) return pedir("libros.ficha", {code = code}, "ficha") end
+-- Otra página de la MISMA lista: el servidor aprieta la flecha del mensaje.
+local function pedirPagina(dir)
+  ultimaDir = s(dir, "next")
+  if navMsg <= 0 then
+    cp.beep("error")
+    return false
+  end
+  return pedir("libros.mas", {msg = navMsg, dir = ultimaDir}, "mas")
+end
 local function pedirBajar(formato)
   if not ficha then return false end
   job = {format = formato, step = 0, total = 0, label = ""}
@@ -397,6 +420,9 @@ local function reintentar()
   elseif re == "ficha" then
     st, sel = "resultados", math.max(1, elegido)
     return res[elegido] and pedirFicha(res[elegido].code) or false
+  elseif re == "mas" then
+    st, sel = "resultados", 1
+    return pedirPagina(ultimaDir)
   elseif re == "bajar" then
     st = "ficha"
     return pedirBajar(s(job.format, "epub"))
@@ -414,6 +440,7 @@ end
 function on_open()
   st, sel, q, res, elegido, ficha, job, libro, calls = "inicio", 1, "", {}, 0, nil, {}, nil, {}
   porLetras, escuchandoLetras, corregido, deletreado = false, false, "", ""
+  resTit, resCuenta, nav, navMsg, pagina, ultimaDir, pila = "", 0, {}, 0, nil, "next", {}
   cargarBajados()
 end
 
@@ -443,10 +470,25 @@ local function filas()
     end
   elseif st == "resultados" then
     if #res == 0 then
-      f[1] = {t = "Deletrear el nombre", h = ROW1, act = "deletrear"}
-      f[2] = {t = "Buscar de nuevo", h = ROW1, act = "dictar"}
+      -- Deletrear es para lo que se DICTÓ; el catálogo vacío de un autor no se
+      -- arregla deletreando, ahí lo único que queda es volver.
+      if resTit == "" then
+        f[1] = {t = "Deletrear el nombre", h = ROW1, act = "deletrear"}
+        f[2] = {t = "Buscar de nuevo", h = ROW1, act = "dictar"}
+      end
     else
-      for i, r in ipairs(res) do f[#f + 1] = {t = r.title, h = ROW1, act = "elegir", i = i} end
+      for i, r in ipairs(res) do
+        -- Un AUTOR viene con cuántos libros tiene: se dice, para que se note
+        -- que al elegirlo no viene una ficha sino otra lista.
+        if r.count > 0 then
+          f[#f + 1] = {t = r.title, d = r.count .. (r.count == 1 and " libro" or " libros"), h = ROW2,
+                       act = "elegir", i = i}
+        else
+          f[#f + 1] = {t = r.title, h = ROW1, act = "elegir", i = i}
+        end
+      end
+      if nav.prev then f[#f + 1] = {t = "Página anterior", h = ROW1, act = "pagina", dir = "prev"} end
+      if nav.next then f[#f + 1] = {t = "Ver más", h = ROW1, act = "pagina", dir = "next"} end
     end
   elseif st == "ficha" and ficha then
     for _, fm in ipairs(ficha.formats) do
@@ -491,6 +533,8 @@ local function accion(it)
     if not r then return false end
     elegido = it.i
     return pedirFicha(r.code)
+  elseif a == "pagina" then
+    return pedirPagina(it.dir)
   elseif a == "bajar" then
     return pedirBajar(it.fm)
   elseif a == "desc" then
@@ -516,7 +560,19 @@ local function atras()
   if st == "inicio" then
     cp.quit()
     return false
-  elseif st == "resultados" then st, porLetras = "inicio", false
+  elseif st == "resultados" then
+    -- Si se entró desde otra lista (el catálogo de un autor), Atrás vuelve a
+    -- ella y no al inicio: lo de abajo sigue estando.
+    local prev = pila[#pila]
+    if prev then
+      pila[#pila] = nil
+      res, resTit, resCuenta = prev.res, prev.tit, prev.cuenta
+      nav, navMsg, pagina = prev.nav, prev.msg, prev.pagina
+      elegido, st, sel = prev.sel, "resultados", prev.sel
+      cp.beep("back")
+      return true
+    end
+    st, porLetras = "inicio", false
   elseif st == "ficha" then
     st, sel = "resultados", math.max(1, elegido)  -- vuelve sobre el elegido
     cp.beep("back")
@@ -595,15 +651,39 @@ end
 
 -- ---------------------------------------------------------------- respuestas
 
-local function llegoBusqueda(t)
+-- Hacia dónde deja pasar de página la lista que vino.
+local function dirs(v)
+  local out = {}
+  if type(v) == "table" then
+    for _, d in ipairs(v) do
+      local k = s(d)
+      if k == "first" or k == "prev" or k == "next" or k == "last" then out[k] = true end
+    end
+  end
+  return out
+end
+
+-- Una lista de resultados del servidor (de buscar, de una ficha que resultó
+-- ser un catálogo, o de otra página): los títulos, de qué mensaje salieron y
+-- hacia dónde se puede seguir.
+local function tomarLista(t)
   local lista = type(t.results) == "table" and t.results or {}
-  corregido, deletreado = s(t.corrected), s(t.spelled)
   res = {}
   for _, r in ipairs(lista) do
     if type(r) == "table" and s(r.title) ~= "" and s(r.code) ~= "" then
-      res[#res + 1] = {title = s(r.title), code = s(r.code)}
+      res[#res + 1] = {title = s(r.title), code = s(r.code), count = n(r.count)}
     end
   end
+  nav, navMsg = dirs(t.nav), n(t.msg)
+  local p = type(t.page) == "table" and t.page or nil
+  if p and n(p.at) > 0 and n(p.of) > 0 then pagina = {at = n(p.at), of = n(p.of)} else pagina = nil end
+end
+
+local function llegoBusqueda(t)
+  corregido, deletreado = s(t.corrected), s(t.spelled)
+  tomarLista(t)
+  -- Una búsqueda nueva empieza de cero: lo que hubiera abajo ya no lleva a ningún lado.
+  resTit, resCuenta, pila, elegido = "", 0, {}, 0
   st, sel = "resultados", 1
   if #res == 0 then cp.beep("error") end
 end
@@ -624,6 +704,18 @@ end
 
 local function llegoFicha(t, code)
   local r = res[elegido]
+  -- Lo elegido era un AUTOR: el bot contestó con su catálogo, no con una
+  -- ficha. La lista de ahora se guarda para que Atrás vuelva a ella.
+  if s(t.kind) == "list" then
+    pila[#pila + 1] = {res = res, tit = resTit, cuenta = resCuenta, nav = nav, msg = navMsg,
+                       pagina = pagina, sel = math.max(1, elegido)}
+    local tit, cuenta = r and r.title or "", r and n(r.count) or 0
+    tomarLista(t)
+    resTit, resCuenta, elegido = tit, cuenta, 0
+    st, sel = "resultados", 1
+    if #res == 0 then cp.beep("error") end
+    return
+  end
   ficha = {code = code, title = s(t.title, r and r.title or "Sin título"), author = s(t.author),
            year = n(t.year), pages = n(t.pages), genre = s(t.genre), desc = txt(t.desc):sub(1, 2048),
            formats = formatos(t.formats)}
@@ -663,6 +755,7 @@ function on_reply(id, ok, t)
     if s(t.error) == "cancelado" then return end  -- se queda donde estaba
     if que == "buscar" then return errorServidor(t, "inicio", "buscar") end
     if que == "ficha" then return errorServidor(t, "resultados", "ficha") end
+    if que == "mas" then return errorServidor(t, "resultados", "mas") end
     if que == "bajar" then return errorServidor(t, "ficha", "bajar") end
     if que == "job" then return errorServidor(t, "ficha", "job") end
     if que == "descarga" then return errorServidor(t, "ficha", "descarga") end
@@ -672,6 +765,10 @@ function on_reply(id, ok, t)
     llegoBusqueda(t)
   elseif que == "ficha" then
     llegoFicha(t, res[elegido] and res[elegido].code or "")
+  elseif que == "mas" then
+    tomarLista(t)
+    st, sel, elegido = "resultados", 1, 0
+    if #res == 0 then cp.beep("error") end
   elseif que == "bajar" then
     local jid = s(t.jobId)
     if jid == "" then return fallo("No se pudo", "El servidor no devolvió el trabajo.", "ficha", "bajar") end
@@ -775,26 +872,35 @@ function on_draw()
     pie(#bajados > 0 and "OK: buscar o abrir · Atrás: salir" or "OK: buscar por voz · Atrás: salir")
   elseif st == "resultados" then
     -- Deletreado, el cabezal es la palabra armada y no la ristra de letras.
-    local dicho = deletreado ~= "" and deletreado or q
+    -- Si la lista es el catálogo de un autor, el cabezal es el autor.
+    local dicho = resTit ~= "" and resTit or (deletreado ~= "" and deletreado or q)
     local y = cabezal(dicho ~= "" and dicho or "Resultados")
     local ancho = cp.width() - 2 * SIDE
-    if deletreado ~= "" then
-      cp.text(SIDE, y + 8, fit("Deletreado: " .. deletreado, ancho, 10), 10)
-      y = y + cp.texth(10) + 4
-    end
-    if corregido ~= "" then
-      cp.text(SIDE, y + 8, fit("Buscando «" .. corregido .. "»", ancho, 10), 10)
-      y = y + cp.texth(10) + 4
+    if resTit == "" then
+      if deletreado ~= "" then
+        cp.text(SIDE, y + 8, fit("Deletreado: " .. deletreado, ancho, 10), 10)
+        y = y + cp.texth(10) + 4
+      end
+      if corregido ~= "" then
+        cp.text(SIDE, y + 8, fit("Buscando «" .. corregido .. "»", ancho, 10), 10)
+        y = y + cp.texth(10) + 4
+      end
     end
     if #res == 0 then
-      y = parrafo(y + 8, "No encontré nada con «" .. (corregido ~= "" and corregido or dicho) .. "». " ..
-                  "Puedes deletrear el nombre letra por letra.", 12, 4)
+      local cuerpo = resTit ~= "" and "El bot no devolvió ningún libro de este autor."
+                     or ("No encontré nada con «" .. (corregido ~= "" and corregido or dicho) .. "». " ..
+                         "Puedes deletrear el nombre letra por letra.")
+      y = parrafo(y + 8, cuerpo, 12, 4)
       lista(filas(), y + 16, fin)
       pie("OK: elegir · Atrás: volver")
     else
-      cp.text(SIDE, y + 8, #res .. (#res == 1 and " resultado" or " resultados"), 10)
+      local sub = #res .. (#res == 1 and " resultado" or " resultados")
+      if resCuenta > 0 then sub = sub .. " de " .. resCuenta end
+      if pagina then sub = sub .. " · Página " .. pagina.at .. " de " .. pagina.of end
+      cp.text(SIDE, y + 8, fit(sub, ancho, 10), 10)
       lista(filas(), y + 40, fin)
-      pie("Palanca: elegir · OK: ver la ficha · Atrás: volver")
+      pie(nav.next and "OK: ver la ficha o pasar de página · Atrás: volver"
+          or "Palanca: elegir · OK: ver la ficha · Atrás: volver")
     end
   elseif st == "ficha" and ficha then
     local y = cabezal(ficha.title)

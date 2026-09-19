@@ -98,6 +98,85 @@ std::string localShaOf(const std::string& raw, const std::string& id) {
   return raw.substr(start, end - start);
 }
 
+// Las apps de Lua que el paquete instalo alguna vez y ya NO estan en el
+// manifiesto. El dueno saco cuatro de las de fabrica ("esas apps ahora van a
+// ser las que te menciono, las otras vas a borrarlas todas") y el paquete no
+// tenia forma de sacar nada: solo baja. Sin esto, la tarjeta se queda para
+// siempre con el reloj y el tres en raya en Juegos.
+//
+// Se borra SOLO lo que el paquete puso: la prueba es que el id este en el
+// manifiesto LOCAL (el que escribe saveLocalManifest, o sea lo que este aparato
+// bajo) y no en el del servidor. Un .lua que el usuario copio a mano por el modo
+// memoria USB nunca estuvo en ese archivo, asi que no se toca.
+//
+// `raw` es el manifiesto local entero; los ids de app tienen la forma
+// "apps/<nombre>" y el archivo es /Apps/<nombre>.lua, que es como los planta
+// el servidor (assets.ts, FACTORY_APPS).
+// Lo que el paquete NO puede borrar solo: una app que el producto saco y que la
+// gente copio A MANO por el modo memoria USB (nunca estuvo en el manifiesto
+// local, asi que purgeRetiredApps no la ve). Cada nombre que entra aca sube
+// APPS_PURGE_REV, y la limpieza corre UNA vez por aparato: al que la vuelva a
+// copiar a proposito no se le pelea.
+constexpr int APPS_PURGE_REV = 1;
+const char* const RETIRED_APPS[] = {"/Apps/viajes.lua"};
+
+void purgeRemovedFromProduct() {
+  if (HUB_STORE.appsPurge >= APPS_PURGE_REV) return;
+  for (const char* file : RETIRED_APPS) {
+    if (!Storage.exists(file)) continue;
+    if (Storage.remove(file)) {
+      LOG_INF(TAG, "%s salio del producto: se borro", file);
+    } else {
+      LOG_ERR(TAG, "%s salio del producto y no se pudo borrar", file);
+    }
+  }
+  HUB_STORE.appsPurge = APPS_PURGE_REV;
+  HUB_STORE.saveToFile();
+}
+
+int purgeRetiredApps(const std::string& raw, const std::vector<AssetSyncActivity::Item>& fresh) {
+  if (raw.empty()) return 0;
+  // Guarda: un manifiesto SIN ninguna app no es "el duenio saco todas las
+  // apps", es un servidor al que le falta el directorio de las apps de fabrica
+  // (en el Dockerfile se bajan aparte, y si esa capa sale mal el resto del
+  // paquete llega igual). Borrar por eso dejaria la tarjeta pelada sin que
+  // nadie lo haya pedido, asi que sin apps en el manifiesto no se borra nada.
+  int enElServidor = 0;
+  for (const AssetSyncActivity::Item& item : fresh) {
+    if (item.id.rfind("apps/", 0) == 0) enElServidor++;
+  }
+  if (enElServidor == 0) {
+    LOG_INF(TAG, "el manifiesto no trae ninguna app: no se borra nada de /Apps");
+    return 0;
+  }
+  int gone = 0;
+  size_t at = raw.find("\"apps/");
+  while (at != std::string::npos) {
+    const size_t start = at + 1;                  // sin la comilla de apertura
+    const size_t end = raw.find('"', start);
+    if (end == std::string::npos) break;
+    const std::string id = raw.substr(start, end - start);
+    at = raw.find("\"apps/", end);
+    bool sigue = false;
+    for (const AssetSyncActivity::Item& item : fresh) {
+      if (item.id == id) {
+        sigue = true;
+        break;
+      }
+    }
+    if (sigue) continue;
+    const std::string file = "/Apps/" + id.substr(5) + ".lua";
+    if (!Storage.exists(file.c_str())) continue;
+    if (Storage.remove(file.c_str())) {
+      gone++;
+      LOG_INF(TAG, "%s salio del paquete: se borro %s", id.c_str(), file.c_str());
+    } else {
+      LOG_ERR(TAG, "%s salio del paquete y no se pudo borrar %s", id.c_str(), file.c_str());
+    }
+  }
+  return gone;
+}
+
 // ---------------------------------------------------------------------------
 // Lector del manifiesto del servidor
 // {"version":"...","items":[{"id","kind","path","bytes","sha"}, ...]}
@@ -345,6 +424,10 @@ void AssetSyncActivity::fetchManifest() {
       needBytes += item.bytes;
     }
   }
+  // Lo que el paquete dejo de anunciar se borra de la tarjeta ANTES de bajar
+  // nada: si la descarga se corta a la mitad, la limpieza ya esta hecha.
+  purgeRetiredApps(localRaw, items);
+  purgeRemovedFromProduct();
   localRaw.clear();
   localRaw.shrink_to_fit();
   LOG_INF(TAG, "manifiesto %s: %u archivos, %d por bajar", version.c_str(), (unsigned)items.size(), needCount);
