@@ -2062,6 +2062,24 @@ Escritor, que andaba, también. Ninguna falla en el harness. La pista fue el **b
 - **Nombres, como los pidió el dueño**: **Biblioteca** (`libros.lua`), **Escritor** (`librito.lua`, y el
   cabezal de adentro ya no dice "Librito") y **Gurú de viaje** (`viajes.lua`). Nada en mayúsculas.
 
+## La mascota, tercera vez: siluetas y nombre por voz de verdad (después de 1.5.114)
+
+"Se ve horrible, no parece ni parecido un salchicha, pésima terminación, encima se llama Pipo, ni cambiarle el
+nombre." Tres cosas y las tres eran ciertas:
+
+- **El pixel art de 32 × 16 a escala 7 son manchas en el vidrio.** Ahora son **siluetas** CC0 de openclipart
+  (`Dachshund` de eevee93, 300 × 112 en pantalla; `Resting/sleeping dog` de f_featherbrain para dormida) y
+  los iconos y el huevo de OpenCritter (MIT). Las poses contenta/triste/quieta 2 son la MISMA silueta con la
+  cola girada desde su raíz (transformación, no dibujo; anotado en `docs/ws397/MASCOTA.md`), y "se fue" es la
+  silueta en espejo y más chica. En Commons/openclipart/freesvg no hay salchicha echada ni sentada CC0.
+  **La vista previa se mira antes de entregar**: `scratchpad/mascota/preview/sheet.png` sale de correr la app
+  de verdad bajo un driver en C que anota las llamadas a `cp` y las pinta con Pillow.
+- **El nombre no se impone**: pantalla "¿Cómo se llama tu perrita?" con "Decir el nombre" y "Se llama Pipo";
+  una escucha fallida vuelve a esa pantalla con "No entendí" en vez de bautizarla sola, y en Info hay
+  "Cambiar el nombre". `limpiarNombre` saca "se llama", toma la primera palabra, mayúscula, 12 letras.
+- **La pantalla con el sistema visual**: márgenes de 24, grilla de 8, cabezal UI_14 con filete, barras con
+  marco de 1 px y relleno macizo, filas con `cp.selection`. Coordenadas enteras, que el harness ahora exige.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`
