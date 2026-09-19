@@ -266,12 +266,10 @@ local function probar()
   end
   probadas[letra] = true
   if esDe[letra] then
+    cp.beep("ok")
     if completa() then
       estado = "ganado"
       ganadas = ganadas + 1
-      cp.beep("ok")
-    else
-      cp.beep("ok")
     end
   else
     fallos = fallos + 1
@@ -343,7 +341,7 @@ end
 
 local REGLA_Y = 76
 local HORCA_Y = 128        -- la viga
-local SUELO_Y = 424
+local SUELO_Y = 412
 local PALABRA_Y = 436
 local ERRADAS_Y = 496
 local ABC_Y = 552
@@ -477,7 +475,11 @@ function on_draw()
   end
 
   centrado(estado == "ganado" and "¡Ganaste!" or "Se acabó", ABC_Y + 16, 14, true)
-  centrado(estado == "ganado" and (categoria .. " · " .. #glifos .. " letras")
-           or ("Era " .. table.concat(glifos)), ABC_Y + 62, 12)
+  if estado == "ganado" then
+    centrado(fallos == 0 and "Sin un solo fallo" or (fallos .. " de " .. FALLOS_MAX .. " fallos"),
+             ABC_Y + 62, 12)
+  else
+    centrado("Era " .. table.concat(glifos), ABC_Y + 62, 12)
+  end
   cp.text(24, alto - 40, "OK: otra palabra · Atrás: salir", 10)
 end
