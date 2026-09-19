@@ -46,7 +46,7 @@ import { normalizeLang, type Lang } from "./lang";
 import { DEFAULT_TZ, download, DownloadError, extractArticle, readFeed, whenLabel } from "./rss";
 import { load as loadStore } from "./store";
 import { addUsage, overQuota } from "./usage";
-import { MEDICAL_FEED_ID, MEDICAL_FEED_NAME, readMedicalFeed } from "./medical";
+import { MEDICAL_FEED_ID, MEDICAL_FEED_NAME, MEDICAL_SUMMARY_VERSION, readMedicalFeed } from "./medical";
 
 // Cuántas notas lleva el paquete y cuántas de ésas pasan por el modelo. El
 // resto van con el texto limpiado a mano, que es gratis y casi siempre alcanza.
@@ -95,6 +95,9 @@ export type PackItem = {
   // la etiqueta hecha. Opcional porque un paquete guardado antes de 1.5.115 no
   // lo tiene; se completa solo en la primera pasada que reusa la nota.
   whenAt?: number;
+  // Versión del formato de resumen médico. No viaja al aparato; sólo invalida
+  // el cuerpo guardado cuando cambia el prompt clínico.
+  medicalVersion?: number;
 };
 
 type Body = { id: string; title: string; feed: string; when: string; text: string };
@@ -139,13 +142,27 @@ const PROMPT: Record<Lang, string> = {
   ru: "Перепиши эту новость для маленького экрана: что произошло, где, кого касается и почему это важно. Короткие фразы, без мнений, ничего не выдумывай. Пять-десять фраз, простой текст.",
 };
 
+const MEDICAL_PROMPT_ES =
+  "Resume este abstract para un médico. Mantén lenguaje clínico y metodológico; no lo simplifiques para público general. " +
+  "Incluye, sólo si están reportados: diseño y población, tamaño muestral, intervención y comparador, endpoint primario, " +
+  "magnitud del efecto con IC/p cuando figure, eventos adversos relevantes y limitaciones explícitas. Conserva nombres de " +
+  "fármacos, dosis, HR/RR/OR, IC95%, NNT y unidades. Distingue asociación de causalidad. No extrapoles más allá del abstract, " +
+  "no declares que cambia la práctica si el estudio no lo demuestra y no inventes datos. Español neutro, 6 a 12 frases, " +
+  "texto plano y compacto para una pantalla pequeña.";
+
 // Una nota masticada. Si el modelo falla, se devuelve el texto limpiado a mano:
 // el paquete NUNCA queda sin la nota por culpa del modelo.
-async function chew(accountId: number, text: string, lang: Lang): Promise<{ text: string; chewed: boolean }> {
+async function chew(
+  accountId: number,
+  text: string,
+  lang: Lang,
+  medical = false,
+): Promise<{ text: string; chewed: boolean }> {
   const raw = text.slice(0, MAX_BODY);
   if (raw.length < 400) return { text: raw, chewed: false };
   try {
-    const out = await chatText({ system: PROMPT[lang], user: raw, maxTokens: 900 });
+    const system = medical && lang === "es" ? MEDICAL_PROMPT_ES : PROMPT[lang];
+    const out = await chatText({ system, user: raw, maxTokens: medical ? 1100 : 900 });
     await addUsage(accountId, { llm: 1 });
     const clean = out.trim();
     if (clean.length > 200) return { text: clean, chewed: true };
@@ -316,7 +333,8 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     // Lo que ya estaba y no cambió de título no se vuelve a bajar ni a masticar:
     // eso es lo que hace que la pasada de cada hora sea barata.
     const antes = conocido.get(id);
-    if (antes && antes.title === item.title && previo.bodies[id]) {
+    const medical = feedId === MEDICAL_FEED_ID;
+    if (antes && antes.title === item.title && previo.bodies[id] && (!medical || antes.medicalVersion === MEDICAL_SUMMARY_VERSION)) {
       // El `whenAt` completa los paquetes armados antes de la ventana rodante.
       items.push(antes.whenAt ? antes : { ...antes, whenAt: item.whenAt });
       bodies[id] = previo.bodies[id];
@@ -360,7 +378,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     }
 
     const puedeMasticar = !sinCupo && chewedCount < DIGEST_PER_RUN;
-    const { text: final, chewed } = puedeMasticar ? await chew(accountId, text, lang) : { text: text.slice(0, MAX_BODY), chewed: false };
+    const { text: final, chewed } = puedeMasticar ? await chew(accountId, text, lang, medical) : { text: text.slice(0, MAX_BODY), chewed: false };
     if (chewed) chewedCount++;
     delete fallidas[id];
     const body: Body = { id, title: item.title, feed, when: whenLabel(item.whenAt, tz), text: final };
@@ -375,6 +393,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
       chewed,
       link: item.link ?? "",
       whenAt: item.whenAt,
+      medicalVersion: medical ? MEDICAL_SUMMARY_VERSION : undefined,
     });
     suma(aceptadas, feedId);
   }
@@ -493,6 +512,15 @@ news.get("/status", async (c) => {
     at: pack.at,
     items: pack.items.length,
     chewed: pack.items.filter((item) => item.chewed).length,
+  });
+});
+
+news.get("/preview", async (c) => {
+  const pack = await loadPack(accountOf(c));
+  return c.json({
+    ok: true,
+    at: pack.at,
+    items: pack.items.map(({ id, feed, title, when, chewed, link }) => ({ id, feed, title, when, chewed, link })),
   });
 });
 
