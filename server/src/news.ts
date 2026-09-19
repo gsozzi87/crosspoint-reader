@@ -391,7 +391,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
       sha: (await sha256Hex(final)).slice(0, 16),
       bytes: final.length,
       chewed,
-      link: item.link ?? "",
+      link: item.sourceLink ?? item.link ?? "",
       whenAt: item.whenAt,
       medicalVersion: medical ? MEDICAL_SUMMARY_VERSION : undefined,
     });
