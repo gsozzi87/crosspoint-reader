@@ -10,17 +10,35 @@ RUN mkdir -p /opt/piper/voices && cd /opt \
     && echo "a50cb45f355b7af1f6d758c1b360717877ba0a398cc8cbe6d2a7a3a26e225992  piper.tar.gz" | sha256sum -c - \
     && tar xzf piper.tar.gz && rm piper.tar.gz
 
-# Apps Lua de fábrica. Se fijan al commit de la release y se verifican antes de
-# incorporarlas al paquete que el lector descarga a /Apps.
+# Apps Lua de fábrica (server/src/assets.ts, FACTORY_APPS). Viven en
+# examples/Apps del repo, que NO entra en el contexto de Docker: Railway compila
+# con Root Directory = server, así que un COPY no las alcanza y hay que bajarlas.
+#
+# ESTABAN FIJADAS A UN COMMIT Y A SU sha256, y eso las congeló: el paquete de
+# contenido sirvió durante meses el ahorcado de ese commit por más que el repo
+# cambiara, porque nadie se acuerda de actualizar tres hashes a mano. Ahora se
+# bajan de la RAMA que Railway despliega. El `ADD` de arriba es el reloj de la
+# caché: su respuesta cambia con cada commit de la rama, así que la capa de las
+# apps se rehace sola en cada despliegue. Sin él, Docker reusaría la capa vieja
+# y volveríamos al mismo congelamiento por otro camino.
+#
+# La verificación que reemplaza al sha256: curl -f falla con 404 (una app que se
+# renombró y no se cambió acá NO pasa desapercibida) y después se exige que
+# estén las cinco y que ninguna venga vacía o recortada.
+ARG APPS_REF=ws397
+ADD https://api.github.com/repos/gsozzi87/crosspoint-reader/commits/${APPS_REF} /tmp/apps-head.json
 RUN mkdir -p /opt/apps && cd /opt/apps \
-    && curl -fsSL --retry 3 -o reloj.lua https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/09d15206f9c7bbb0d991c26bdf466cfbf1740a72/examples/Apps/reloj.lua \
-    && curl -fsSL --retry 3 -o ahorcado.lua https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/09d15206f9c7bbb0d991c26bdf466cfbf1740a72/examples/Apps/ahorcado.lua \
-    && curl -fsSL --retry 3 -o tresenraya.lua https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/09d15206f9c7bbb0d991c26bdf466cfbf1740a72/examples/Apps/tresenraya.lua \
-    && printf '%s  %s\n' \
-      df3764a6128dc7890d8b4a469386b25aea4e81d999d81c20696e480859c6ae73 reloj.lua \
-      1d7d38d61467bd4ecc3a92a04ffeeaae888deb78ec5623556859ba69cd6417f0 ahorcado.lua \
-      c8b29ea6d6755ccbfcb94ad264606f1348871b5faeed8fa8aeaa7763c72662de tresenraya.lua \
-      | sha256sum -c -
+    && for a in ahorcado librito libros mascota sudoku ; do \
+         curl -fsSL --retry 3 -o $a.lua \
+           https://raw.githubusercontent.com/gsozzi87/crosspoint-reader/${APPS_REF}/examples/Apps/$a.lua \
+         || exit 1 ; \
+       done \
+    && n=$(ls -1 /opt/apps/*.lua | wc -l) && [ "$n" = 5 ] || { echo "faltan apps: $n de 5"; exit 1; } \
+    && for f in /opt/apps/*.lua ; do \
+         [ -s "$f" ] || { echo "$f vino vacío"; exit 1; } ; \
+         [ "$(wc -c < "$f")" -ge 2000 ] || { echo "$f vino recortado"; exit 1; } ; \
+       done \
+    && ls -l /opt/apps
 
 # Voces (rhasspy/piper-voices en Hugging Face): es, en, fr, de, pt, ru
 ARG HF=https://huggingface.co/rhasspy/piper-voices/resolve/1162a9173d0ce503555aed757976b7a9912eae4c

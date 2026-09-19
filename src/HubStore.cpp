@@ -182,6 +182,7 @@ void HubStore::toJson(JsonDocument& doc) const {
   doc["assetsLang"] = assetsLang;
   doc["assetsFiles"] = assetsFiles;
   doc["assetsPending"] = assetsPending;
+  doc["appsPurge"] = appsPurge;
   doc["settingsRev"] = settingsRev;
   doc["setupDone"] = setupDone;
   doc["setupStep"] = setupStep;
@@ -245,6 +246,7 @@ bool HubStore::fromJson(JsonVariantConst doc) {
   assetsLang = str(doc, "assetsLang");
   assetsFiles = doc["assetsFiles"] | 0;
   assetsPending = doc["assetsPending"] | false;
+  appsPurge = doc["appsPurge"] | 0;
   settingsRev = doc["settingsRev"] | 0;
   setupDone = doc["setupDone"] | false;
   setupStep = doc["setupStep"] | 0;

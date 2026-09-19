@@ -185,7 +185,8 @@ Hoy son 5 pestañas y la quinta se comió Fotos, Noticias, Viajes, Memoria, Ajus
 Contenido, Log y la cuenta. Con Fotos afuera quedan nueve.
 
 Propuesta: seis pestañas abajo — **Hoy · Agenda · Listas · Notas · Viajes · Ajustes**. Viajes sale
-al primer nivel porque es lo único con contenido propio que se usa seguido. Y **Ajustes deja de ser
+al primer nivel porque es lo único con contenido propio que se usa seguido. *(Se hizo en 1.5.78, y
+quedaron **cinco**: Viajes salió del producto y la pestaña se fue con él.)* Y **Ajustes deja de ser
 un cajón**: pantalla con secciones a la vista (Aparato, Voz y sonido, Clima y lugar, Noticias,
 Memoria, Cuenta, y abajo Avanzado con IA / Contenido / Log para admin). Nada de un "Más" con diez
 filas iguales.
@@ -193,24 +194,11 @@ filas iguales.
 Se mantiene la regla que ya está: **un solo estado**, se vuelve a pedir entero y se repinta después
 de cada cambio.
 
-### B3. Viajes reconoce un viaje que ya no existe
+### B3. ~~Viajes reconoce un viaje que ya no existe~~ — sin objeto
 
-Encontré tres cosas que lo causan, y probablemente sean las tres a la vez:
-
-1. **`getTrip(acc, id)` con id vacío devuelve `trips[0]`** (`server/src/trips.ts:96`). Si el
-   aparato pregunta sin id porque se le limpió el suyo, el servidor le contesta con **otro viaje**
-   como si fuera el que pidió. Nunca ve el 404.
-2. **Las sugerencias no se purgan al borrar el viaje.** Quedan en `/data/suggest.json` con clave
-   `trip:<id>:…` para siempre. `/api/trip/delete` borra el viaje, los eventos del calendario y los
-   adjuntos, pero no las sugerencias.
-3. **La caché del aparato** (`/.crosspoint/trips.json`) se muestra primero a propósito (para el
-   aeropuerto sin red). `fetchTrips()` refresca la lista pero nunca compara `tripId` contra la
-   lista nueva, así que el id viejo sobrevive hasta que alguien entra y se come el 404.
-
-Arreglo: `getTrip` no inventa un viaje cuando le pidieron uno concreto (hoy ya devuelve null con id
-explícito, pero `suggest.ts` llama con el id que venga y `/api/suggest/trip` cae en el fallback);
-`/api/trip/delete` purga las entradas de `suggest.json` de ese viaje; y `fetchTrips()` limpia
-`tripId` y `suggestTripId` si dejaron de estar en la lista.
+Viajes salió del producto en 1.5.93 (`trips.ts`, `TripActivity`), volvió como app de Lua en 1.5.111
+y volvió a salir, entera, después de 1.5.115: *"no me va a servir"*. Las sugerencias que también
+entraban acá (`suggest.ts`) se fueron en 1.5.108. No queda nada que arreglar.
 
 ### B4. La lectura va lenta
 

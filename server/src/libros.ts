@@ -15,7 +15,14 @@
 //                            deletreado: se arma la palabra sin modelo
 //                            (lettersToWord) y se pasa por el corrector ANTES de
 //                            buscar (`spelled` es la palabra armada).
-//   libros.ficha  {code}   → {title, author, year, pages, genre, desc, formats}
+//   libros.ficha  {code}   → {kind:"card", title, author, year, pages, genre, desc, formats}
+//                            o {kind:"list", results, msg, nav, page?} cuando lo
+//                            elegido era un AUTOR y el bot contesta con SU
+//                            catálogo en vez de una ficha (`Ángeles Mastretta
+//                            [11]`). Quién decide es classifyReply.
+//   libros.mas {msg, dir}  → otra página de esa misma lista: aprieta la flecha
+//                            del mensaje `msg` (dir = first|prev|next|last) y
+//                            devuelve {kind:"list", results, msg, nav, page?}
 //   libros.bajar  {code, format?} → {jobId}  (trabajo: ficha → botón → archivo → saveFile, tope 40 MB)
 //
 // Todo error vuelve como {ok:false, error, code}: `no_telegram` sin sesión
@@ -38,14 +45,18 @@ import { normalizeLang } from "./lang";
 import { readBody } from "./net";
 import { accountOf, viaOf, type AppEnv } from "./tenant";
 import { chatText } from "./llm";
-import { fileNameFor, formatOfLabel, lettersToWord, parseCard, parseList, fold, type Card } from "./librosParse";
+import { classifyReply, fileNameFor, formatOfLabel, lettersToWord, navOfLabel, pageOfLabel, parseCard, parseList, fold, type Card, type ListResult, type NavDir } from "./librosParse";
 import { askBot, getStatus, logOut, saveConfig, sendCode, signIn, TelegramError, withBot, type BotMessage, type BotSession } from "./telegram";
 
 const REPLY_TIMEOUT_MS = 20_000;
 const FILE_TIMEOUT_MS = 120_000;
 const MAX_FILE_BYTES = 40 * 1024 * 1024;
-const MAX_RESULTS = 10;
+// Una página del bot trae diez; el tope es de esta capa y va con holgura para
+// que una página más larga no se pierda en silencio (que es el defecto que
+// tenía la lista del autor: lo que no entraba, no existía).
+const MAX_RESULTS = 20;
 const CODE_RE = /^\/[A-Za-z0-9_]+$/;
+const DIRS: NavDir[] = ["first", "prev", "next", "last"];
 
 // ---------------------------------------------------------------- textos
 
@@ -60,6 +71,7 @@ const T: Record<Lang, {
   sessionLost: string;
   noQuery: string;
   badCode: string;
+  noMore: string;
   noFormat: (f: string) => string;
   askingCard: string;
   waitingFile: string;
@@ -76,6 +88,7 @@ const T: Record<Lang, {
     sessionLost: "Telegram cerró la sesión: entra de nuevo desde la web",
     noQuery: "Di el título o el autor",
     badCode: "Ese libro no vale: busca de nuevo",
+    noMore: "No hay más páginas",
     noFormat: (f) => `Este bot no da ${f.toUpperCase()}`,
     askingCard: "Pidiendo la ficha…",
     waitingFile: "Esperando el archivo…",
@@ -92,6 +105,7 @@ const T: Record<Lang, {
     sessionLost: "Telegram closed the session: sign in again from the web",
     noQuery: "Say the title or the author",
     badCode: "That book is not valid: search again",
+    noMore: "There are no more pages",
     noFormat: (f) => `This bot does not offer ${f.toUpperCase()}`,
     askingCard: "Asking for the book card…",
     waitingFile: "Waiting for the file…",
@@ -108,6 +122,7 @@ const T: Record<Lang, {
     sessionLost: "Telegram a fermé la session : reconnecte-toi depuis le web",
     noQuery: "Dis le titre ou l'auteur",
     badCode: "Ce livre n'est pas valide : cherche à nouveau",
+    noMore: "Il n'y a pas d'autres pages",
     noFormat: (f) => `Ce bot ne propose pas de ${f.toUpperCase()}`,
     askingCard: "Demande de la fiche…",
     waitingFile: "En attente du fichier…",
@@ -124,6 +139,7 @@ const T: Record<Lang, {
     sessionLost: "Telegram hat die Sitzung beendet: melde dich im Web neu an",
     noQuery: "Sag den Titel oder den Autor",
     badCode: "Dieses Buch ist ungültig: suche erneut",
+    noMore: "Es gibt keine weiteren Seiten",
     noFormat: (f) => `Dieser Bot bietet kein ${f.toUpperCase()} an`,
     askingCard: "Buchkarte wird angefragt…",
     waitingFile: "Warte auf die Datei…",
@@ -140,6 +156,7 @@ const T: Record<Lang, {
     sessionLost: "O Telegram encerrou a sessão: entre de novo pela web",
     noQuery: "Diga o título ou o autor",
     badCode: "Esse livro não vale: busque de novo",
+    noMore: "Não há mais páginas",
     noFormat: (f) => `Este bot não oferece ${f.toUpperCase()}`,
     askingCard: "Pedindo a ficha…",
     waitingFile: "Esperando o arquivo…",
@@ -156,6 +173,7 @@ const T: Record<Lang, {
     sessionLost: "Telegram закрыл сессию: войдите заново на сайте",
     noQuery: "Скажите название или автора",
     badCode: "Эта книга недействительна: поищите снова",
+    noMore: "Больше страниц нет",
     noFormat: (f) => `Этот бот не даёт ${f.toUpperCase()}`,
     askingCard: "Запрашиваю карточку…",
     waitingFile: "Жду файл…",
@@ -211,15 +229,43 @@ function pickCard(msgs: BotMessage[]): BotMessage | null {
   return best;
 }
 
-type Results = { title: string; code: string }[];
+type Results = ListResult[];
 
-async function searchWith(s: BotSession, q: string): Promise<Results> {
+// Una lista de resultados tal como viaja al aparato: lo que se lee, más de
+// qué mensaje salió y hacia dónde se puede pasar de página. `msg` es el
+// mensaje que TIENE las flechas: es el que `libros.mas` vuelve a apretar.
+type ListOut = { results: Results; msg: number; nav: NavDir[]; page?: { at: number; of: number } };
+
+function listOf(msgs: BotMessage[]): ListOut {
+  const text = msgs.map((m) => m.text).join("\n");
+  const results = parseList(text).slice(0, MAX_RESULTS);
+  // El que manda la navegación es el último mensaje con flechas: si el bot
+  // partió la lista en dos, los botones van en el de abajo.
+  let navMsg: BotMessage | null = null;
+  for (const m of msgs) if (m.buttons.some((b) => navOfLabel(b.text))) navMsg = m;
+  const nav: NavDir[] = [];
+  let page: { at: number; of: number } | null = null;
+  if (navMsg) {
+    for (const b of navMsg.buttons) {
+      const d = navOfLabel(b.text);
+      if (d && !nav.includes(d)) nav.push(d);
+      if (!page) page = pageOfLabel(b.text);
+    }
+  }
+  // El número de página puede estar en el texto ("Página 2 de 5") y no en un botón.
+  if (!page) for (const line of text.split("\n")) if ((page = pageOfLabel(line))) break;
+  const out: ListOut = { results, msg: navMsg ? navMsg.id : 0, nav };
+  if (page) out.page = page;
+  return out;
+}
+
+async function searchWith(s: BotSession, q: string): Promise<ListOut> {
   const msgs = await s.waitReply(await s.send(q), { timeoutMs: REPLY_TIMEOUT_MS });
-  return parseList(msgs.map((m) => m.text).join("\n")).slice(0, MAX_RESULTS);
+  return listOf(msgs);
 }
 
 export async function search(accountId: number, q: string): Promise<Results> {
-  return withBot(accountId, (s) => searchWith(s, q));
+  return withBot(accountId, async (s) => (await searchWith(s, q)).results);
 }
 
 // ---------------------------------------------------------------- el corrector
@@ -286,30 +332,73 @@ const buscar: Service = async (ctx, args) => {
     if (corrected) q = corrected;
     console.log(`${who}: deletreado "${raw.slice(0, 80)}" → "${word}"${corrected ? ` → "${corrected}"` : ""}`);
   }
-  const results = await withBot(ctx.accountId, async (s) => {
+  const list = await withBot(ctx.accountId, async (s) => {
     let r = await searchWith(s, q);
-    console.log(`${who}: "${q.slice(0, 60)}" → ${r.length} resultados`);
-    if (!r.length && !corrected) {
+    console.log(`${who}: "${q.slice(0, 60)}" → ${r.results.length} resultados${r.nav.length ? ` (paginada: ${r.nav.join(",")})` : ""}`);
+    if (!r.results.length && !corrected) {
       corrected = await correctQuery(q, ctx.lang);
       if (corrected) {
         r = await searchWith(s, corrected);
-        console.log(`${who}: corregido a "${corrected.slice(0, 60)}" → ${r.length} resultados`);
+        console.log(`${who}: corregido a "${corrected.slice(0, 60)}" → ${r.results.length} resultados`);
       }
     }
     return r;
   });
   if (corrected) out.corrected = corrected;
-  return { ...out, results };
+  return { ...out, kind: "list", ...list };
 };
 
+// El texto y los botones que ES la respuesta: el mensaje con botones si lo
+// hay (la ficha, o la lista paginada), y si no el más largo.
+function replyOf(msgs: BotMessage[]): { msg: BotMessage; text: string; labels: string[] } | null {
+  const msg = pickCard(msgs);
+  if (!msg) return null;
+  // El texto se junta entero: un bot puede partir la lista en dos mensajes.
+  return { msg, text: msgs.map((m) => m.text).join("\n"), labels: msg.buttons.map((b) => b.text) };
+}
+
+// Lo que el bot contesta a un comando NO siempre es una ficha: si lo elegido
+// era un autor (`Ángeles Mastretta [11]`), contesta con SU CATÁLOGO, otra
+// lista y encima paginada. Leerla como ficha metía los diez títulos adentro
+// de la descripción y perdía las demás páginas. Quién decide es
+// `classifyReply`, y el `kind` que vuelve elige la pantalla en el aparato.
 const ficha: Service = async (ctx, args) => {
   const code = argStr(args.code, 40);
   if (!CODE_RE.test(code)) return { ok: false, error: T[ctx.lang].badCode, code: "bad_code" };
   const msgs = await askBot(ctx.accountId, code, { timeoutMs: REPLY_TIMEOUT_MS });
-  const card = pickCard(msgs);
-  if (!card) throw new TelegramError("no_reply", "El bot no contestó");
-  const parsed: Card = parseCard(card.text, card.buttons.map((b) => b.text));
-  return { ...parsed };
+  const reply = replyOf(msgs);
+  if (!reply) throw new TelegramError("no_reply", "El bot no contestó");
+  if (classifyReply(reply.text, reply.labels) === "list") {
+    const list = listOf(msgs);
+    console.log(`libros: cuenta ${ctx.accountId}: ${code} contestó una LISTA de ${list.results.length}${list.nav.length ? ` (${list.nav.join(",")})` : ""}`);
+    return { kind: "list", ...list };
+  }
+  const parsed: Card = parseCard(reply.msg.text, reply.labels);
+  return { kind: "card", ...parsed };
+};
+
+// Otra página de una lista que sigue en el chat. El bot normalmente EDITA el
+// mismo mensaje al apretar la flecha (por eso hace falta `waitChange` y no
+// `waitReply`, que sólo mira mensajes nuevos); si manda uno nuevo, también se
+// toma. Los botones salen de releer el mensaje: el `data` de un botón es
+// binario y no viaja al aparato.
+const mas: Service = async (ctx, args) => {
+  const t = T[ctx.lang];
+  const msgId = Math.trunc(Number(args.msg));
+  const raw = fold(argStr(args.dir, 10)) as NavDir;
+  const dir: NavDir = DIRS.includes(raw) ? raw : "next";
+  if (!Number.isFinite(msgId) || msgId <= 0) return { ok: false, error: t.badCode, code: "bad_code" };
+  return withBot(ctx.accountId, async (s) => {
+    const before = await s.read(msgId);
+    if (!before) return { ok: false, error: t.noMore, code: "no_more" };
+    const button = before.buttons.find((b) => navOfLabel(b.text) === dir);
+    if (!button) return { ok: false, error: t.noMore, code: "no_more" };
+    await s.press(msgId, button.data);
+    const after = await s.waitChange(msgId, before, { timeoutMs: REPLY_TIMEOUT_MS });
+    const list = listOf([after]);
+    console.log(`libros: cuenta ${ctx.accountId}: ${dir} sobre ${msgId} → ${list.results.length} resultados en ${after.id}`);
+    return { kind: "list", ...list };
+  });
 };
 
 const bajar: Service = async (ctx, args) => {
@@ -356,6 +445,7 @@ export const LIBROS_SERVICES: Record<string, Service> = {
   "libros.estado": guarded(estado),
   "libros.buscar": guarded(buscar),
   "libros.ficha": guarded(ficha),
+  "libros.mas": guarded(mas),
   "libros.bajar": guarded(bajar),
 };
 

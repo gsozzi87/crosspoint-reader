@@ -502,7 +502,14 @@ void HubSyncActivity::runSync() {
     // El paquete de noticias viaja con la sincronización: el servidor ya lo
     // masticó, acá sólo se baja lo que falte. Con tope, porque esto corre con
     // la pantalla esperando; el resto entra en la próxima pasada.
-    newspack::sync(/*budget=*/6);
+    //
+    // El tope subió de 6 a 12 con el paquete: el servidor pasó de 18 notas a
+    // hasta 40 (doce por medio, que es lo que el dueño quería ver), y con 6 por
+    // sincronización la caché de la tarjeta tardaba siete pasadas en ponerse al
+    // día. Los TITULARES se ven todos igual —salen del manifiesto— y lo que
+    // falte se baja al abrir Noticias con WiFi; esto es para que la mayoría ya
+    // esté cuando no hay red.
+    newspack::sync(/*budget=*/12);
     // La sincronización oportunista del loop no tiene por qué repetir esto.
     devicesync::markFresh();
     uploadLog();

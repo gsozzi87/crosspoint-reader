@@ -11,7 +11,11 @@
 -- true, la palabra armada y la corrección en el cabezal), Reintentar conserva
 -- el deletreo, corrección sin resultados, y Buscar de nuevo vuelve a dictar →
 -- trabajo que falla → Reintentar → descarga que falla → Reintentar → un
--- bajados.json INCOMPLETO por Inicio → salir.
+-- bajados.json INCOMPLETO por Inicio → el AUTOR entre los resultados
+-- ("Ángeles Mastretta [11]"): su catálogo llega como kind = "list" y se abre
+-- como otra lista, paginada (Ver más / Página anterior por libros.mas), un
+-- libro de ahí sí trae ficha y se baja, y Atrás encadena catálogo →
+-- resultados → inicio → salir.
 
 local function contiene(lista, sub)
   for _, s in ipairs(lista) do
@@ -490,6 +494,152 @@ espera("se-fue.epub")
 assert(cp.read("bajados.json") == "[]", "el que no está se saca de la lista")
 fake.key("ok")                    -- Volver
 noEspera("Bajados")
+
+-- ------------------------------------------------- el AUTOR: otra lista, paginada
+-- El caso del dueño (19-09-2026): entre los resultados vino "Ángeles Mastretta
+-- [11]", que no es un libro sino el autor, y al elegirlo el bot contesta con
+-- SU catálogo — otra lista, y paginada. Antes eso se mostraba como si fuera la
+-- descripción del libro y las demás páginas se perdían.
+local CATALOGO = {
+  {title = "Arráncame la vida", code = "/b9F1E"},
+  {title = "El cielo de los leones", code = "/bzL2E"},
+  {title = "El mundo iluminado", code = "/bBL2E"},
+  {title = "Mal de amores", code = "/bh51y2"},
+  {title = "Mujeres de ojos grandes", code = "/b9N6E"},
+  {title = "Puerto libre", code = "/bDL2E"},
+  {title = "La emoción de las cosas", code = "/bXa2E"},
+  {title = "Maridos", code = "/bWa2E"},
+  {title = "El viento de las horas", code = "/bAL2E"},
+  {title = "Ninguna eternidad como la mía", code = "/bCL2E"},
+}
+
+fake.reply["libros.buscar"] = function(args)
+  assert(args.q == "ángeles mastretta", "buscar: q " .. tostring(args.q))
+  return true, {ok = true, kind = "list", msg = 0, nav = {}, results = {
+    {title = "Arráncame la vida", code = "/b9F1E"},
+    {title = "Ángeles Mastretta", code = "/aMst1", count = 11},
+    {title = "Mujeres de ojos grandes", code = "/b9N6E"},
+  }}
+end
+fake.heard = "ángeles mastretta"
+fake.key("ok")                    -- Buscar por voz
+fake.step()
+fake.step()
+espera("3 resultados")
+espera("Ángeles Mastretta")
+espera("11 libros")               -- se nota que no es un libro
+noEspera("Ver más")               -- esta lista no está paginada
+
+-- OK sobre el autor: el servidor contesta kind = "list" y se abre otra lista.
+local masPedidos = {}
+fake.reply["libros.ficha"] = function(args)
+  assert(args.code == "/aMst1", "ficha del autor: code " .. tostring(args.code))
+  return true, {ok = true, kind = "list", msg = 501, nav = {"next", "last"},
+                page = {at = 1, of = 2}, results = CATALOGO}
+end
+fake.key("down")                  -- el autor es el segundo
+fake.key("ok")
+fake.step()
+espera("Ángeles Mastretta")       -- el cabezal es el autor
+espera("10 resultados de 11")
+espera("Página 1 de 2")
+espera("Arráncame la vida")
+espera("Ninguna eternidad como la mía")
+espera("Ver más")
+noEspera("Página anterior")       -- en la primera no hay anterior
+noEspera("Deletrear el nombre")   -- esto no es la pantalla de una búsqueda vacía
+noEspera("/b9F1E")
+
+-- "Ver más" aprieta la flecha de ESE mensaje y trae la página siguiente.
+fake.reply["libros.mas"] = function(args)
+  masPedidos[#masPedidos + 1] = {msg = args.msg, dir = args.dir}
+  if args.dir == "next" then
+    return true, {ok = true, kind = "list", msg = 501, nav = {"first", "prev"}, page = {at = 2, of = 2},
+                  results = {{title = "El viento de las horas II", code = "/bZz9"}}}
+  end
+  return true, {ok = true, kind = "list", msg = 501, nav = {"next", "last"}, page = {at = 1, of = 2},
+                results = CATALOGO}
+end
+fake.key("up")                    -- la palanca da la vuelta: "Ver más" es la última fila
+fake.key("ok")
+fake.step()
+assert(#masPedidos == 1 and masPedidos[1].msg == 501 and masPedidos[1].dir == "next",
+       "libros.mas con el mensaje y la dirección: " .. tostring(masPedidos[1] and masPedidos[1].msg))
+espera("Ángeles Mastretta")
+espera("Página 2 de 2")
+espera("El viento de las horas II")
+espera("Página anterior")
+noEspera("Ver más")
+noEspera("Arráncame la vida")     -- la página vieja se fue
+
+-- Y la anterior vuelve por el mismo camino.
+fake.key("down")                  -- "Página anterior" es la segunda fila
+fake.key("ok")
+fake.step()
+assert(#masPedidos == 2 and masPedidos[2].dir == "prev", "la flecha de atrás")
+espera("Página 1 de 2")
+espera("Arráncame la vida")
+
+-- Un libro del catálogo sí trae ficha (kind = "card"), y se baja como siempre.
+-- El mismo servicio contesta las dos cosas según el comando, que es como se
+-- comporta el bot: el del autor devuelve lista y el del libro, ficha.
+fake.reply["libros.ficha"] = function(args)
+  if args.code == "/aMst1" then
+    return true, {ok = true, kind = "list", msg = 501, nav = {"next", "last"}, page = {at = 1, of = 2},
+                  results = CATALOGO}
+  end
+  assert(args.code == "/b9F1E", "ficha del libro: code " .. tostring(args.code))
+  return true, {ok = true, kind = "card", title = "Arráncame la vida", author = "Ángeles Mastretta",
+                year = 1985, pages = 260, genre = "Novela", desc = "Catalina Guzmán cuenta su vida.",
+                formats = {"epub"}}
+end
+fake.key("ok")                    -- el primero del catálogo
+fake.step()
+espera("Arráncame la vida")
+espera("1985 · 260 páginas · Novela")
+espera("Bajar EPUB")
+fake.reply["libros.bajar"] = function(args)
+  assert(args.code == "/b9F1E", "bajar del catálogo: code " .. tostring(args.code))
+  return true, {ok = true, jobId = "j-mas"}
+end
+fake.reply["job.status"] = function(args)
+  assert(args.id == "j-mas", "job.status: id " .. tostring(args.id))
+  return true, {ok = true, state = "done", step = 3, total = 3,
+                files = {{id = "f-am", name = "Arráncame la vida.epub", bytes = 500}}}
+end
+fake.key("ok")                    -- Bajar EPUB
+fake.step()
+avanzar(3000)
+fake.tick()
+fake.step()
+assert(descargas[#descargas].name == "Arrancame-la-vida.epub",
+       "el nombre se vuelve seguro: " .. tostring(descargas[#descargas].name))
+fake.step()
+espera("Listo")
+fake.key("back")                  -- Listo → inicio
+espera("Buscar por voz")
+
+-- Atrás encadenado: ficha → catálogo → resultados de la búsqueda → inicio.
+fake.heard = "ángeles mastretta"
+fake.key("ok")
+fake.step()
+fake.step()
+fake.key("down")
+fake.key("ok")                    -- el autor
+fake.step()
+espera("Página 1 de 2")
+fake.key("ok")                    -- Arráncame la vida
+fake.step()
+espera("Bajar EPUB")
+fake.key("back")                  -- ficha → el catálogo, sobre el elegido
+espera("Página 1 de 2")
+espera("10 resultados de 11")
+fake.key("back")                  -- catálogo → los resultados de la búsqueda
+espera("3 resultados")
+espera("11 libros")
+noEspera("Página 1 de 2")
+fake.key("back")                  -- resultados → inicio
+espera("Buscar por voz")
 
 -- ------------------------------------------------------------- salir
 assert(on_key("back") == false, "Atrás en Inicio sale de la app")

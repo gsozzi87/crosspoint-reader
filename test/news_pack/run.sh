@@ -3,3 +3,4 @@
 set -e
 cd "$(dirname "$0")/../../server"
 bun test ../test/news_pack/pack.test.ts
+bun test ../test/news_pack/rebuild.test.ts

@@ -27,7 +27,6 @@ import { assets } from "./assets";
 import { calendar } from "./calendar";
 import { notes } from "./notes";
 import { apps } from "./apps";
-import { tripApi, tripsApi } from "./viajes";
 import { accountApi, pairStatus, startPairing } from "./accounts";
 import { readBody } from "./net";
 import { accountOf, bearerOf, requireTenant, type AppEnv } from "./tenant";
@@ -128,8 +127,6 @@ api.route("/news", news);             // paquete masticado, estado y actualizaci
 api.route("/rss", rss);               // GET  /api/rss, /api/rss/article → noticias de los feeds cargados en /board
 api.route("/calendar", calendar);  // GET /api/calendar, /day, /repeat; POST /api/calendar/event, /event/delete, /dictate → calendario local
 api.route("/assets", assets);   // GET /api/assets/manifest, /file, /status → paquete de contenido (Biblia, tarjetas, sonidos)
-api.route("/trips", tripsApi);       // GET  /api/trips?lang= → lista de viajes (la web)
-api.route("/trip", tripApi);         // GET  /api/trip?id= y los POST de días, ítems, papeles, para llevar y guía (la web)
 api.route("/account", accountApi);  // POST /api/account/pair, /device/rename, /device/delete, /password (desde la web)
 api.route("/log", deviceLog);         // GET/POST/DELETE /api/log → el aparato sube su log; se lee en /board/log
 // POST /api/apps/call {app, service, args}; GET /api/apps/file/:id → la puerta

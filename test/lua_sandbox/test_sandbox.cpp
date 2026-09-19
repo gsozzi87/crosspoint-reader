@@ -710,18 +710,19 @@ int main() {
     check(err.empty(), (std::string("ahorcado: 60 jugadas") + (err.empty() ? "" : ": " + err)).c_str());
   }
   {
-    // Tres en raya: mover y poner hasta llenar el tablero varias veces. Acá es
-    // donde un cursor que no sabe qué hacer sin casillas libres se cuelga.
+    // Sudoku: mover y poner hasta llenar casillas varias veces. Acá es donde un
+    // cursor que no sabe qué hacer sin casillas libres se cuelga.
     const char* teclas[] = {"down", "ok", "up", "ok"};
-    const std::string err = playApp("examples/Apps/tresenraya.lua", teclas, 4, 40);
-    check(err.empty(), (std::string("tres en raya: 40 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
+    const std::string err = playApp("examples/Apps/sudoku.lua", teclas, 4, 40);
+    check(err.empty(), (std::string("sudoku: 40 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
   }
   {
-    // El reloj no tiene partida, pero sí el caso que importa: muchos ticks
-    // seguidos sin que el minuto cambie no tienen que hacer nada raro.
+    // Lo que se probaba con el reloj (borrado del producto, ver CLAUDE.md) y
+    // sigue siendo el caso que importa en tinta: muchos ticks seguidos sin que
+    // cambie nada NO tienen que hacer nada raro ni pedir repintado.
     const char* teclas[] = {"ok"};
-    const std::string err = playApp("examples/Apps/reloj.lua", teclas, 1, 50);
-    check(err.empty(), (std::string("reloj: 50 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
+    const std::string err = playApp("examples/Apps/mascota.lua", teclas, 1, 50);
+    check(err.empty(), (std::string("mascota: 50 vueltas") + (err.empty() ? "" : ": " + err)).c_str());
   }
 
   // El último directorio temporal de los archivos falsos no lo borra nadie más.

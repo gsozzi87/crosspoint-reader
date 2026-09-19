@@ -61,6 +61,34 @@ const BUILD_ON_START = process.env.ASSETS_BUILD !== "0";
 // descartan solas y se regeneran (ver loadIndex).
 const ART_REV = "sin-tarjetas-v1";
 
+// Las apps que vienen con el aparato. Decision del dueno: estas cinco y nada
+// mas ("esas apps ahora van a ser las que te menciono, las otras vas a
+// borrarlas todas"). El aparato BORRA de /Apps lo que el paquete le instalo
+// alguna vez y ya no figura aca (AssetSyncActivity::purgeRetiredApps), asi que
+// sacar un nombre de esta lista lo saca tambien de las tarjetas que ya lo
+// tienen. Lo que el usuario copio a mano por el modo memoria USB no se toca.
+const FACTORY_APPS = ["ahorcado", "librito", "libros", "mascota", "sudoku"] as const;
+// El `tag` de una app sale del CONTENIDO del .lua, no de un numero a mano. El
+// indice vive en el volumen, asi que un tag fijo ("factory/<name>/1", como
+// estaba) hacia que un servidor que ya armo el paquete siguiera sirviendo el
+// .lua de hace tres releases para siempre, y acordarse de subir el numero en
+// cada cambio es justo la clase de paso que no se hace. Con el sha del archivo
+// se cae sola la entrada de lo que cambio y ninguna otra.
+async function appTag(name: string): Promise<string> {
+  try {
+    const data = await readFile(`${FACTORY_APPS_DIR}/${name}.lua`);
+    return `factory/${name}/${sha16(new Uint8Array(data))}`;
+  } catch (err) {
+    // Que se vea en el log de Railway: una app de fabrica que no esta en la
+    // imagen no aparece en el manifiesto, el aparato no la baja nunca y desde
+    // afuera se ve como "esa app no existe". El Dockerfile la baja en una capa
+    // aparte, asi que este caso es real (y el aparato, por su lado, no borra
+    // nada de /Apps si el manifiesto viene sin ninguna app).
+    console.error(`assets: FALTA la app de fabrica ${name}.lua en ${FACTORY_APPS_DIR}: ${err instanceof Error ? err.message : String(err)}`);
+    return `factory/${name}/missing`;
+  }
+}
+
 export type AssetKind = "bible" | "apps" | "cards" | "sounds" | "icons";
 // `tag` es de qué se generó el archivo (el dibujo, o la palabra que dice el
 // clip): si cambia, esa entrada sola se rehace. Sin eso, cambiar UNA palabra
@@ -76,9 +104,9 @@ const indexes = new Map<Lang, Index>();
 
 // Lo que tendría que decir el `tag` de cada id con el catálogo de hoy. Lo que no
 // coincida se descarta del índice y se genera de nuevo.
-function expectedTags(): Map<string, string> {
+async function expectedTags(): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  for (const name of ["reloj", "ahorcado", "tresenraya"]) out.set(`apps/${name}`, `factory/${name}/1`);
+  for (const name of FACTORY_APPS) out.set(`apps/${name}`, await appTag(name));
   return out;
 }
 
@@ -119,7 +147,7 @@ async function loadIndex(lang: Lang): Promise<Index> {
     idx.art = ART_REV;
   }
   // Cambió una palabra o el dibujo de una tarjeta: se cae solo lo que cambió.
-  const want = expectedTags();
+  const want = await expectedTags();
   idx.entries = Object.fromEntries(
     Object.entries(idx.entries).filter(([id, e]) => {
       if (!want.has(id)) return e.kind === "bible";  // ids viejos que ya no existen
@@ -198,12 +226,12 @@ async function plan(lang: Lang): Promise<Planned[]> {
       },
     });
   }
-  for (const name of ["reloj", "ahorcado", "tresenraya"]) {
+  for (const name of FACTORY_APPS) {
     out.push({
       id: `apps/${name}`,
       kind: "apps",
       path: `/Apps/${name}.lua`,
-      tag: `factory/${name}/1`,
+      tag: await appTag(name),
       make: async () => new Uint8Array(await readFile(`${FACTORY_APPS_DIR}/${name}.lua`)),
     });
   }

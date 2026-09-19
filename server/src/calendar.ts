@@ -13,13 +13,13 @@
 // Qué sale en el calendario:
 //   1. los eventos de /data/calendar.json (los que se cargan acá),
 //   2. los RECORDATORIOS de store.json (se leen, NO se copian: el dueño sigue
-//      siendo store.ts, y tildarlos sigue yendo por POST /api/hub/done),
-//   3. los ítems de viaje que `viajes.ts` espeja acá con `tripId` (salen como
-//      kind "trip"; se rehacen al guardar el viaje y se van al borrarlo).
+//      siendo store.ts, y tildarlos sigue yendo por POST /api/hub/done).
 //
-// Entre 1.5.93 y la vuelta de Viajes `normalizeCalendar` DESCARTABA los eventos
-// con `tripId` porque no tenían dueño. Ahora vuelven a tenerlo (`syncCalendar`
-// en viajes.ts), así que se conservan como cualquier otro.
+// Viajes salió del producto en 1.5.93 y espejaba sus ítems acá con `tripId`;
+// volvió en 1.5.111 con el espejo puesto de nuevo y volvió a salir, esta vez
+// entera. Esos eventos ya no tienen dueño —nadie los puede editar ni borrar—,
+// así que `normalizeCalendar` los descarta al leer. Es de una sola vía a
+// propósito: el viaje que los explicaba no existe.
 //
 // ── Zona horaria ────────────────────────────────────────────────────────────
 // La mitad de los bugs de calendario salen de mezclar fechas con instantes.
@@ -58,8 +58,6 @@ export type CalEvent = {
   place?: string;
   note?: string;
   repeat?: Repeat;
-  tripId?: string;      // lo escribe viajes.ts (espejo de un ítem del viaje)
-  tripDay?: number;
   [extra: string]: unknown;  // lo que agregue otro módulo se conserva tal cual
 };
 
@@ -128,6 +126,9 @@ function normalizeCalendar(raw: unknown): CalendarFile {
   };
   const events: CalEvent[] = [];
   for (const e of list) {
+    // Espejo de un viaje: el módulo que los escribía ya no existe, así que
+    // estos eventos no se pueden editar ni borrar desde ningún lado. Se van.
+    if (e && typeof e === "object" && (e as Record<string, unknown>).tripId) continue;
     const ev = normalizeEvent(e, fallbackId);
     if (ev) events.push(ev);
   }
@@ -158,7 +159,7 @@ function nextEventId(cal: CalendarFile): number {
 export type Occurrence = {
   key: string;           // único por ocurrencia: "ev-12@2026-09-15"
   id: number;
-  kind: "event" | "reminder" | "trip";
+  kind: "event" | "reminder";
   date: string;          // día local "YYYY-MM-DD"
   startAt: string;       // arranque de la SERIE tal como está guardado ("2026-09-15T10:30")
   endAt: string;         // fin de la serie, igual formato
@@ -174,8 +175,6 @@ export type Occurrence = {
   repeatText: string;
   start: number;         // epoch UTC en segundos (00:00 local si es de todo el día)
   end: number;
-  tripId?: string;       // solo en kind "trip": el viaje del que sale
-  tripDay?: number;
 };
 
 function timeOf(stamp: string): string {
@@ -197,7 +196,6 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
   const endTime = timeOf(ev.end);
   const rep = normalizeRepeat(ev.repeat);
   const text = repeatText(rep, ev.start, lang);
-  const kind: Occurrence["kind"] = ev.tripId ? "trip" : "event";
   // Se busca desde antes del rango: un evento de cinco días que arrancó el mes
   // pasado tiene que seguir apareciendo en los días que caen adentro.
   const dates = expandRepeat(startDate, rep, addDays(from, -span), to, MAX_OCCURRENCES);
@@ -208,7 +206,7 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
       const ok = push(out, {
         key: `ev-${ev.id}@${date}`,
         id: ev.id,
-        kind,
+        kind: "event",
         date,
         startAt: ev.start,
         endAt: ev.end,
@@ -224,8 +222,6 @@ function expandEvent(ev: CalEvent, from: string, to: string, lang: Lang, out: Oc
         repeatText: text,
         start: ev.allDay ? startOfLocalDay(date) : localToEpoch(date + (time ? "T" + time : "")),
         end: ev.allDay ? endOfLocalDay(date) : localToEpoch(addDays(base, span) + (endTime ? "T" + endTime : "T23:59")),
-        ...(ev.tripId ? { tripId: String(ev.tripId) } : {}),
-        ...(Number.isFinite(Number(ev.tripDay)) ? { tripDay: Number(ev.tripDay) } : {}),
       });
       if (!ok) return false;
     }
@@ -543,8 +539,8 @@ calendar.post("/dictate", async (c) => {
     return c.json({ ok: false, error: String(err).slice(0, 200), code: "internal" }, 500);
   }
 
-  // Un solo leer-modificar-escribir para todas: el archivo lo escriben también
-  // los viajes, y una escritura por actividad es una carrera por cada renglón.
+  // Un solo leer-modificar-escribir para todas: una escritura por actividad
+  // sería una carrera por cada renglón.
   const added = await mutate(accountOf(c), (cal) => {
     const out: { id: number; start: string; title: string; allDay: boolean }[] = [];
     for (const it of items.slice(0, MAX_DICTATE_ITEMS)) {
