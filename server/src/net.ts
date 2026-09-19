@@ -245,7 +245,18 @@ function fetchPinned(url: URL, address: PublicAddress, init: RequestInit, timeou
     );
 
     request.setTimeout(timeoutMs, () => request.destroy(new Error("tiempo de espera agotado")));
-    request.once("error", reject);
+    // `on` y no `once`, Y la bandera: el cliente HTTP puede emitir "error" DOS
+    // veces por el mismo pedido (prueba una dirección, falla, y el segundo
+    // error llega en un `process.nextTick` posterior). Con `once` el listener
+    // ya no estaba y un "error" sin oyente NO es una promesa rechazada: es un
+    // throw que voltea el proceso entero. Un host caído —eutils.ncbi con el
+    // proxy cerrado, un diario que rechaza la conexión— mataba al servidor.
+    let settled = false;
+    request.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
     const signal = init.signal;
     const abort = () => request.destroy(signal?.reason instanceof Error ? signal.reason : new Error("pedido cancelado"));
     if (signal?.aborted) abort();

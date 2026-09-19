@@ -133,19 +133,43 @@ Biblia, ni del paquete de contenido. Vive en `TranslateLang`/`SpeechLang`/`TtsLa
 voz de Piper bajada aparte en el Dockerfile (`it_IT-paola-medium`). Agregar otro idioma sólo-traductor es
 repetir esos cuatro lugares; convertirlo en idioma de la interfaz es otra cosa y mucho más grande.
 
-### La fuente médica de PubMed es VIRTUAL y se apaga con `NEWS_MEDICAL=0`
+### Un host caído volteaba el servidor entero
 
-`src/medical.ts` agrega "Medicina · PubMed" al paquete de **toda** cuenta, aunque no haya cargado un solo
-RSS (por eso `rebuild()` ya no corta temprano con cero feeds). Cada pasada horaria son dos viajes a NCBI
-—`esearch` y `efetch`, 15 s de tope cada uno— más las llamadas al modelo de lo que mastique, y eso lo paga
-la cuenta aunque nadie lo haya pedido. `NEWS_MEDICAL=0` la apaga sin tocar código.
+`fetchPinned()` (`net.ts`) escuchaba el error del pedido con `request.once("error", reject)`. El cliente
+HTTP puede emitir `"error"` **dos veces** por el mismo pedido: prueba una dirección, falla, y el segundo
+error llega en un `process.nextTick` posterior. Con `once` el oyente ya no estaba — y un `"error"` sin
+oyente **no** es una promesa rechazada, es un throw que mata el proceso. O sea que un host que rechaza la
+conexión (NCBI detrás de un proxy cerrado, un diario caído) tiraba abajo TODO el servidor en medio de la
+pasada de noticias. Ahora es `on` con bandera: el primero rechaza, los demás se ignoran.
 
-Conviene poner **`NCBI_EMAIL`** (y `NCBI_API_KEY` si se tiene): NCBI pide identificarse y sin eso limita
-más fuerte. Sin clave el tope son 3 pedidos por segundo para toda la IP de Railway.
+### PubMed es un feed MÁS, no una fuente "automática"
 
-Ojo con las pruebas: `./test/news_pack/run.sh` dice "sin red" y tiene que seguir siéndolo, así que
-`rebuild.test.ts` pone `NEWS_MEDICAL=0`. Sin eso el archivo sale a PubMed de verdad y se cae donde no hay
-salida (el sandbox) o queda colgado de que NCBI conteste (CI).
+`src/medical.ts` trae evidencia clínica reciente de E-utilities, y el aparato recibe exactamente el mismo
+formato que de un RSS. Lo que lo distingue es **la URL guardada**: la centinela `pubmed:`, que no se
+resuelve por DNS y no se baja. `isMedicalFeed(url)` es la única forma válida de reconocerla.
+
+- Se agrega desde `/board` → Ajustes → Noticias con un botón (no se pega una URL), y una vez agregada es
+  una fila igual a las demás: se renombra, se prueba y se borra igual.
+- `rebuild()` la recorre **dentro del mismo lazo** que los diarios, así que respeta el mismo cupo por
+  medio, el mismo reparto intercalado y la misma ventana rodante. La única diferencia son dos líneas: de
+  dónde salen los titulares.
+- **El interruptor es la lista**: si no está cargada, no se llama y no se sale a la red. Por eso no hay
+  variable de entorno para apagarla, y por eso `./test/news_pack/run.sh` sigue siendo sin red.
+- `POST /api/board/feed/test` sobre ella consulta PubMed y no `checkFeed`: bajar `pubmed:` diría que la
+  fuente está rota cuando no lo está.
+
+**No pide cuenta, ni clave, ni correo.** E-utilities contesta a cualquiera; se manda sólo `tool`, que es la
+etiqueta con la que NCBI pide que las aplicaciones se presenten. No hay nada que configurar.
+
+**El resumen sale en el idioma del aparato.** El abstract viene siempre en inglés, así que el modelo
+traduce y resume en el mismo paso, con prompt clínico (`medicalPrompt(lang)` en `news.ts`): mantiene el
+registro médico, conserva sin traducir fármacos, dosis, HR/RR/OR, IC95%, NNT y unidades, y separa
+asociación de causalidad. Antes el prompt era sólo en español y en cualquier otro idioma la nota médica
+caía al prompt de noticias común, que la simplifica para público general. `MEDICAL_SUMMARY_VERSION`
+(`medical.ts`) sube cuando ese prompt cambia: los cuerpos ya guardados se vuelven a masticar en vez de
+quedar congelados en el idioma viejo.
+
+`NEWS_MEDICAL_ITEMS` (10, tope 12) es cuántos artículos aporta por pasada.
 
 ## Listas: son dos, y la pizarra de mensajes ya no existe
 

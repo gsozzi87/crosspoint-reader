@@ -37,7 +37,7 @@ import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSear
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
-import { MEDICAL_FEED_ID, MEDICAL_FEED_NAME } from "./medical";
+import { isMedicalFeed, MEDICAL_FEED_NAME, MEDICAL_URL, readMedicalFeed } from "./medical";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
 import { clampNote } from "./notes";
 import { telegramBoard } from "./libros";
@@ -129,6 +129,23 @@ boardApi.post("/feed", async (c) => {
     });
     return found ? c.json({ ok: true }) : c.json({ ok: false, error: "no está" }, 404);
   }
+  // PubMed es un feed más, pero no tiene una URL que se pueda bajar: no pasa
+  // por probeFeed ni por la guardia de SSRF (no hay host al que salir). Entra
+  // por acá y después vive en la lista como cualquier diario: se renombra, se
+  // prueba y se borra igual.
+  if (isMedicalFeed((b.url ?? "").toString())) {
+    const accM = accountOf(c);
+    const nameM = (b.name ?? "").toString().trim().slice(0, 40) || MEDICAL_FEED_NAME;
+    const dupM = await mutate(accM, (store) => {
+      store.feeds ??= [];
+      if (store.feeds.some((f) => isMedicalFeed(f.url))) return true;
+      store.feeds.push({ id: nextId(store), name: nameM, url: MEDICAL_URL });
+      return false;
+    });
+    if (dupM) return c.json({ ok: false, error: "esa fuente ya está cargada" }, 400);
+    return c.json({ ok: true, name: nameM, url: MEDICAL_URL, count: 0 });
+  }
+
   let url = (b.url ?? "").toString().trim().slice(0, 500);
   if (url && !/^[a-z]+:\/\//i.test(url)) url = "https://" + url;  // "diario.com/rss"
   // El servidor es el que va a buscar el feed, y está adentro de la red privada
@@ -168,6 +185,18 @@ boardApi.post("/feed/test", async (c) => {
   const store = await load(accountOf(c));
   const feed = (store.feeds ?? []).find((f) => f.id === Number(b.id));
   if (!feed) return c.json({ ok: false, error: "no está" }, 404);
+  // "Probar" sobre PubMed consulta PubMed; `checkFeed` bajaría una URL que no
+  // existe y diría que la fuente está rota cuando no lo está.
+  if (isMedicalFeed(feed.url)) {
+    try {
+      const r = await readMedicalFeed();
+      return c.json({ ok: true, name: feed.name, count: r.items.length });
+    } catch (err) {
+      // Mismo contrato que `checkFeed`: {count, error}. Un campo propio no se
+      // vería, porque la hoja de la web solo mira esos dos.
+      return c.json({ ok: true, name: feed.name, count: 0, error: String(err instanceof Error ? err.message : err).slice(0, 160) });
+    }
+  }
   const r = await checkFeed(feed.url);
   return c.json({ ok: true, name: feed.name, ...r });
 });
@@ -178,11 +207,6 @@ boardApi.get("/extra", async (c) => {
   return c.json({
     ok: true,
     feeds: store.feeds ?? [],
-    automaticFeeds: [{
-      id: MEDICAL_FEED_ID,
-      name: MEDICAL_FEED_NAME,
-      description: "PubMed · evidencia clínica reciente · selección automática",
-    }],
     memories: store.memories ?? [],
     settings: store.settings ?? DEFAULT_SETTINGS,
     lists: Object.keys(store.lists),
@@ -406,6 +430,9 @@ boardApi.get("/state", async (c) => {
     notes: store.notes.slice().reverse(),
     memories: store.memories ?? [],
     feeds: store.feeds ?? [],
+    // Cuál es la URL centinela de PubMed y si ya está cargada: con eso la web
+    // decide si ofrece el botón de agregarla. No hay más "fuentes automáticas".
+    medical: { url: MEDICAL_URL, name: MEDICAL_FEED_NAME, added: (store.feeds ?? []).some((f) => isMedicalFeed(f.url)) },
     settings: { ...DEFAULT_SETTINGS, ...(store.settings ?? {}) },
     place: diag.place,
     weather: diag.weather,

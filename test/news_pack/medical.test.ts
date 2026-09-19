@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 
 import {
-  MEDICAL_FEED_ID,
+  isMedicalFeed,
   MEDICAL_FEED_NAME,
   MEDICAL_SUMMARY_VERSION,
+  MEDICAL_URL,
   parseMedicalXml,
 } from "../../server/src/medical";
 
@@ -37,9 +38,10 @@ const article = (p: {
   </PubmedArticle>`;
 
 test("la fuente médica usa un id reservado y versión de resumen", () => {
-  expect(MEDICAL_FEED_ID).toBe(2_000_000_000);
+  expect(MEDICAL_URL).toBe("pubmed:");
   expect(MEDICAL_FEED_NAME).toContain("PubMed");
-  expect(MEDICAL_SUMMARY_VERSION).toBeGreaterThan(1);
+  // Sube cuando cambia el prompt clínico: 3 es "en el idioma del aparato".
+  expect(MEDICAL_SUMMARY_VERSION).toBeGreaterThanOrEqual(3);
 });
 
 test("prioriza señal clínica sobre recencia bruta", () => {
@@ -78,4 +80,20 @@ test("respeta el límite sin inventar ítems", () => {
   const xml = `<PubmedArticleSet>${article({ pmid: 1, journal: "JAMA", title: "A", type: "Meta-Analysis", day: 19 })}${article({ pmid: 2, journal: "BMJ", title: "B", type: "Systematic Review", day: 18 })}</PubmedArticleSet>`;
   expect(parseMedicalXml(xml, 1)).toHaveLength(1);
   expect(parseMedicalXml("<PubmedArticleSet/>", 8)).toEqual([]);
+});
+
+// PubMed es un feed más y lo que lo distingue es la URL guardada: si esto se
+// afloja, un diario cualquiera podría entrar por el camino de PubMed (o al
+// revés, la fuente médica saldría a bajar una URL que no existe).
+test("isMedicalFeed reconoce la fuente por su URL y no se confunde", () => {
+  expect(isMedicalFeed("pubmed:")).toBe(true);
+  expect(isMedicalFeed("PubMed:")).toBe(true);        // no distingue mayúsculas
+  expect(isMedicalFeed("  pubmed:  ")).toBe(true);    // ni espacios de los lados
+  expect(isMedicalFeed("pubmed:clinica")).toBe(true); // admite sufijo
+
+  expect(isMedicalFeed("https://pubmed.ncbi.nlm.nih.gov/rss")).toBe(false);
+  expect(isMedicalFeed("https://diario.com/rss")).toBe(false);
+  expect(isMedicalFeed("")).toBe(false);
+  expect(isMedicalFeed(undefined)).toBe(false);
+  expect(isMedicalFeed(null)).toBe(false);
 });

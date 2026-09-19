@@ -8,13 +8,31 @@
 // ensayos fase III/RCT y evidencia secundaria; después revistas de especialidad
 // mayores. Editoriales, cartas, comentarios y casos quedan afuera.
 //
-// NCBI_EMAIL y NCBI_API_KEY son opcionales, pero permiten identificar la app.
+// NO pide cuenta, clave ni correo: E-utilities contesta a cualquiera. Se manda
+// sólo `tool`, que es la etiqueta con la que NCBI pide que las aplicaciones se
+// presenten; no es un login ni hay nada que configurar.
+//
+// Es un feed COMO CUALQUIER OTRO: vive en la lista del usuario (`store.feeds`)
+// con la URL centinela `pubmed:`, se agrega y se borra desde /board, y el bucle
+// del paquete lo trata igual que a un diario. Antes era una fuente "virtual"
+// que se le imponía a toda cuenta.
 import type { Item } from "./rss";
 import { safeFetchAt, textCappedSmart } from "./net";
 
-export const MEDICAL_FEED_ID = 2_000_000_000;
+// La URL que lo identifica en la lista de feeds. No se resuelve por DNS: es la
+// marca que hace que `rebuild()` llame a `readMedicalFeed()` en vez de bajar un
+// RSS. Todo lo que la compare tiene que usar `isMedicalFeed()`.
+export const MEDICAL_URL = "pubmed:";
 export const MEDICAL_FEED_NAME = "Medicina · PubMed";
-export const MEDICAL_SUMMARY_VERSION = 2;
+
+/** ¿Esta fuente es la de PubMed? Se mira la URL, que es lo que se persiste. */
+export function isMedicalFeed(url: string | undefined | null): boolean {
+  return (url ?? "").trim().toLowerCase().startsWith(MEDICAL_URL);
+}
+
+// Sube cuando cambia el prompt clínico: invalida el cuerpo guardado y lo vuelve
+// a masticar. 3 = resúmenes en el idioma del aparato, no siempre en español.
+export const MEDICAL_SUMMARY_VERSION = 3;
 
 const EUTILS = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils";
 const MAX_XML = 4_000_000;
@@ -93,11 +111,9 @@ function clampItems(): number {
 }
 
 function addIdentity(url: URL): void {
+  // Lo único que se manda. Sin correo y sin clave: no hace falta ninguna de las
+  // dos para que E-utilities conteste.
   url.searchParams.set("tool", "ws397-paper");
-  const email = process.env.NCBI_EMAIL?.trim();
-  const key = process.env.NCBI_API_KEY?.trim();
-  if (email) url.searchParams.set("email", email);
-  if (key) url.searchParams.set("api_key", key);
 }
 
 async function getText(url: URL, max: number): Promise<string> {
@@ -275,18 +291,10 @@ export function parseMedicalXml(xml: string, limit = clampItems()): Item[] {
   return candidates.slice(0, limit).map((c) => c.item);
 }
 
-// Interruptor. Esta fuente es VIRTUAL: aparece en toda cuenta aunque el usuario
-// no haya cargado un solo RSS, y cada pasada son dos viajes a PubMed (esearch +
-// efetch, 15 s de tope cada uno) más las llamadas al modelo de lo que mastique.
-// Con `NEWS_MEDICAL=0` no sale a la red y devuelve vacío, que es lo que hace
-// falta para (a) apagarla desde Railway sin tocar código y (b) que
-// `./test/news_pack/run.sh` siga siendo lo que dice ser: lógica pura, sin red.
-export function medicalEnabled(): boolean {
-  return (process.env.NEWS_MEDICAL ?? "1").trim() !== "0";
-}
-
+// El interruptor es la lista de feeds: si el usuario no agregó PubMed, esto no
+// se llama y no sale a la red. Por eso tampoco hace falta una variable de
+// entorno para apagarlo, ni para que `./test/news_pack/run.sh` siga sin red.
 export async function readMedicalFeed(): Promise<{ items: Item[]; title: string }> {
-  if (!medicalEnabled()) return { items: [], title: MEDICAL_FEED_NAME };
   const limit = clampItems();
   const search = new URL(`${EUTILS}/esearch.fcgi`);
   search.searchParams.set("db", "pubmed");

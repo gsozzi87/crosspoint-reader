@@ -2289,6 +2289,49 @@ manifiesto de noticias.
 *Pensando*, que PWR durante una descarga deje `CANCELAR por PWR` y enseguida el `PWR soltado … se suspende`
 de siempre, y que la línea `[ERR] [LOOP]` traiga un número de bombeos grande.
 
+## PubMed es un feed más, y un host caído volteaba el servidor (servidor, después de 1.5.118)
+
+Pedido del dueño: *"no vamos a usar ningun mail, si ya trae las noticias no veo para qué loguearse ni nada…
+sólo que quede como opción en la web si lo quieren o no como un feed más… arregla lo del prompt pues, ya
+dame las noticias o papers traducidos y masticados"*. **Nada de firmware**: es todo servidor y web.
+
+- **Lo que lo distingue es la URL, no un id reservado.** Antes era una fuente VIRTUAL con
+  `MEDICAL_FEED_ID = 2_000_000_000` que `rebuild()` inyectaba a mano y que se apagaba con `NEWS_MEDICAL=0`.
+  Ahora se guarda como cualquier feed con la URL centinela **`pubmed:`** e `isMedicalFeed(url)` la reconoce
+  (sin distinguir mayúsculas ni espacios, y sin confundirla con `https://pubmed.ncbi.nlm.nih.gov/…`, que es
+  un RSS de verdad). El lazo de `rebuild()` es el mismo que el de los diarios: mismo cupo por medio, mismo
+  reparto intercalado, misma ventana rodante; lo único que cambia es de dónde salen los titulares.
+- **El interruptor es la lista.** Si no está cargada, no se llama y no se sale a la red — y por eso la
+  variable de entorno se fue. De paso eso arregla la prueba: `./test/news_pack/run.sh` salía a NCBI de
+  verdad en cada corrida (`ECONNREFUSED eutils.ncbi.nlm.nih.gov`) porque la fuente virtual se inyectaba
+  siempre; el parche de la semana pasada fue ponerle `NEWS_MEDICAL=0`, que ya no hace falta.
+- **No pide cuenta, ni clave, ni correo.** `addIdentity()` manda sólo `tool=ws397-paper`, que es cómo NCBI
+  pide que las aplicaciones se presenten. Se sacaron `NCBI_EMAIL` y `NCBI_API_KEY`.
+- **El resumen sale en el idioma del aparato.** El abstract de PubMed viene siempre en inglés y el prompt
+  clínico estaba escrito SÓLO en español, así que en cualquier otro idioma la nota médica caía al prompt de
+  noticias común, que la simplifica para público general. `medicalPrompt(lang)` traduce y resume en el mismo
+  paso en los seis idiomas, manteniendo el registro clínico y dejando **sin traducir** fármacos, dosis,
+  HR/RR/OR, IC95%, NNT y unidades. `MEDICAL_SUMMARY_VERSION` sube con el prompt y **invalida lo ya
+  masticado**: sin eso los cuerpos guardados quedaban congelados en el idioma viejo.
+- **En la web**: `/board` → Ajustes → Noticias tiene un botón "🩺 Agregar Medicina · PubMed" (no se pega una
+  URL) que desaparece una vez agregada, y después es una fila más — se renombra, se prueba y se borra igual.
+  La hoja no muestra `pubmed:` crudo, que no significa nada, sino qué es la fuente. `POST /feed/test` sobre
+  ella consulta PubMed (bajar `pubmed:` diría que está rota cuando no lo está) y **contesta con la forma de
+  `checkFeed` (`{count, error}`)**: la primera versión inventó un campo `reason` que la web no mira en
+  ningún lado, así que el error no se veía.
+- **`medical` viaja en `GET /api/board/state`, no en `/extra`.** `/extra` es para el firmware viejo y la web
+  no lo pide nunca: el botón no aparecía por eso. Regla de siempre — hay UN estado y la web lo pide entero.
+
+**Y el pedo grande, que apareció solo mientras se probaba esto**: el servidor se **moría** al tocar PubMed
+desde este sandbox. `fetchPinned()` (`net.ts`) escuchaba con `request.once("error", reject)`, y el cliente
+HTTP puede emitir `"error"` **dos veces** por el mismo pedido (prueba una dirección, falla, y el segundo
+error llega en un `process.nextTick` posterior). Con `once` el oyente ya no estaba, y un `"error"` sin
+oyente **no es una promesa rechazada: es un throw que voltea el proceso**. O sea que cualquier host que
+rechace la conexión —NCBI acá, un diario caído en Railway— tiraba abajo el servidor entero en medio de la
+pasada de noticias, con todo lo demás adentro. Ahora es `on` con bandera. Verificado con el reproductor de
+verdad: antes `Bun v1.3.11` y el proceso muerto; ahora la línea `news feed: pubmed: Error…` y la pasada
+termina sola.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

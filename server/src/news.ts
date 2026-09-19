@@ -46,7 +46,7 @@ import { normalizeLang, type Lang } from "./lang";
 import { DEFAULT_TZ, download, DownloadError, extractArticle, readFeed, whenLabel } from "./rss";
 import { load as loadStore } from "./store";
 import { addUsage, overQuota } from "./usage";
-import { MEDICAL_FEED_ID, MEDICAL_FEED_NAME, MEDICAL_SUMMARY_VERSION, readMedicalFeed } from "./medical";
+import { isMedicalFeed, MEDICAL_SUMMARY_VERSION, readMedicalFeed } from "./medical";
 
 // Cuántas notas lleva el paquete y cuántas de ésas pasan por el modelo. El
 // resto van con el texto limpiado a mano, que es gratis y casi siempre alcanza.
@@ -142,13 +142,34 @@ const PROMPT: Record<Lang, string> = {
   ru: "Перепиши эту новость для маленького экрана: что произошло, где, кого касается и почему это важно. Короткие фразы, без мнений, ничего не выдумывай. Пять-десять фраз, простой текст.",
 };
 
-const MEDICAL_PROMPT_ES =
-  "Resume este abstract para un médico. Mantén lenguaje clínico y metodológico; no lo simplifiques para público general. " +
-  "Incluye, sólo si están reportados: diseño y población, tamaño muestral, intervención y comparador, endpoint primario, " +
-  "magnitud del efecto con IC/p cuando figure, eventos adversos relevantes y limitaciones explícitas. Conserva nombres de " +
-  "fármacos, dosis, HR/RR/OR, IC95%, NNT y unidades. Distingue asociación de causalidad. Conserva PMID y DOI en una última frase breve si están presentes. " +
-  "No extrapoles más allá del abstract, no declares que cambia la práctica si el estudio no lo demuestra y no inventes datos. Español neutro, 6 a 12 frases, " +
-  "texto plano y compacto para una pantalla pequeña.";
+// El abstract de PubMed viene SIEMPRE en inglés, así que acá el modelo hace dos
+// cosas a la vez: traducir al idioma del aparato y resumir en clínico. Antes
+// esto era un solo prompt en español y en cualquier otro idioma la nota médica
+// caía al prompt de noticias común, que la simplifica para público general.
+// `MEDICAL_SUMMARY_VERSION` (medical.ts) sube cuando esto cambia, así los
+// cuerpos ya guardados se vuelven a masticar en vez de quedar en español.
+const MEDICAL_TARGET: Record<Lang, string> = {
+  es: "español neutro",
+  en: "English",
+  fr: "français",
+  de: "Deutsch",
+  pt: "português",
+  ru: "русский язык",
+};
+
+function medicalPrompt(lang: Lang): string {
+  return [
+    `El texto que sigue es el abstract de un artículo médico, en inglés. Tradúcelo y resúmelo en ${MEDICAL_TARGET[lang]}.`,
+    "Es para un MÉDICO: mantén el lenguaje clínico y metodológico y no lo simplifiques para público general.",
+    "Incluye, sólo si están reportados: diseño y población, tamaño muestral, intervención y comparador,",
+    "endpoint primario, magnitud del efecto con IC/p cuando figure, eventos adversos relevantes y limitaciones explícitas.",
+    "Conserva SIN traducir los nombres de fármacos, las dosis, HR/RR/OR, IC95%, NNT, las unidades y las siglas de escalas.",
+    "Distingue asociación de causalidad.",
+    "Si están presentes, conserva PMID y DOI en una última frase breve.",
+    "No extrapoles más allá del abstract, no declares que cambia la práctica si el estudio no lo demuestra y no inventes datos.",
+    "De 6 a 12 frases, texto plano y compacto para una pantalla pequeña.",
+  ].join(" ");
+}
 
 // Una nota masticada. Si el modelo falla, se devuelve el texto limpiado a mano:
 // el paquete NUNCA queda sin la nota por culpa del modelo.
@@ -161,7 +182,7 @@ async function chew(
   const raw = text.slice(0, MAX_BODY);
   if (raw.length < 400) return { text: raw, chewed: false };
   try {
-    const system = medical && lang === "es" ? MEDICAL_PROMPT_ES : PROMPT[lang];
+    const system = medical ? medicalPrompt(lang) : PROMPT[lang];
     const out = await chatText({ system, user: raw, maxTokens: medical ? 1100 : 900 });
     await addUsage(accountId, { llm: 1 });
     const clean = out.trim();
@@ -260,6 +281,18 @@ export function rollingWindow(items: PackItem[], perFeed: number, total: number)
 export async function rebuild(accountId: number, lang: Lang = "es"): Promise<number> {
   const store = await loadStore(accountId);
   const feeds = store.feeds ?? [];
+  // Sin fuentes cargadas no hay paquete. PubMed ya no es una excepción: es un
+  // feed de la lista como cualquier otro, así que si no está, no se sale a la
+  // red (y por eso las pruebas del paquete siguen siendo sin red).
+  if (feeds.length === 0) {
+    await mutateDoc(accountId, "news", shape, (pack) => {
+      pack.at = new Date().toISOString();
+      pack.items = [];
+      pack.bodies = {};
+      pack.failed = {};
+    });
+    return 0;
+  }
 
   // El masticado gasta modelo SIN que nadie lo pida (corre solo cada hora), así
   // que respeta el mismo tope mensual que las rutas metered: pasado el tope el
@@ -279,22 +312,15 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   const porFeed: { feed: string; id: number; items: Awaited<ReturnType<typeof readFeed>>["items"] }[] = [];
   const unavailable = new Set<number>();
 
-  // Fuente virtual: siempre aparece aunque el usuario no haya cargado ningún
-  // RSS. Vive en el servidor y usa el mismo formato que el resto de medios.
-  try {
-    const medical = await readMedicalFeed();
-    if (medical.items.length)
-      porFeed.push({ feed: MEDICAL_FEED_NAME, id: MEDICAL_FEED_ID, items: medical.items });
-    else
-      unavailable.add(MEDICAL_FEED_ID);
-  } catch (err) {
-    unavailable.add(MEDICAL_FEED_ID);
-    console.error("news medical:", String(err).slice(0, 120));
-  }
+  // Qué ids son de PubMed. Se mira la URL una vez y se guarda: más abajo hace
+  // falta por id, cuando ya no se tiene el feed a mano.
+  const medicalIds = new Set(feeds.filter((f) => isMedicalFeed(f.url)).map((f) => f.id));
 
   for (const f of feeds) {
     try {
-      const r = await readFeed(f.url);
+      // Única diferencia con un diario: de dónde salen los titulares. Después
+      // entra al MISMO reparto, al mismo cupo por medio y a la misma ventana.
+      const r = isMedicalFeed(f.url) ? await readMedicalFeed() : await readFeed(f.url);
       if (r.items.length) porFeed.push({ feed: f.name || r.title, id: f.id, items: r.items });
       else unavailable.add(f.id);
     } catch (err) {
@@ -333,7 +359,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     // Lo que ya estaba y no cambió de título no se vuelve a bajar ni a masticar:
     // eso es lo que hace que la pasada de cada hora sea barata.
     const antes = conocido.get(id);
-    const medical = feedId === MEDICAL_FEED_ID;
+    const medical = medicalIds.has(feedId);
     if (antes && antes.title === item.title && previo.bodies[id] && (!medical || antes.medicalVersion === MEDICAL_SUMMARY_VERSION)) {
       // El `whenAt` completa los paquetes armados antes de la ventana rodante.
       items.push(antes.whenAt ? antes : { ...antes, whenAt: item.whenAt });
@@ -402,7 +428,6 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   // todos los configurados. Esto también cubre páginas que contestaron pero
   // sólo trajeron titulares o cuerpos demasiado cortos.
   if (items.length === 0) {
-    unavailable.add(MEDICAL_FEED_ID);
     for (const feed of feeds) unavailable.add(feed.id);
   }
   const seen = new Set(items.map((item) => item.id));
