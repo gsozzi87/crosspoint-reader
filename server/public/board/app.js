@@ -171,7 +171,6 @@ function fmtStamp(iso) {
   if (isNaN(d.getTime())) return iso;
   return fmtDay(isoOf(d)) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
 }
-function kb(b) { return b < 1024 ? b + " B" : b < 1048576 ? Math.round(b / 1024) + " KB" : (b / 1048576).toFixed(1) + " MB"; }
 
 // ── Hoja (editor) ───────────────────────────────────────────────────────────
 let sheetOpts = null;
