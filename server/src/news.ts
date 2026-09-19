@@ -46,6 +46,7 @@ import { normalizeLang, type Lang } from "./lang";
 import { DEFAULT_TZ, download, DownloadError, extractArticle, readFeed, whenLabel } from "./rss";
 import { load as loadStore } from "./store";
 import { addUsage, overQuota } from "./usage";
+import { MEDICAL_FEED_ID, MEDICAL_FEED_NAME, readMedicalFeed } from "./medical";
 
 // Cuántas notas lleva el paquete y cuántas de ésas pasan por el modelo. El
 // resto van con el texto limpiado a mano, que es gratis y casi siempre alcanza.
@@ -242,15 +243,6 @@ export function rollingWindow(items: PackItem[], perFeed: number, total: number)
 export async function rebuild(accountId: number, lang: Lang = "es"): Promise<number> {
   const store = await loadStore(accountId);
   const feeds = store.feeds ?? [];
-  if (feeds.length === 0) {
-    await mutateDoc(accountId, "news", shape, (pack) => {
-      pack.at = new Date().toISOString();
-      pack.items = [];
-      pack.bodies = {};
-      pack.failed = {};
-    });
-    return 0;
-  }
 
   // El masticado gasta modelo SIN que nadie lo pida (corre solo cada hora), así
   // que respeta el mismo tope mensual que las rutas metered: pasado el tope el
@@ -269,6 +261,20 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   // la segunda vuelta, así un diario que publica mucho no se come el paquete.
   const porFeed: { feed: string; id: number; items: Awaited<ReturnType<typeof readFeed>>["items"] }[] = [];
   const unavailable = new Set<number>();
+
+  // Fuente virtual: siempre aparece aunque el usuario no haya cargado ningún
+  // RSS. Vive en el servidor y usa el mismo formato que el resto de medios.
+  try {
+    const medical = await readMedicalFeed();
+    if (medical.items.length)
+      porFeed.push({ feed: MEDICAL_FEED_NAME, id: MEDICAL_FEED_ID, items: medical.items });
+    else
+      unavailable.add(MEDICAL_FEED_ID);
+  } catch (err) {
+    unavailable.add(MEDICAL_FEED_ID);
+    console.error("news medical:", String(err).slice(0, 120));
+  }
+
   for (const f of feeds) {
     try {
       const r = await readFeed(f.url);
@@ -377,6 +383,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   // todos los configurados. Esto también cubre páginas que contestaron pero
   // sólo trajeron titulares o cuerpos demasiado cortos.
   if (items.length === 0) {
+    unavailable.add(MEDICAL_FEED_ID);
     for (const feed of feeds) unavailable.add(feed.id);
   }
   const seen = new Set(items.map((item) => item.id));
