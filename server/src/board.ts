@@ -37,6 +37,7 @@ import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSear
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { probeFeed, checkFeed } from "./rss";
+import { MEDICAL_FEED_ID, MEDICAL_FEED_NAME } from "./medical";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
 import { clampNote } from "./notes";
 import { telegramBoard } from "./libros";
@@ -177,6 +178,11 @@ boardApi.get("/extra", async (c) => {
   return c.json({
     ok: true,
     feeds: store.feeds ?? [],
+    automaticFeeds: [{
+      id: MEDICAL_FEED_ID,
+      name: MEDICAL_FEED_NAME,
+      description: "PubMed · evidencia clínica reciente · selección automática",
+    }],
     memories: store.memories ?? [],
     settings: store.settings ?? DEFAULT_SETTINGS,
     lists: Object.keys(store.lists),
