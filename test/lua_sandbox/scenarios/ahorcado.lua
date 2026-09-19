@@ -244,3 +244,40 @@ for _ = 1, #ABC * 2 do
   fake.key("down")
 end
 assert(cp.busy() == false, "y al final sigue sin haber nada en curso")
+
+-- ---------------------------------------------------------------------------
+-- 8. Quince partidas al azar de punta a punta, ganadas y perdidas alternadas:
+-- es donde aparece la palabra que no se puede terminar o el cursor que se
+-- queda sin letras libres.
+
+cp.save("")
+fake.reload()
+on_open()
+-- El marcador viene de antes: la app lo lleva en su archivo y esto es la misma
+-- sesión, así que se parte de lo que haya.
+local mg, mp = campos().marcador:match("(%d+)%s+(%d+)")
+local g0, p0 = tonumber(mg), tonumber(mp)
+for k = 1, 15 do
+  fake.advance(k * 13)
+  local pal = campos().palabra
+  local orden, enPal = claves(pal)
+  if k % 2 == 1 then
+    for _, l in ipairs(orden) do probar(l) end
+    g0 = g0 + 1
+    assert(dibujado("¡Ganaste!"), "partida " .. k .. ": ganada")
+  else
+    local fallados = 0
+    for _, l in ipairs(ABC) do
+      if fallados < 6 and not enPal[l] then
+        probar(l)
+        fallados = fallados + 1
+      end
+    end
+    p0 = p0 + 1
+    assert(dibujado("Se acabó"), "partida " .. k .. ": perdida")
+    assert(dibujado("Era " .. pal), "y se ve cuál era")
+  end
+  assert(dibujado(g0 .. " - " .. p0), "el marcador va llevando la cuenta")
+  assert(fake.key("ok") == true, "OK: otra palabra")
+end
+assert(cp.busy() == false, "quince partidas y ni una vez se abrió el micrófono o la red")
