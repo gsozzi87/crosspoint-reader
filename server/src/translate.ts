@@ -13,12 +13,20 @@ import { Hono } from "hono";
 import type { AppEnv } from "./tenant";
 import { transcribeWav, toWav, NoSpeechError, NO_SPEECH, NO_SPEECH_MSG } from "./transcribe";
 import { synthesize } from "./tts";
-import { LANGUAGE_NAME, normalizeLang } from "./lang";
+import { LANGUAGE_NAME, normalizeLang, type Lang } from "./lang";
 import { chatText, LlmError } from "./llm";
 import { limitBody, readBodyBytes, redactSecrets } from "./net";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 export const translate = new Hono<AppEnv>();
+
+type TranslateLang = Lang | "it";
+const TRANSLATE_NAME: Record<TranslateLang, string> = { ...LANGUAGE_NAME, it: "italiano" };
+
+function normalizeTranslateLang(raw: string | null | undefined): TranslateLang {
+  const code = (raw ?? "").toLowerCase().slice(0, 2);
+  return code === "it" ? "it" : normalizeLang(code);
+}
 
 function framed(json: object, audio: Uint8Array | null): Response {
   const head = Buffer.from(JSON.stringify(json), "utf8");
@@ -29,8 +37,8 @@ function framed(json: object, audio: Uint8Array | null): Response {
 }
 
 translate.post("/", limitBody(8 * 1024 * 1024), async (c) => {
-  const from = normalizeLang(c.req.query("from"));
-  const to = normalizeLang(c.req.query("to"));
+  const from = normalizeTranslateLang(c.req.query("from"));
+  const to = normalizeTranslateLang(c.req.query("to"));
   let text: string;
   try {
     text = await transcribeWav(toWav(await readBodyBytes(c), c.req.header("content-type")), from);
@@ -52,7 +60,7 @@ translate.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     const translation = (
       await chatText({
         system: [
-          `Eres un traductor de conversación. Traduce del ${LANGUAGE_NAME[from]} al ${LANGUAGE_NAME[to]} lo que dice el usuario,`,
+          `Eres un traductor de conversación. Traduce del ${TRANSLATE_NAME[from]} al ${TRANSLATE_NAME[to]} lo que dice el usuario,`,
           "tal cual, con el mismo registro y sin agregar nada: ni comentarios, ni comillas, ni explicaciones.",
           "El texto llega transcrito de voz y puede contener errores de reconocimiento: interprétalo con sentido común.",
           "Responde solo con la traducción, en texto plano.",
