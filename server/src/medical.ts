@@ -251,12 +251,14 @@ function parseCandidate(block: string): Candidate | null {
     ? `${citation}. ${abstract}`.slice(0, 6000)
     : `${citation}. Publicación reciente indexada en PubMed.`;
 
+  const pubmedUrl = `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`;
   const item: Item = {
     id: pmid,
     title: `[${label}] ${title}`.slice(0, 500),
     when: "",
     whenAt,
-    link: abstract.length >= 200 ? "" : `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`,
+    link: abstract.length >= 200 ? "" : pubmedUrl,
+    sourceLink: pubmedUrl,
     desc,
   };
   return { item, score: candidateScore(journal, types, abstract, whenAt), journal, types };
