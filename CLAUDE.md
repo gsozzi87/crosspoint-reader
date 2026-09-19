@@ -2015,15 +2015,18 @@ Pedidos del dueño después de probar LIBRARY en vivo ("anduvo bien!"):
   1 bit empaquetado por filas (MSB primero, 1 = tinta, fila redondeada a byte), hasta 256 × 256, escala 1..8.
   Pinta píxel a píxel con `drawPixel`/`fillRect` a propósito: `GfxRenderer::drawImage` no rota los bits
   (tiene un `TODO`) y así la orientación del panel se aplica sola. En el harness queda en `fake.images`.
-- **Mascota** (`examples/Apps/mascota.lua`, 45 KB; créditos y reglas en `docs/ws397/MASCOTA.md`): tamagotchi
-  con **dibujos ajenos, como pidió el dueño** ("no las generes tú"): la gatita es "Tiny Kitten Game Sprite" de
-  Segel (OpenGameArt, **CC0**) y los iconos y el huevo son de OpenCritter de SuperMechaCow (**MIT**); pasados a
-  1 bit con Pillow (umbral, sólo contorno) a 88 × 120 y pintados a escala 2. Cuatro barras (hambre, ánimo,
-  energía, higiene) que bajan con el reloj de verdad (`cp.time().epoch`, tope de 12 h por ausencia, guardado
-  en `cp.save`); Alimentar, Jugar (mayor o menor, 3 rondas), Dormir, Limpiar, Info; nombre por voz al nacer;
-  sacudir la despierta, boca abajo la duerme; 36 h de descuido y "se fue" (huevo nuevo). Repinta sólo cuando
-  cambia algo (cuadro cada 4 s). Descartados por licencia: picotamachibi (sin licencia), Matagotchi (GPL),
-  ToffeeCraft (sin redistribución).
+- **Mascota** (`examples/Apps/mascota.lua`, 24 KB; créditos y reglas en `docs/ws397/MASCOTA.md`): tamagotchi
+  con **dibujos ajenos, como pidió el dueño** ("no las generes tú"), y **es una perrita salchicha** ("pero
+  quiero una perrita salchicha"): la mascota `dachshund` de openclaw-tamagotchi de Artem Katolikov
+  (GitHub, **MIT**; idle/walk/sleep de 32 × 32, recortados a 32 × 16 y pintados a escala 7; el cuadro de
+  "se fue" es el de quieta dado vuelta). Convertida por paleta y no por umbral (el ojo desaparecía por
+  luminancia). Los iconos y el huevo son de OpenCritter de SuperMechaCow (**MIT**). La primera versión era una
+  gatita CC0 de Segel (OpenGameArt) y duró un commit. Cuatro barras (hambre, ánimo, energía, higiene) que
+  bajan con el reloj de verdad (`cp.time().epoch`, tope de 12 h por ausencia, guardado en `cp.save`);
+  Alimentar, Jugar (mayor o menor, 3 rondas), Dormir, Limpiar, Info; nombre por voz al nacer; sacudir la
+  despierta, boca abajo la duerme; 36 h de descuido y "se fue" (huevo nuevo). Repinta sólo cuando cambia algo
+  (cuadro cada 4 s). Descartados por licencia o legibilidad: el Dachshund CC0 de zwonky (16 × 16, a 1 bit son
+  dos manchas), picotamachibi (sin licencia), Matagotchi (GPL), ToffeeCraft (sin redistribución).
 - **Sudoku** (`examples/Apps/sudoku.lua`, 30 KB): con sólo palanca, OK y Atrás, el cursor recorre las celdas
   vacías, OK cicla 1…9…vacío y Atrás abre el menú (Dictar, Verificar, Pista, Nuevo, Salir). **Dictar** entiende
   "fila tres, columna cinco, siete", "3 5 7", "borra fila 2 columna 4" y "pon un siete" en la celda del cursor.
@@ -2037,8 +2040,7 @@ Pedidos del dueño después de probar LIBRARY en vivo ("anduvo bien!"):
 
 **Instalar**: copiar `libros.lua`, `mascota.lua` y `sudoku.lua` (y `librito.lua`/`viajes.lua` por el nombre
 nuevo) a `/Apps`, y actualizar a 1.5.113 por OTA antes de abrir la mascota (sin `cp.image` no dibuja).
-**Pendiente de hardware**: el tamaño de la gatita en el vidrio (escala 2; si queda chica, escala 3 en
-`dibujarCasa`), el micrófono para el nombre, los gestos, y una corrección y un deletreo reales en LIBRARY.
+**Pendiente de hardware**: el tamaño de la perrita en el vidrio (`ESCALA = 7`, va de 1 a 8), el micrófono para el nombre, los gestos, y una corrección y un deletreo reales en LIBRARY.
 
 ## Roadmap acordado
 

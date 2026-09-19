@@ -1,7 +1,7 @@
 -- Escenario de examples/Apps/mascota.lua: la vida entera de la mascota con el
 -- cp falso del harness. Corre DESPUÉS de cargar la app; falla con error().
 --
--- Orden: nombre por voz → pantalla con el gato (cp.image con los bytes que
+-- Orden: nombre por voz → pantalla con la perra (cp.image con los bytes que
 -- corresponden) → alimentar → jugar las tres rondas → dormir y despertar →
 -- limpiar → pasan horas (bajan las barras) → recargar (vuelve del cp.save) →
 -- sin reloj → descuido largo → "se fue" → huevo nuevo → 50 ticks quietos.
@@ -67,14 +67,14 @@ assert(contiene(d, "Día 1"), "arranca en el día 1")
 assert(contiene(d, "Alimentar") and contiene(d, "Jugar") and contiene(d, "Dormir")
    and contiene(d, "Limpiar") and contiene(d, "Info"), "los cinco botones")
 
--- El gato: 88 x 120 a escala 2 son 11 bytes por fila → 1320 bytes.
+-- La perra: 32 x 16 a escala 7 son 4 bytes por fila → 64 bytes, 224 px de ancho.
 fake.images = {}
 fake.draw()
-local gato
-for _, i in ipairs(fake.images) do if i.w == 88 then gato = i end end
-assert(gato, "no se dibujó el gato")
-assert(gato.escala == 2 and gato.bytes >= 11 * 120, "el gato: 88 px de ancho a escala 2, " .. gato.bytes .. " bytes")
-assert(gato.x == (480 - 176) // 2, "el gato va centrado")
+local perra
+for _, i in ipairs(fake.images) do if i.w == 32 and i.h == 16 then perra = i end end
+assert(perra, "no se dibujó la perra")
+assert(perra.escala == 7 and perra.bytes >= 4 * 16, "la perra: 32 x 16 a escala 7, " .. perra.bytes .. " bytes")
+assert(perra.x == (480 - 224) // 2, "la perra va centrada")
 
 -- ------------------------------------------------------------- alimentar
 local hambre0 = stat("Hambre")
@@ -196,7 +196,7 @@ assert(seFue, "con días de descuido se tenía que ir")
 d = fake.draw()
 assert(contiene(d, "Vivió"), "la pantalla de despedida cuenta los días")
 im = ultimaImagen()
-assert(im.w == 128 and im.h == 120 and im.escala == 2, "el cuadro de despedida es el gato acostado (128 x 120)")
+assert(im.w == 32 and im.h == 16 and im.escala == 7, "el cuadro de despedida es la perra dada vuelta (32 x 16 a escala 7)")
 assert(not fake.key("up"), "en la despedida la palanca no hace nada")
 -- Guardado como ida: al recargar sigue ida.
 fake.reload()
