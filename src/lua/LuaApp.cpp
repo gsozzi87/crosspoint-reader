@@ -1015,12 +1015,44 @@ bool LuaApp::open(GfxRenderer& renderer, const std::string& path) {
     error_ = "la app supera el tamaño permitido";
     return false;
   }
-  script.close();
-  const String source = Storage.readFile(path.c_str());
-  if (source.length() == 0) {
-    error_ = "el archivo está vacío o no se pudo leer";
+  // El script se lee ENTERO y a PSRAM. Hasta 1.5.113 iba por
+  // `Storage.readFile()`, que recorta EN SILENCIO a un cuarto del bloque de heap
+  // libre (~28 KB con un heap interno de ~110 KB): toda app de más de eso
+  // llegaba cortada y Lua reventaba en el último renglón leído (viajes 763/765,
+  // sudoku 768, libros 812: los tres al mismo byte, ~28 KB). El tope de una app
+  // es SCRIPT_CAP y se lee completo o no se abre.
+  const size_t scriptSize = static_cast<size_t>(script.size());
+  char* buffer = static_cast<char*>(heap_caps_malloc(scriptSize + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!buffer) buffer = static_cast<char*>(malloc(scriptSize + 1));
+  if (!buffer) {
+    script.close();
+    error_ = "no hay memoria para leer la app";
     return false;
   }
+  size_t got = 0;
+  while (got < scriptSize) {
+    const int r = script.read(reinterpret_cast<uint8_t*>(buffer) + got, scriptSize - got);
+    if (r <= 0) break;
+    got += static_cast<size_t>(r);
+  }
+  script.close();
+  buffer[got] = '\0';
+  if (got == 0 || got != scriptSize) {
+    LOG_ERR(TAG, "%s: se leyeron %u de %u B del script", name_.c_str(), (unsigned)got, (unsigned)scriptSize);
+    free(buffer);
+    error_ = got == 0 ? "el archivo está vacío o no se pudo leer" : "no se pudo leer la app entera";
+    return false;
+  }
+  struct SourceGuard {
+    char* p;
+    ~SourceGuard() { free(p); }
+  } sourceGuard{buffer};
+  struct {
+    const char* c_str() const { return p; }
+    size_t length() const { return n; }
+    const char* p;
+    size_t n;
+  } source{buffer, got};
 
   state_ = luasandbox::create(MEM_CAP);
   if (!state_) {

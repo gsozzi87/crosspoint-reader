@@ -1,4 +1,4 @@
--- GHOSTWRITER: dicta un tema y el servidor escribe un libro corto (unos 15 minutos
+-- Escritor: dicta un tema y el servidor escribe un libro corto (unos 15 minutos
 -- de lectura) que se abre en el lector. Muestra el contrato asíncrono de las
 -- apps: cp.listen / cp.call / cp.download piden algo y la respuesta llega por
 -- on_heard y on_reply; el trabajo largo (escribir) se consulta desde on_tick
@@ -518,7 +518,7 @@ end
 function on_draw()
   local fin = cp.height() - 88
   if st == "inicio" then
-    local y = cabezal("Librito")
+    local y = cabezal("Escritor")
     y = parrafo(y + 8, "Dicta un tema y te escribe un libro corto para leer en 15 minutos. " ..
                 "Eliges cómo encararlo y qué capítulos van, y el libro queda en la tarjeta, en Leer.", 12, 4)
     lista(filas(), y + 16, fin)

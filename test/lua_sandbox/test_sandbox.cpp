@@ -231,8 +231,43 @@ cp.ms = function() return fake.ms end
 fake.advance = function(ms) fake.ms = fake.ms + ms end
 cp.save = function(t) saved = tostring(t):sub(1, 4096); return true end
 cp.load = function() return saved end
-cp.text = function(x, y, s) fake.drawn[#fake.drawn + 1] = tostring(s) end
+-- Los mismos tipos que exige el C del aparato: luaL_checkinteger acepta enteros,
+-- floats con valor entero y strings numéricos; luaL_checklstring acepta strings
+-- y números. Lo demás es "bad argument" en el aparato, así que también acá.
+local function chkint(fn, i, v)
+  local n = math.tointeger(v) or (type(v) == "string" and math.tointeger(tonumber(v)))
+  if n == nil then error(string.format("bad argument #%d to '%s' (number has no integer representation or not a number: %s)", i, fn, tostring(v)), 3) end
+  return n
+end
+local function chkstr(fn, i, v)
+  if type(v) == "string" then return v end
+  if type(v) == "number" then return tostring(v) end
+  error(string.format("bad argument #%d to '%s' (string expected, got %s)", i, fn, type(v)), 3)
+end
+local rawrect, rawline, rawsel = cp.rect, cp.line, cp.selection
+cp.text = function(x, y, s, tam, negrita)
+  chkint("text", 1, x); chkint("text", 2, y); s = chkstr("text", 3, s)
+  if tam ~= nil then chkint("text", 4, tam) end
+  fake.drawn[#fake.drawn + 1] = s
+end
+cp.rect = function(x, y, w, h, lleno, grosor)
+  chkint("rect", 1, x); chkint("rect", 2, y); chkint("rect", 3, w); chkint("rect", 4, h)
+  if grosor ~= nil then chkint("rect", 6, grosor) end
+  return rawrect(x, y, w, h, lleno, grosor)
+end
+cp.line = function(x1, y1, x2, y2, grosor)
+  chkint("line", 1, x1); chkint("line", 2, y1); chkint("line", 3, x2); chkint("line", 4, y2)
+  if grosor ~= nil then chkint("line", 5, grosor) end
+  return rawline(x1, y1, x2, y2, grosor)
+end
+cp.selection = function(x, y, w, h)
+  chkint("selection", 1, x); chkint("selection", 2, y); chkint("selection", 3, w); chkint("selection", 4, h)
+  return rawsel(x, y, w, h)
+end
+local rawtextw = cp.textw
+cp.textw = function(s, tam) s = chkstr("textw", 1, s); if tam ~= nil then chkint("textw", 2, tam) end; return rawtextw(s, tam) end
 cp.image = function(x, y, w, h, bits, escala)
+  chkint("image", 1, x); chkint("image", 2, y); chkint("image", 3, w); chkint("image", 4, h)
   assert(type(bits) == "string", "cp.image: bits tiene que ser un string")
   assert(w >= 1 and h >= 1 and w <= 256 and h <= 256, "cp.image: tamaño fuera de rango")
   assert(#bits >= ((w + 7) // 8) * h, "cp.image: faltan bytes")

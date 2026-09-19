@@ -2042,6 +2042,26 @@ Pedidos del dueño después de probar LIBRARY en vivo ("anduvo bien!"):
 nuevo) a `/Apps`, y actualizar a 1.5.113 por OTA antes de abrir la mascota (sin `cp.image` no dibuja).
 **Pendiente de hardware**: el tamaño de la perrita en el vidrio (`ESCALA = 7`, va de 1 a 8), el micrófono para el nombre, los gestos, y una corrección y un deletreo reales en LIBRARY.
 
+## Las apps grandes llegaban CORTADAS a 28 KB, y era el cargador (1.5.114)
+
+El dueño probó 1.5.113 y tres apps reventaron —Gurú de viaje "765", Sudoku "768", Biblioteca "812"— y el
+Escritor, que andaba, también. Ninguna falla en el harness. La pista fue el **byte** de cada línea: 28751,
+27767 y 28720. Tres apps distintas, mismo byte: no eran las apps.
+
+- **`Storage.readFile()` recorta en silencio** a `getMaxAllocHeap() / 4` (mínimo 16 KB): con un bloque
+  contiguo libre de ~110 KB, todo script de más de ~28 KB llegaba cortado y Lua reventaba en el último renglón
+  que alcanzó a leer; con el heap más fragmentado, el tope baja y cae hasta el Escritor (19 KB). Sólo lo decía
+  por `Serial`, que nadie lee. **El "763" de Viajes v1 era esto mismo**, mal diagnosticado como un nil de la
+  tarjeta (la regla de `s()`/`n()` sigue siendo buena, pero no era la causa).
+- `LuaApp::open()` lee ahora el archivo **entero y a PSRAM** (`heap_caps_malloc` SPIRAM, hasta `SCRIPT_CAP` de
+  64 KB) y si no lo lee completo no abre y lo dice en el log. De paso el script deja de vivir en el heap
+  interno, que es el escaso.
+- **El harness ahora exige los mismos tipos que el C del aparato** en `cp.text/rect/line/selection/image/textw`
+  (coordenadas enteras, texto string): un `x / 2` con resto o un `cp.text(x, y, nil)` pasaban de escritorio y
+  fallaban en el vidrio. No era la causa de esta tanda, pero era un agujero del mismo tipo.
+- **Nombres, como los pidió el dueño**: **Biblioteca** (`libros.lua`), **Escritor** (`librito.lua`, y el
+  cabezal de adentro ya no dice "Librito") y **Gurú de viaje** (`viajes.lua`). Nada en mayúsculas.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

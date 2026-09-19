@@ -85,7 +85,7 @@ local DESC = "Muchos años después, frente al pelotón de fusilamiento, el coro
 
 -- ------------------------------------------------------------- inicio
 on_open()
-espera("LIBRARY")
+espera("Biblioteca")
 espera("Presiona OK y di el título o el autor")
 espera("Buscar por voz")
 noEspera("Bajados")

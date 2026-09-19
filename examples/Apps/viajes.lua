@@ -1,4 +1,4 @@
--- CONCIERGE: la agenda, los papeles y la guía de cada día.
+-- Gurú de viaje: la agenda, los papeles y la guía de cada día.
 -- Todo se lee de la tarjeta (/Apps/data/viajes/): viaje.json es la vista
 -- compacta que baja Actualizar, papel-<id>.txt y guia-<fecha>.txt se bajan una
 -- vez y quedan, y pendientes.json guarda los tildes hechos sin red, que
@@ -1365,7 +1365,7 @@ end
 function on_draw()
   local fin = cp.height() - 88
   if st == "sin" then
-    local y = cabezal("Viajes")
+    local y = cabezal("Gurú de viaje")
     y = parrafo(y + 8, "No hay viajes cargados. Cárgalos en la web: /board → Viajes, y después elige Actualizar.",
                 12, 4)
     lista(filas(), y + 16, fin)

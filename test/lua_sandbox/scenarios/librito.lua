@@ -60,7 +60,7 @@ end
 
 -- ------------------------------------------------------------- inicio
 on_open()
-espera("Librito")
+espera("Escritor")
 espera("Dictar el tema")
 noEspera("Retomar")
 
