@@ -12,6 +12,7 @@
 // the local header last and break the build.
 #include "HttpDownloader.h"
 #include <Logging.h>
+#include <NetPump.h>
 #include <ReleaseJsonParser.h>
 #include <esp_ota_ops.h>
 #include <esp_wifi.h>
@@ -59,6 +60,13 @@ OtaUpdater::OtaUpdaterError OtaUpdater::checkForUpdate() {
     return true;
   });
   if (!ok) {
+    // `fetchUrl` devuelve un bool, así que "cortado" y "falló" llegan iguales;
+    // la bandera sigue puesta hasta la próxima pasada del loop (NetPump.h), que
+    // es lo que los separa.
+    if (netpump::cancelRequested()) {
+      LOG_INF("OTA", "chequeo de versión cortado por %s", netpump::cancelReason());
+      return ABORTED;
+    }
     LOG_ERR("OTA", "Release check fetch failed");
     return HTTP_ERROR;
   }
@@ -225,6 +233,17 @@ OtaUpdater::OtaUpdaterError OtaUpdater::installUpdate(ProgressCallback onProgres
   }
 
   if (!fetchOk || !flashOk) {
+    // CORTAR UNA DESCARGA OTA ES SEGURO, y por eso el bombeo puede hacerlo: lo
+    // que se escribió va a la partición INACTIVA y
+    // `esp_ota_set_boot_partition()` no se llamó nunca, así que el aparato
+    // sigue arrancando con el firmware de ahora. `esp_ota_abort()` suelta el
+    // handle y la deja marcada como inválida.
+    if (flashOk && netpump::cancelRequested()) {
+      LOG_INF("OTA", "descarga cortada por %s tras %u de %u bytes (la partición de arranque no se tocó)",
+              netpump::cancelReason(), (unsigned)processedSize, (unsigned)totalSize);
+      esp_ota_abort(otaHandle);
+      return ABORTED;
+    }
     LOG_ERR("OTA", "Firmware install failed (%s)", flashOk ? "download" : "flash write");
     esp_ota_abort(otaHandle);
     return flashOk ? HTTP_ERROR : INTERNAL_UPDATE_ERROR;

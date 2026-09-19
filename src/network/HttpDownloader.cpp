@@ -4,6 +4,7 @@
 #include <Arduino.h>
 #include <Logging.h>
 #include <Memory.h>
+#include <NetPump.h>
 #include <base64.h>
 #include <esp_wifi.h>
 
@@ -101,7 +102,14 @@ HttpDownloader::DownloadError runGetWolf(const std::string& startUrl, const std:
           if (sink.progress && sink.total > 0) sink.progress(sink.downloaded, sink.total);
           return true;
         },
-        [&sink]() { return sink.cancelFlag && *sink.cancelFlag; });
+        // EL ENGANCHE QUE YA EXISTÍA. `SecureHttpClient` consulta este
+        // predicado en cada vuelta de readLine/readFixed/readChunked/
+        // readUntilClose, o sea cada 1-2 ms mientras espera bytes: es
+        // exactamente el punto de bombeo que hacía falta, sin inventar nada
+        // ni tocar el SDK. Hasta acá sólo miraba el cancelFlag del llamador
+        // (que sólo pone downloadToFile), así que una descarga de 5,7 MB
+        // pasaba 90 s sin que el loop atendiera a nadie.
+        [&sink]() { return netpump::pumpAndCheckCancel() || (sink.cancelFlag && *sink.cancelFlag); });
 
     if (http.aborted()) return HttpDownloader::ABORTED;
     if (status < 0) {
@@ -213,7 +221,7 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
   }
 
   while (true) {
-    if (sink.cancelFlag && *sink.cancelFlag) {
+    if (netpump::pumpAndCheckCancel() || (sink.cancelFlag && *sink.cancelFlag)) {
       esp_http_client_cleanup(client);
       return HttpDownloader::ABORTED;
     }
@@ -249,6 +257,10 @@ HttpDownloader::DownloadError runGet(const std::string& url, const std::string& 
 HttpDownloader::DownloadError runGetSecure(const std::string& url, const std::string& username,
                                            const std::string& password, Sink& sink,
                                            const std::string& authorization = "") {
+  // Marca el trabajo en curso: es lo que le da nombre a la pasada larga en el
+  // log, y lo que ceba el estado de los botones para que el que ya estaba
+  // apretado no cancele nada.
+  netpump::Scope scope(url.c_str());
 #if defined(FREEINK_NET_WOLFSSL)
   return runGetWolf(url, username, password, sink, authorization);
 #else

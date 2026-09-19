@@ -471,6 +471,10 @@ void VoiceActivity::render(RenderLock&&) {
   renderer.clearScreen();
   GUI.drawHeader(renderer, Rect{0, metrics.topPadding, pageWidth, metrics.headerHeight}, tr(STR_HUB_TALK));
   const char* confirmLabel = "";
+  // Mientras se espera al servidor, Atrás CANCELA de verdad (el bombeo de
+  // include/NetPump.h corta la petición en curso), así que el renglón de
+  // abajo lo dice en vez de prometer un "Atrás" que no volvía.
+  const char* backLabel = tr(STR_BACK);
   switch (state) {
     case RECORDING:
       if (askingTime) {
@@ -518,6 +522,7 @@ void VoiceActivity::render(RenderLock&&) {
       break;
     case SENDING:
       renderer.drawCenteredText(UI_12_FONT_ID, mid - 10, tr(STR_VOICE_THINKING), true, EpdFontFamily::BOLD);
+      backLabel = tr(STR_CANCEL);
       break;
     case SPEAKING:
       // Mientras habla se muestra lo mismo que va a decir; si lo que sigue es
@@ -547,7 +552,7 @@ void VoiceActivity::render(RenderLock&&) {
     case REPLY:
       break;
   }
-  const auto labels = mappedInput.mapLabels(tr(STR_BACK), confirmLabel, "", "");
+  const auto labels = mappedInput.mapLabels(backLabel, confirmLabel, "", "");
   GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
   renderer.displayBuffer();
 }

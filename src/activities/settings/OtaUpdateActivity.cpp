@@ -48,6 +48,14 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     LOG_DBG("OTA", "Update check failed: %d", res);
     {
       RenderLock lock(*this);
+      // Cortado por el dueño (Atrás o PWR) no es lo mismo que fallido: se dice
+      // en el renglón de detalle. NO se cierra la pantalla sola, y es a
+      // propósito: salir de acá con el WiFi arriba hace un reinicio silencioso,
+      // que se comería la suspensión que PWR acaba de pedir. Quedándose, la
+      // suelta de PWR —que el bombeo dejó fresca en el PMIC— la atiende
+      // handlePowerHold() en la pasada siguiente, como en cualquier otra
+      // pantalla.
+      failedDetail = res == OtaUpdater::ABORTED ? tr(STR_CANCEL) : nullptr;
       state = FAILED;
     }
     return;
@@ -65,6 +73,10 @@ void OtaUpdateActivity::onWifiSelectionComplete(const bool success) {
     return;
   }
 
+  askToInstall();
+}
+
+void OtaUpdateActivity::askToInstall() {
   {
     RenderLock lock(*this);
     state = WAITING_CONFIRMATION;
@@ -139,6 +151,7 @@ void OtaUpdateActivity::render(RenderLock&&) {
 
   if (state == CHECKING_FOR_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_CHECKING_UPDATE));
+    drawCancelHint();
   } else if (state == WAITING_CONFIRMATION) {
     // Version info sits in the upper part of the screen so the centered
     // Cancel/Update popup doesn't cover it (same layout as ConfirmationActivity).
@@ -165,6 +178,7 @@ void OtaUpdateActivity::render(RenderLock&&) {
     renderer.drawCenteredText(
         UI_10_FONT_ID, y,
         (std::to_string(updater.getProcessedSize()) + " / " + std::to_string(updater.getTotalSize())).c_str());
+    drawCancelHint();
   } else if (state == NO_UPDATE) {
     renderer.drawCenteredText(UI_10_FONT_ID, top, tr(STR_NO_UPDATE), true, EpdFontFamily::BOLD);
     const auto labels = mappedInput.mapLabels(tr(STR_BACK), "", "", "");
@@ -184,6 +198,16 @@ void OtaUpdateActivity::render(RenderLock&&) {
   renderer.displayBuffer();
 }
 
+// UNA PANTALLA QUIETA NO DICE SI SE PUEDE SALIR. Bajar 5,7 MB son minutos con
+// la barra avanzando de a 10 %, y hasta acá no había forma de saber que Atrás
+// servía para algo (no servía: el loop estaba adentro de la descarga). Ahora
+// corta de verdad, así que hay que decirlo. Reusa STR_CANCEL: no hace falta
+// una clave nueva en los siete idiomas para esto.
+void OtaUpdateActivity::drawCancelHint() {
+  const auto labels = mappedInput.mapLabels(tr(STR_CANCEL), "", "", "");
+  GUI.drawButtonHints(renderer, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
+}
+
 void OtaUpdateActivity::runUpdateInstall() {
   LOG_DBG("OTA", "New update available, starting download...");
   {
@@ -199,6 +223,19 @@ void OtaUpdateActivity::runUpdateInstall() {
         static_cast<OtaUpdateActivity*>(ctx)->requestUpdate(true);
       },
       this);
+
+  if (res == OtaUpdater::ABORTED) {
+    // La descarga se cortó a pedido: la partición de arranque no se tocó, así
+    // que volver a preguntar "¿Cancelar o Actualizar?" es exactamente donde
+    // estábamos. Sin cerrar la pantalla, por lo mismo que arriba.
+    //
+    // Se pide desde loop() y no acá: esto corre ADENTRO del callback del
+    // popup, y `show()` reasigna el `std::function` que lo está ejecutando.
+    LOG_INF("OTA", "descarga cancelada: se vuelve a la confirmación");
+    lastUpdaterPercentage = UNINITIALIZED_PERCENTAGE;
+    reaskPending = true;
+    return;
+  }
 
   if (res != OtaUpdater::OK) {
     LOG_DBG("OTA", "Update failed: %d", res);
@@ -229,6 +266,12 @@ void OtaUpdateActivity::runUpdateInstall() {
 }
 
 void OtaUpdateActivity::loop() {
+  if (reaskPending) {
+    reaskPending = false;
+    askToInstall();
+    return;
+  }
+
   if (state == WAITING_CONFIRMATION) {
     if (confirmPopup.handleInput(mappedInput, [this] { requestUpdate(); })) return;
     // Popup dismissed without a selection (Back button or tap outside): cancel.

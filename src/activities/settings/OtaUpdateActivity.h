@@ -32,11 +32,16 @@ class OtaUpdateActivity : public Activity {
   const char* failedDetail = nullptr;
   // Queda pendiente encadenar la descarga del contenido después del chequeo.
   bool assetsNext = false;
+  // Descarga cancelada: hay que volver a mostrar la confirmación, pero desde
+  // loop() — quien la canceló corría adentro del callback del propio popup.
+  bool reaskPending = false;
   // Cancel/Update confirmation over the version info (replaces the old
   // hand-rolled bottom tap rects).
   OptionPopup confirmPopup;
 
   void onWifiSelectionComplete(bool success);
+  void askToInstall();
+  void drawCancelHint();
   void runUpdateInstall();
 
  public:
