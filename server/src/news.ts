@@ -146,8 +146,8 @@ const MEDICAL_PROMPT_ES =
   "Resume este abstract para un médico. Mantén lenguaje clínico y metodológico; no lo simplifiques para público general. " +
   "Incluye, sólo si están reportados: diseño y población, tamaño muestral, intervención y comparador, endpoint primario, " +
   "magnitud del efecto con IC/p cuando figure, eventos adversos relevantes y limitaciones explícitas. Conserva nombres de " +
-  "fármacos, dosis, HR/RR/OR, IC95%, NNT y unidades. Distingue asociación de causalidad. No extrapoles más allá del abstract, " +
-  "no declares que cambia la práctica si el estudio no lo demuestra y no inventes datos. Español neutro, 6 a 12 frases, " +
+  "fármacos, dosis, HR/RR/OR, IC95%, NNT y unidades. Distingue asociación de causalidad. Conserva PMID y DOI en una última frase breve si están presentes. " +
+  "No extrapoles más allá del abstract, no declares que cambia la práctica si el estudio no lo demuestra y no inventes datos. Español neutro, 6 a 12 frases, " +
   "texto plano y compacto para una pantalla pequeña.";
 
 // Una nota masticada. Si el modelo falla, se devuelve el texto limpiado a mano:
