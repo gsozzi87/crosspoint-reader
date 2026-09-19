@@ -38,7 +38,10 @@ en el vidrio son 4. Se probaron anchos de 150 a 256 con trazos de 1,4 a 3,1 y se
 
 CC0 no exige nada y **permite modificar** (que es lo que hacemos: doblar la cola, cerrar los ojos,
 espejar); MIT exige conservar el aviso de copyright, que va en el comentario de cabecera de la app,
-en la pantalla de Info y acá. Ninguna restringe el uso comercial.
+en la pantalla de Info y acá. Ninguna restringe el uso comercial. Lo de openclipart está escrito en
+su propia página (https://openclipart.org/share): *"We use the Creative Commons Zero 1.0 Public
+Domain License every time an artist uploads a piece of clipart… for anyone to use for any reason,
+even commercially"*, y *"there is no need to cite Openclipart"* — igual citamos al autor.
 
 **Por qué ese dibujo y no otro.** El SVG de oksmith trae, por cada forma, un camino **relleno** y
 otro **sólo de trazo** (`fill-opacity="0" stroke="#1A1919"`). Poniendo los rellenos en **blanco** y

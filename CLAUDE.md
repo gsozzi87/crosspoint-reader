@@ -565,7 +565,7 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 
 ## Apps en Lua desde la tarjeta (1.5.48)
 
-- Una app es **un archivo** en `/Apps` de la tarjeta (`/Apps/dados.lua`). Se copia por el modo memoria USB y se
+- Una app es **un archivo** en `/Apps` de la tarjeta (`/Apps/sudoku.lua`). Se copia por el modo memoria USB y se
   abre en **Juegos → Apps de la tarjeta**. Contrato de callbacks (`on_open`, `on_key`, `on_tick`, `on_draw`), no
   de bucle propio: en tinta el refresco lo decide el firmware, y una app con su `while true` se comería el loop,
   los recordatorios y el reposo. El contrato entero está en `docs/ws397/APPS_LUA.md` y hay ejemplos en
@@ -585,11 +585,12 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - **`cp.time()` y tres apps de fábrica (1.5.81)**: `cp.time()` es la única forma que tiene una app de saber la hora
   (`os` no está en el cajón, y `os.execute` y `os.remove` vienen en la misma biblioteca). Devuelve `year`, `month`,
   `day`, `hour`, `min`, `sec`, `wday` (1 = lunes) y `epoch` en UTC, y **`nil` cuando el aparato no está en hora**,
-  que es un estado real y frecuente. En la tarjeta de fábrica van `reloj.lua`, `ahorcado.lua` y `tresenraya.lua`
-  (`examples/Apps/`); `contador.lua` y `dados.lua` quedan como ejemplos para leer.
-  `reloj.lua` existe también para dejar escrito **cuándo** repinta una app en tinta: mira el minuto y devuelve
-  `true` sólo cuando cambió. Devolver `true` en cada `on_tick` sería un parcial cada 120 ms, o sea un completo
-  cada segundo y medio, para siempre.
+  que es un estado real y frecuente. (Las de fábrica eran `reloj.lua`, `ahorcado.lua` y `tresenraya.lua`, con
+  `contador.lua` y `dados.lua` de ejemplo; **desde 1.5.116 son cinco y otras**: Ahorcado, Escritor, Biblioteca,
+  Mascota y Sudoku, y las demás se borraron del repo.)
+  Lo que dejaba escrito `reloj.lua` —**cuándo** repinta una app en tinta— lo dice ahora `mascota.lua`: el cuadro
+  de la animación cambia cada cuatro segundos y el resto de los `on_tick` devuelven `false`. Devolver `true` en
+  cada `on_tick` sería un parcial cada 120 ms, o sea un completo cada segundo y medio, para siempre.
   `./test/lua_sandbox/run.sh` corre las cinco con el reloj puesto y sin el reloj puesto, y juega **partidas
   enteras** de ahorcado y de tres en raya: ahí es donde aparecen el índice fuera de rango y el cursor que se
   cuelga con el tablero lleno, que un toque a cada callback no encuentra.
@@ -1871,6 +1872,11 @@ mismo bucle sin fallar. O sea que el nil no lo produjo el script ni la función:
 
 ## Viajes, la app de Lua, y `cp.say` (1.5.111)
 
+> **TODO ESTO SALIÓ DEL PRODUCTO EN 1.5.116** ("la app de viajes se va, no la quiero ni en el aparato ni en
+> la web, no me va a servir"). Se borraron la app, `server/src/viajes.ts`, la pestaña de `/board` y los dos
+> documentos de `docs/ws397/` que se nombran acá abajo. Queda como historia: por qué se hizo así, y que es la
+> **segunda** vez que Viajes sale (la primera fue en 1.5.93).
+
 Diseño en `docs/ws397/VIAJES_APP.md`; **la verdad sobre nombres y formas en `docs/ws397/VIAJES_CONTRATO.md`**
 (decisiones del dueño: sin Diario ni libro del viaje; la guía se guarda directo en la tarjeta sin confirmar;
 antes de generarla la app pregunta POR VOZ lo que le falta al itinerario; Preguntar por voz con el viaje entero en
@@ -1906,6 +1912,11 @@ el contexto y respuesta hablada). Tres paquetes en paralelo, cada uno con su pru
 desde la app, y una guía generada de verdad con la clave de las apps cargada.
 
 ## Viajes v2: cada día su lugar, y la guía por día y a pedido (1.5.112)
+
+> **TODO ESTO SALIÓ DEL PRODUCTO EN 1.5.116** ("la app de viajes se va, no la quiero ni en el aparato ni en
+> la web, no me va a servir"). Se borraron la app, `server/src/viajes.ts`, la pestaña de `/board` y los dos
+> documentos de `docs/ws397/` que se nombran acá abajo. Queda como historia: por qué se hizo así, y que es la
+> **segunda** vez que Viajes sale (la primera fue en 1.5.93).
 
 Probando 1.5.111 el dueño dijo lo obvio: *"es un viaje de 13 días, obvio es de varios lugares… de ahí toma un
 crucero, visita islas, vuelve a Roma, de ahí a Madrid, boletos de tren, cada día en un hotel distinto"*, y *"la
@@ -2090,6 +2101,109 @@ la app siguiente veía `isDone()`, se salteaba `begin()`, `pump()` devolvía Con
 Ayer "anduvo" porque la red seguía arriba de una sincronización anterior. Ahora `shutdownRadio()` reinicia el
 objeto, y `beginListen()`/`ensureConnected()` comprueban `WiFi.status()` antes de creerle a un Connected viejo.
 La OTA a 1.5.114 que "falló" fue una bajada cortada: el binario del servidor estaba entero (mismo hash).
+
+## Cinco apps y nada más, noticias por medio, y Viajes afuera otra vez (1.5.116)
+
+Tanda de pedidos del dueño probando 1.5.115 en el aparato.
+
+- **La Biblioteca metía el catálogo de un autor en la DESCRIPCIÓN del libro.** Le dijo "Ángeles
+  Mastretta" (y el corrector de 1.5.113 acertó el apellido sin deletreo, que era lo que se quería ver);
+  entre los resultados el bot devuelve **`Ángeles Mastretta [11]`**, que no es un libro sino la AUTORA, y
+  al abrirla contesta con otra LISTA. `libros.ficha` parseaba todo con `parseCard`, así que esa lista se
+  mostraba como el texto de la ficha, corrida y sin poder bajar nada. Ahora `classifyReply` decide:
+  **manda el botón de FORMATO** (Epub/PDF), que es la única señal que no depende del idioma ni del texto;
+  si no hay, dos o más líneas `Título /comando` son lista salvo que el texto tenga además forma de ficha.
+  `libros.ficha` contesta con `kind` y **la app deja que el `kind` elija la pantalla**.
+  Una lista de UNA entrada se lee como ficha **a propósito**: no se distingue de una ficha que termina
+  nombrando un comando, y errarle para el lado "lista" deja un resultado que al abrirlo vuelve a sí mismo.
+- **Y las flechitas del bot.** La lista viene paginada y lo de abajo se perdía. `libros.mas {msg, dir}`
+  relee el mensaje y aprieta la flecha. **`waitReply` no servía**: sólo mira ids MAYORES que el enviado, y
+  al paginar el bot **edita el mismo mensaje**; `waitChange` mira los dos caminos en cada vuelta de 700 ms,
+  la edición primero para que un "Buscando…" intermedio no gane. `MAX_RESULTS` 10 → 20: con 10 se perdía
+  en silencio el final de una página, que es el mismo defecto que se estaba arreglando.
+- **Noticias: doce por medio, no tres.** `PACK_ITEMS` (18) era el tope TOTAL, así que con tres diarios
+  salían seis de cada uno y, descartando las notas sin cuerpo, tres o cuatro. Ahora manda `NEWS_PER_FEED`
+  (12) y el total (40) es sólo el techo. El tope por feed destapó dos cosas: el cupo cuenta las notas
+  **aceptadas** (se miran 36 candidatos por medio y el descarte sigue con el siguiente del MISMO diario),
+  y **la nota de la que no se pudo sacar texto se anota** (`failed`, reintento a las 6 h) — sin eso cada
+  hora se volvían a bajar las mismas, se gastaba el tope de bajadas en ellas y el diario se quedaba
+  clavado en cuatro **para siempre**. `rollingWindow` recorta por fecha y, si aun así no entra en el
+  total, suelta la más vieja **del medio que más tiene**: un recorte por fecha a secas dejaba sin una sola
+  nota al diario que publica despacio o sin fecha. `PackItem` gana `whenAt` **del lado del servidor**: el
+  formato de cable no cambió y el firmware no se tocó por esto. Manifiesto medido: **8267 bytes con 40
+  notas**, o sea ~17 KB de heap mientras `ServerClient` lo copia dos veces. Lo que sí subió en el aparato
+  son los presupuestos de bajada (6 → 12 en la sincronización, 4 → 8 en la oportunista): los TITULARES se
+  ven todos igual porque salen del manifiesto, esto es para que el cuerpo ya esté cuando no hay red.
+- **Sudoku sin nada de voz** ("ese es puro botoncito"): se fue el dictado entero —el parser, `on_heard`,
+  la única `cp.listen`— y con él la última puerta que le prendía el WiFi. El menú queda en Verificar,
+  Pista, Nuevo y Salir.
+- **Ahorcado rehecho** ("mejórale la gráfica y una lista mejor de palabras, está horrible"): horca grande
+  y centrada con trazos de 4 a 6 px, muñeco de seis pasos que al perder recibe ojos en cruz, y la palabra
+  en **casillas separadas** en vez de guiones corridos. Se elige la letra en un **abecedario de 27 teclas
+  con la Ñ en su lugar**; la palanca saltea las ya probadas, las erradas quedan tachadas y las acertadas
+  subrayadas. **Los acentos**: la palabra se guarda bien escrita (MURCIÉLAGO, CIGÜEÑA) y se parte con
+  `utf8` en glifos, cada uno con su clave sin tilde, así la Á se destapa con la A y la Ñ es tecla propia.
+  No hay palabra que no se pueda ganar, y el escenario lo comprueba **sobre la lista entera**. 316
+  sustantivos en español neutro, de 4 a 12 letras, en once categorías que se muestran como pista.
+- **La mascota, cuarto intento y el que quedó.** "No esa mancha negra, no quiero mancha quiero que esté
+  dibujado el contorno tipo caricatura". Tenía razón y la explicación es del medio: las tres versiones
+  anteriores eran siluetas **rellenas**, y una silueta rellena en tinta es una mancha a cualquier tamaño.
+  Ahora es **línea**: contorno negro, interior blanco, ojo, hocico, oreja caída y las cuatro patas, de un
+  dachshund CC0 de oksmith (openclipart). Con trazo fino **hay que trabajar cerca de la resolución final**
+  —a escala alta el trazo se parte—, así que el bitmap va grande y con poca escala, al revés que antes.
+  Los **cinco cuadros salen del MISMO dibujo**: dormida es la misma perra con los ojos cerrados —los dos
+  puntos del SVG aplastados a una rayita, que es una transformación del original y no un dibujo nuestro— y
+  "se fue" la misma en espejo. En la primera vuelta de esta tanda la dormida era otro SVG y **la perrita
+  cambiaba de raza al dormirse**, que es exactamente el defecto que el dueño venía marcando.
+  **Por qué ESE dibujo**: el SVG trae por cada forma un camino relleno y otro sólo de trazo, así que
+  poniendo los rellenos en BLANCO y dejando los trazos negros queda línea con interior blanco, y el
+  relleno blanco sigue tapando lo de atrás (las patas del otro lado no se transparentan). Los que son
+  formas rellenas sin trazo vuelven a ser una mancha al binarizar, se pruebe lo que se pruebe.
+  **El cuerpo se guarda UNA vez**: los seis cuadros de pie son el mismo cuerpo con el hueco de la cola en
+  blanco más un parche de 27x32; `cp.image` no pinta los ceros, así que uno no borra al otro. Seis colas
+  son 768 bytes contra unos 15 KB de seis cuerpos enteros. La cola se **dobla** (el giro crece con la
+  distancia a la raíz), no se recorta y se pega: los píxeles de la base no se mueven y no hay juntura.
+  Y "está contenta" alternaba dos cuadros de los cuales uno tenía la cola neutra, o sea que **la mitad del
+  tiempo la contenta se veía igual que la tranquila**; ahora los dos cuadros de cada humor van para el
+  mismo lado.
+  **Si en el vidrio el trazo queda fino o grueso, se regeneran los bitmaps con otro `STROKE`, NO se toca
+  `ESCALA`**: a 1 la perra queda diminuta y a 3 no entra en la zona.
+- **Viajes sale del producto, entero y por segunda vez** ("no la quiero ni en el aparato ni en la web"):
+  la app, `viajes.ts` con sus doce servicios, la pestaña de `/board` (vuelven a ser **cinco**) y los docs.
+  `#viajes` y `#mas/viajes` redirigen a Hoy. Los eventos que espejaba en el calendario quedaron otra vez
+  sin dueño, así que `normalizeCalendar` vuelve a descartarlos al leer. Huérfanos que dejó, verificados
+  uno por uno: `appsProseSearch` (su único llamador era la guía), y `weatherLineAt`, que **ya estaba
+  muerto antes** — era el clima del viaje de la v1 y la v2 se lo sacó sin borrarlo.
+
+### Las apps de fábrica son cinco, y el Dockerfile las tenía congeladas
+
+Decisión del dueño: **Ahorcado, Escritor, Biblioteca, Mascota y Sudoku**, y las otras borradas. Se fueron
+`reloj.lua`, `tresenraya.lua`, `contador.lua` y `dados.lua` del repo.
+
+- **El paquete de contenido no sabía SACAR nada**, sólo bajar, así que una app borrada se quedaba en la
+  tarjeta para siempre. `AssetSyncActivity::purgeRetiredApps()` borra de `/Apps` lo que figura en el
+  manifiesto LOCAL (o sea: lo que el paquete instaló en ESTE aparato) y ya no está en el del servidor.
+  Lo que el usuario copió a mano por el modo memoria USB nunca estuvo en ese archivo, así que no se toca;
+  para lo que salió del producto y pudo copiarse a mano hay una purga de una vez (`APPS_PURGE_REV`).
+  **Guarda que hace falta**: un manifiesto SIN ninguna app no se lee como "sacaron todas" sino como una
+  imagen del servidor a la que le faltó esa capa, y no se borra nada.
+- **Y el pedo de fondo, que llevaba meses**: `server/Dockerfile` bajaba las apps de fábrica **fijadas a un
+  commit viejo y verificadas contra su sha256**. Railway compila con Root Directory = `server`, así que
+  `examples/Apps/` no entra en el contexto de Docker y hay que bajarlas — pero con el commit clavado, el
+  paquete que el aparato descarga venía sirviendo **el ahorcado de ese commit** por más que el repo
+  cambiara, y nadie se acuerda de actualizar tres hashes a mano. Ahora se bajan de la RAMA que Railway
+  despliega, con un `ADD` a la API de commits como reloj de la caché (si no, Docker reusa la capa vieja y
+  es el mismo congelamiento por otro camino) y con el build fallando si falta una. Por el mismo motivo el
+  `tag` de cada app sale del **sha del archivo** y no de un número a mano.
+  **Regla**: un dato que hay que actualizar a mano para que algo no se congele se congela.
+
+**Instalar**: nada a mano. Las cinco apps vienen en el paquete de contenido, así que alcanza con
+actualizar por OTA y sincronizar; el aparato baja las que falten y borra `reloj`, `tresenraya` y lo que
+el paquete le haya instalado y ya no anuncie. **Pendiente de hardware**: el trazo de la perrita en el
+vidrio (4 px), el muñeco del ahorcado y que la Ñ y la Ü tengan glifo en UI_12/UI_14; una búsqueda de
+autor de verdad en la Biblioteca con sus flechitas (el bot **edita** el mensaje al paginar y ese camino
+no se pudo probar sin él); y una pasada de noticias contra diarios de verdad, que acá el proxy no deja
+salir.
 
 ## Roadmap acordado
 
