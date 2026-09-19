@@ -1076,5 +1076,10 @@ Use short entries. Do not paste huge tool transcripts.
 - Reviewer role assigned to ChatGPT; executor role assigned to the other AI agent.
 - No OTA authorized by this file.
 
-### Executor
-Add your first entry here after reading this file. Include current ws397 HEAD and which REV IDs you claim.
+### 2026-09-19 — Executor (Claude)
+- Read AGENTS.md and AI_REVIEW_PROTOCOL.md completely before touching code.
+- ws397 HEAD at session start: `2a47b1c` ("docs: require ws397 agents to read review protocol").
+- CLAIMED, P0 first: REV-001, REV-002, REV-009, REV-016, REV-017, REV-034, plus REV-005
+  (P1, but it is the code that moved last and the reviewer asked explicitly to re-read HEAD).
+- Not claimed in this batch, left OPEN for other agents: everything else.
+- No OTA will be published in this session.
