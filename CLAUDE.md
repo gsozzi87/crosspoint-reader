@@ -2205,6 +2205,90 @@ autor de verdad en la Biblioteca con sus flechitas (el bot **edita** el mensaje 
 no se pudo probar sin él); y una pasada de noticias contra diarios de verdad, que acá el proxy no deja
 salir.
 
+## El loop se quedaba SORDO adentro de la red (1.5.117)
+
+*"Se traba un montón de tiempo, no sé si es por la red o qué, pero no me da error, se traba, no responde al
+botón de atrás ni al de suspender, el usuario vive una experiencia mala."* No hubo que adivinar: el log lo
+decía entero, en la línea que mide UNA pasada del loop de Arduino (`main.cpp`).
+
+    New max loop duration: 90235 ms   ← la descarga de una OTA completa
+    New max loop duration: 52152 ms   ← una descarga que falló
+    New max loop duration: 34925 ms   ← otra
+    New max loop duration: 16377 ms   ← un 502 del servidor al chequear la versión
+    New max loop duration: 10684 ms   ← una pregunta de voz con búsqueda
+
+Noventa segundos adentro de una sola pasada. En todo ese rato no corren `POWER_KEY.pump()`, ni el
+`InputManager`, ni `MOTION.poll()`, ni `devlog::tick()`. Y la confirmación desde el otro lado estaba al lado,
+puesta por el arreglo de 1.5.100: `golpe: … latcheado durante 34979 ms de loop ocupado: se descarta`.
+Peor: la pulsación de PWR se decodificaba recién al volver, así que o llegaba vieja (`STALE_EDGE_MS`) o
+suspendía de golpe justo cuando la pantalla revivía — de ahí que además de trabarse hiciera algo raro al
+destrabarse.
+
+**Dónde estaba, exactamente**: los cuatro lazos de lectura de `SecureHttpClient` del SDK (`readFixed` con su
+`delay(2)` es el de las OTA; `readLine` es el de los 16 s del 502). Llegan ahí sólo dos caminos:
+`HttpDownloader::runGetWolf` (OTA, OPDS, fuentes, paquete de contenido) y `ServerClient::requestOnce` (los
+sesenta y pico de llamadores de `SERVER_CLIENT`).
+
+**Y el enganche ya existía sin usarse**: `SecureHttpClient::AbortCallback` se consulta en cada vuelta de esos
+lazos, o sea **cada 1-2 ms**. Es el equivalente de red del *slice hook* del panel de 1.5.97. `runGetWolf` le
+pasaba un predicado que sólo miraba una bandera que casi nadie ponía, y `ServerClient` usaba la forma de
+`sendRequest` que **ni siquiera acepta** ese callback.
+
+- **`include/NetPump.h` + `src/util/NetPumpHooks.{h,cpp}`**: el header guarda el puntero y `src/` instala la
+  función, mismo patrón que el panel (el header tiene que incluirse desde `lib/ServerClient` además de
+  `src/`). `netpump::Scope` marca el trabajo en curso y la más externa manda.
+- **Lo que el bombeo hace y NADA más**: `POWER_KEY.pump()`, una lectura CRUDA del pin de Atrás,
+  `esp_task_wdt_reset()` y `devlog::tick()`. No pinta (candado de render y regla del panel), no duerme desde
+  adentro del lazo, no vuelve a entrar a la red, **no llama a `InputManager::update()`** —se comería la
+  pulsación que la pantalla espera— y **no corre `checkTimeAlarms()` ni `MOTION.poll()`**, que empujan
+  Activities y consumen gestos.
+- **Rate limit de 25 ms**: los lazos preguntan cada 1-2 ms y una lectura I²C al PMIC a esa cadencia le sacaría
+  ancho de banda a la descarga. 25 ms es más rápido que cualquier dedo.
+- **Cebado**: la `Scope` externa llama al hook una vez sin emitir nada, sólo para cebar el estado de los
+  botones. Es la lección del boca abajo del IMU de 1.5.92 —la posición en la que el aparato ya estaba no es un
+  gesto—: sin eso, *Atrás mantenido en el hub = sincronizar* cancelaría la sincronización que acaba de pedir.
+- **Cancelar es de la PASADA del loop, no de la llamada**, y se limpia en `beginPass()`. Una sincronización son
+  decenas de peticiones dentro de una sola pasada: con la bandera por llamada, Atrás cancelaba una y la
+  siguiente arrancaba igual.
+- **PWR nunca duerme desde adentro del lazo**: el hook ve el flanco (o una suelta pendiente, porque un toque
+  entero puede caber entre dos bombeos), pide cancelar y **deja la suelta latcheada**. La red se desarma en
+  decenas de ms y `handlePowerHold()` la atiende en la pasada siguiente con las reglas de 1.5.99 intactas.
+- **Cortar una OTA es seguro y por eso el bombeo puede hacerlo**: lo escrito va a la partición INACTIVA,
+  `esp_ota_set_boot_partition()` no se llamó nunca y `esp_ota_abort()` suelta el handle, así que el aparato
+  sigue arrancando con el firmware de ahora.
+- Una petición cancelada devuelve `Transport` y **no se reintenta**; sin esa guardia volvía un 200 con el
+  cuerpo truncado. En el vidrio, OTA (*Comprobando* y *Actualizando*) y Hablar (*Pensando*) muestran ahora
+  **Atrás → Cancelar**, reusando `STR_CANCEL` (cero claves nuevas en los siete idiomas).
+
+**Y el log deja de esconderlo.** Una pasada de 35 segundos era un `[DBG] New max loop duration` entre miles de
+líneas de depuración, y encima sólo salía cuando era récord. Ahora hay un `[ERR]` que dice quién la tuvo:
+
+    [ERR] [LOOP] el loop estuvo 90235 ms sin atender a nadie: lo tuvo la red en «…/firmware-ws397.bin»
+          (90233 ms), se bombeó 3609 veces (PWR y Atrás siguieron vivos)
+    [ERR] [LOOP] el loop estuvo 9120 ms sin atender a nadie y NO fue la red: pantalla EpubReader.
+          Eso no tiene bombeo y hay que ir a buscarlo ahí
+
+Dos plazos a propósito —4 s con red, 8 s sin— porque una página con imagen la primera vez cuesta 4,8 s
+(1.5.83) y un `[ERR]` por página sería la línea por pintada que hubo que sacar en 1.5.93. **El número de
+bombeos ES la prueba**: si alguna vez sale `se bombeó 0 veces` en una operación larga, el bombeo no llegó a
+ese camino.
+
+**Lo que NO tiene bombeo, y queda anotado**: el `connect()` de TCP y el DNS (está adentro del
+`NetworkClient` de Arduino, no hay enganche sin cirugía en el core) y el lazo del handshake de wolfSSL
+(`SecureClient.cpp`, `delay(5)`), que se arregla con cuatro líneas en el SDK y se dejó afuera porque **ningún
+número del log apunta al handshake**: los 35/52/90 s son cuerpo y los 16 s son cabeceras. Tampoco las pasadas
+largas que no son de red (un FULL del panel, una página con imagen, el parseo de un EPUB), pero ésas ahora al
+menos se nombran solas en el log.
+
+De paso: `ServerClient::request()` no restauraba `WiFi.setSleep(true)` al salir por `NoNetwork` entre
+reintentos, y el cuerpo de la respuesta se copiaba DOS veces en heap interno (se juntaba en `_body` y después
+se copiaba a `out.body`); ahora cae derecho por el `DataCallback`, que son unos 17 KB menos de pico en el
+manifiesto de noticias.
+
+**Qué tiene que ver el dueño para saber que anduvo**: que Atrás corte en el acto durante *Actualizando* o
+*Pensando*, que PWR durante una descarga deje `CANCELAR por PWR` y enseguida el `PWR soltado … se suspende`
+de siempre, y que la línea `[ERR] [LOOP]` traiga un número de bombeos grande.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

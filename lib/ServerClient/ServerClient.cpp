@@ -5,6 +5,7 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <Logging.h>
+#include <NetPump.h>
 #include <PersistableStore.h>
 #include <WiFi.h>
 #include <esp_random.h>
@@ -90,15 +91,42 @@ ServerClient::Result ServerClient::requestOnce(const char* method, const std::st
   http.addHeader("Accept", "application/json");
   http.addHeader("X-Request-Id", requestId);
   if (auth) http.addHeader("Authorization", "Bearer " + SERVER_STORE.getToken());
+  // EL CUERPO SE ESCRIBE DERECHO Y EL LAZO DE ESPERA BOMBEA. El `sendRequest`
+  // de tres argumentos junta el cuerpo adentro de `_body` y después había que
+  // COPIARLO a `out.body` (dos copias del mismo cuerpo en el heap interno, que
+  // es el escaso); y, sobre todo, no acepta `AbortCallback`, que es el
+  // predicado que `SecureHttpClient` consulta en cada vuelta de sus lazos de
+  // lectura. Con la versión de cinco argumentos el cuerpo cae directo en
+  // `out.body` y, mientras el servidor piensa, el loop sigue atendiendo a PWR
+  // y a Atrás. Los reintentos internos del SDK ocurren ANTES de que llegue un
+  // solo byte de cuerpo (una escritura fallida o una línea de estado que no
+  // llega sobre una conexión reusada), así que `out.body` no se puede
+  // concatenar consigo mismo.
+  const freeink::SecureHttpClient::DataCallback sink = [&out](const uint8_t* data, const size_t len) {
+    out.body.append(reinterpret_cast<const char*>(data), len);  // binary-safe (/api/voice trae JSON + audio)
+    return true;
+  };
+  const freeink::SecureHttpClient::AbortCallback pump = []() { return netpump::pumpAndCheckCancel(); };
   int status;
   if (body && body->data) {
     http.addHeader("Content-Type", body->contentType ? body->contentType : "application/octet-stream");
-    status = http.sendRequest(method, body->data, body->len);
+    status = http.sendRequest(method, body->data, body->len, sink, pump);
   } else {
-    status = http.sendRequest(method, nullptr, 0);
+    status = http.sendRequest(method, nullptr, 0, sink, pump);
   }
   out.status = status;
-  out.body = http.getString();  // std::string: binary-safe (/api/voice carries JSON + audio)
+  // UNA PETICIÓN CORTADA NO ES UN 200. `sendRequestOnce` devuelve el estado que
+  // alcanzó a leer aunque el cuerpo haya quedado por la mitad, así que sin esto
+  // una cancelación a mitad de la respuesta se le entregaría al llamador como
+  // un éxito con el cuerpo truncado.
+  if (http.aborted()) {
+    LOG_INF(TAG, "%s: cortada por el usuario (%s) con %u bytes recibidos", url.c_str(), netpump::cancelReason(),
+            (unsigned)out.body.size());
+    out.status = -1;
+    out.body.clear();
+    http.end();
+    return Result::Transport;
+  }
   http.end();
 #else
   (void)method;
@@ -175,6 +203,12 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
   if (auth && !SERVER_STORE.hasToken()) return Result::NoToken;
 
   const std::string url = joinUrl(base, path);
+  // EL TRABAJO EN CURSO TIENE NOMBRE, y el bombeo empieza acá: la Scope ceba
+  // el estado de los botones (el Atrás que YA estaba apretado cuando la
+  // petición arrancó no cancela nada) y le da a la línea de "pasada larga" del
+  // log algo que decir. Cubre los tres intentos, no cada uno: cancelar es de
+  // la petición entera.
+  netpump::Scope scope(path.c_str());
   // One id across the retries of a request: a server that applied the first
   // attempt but lost the response can recognise the replay.
   const std::string requestId = newRequestId();
@@ -191,8 +225,15 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
   for (int attempt = 0; attempt < ATTEMPTS; ++attempt) {
     if (attempt > 0) {
       LOG_DBG(TAG, "%s %s: retry %d after status %d", method, path.c_str(), attempt, out.status);
-      delay(BACKOFF_MS[attempt - 1]);
-      if (!networkUp()) return Result::NoNetwork;
+      // El backoff es una espera NUESTRA, así que también bombea: un segundo y
+      // medio de delay() a secas entre dos intentos es un segundo y medio sin
+      // atender a nadie, y justo cuando el dueño está apretando todo porque
+      // "no pasa nada".
+      netpump::pumpDelay(BACKOFF_MS[attempt - 1]);
+      if (!networkUp()) {
+        if (wifiDormia) WiFi.setSleep(true);
+        return Result::NoNetwork;
+      }
     }
     const unsigned long t0 = millis();
     result = requestOnce(method, url, body, auth, requestId, out, timeoutMs);
@@ -219,6 +260,13 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
     if (out.status < 0 && took >= tope) {
       LOG_ERR(TAG, "%s %s: venció el tope de %lu ms sin que la conexión se cayera: el servidor sigue trabajando, no se reintenta",
               method, path.c_str(), (unsigned long)tope);
+      break;
+    }
+    // CANCELADA ES CANCELADA: no se reintenta. Si el dueño apretó Atrás o PWR
+    // para sacarse de encima una petición que no volvía, repetirla dos veces
+    // más con su backoff es exactamente lo que él estaba tratando de evitar.
+    if (netpump::cancelRequested()) {
+      LOG_INF(TAG, "%s %s: cancelada por %s, no se reintenta", method, path.c_str(), netpump::cancelReason());
       break;
     }
     if (!retryable(out.status)) break;
@@ -321,6 +369,14 @@ int ServerClient::flushQueue(size_t maxItems) {
   int done = 0;
   bool changed = false;
   while (items.size() > 0 && static_cast<size_t>(done) < maxItems) {
+    // Se pregunta ACÁ y no después del envío: así el ítem que SÍ se entregó
+    // antes de que el dueño cancelara se saca igual de la cola (si no, volvía
+    // a subirse en la próxima sincronización), y el siguiente ni se intenta.
+    if (netpump::cancelRequested()) {
+      LOG_INF(TAG, "queue: se corta por %s, quedan %u pendientes", netpump::cancelReason(),
+              (unsigned)items.size());
+      break;
+    }
     JsonObjectConst item = items[0].as<JsonObjectConst>();
     const std::string path = item["path"] | "";
     const std::string body = item["body"] | "";
@@ -329,14 +385,19 @@ int ServerClient::flushQueue(size_t maxItems) {
     Result r = Result::Transport;
     // The queued id is the request id, so a replay after a lost response is
     // recognisable server-side.
+    // La cola se vacía adentro de UNA pasada del loop: sin Scope no habría
+    // bombeo (tick() no hace nada fuera de una) y cincuenta POST encolados
+    // serían cincuenta esperas sordas seguidas.
+    netpump::Scope scope(path.c_str());
     for (int attempt = 0; attempt < ATTEMPTS; ++attempt) {
-      if (attempt > 0) delay(BACKOFF_MS[attempt - 1]);
+      if (attempt > 0) netpump::pumpDelay(BACKOFF_MS[attempt - 1]);
       if (!networkUp()) {
         r = Result::NoNetwork;
         break;
       }
       const Body payload{"application/json", reinterpret_cast<const uint8_t*>(body.data()), body.size()};
       r = requestOnce("POST", joinUrl(base, path), &payload, true, id.empty() ? newRequestId() : id, resp);
+      if (netpump::cancelRequested()) break;
       if (!retryable(resp.status)) break;
     }
     if (r == Result::Ok) {

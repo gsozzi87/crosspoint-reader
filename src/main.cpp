@@ -14,6 +14,7 @@
 #include <HalTiltSensor.h>
 #include <I18n.h>
 #include <Logging.h>
+#include <NetPump.h>
 #include <PowerManager.h>
 #include <SPI.h>
 #include <ServerCredentialStore.h>
@@ -70,6 +71,7 @@
 #include "util/ButtonNavigator.h"
 #include "util/CardLayout.h"
 #include "util/IdleSleep.h"
+#include "util/NetPumpHooks.h"
 #include "util/PowerKey.h"
 #include "util/RtcAlarm.h"
 #include "util/ScreenshotUtil.h"
@@ -1332,6 +1334,10 @@ void setup() {
   devlog::begin();  // from here every LOG_* line also goes to the SD
   setLogSink(&devlog::write);
   POWER_KEY.logSnapshot();  // the PMIC register dump, now that it reaches /board/log
+  // Desde acá una llamada de red que se quede esperando sigue atendiendo PWR y
+  // Atrás (include/NetPump.h). Va después de POWER_KEY.begin() y del log, para
+  // que la línea de instalación llegue a /board/log.
+  netpumphooks::begin();
   // Cuánto se fue durmiendo, dicho por el aparato: la última línea del diario
   // es la de "antes de dormir" y ésta es la de ahora.
   if (BoardConfig::isWS397() && esp_reset_reason() == ESP_RST_DEEPSLEEP) batterylog::reportAfterSleep();
@@ -1584,6 +1590,12 @@ void loop() {
   static unsigned long maxLoopDuration = 0;
   const unsigned long loopStartTime = millis();
   static unsigned long lastMemPrint = 0;
+
+  // Arranca una pasada: se olvida el resumen de red de la anterior y se limpia
+  // la cancelación. Si alguien apretó Atrás o PWR para cortar una descarga, el
+  // loop ya volvió a correr: la cancelación cumplió y no puede quedar puesta
+  // para matar lo próximo que se pida.
+  netpump::beginPass();
 
   if (BoardConfig::isWS397()) {
     // OK is plain Confirm here (DigitalButtons): the shared confirm/power
@@ -2022,6 +2034,36 @@ void loop() {
     if (maxLoopDuration > 50) {
       LOG_DBG("LOOP", "New max loop duration: %lu ms (activity: %lu ms)", maxLoopDuration, activityDuration);
     }
+  }
+
+  // UNA PASADA DE MEDIO MINUTO NO ES UNA LÍNEA DE DEPURACIÓN. Hasta acá lo
+  // único que quedaba de una descarga de 90 s era un `[DBG] New max loop
+  // duration`, que sale sólo cuando el número es un récord y no dice qué lo
+  // causó: el dueño tuvo que contar que "se traba y no responde al botón de
+  // atrás ni al de suspender". La regla de 1.5.96 es que eso lo detecta el
+  // aparato. Sale SIEMPRE que la pasada se pase del plazo (no sólo la primera
+  // vez), dice qué operación de red la ocupó y CUÁNTAS veces se bombeó
+  // mientras tanto: ese número es la prueba de que PWR y Atrás se estuvieron
+  // atendiendo. Bombeos ~0 con una operación larga = el bombeo no llegó a ese
+  // camino, y hay que ir a buscarlo ahí.
+  //
+  // Dos plazos distintos y a propósito. Con la red, CUATRO segundos ya es una
+  // pasada que hay que explicar. Sin la red, el piso son OCHO: una página con
+  // imagen la primera vez cuesta 4,8 s (1.5.83) y un FULL del panel 2,2 s, y
+  // convertir eso en un [ERR] por página sería la línea por pintada que hubo
+  // que sacar en 1.5.93.
+  constexpr unsigned long LOOP_STALL_NET_MS = 4000;
+  constexpr unsigned long LOOP_STALL_OTHER_MS = 8000;
+  const unsigned long netMs = netpump::passMs();
+  const bool fueLaRed = netMs * 2 >= loopDuration;
+  if (fueLaRed && loopDuration >= LOOP_STALL_NET_MS) {
+    LOG_ERR("LOOP", "el loop estuvo %lu ms sin atender a nadie: lo tuvo la red en «%s» (%lu ms), "
+            "se bombeó %lu veces (PWR y Atrás siguieron vivos)",
+            loopDuration, netpump::passWhat(), netMs, static_cast<unsigned long>(netpump::passTicks()));
+  } else if (!fueLaRed && loopDuration >= LOOP_STALL_OTHER_MS) {
+    LOG_ERR("LOOP", "el loop estuvo %lu ms sin atender a nadie y NO fue la red (%lu ms de red): "
+            "pantalla %s. Eso no tiene bombeo y hay que ir a buscarlo ahí",
+            loopDuration, netMs, activityManager.currentActivityName());
   }
 
   // Add delay at the end of the loop to prevent tight spinning

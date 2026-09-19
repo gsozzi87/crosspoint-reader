@@ -22,6 +22,9 @@ class OtaUpdater {
     INTERNAL_UPDATE_ERROR,
     OOM_ERROR,
     WRONG_DEVICE_ERROR,
+    // El dueño cortó (Atrás o PWR) mientras se bajaba: no es un fallo, y la
+    // pantalla no tiene que decir "Actualización fallida".
+    ABORTED,
   };
 
   size_t getOtaSize() const { return otaSize; }

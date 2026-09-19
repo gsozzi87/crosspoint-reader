@@ -54,6 +54,11 @@ class PowerKey {
   // release itself, not on its length. tookShortPress() clears this too: every
   // caller of that one is dropping the tap, and a dropped tap has no release.
   bool tookRelease();
+  // La misma suelta pero SIN consumirla: es para el bombeo de la red
+  // (include/NetPump.h), que necesita saber que el dueño apretó PWR para
+  // cortar la petición, pero NO puede quedarse con el evento — el que
+  // suspende es main.cpp, en un punto seguro y con la pantalla consistente.
+  bool releasePending() const { return releasePending_; }
 
   // REPOSO: el light sleep arma GPIO38 como fuente de despertar POR NIVEL
   // (`gpio_wakeup_enable(LOW_LEVEL)`), y eso escribe el tipo de interrupción
