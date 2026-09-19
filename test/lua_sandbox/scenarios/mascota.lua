@@ -152,12 +152,13 @@ fake.key("down"); fake.key("down")   -- fila 3: Dormir
 fake.key("ok")
 d = espera("Duerme")
 assert(contiene(d, "Despertar"), "dormida, la fila dice Despertar")
--- Dormida es otro dibujo (en su camita): 180 x 95 a escala 2, 360 px de ancho,
--- y ahí no va parche de cola.
+-- Dormida es la MISMA perra (con los ojos cerrados y la cola caída), así que
+-- mide lo mismo que de pie y va en un solo dibujo, sin parche de cola: la
+-- mascota no cambia de tamaño ni de personaje al dormirse.
 perra, cola = perraEnPantalla()
-assert(perra.w == 180 and perra.h == 95 and perra.escala == 2, "dormida: 180 x 95 a escala 2, es " .. perra.w .. "x" .. perra.h)
-assert(perra.x == (480 - 360) // 2, "la dormida también va centrada")
-assert(not cola, "la dormida es un dibujo entero, sin parche de cola")
+assert(perra.w == 187 and perra.h == 103 and perra.escala == 2, "dormida: 187 x 103 a escala 2, es " .. perra.w .. "x" .. perra.h)
+assert(perra.x == (480 - 374) // 2, "la dormida también va centrada")
+assert(not cola, "la dormida ya trae la cola en el dibujo, sin parche")
 -- Dormida no come.
 fake.key("up"); fake.key("up"); fake.key("ok")
 espera("despiértala primero")
