@@ -45,6 +45,24 @@ constexpr unsigned long WIFI_TICK_MS = 2500;  // cada cuanto se mueve la barra
 // FriendlyWifi
 // ---------------------------------------------------------------------------
 
+// REV-052: ¿la radio está de verdad arriba?
+//
+// `WiFi.status()` sola no alcanza. Todo camino que suelta la red hace
+// `WiFi.mode(WIFI_OFF)` (Hablar al salir, las apps de Lua al cerrarse,
+// main.cpp), y el estado que devuelve `status()` lo actualiza el task de
+// eventos: justo después de apagar puede seguir diciendo WL_CONNECTED. Una
+// pantalla que le cree se saltea la conexión entera, no muestra el cartel de
+// WiFi y cae directo a "Pensando" con una radio apagada — el POST muere en el
+// acto con "no network".
+//
+// Pedir además una IP válida cierra el hueco: la interfaz apagada no tiene
+// ninguna, y una conexión real siempre la tiene (sin IP no hay socket).
+//
+// Esto es el mismo defecto que 1.5.115 arregló para las apps de Lua, y estaba
+// arreglado SÓLO ahí: las otras ocho pantallas con `FriendlyWifi` le creían.
+// Por eso la comprobación vive acá adentro y no en cada llamador.
+static bool radioReallyUp() { return WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0); }
+
 void FriendlyWifi::begin() {
   currentPhase = Phase::Connecting;
   attempts = 0;
@@ -55,9 +73,14 @@ void FriendlyWifi::begin() {
   currentSsid.clear();
   lastTick = millis();
   bump();
-  if (WiFi.status() == WL_CONNECTED) {
+  if (radioReallyUp()) {
     currentPhase = Phase::Connected;
     return;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    // Dice que sí pero no tiene IP: la radio está bajando o ya bajó. Se conecta
+    // igual, que es lo que el usuario espera ver.
+    LOG_INF("HUB_SYNC", "friendly wifi: la radio dice conectada pero no tiene IP; se reconecta");
   }
   {
     RenderLock lock;  // la SD y la pantalla comparten el SPI
@@ -179,6 +202,13 @@ void FriendlyWifi::onConnected() {
 }
 
 FriendlyWifi::Phase FriendlyWifi::pump() {
+  // REV-052: si el objeto se quedó en Connected y la radio ya no está, no se
+  // puede seguir diciendo que sí. El llamador pasaría a mandar sobre una radio
+  // apagada; así, en cambio, se vuelve a conectar y el usuario ve el cartel.
+  if (currentPhase == Phase::Connected && !radioReallyUp()) {
+    LOG_INF("HUB_SYNC", "friendly wifi: la conexión se cayó por debajo; se reconecta");
+    begin();
+  }
   switch (currentPhase) {
     case Phase::Connecting: {
       const wl_status_t st = WiFi.status();
