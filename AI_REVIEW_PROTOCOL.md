@@ -2528,6 +2528,208 @@ entonces se corrige el caller real.
 Impacto: prácticamente nulo para el usuario salvo unos bytes/unas escrituras por primitiva; enorme para
 diagnóstico. La próxima OTA de diagnóstico debería conservarla al menos hasta capturar el culpable.
 
+
+## REV-057 — El fallback de apagado vuelve a tocar la SD después de desmontarla
+State: OPEN
+Severity: P1
+Subsystem: firmware / power-off / storage
+
+Hallazgo confirmado por código en el Paso 1 de la auditoría de energía.
+
+Flujo actual:
+1. `handlePowerHold()` llega a 3 s y llama `powerOffNow()`.
+2. `powerOffNow()` guarda estado, pinta "apagado", cierra el log y llama
+   `Storage.prepareForDeepSleep()`.
+3. En WS397 eso termina en `SDCardManager::shutdown()`: desmonta FsVolume, detiene SDMMC y deja
+   `initialized=false`.
+4. Si `POWER_KEY.powerOff()` falla, o si el comando fue aceptado pero dos segundos después el ESP
+   sigue vivo, `powerOffNow()` RETORNA.
+5. El caller llama inmediatamente `enterDeepSleep()`.
+6. `enterDeepSleep()` vuelve a ejecutar operaciones de filesystem: APP_STATE.saveToFile(),
+   saveSleepFrameBuffer()/remove, lectura de titulares, batterylog y el teardown de la Activity.
+
+Eso viola explícitamente el contrato de HalStorage: después de prepareForDeepSleep no debe haber
+usuarios del filesystem ni HalFiles válidos. Algunas operaciones fallarán limpiamente, pero otras
+llegan directamente al FsVolume ya terminado; el comportamiento no debe depender de cómo responda
+SdFat a un volumen desmontado.
+
+Impacto para el usuario:
+- aparece sólo cuando el apagado real por PMIC falla o no corta a tiempo;
+- lo que debería ser un fallback limpio a suspensión puede perder el último estado, no pintar bien el
+  estado de sueño, producir errores de SD o terminar en reset/estado errático;
+- es exactamente un camino de recuperación, por lo que debe ser MÁS seguro que el camino normal.
+
+Arreglo esperado:
+- no volver a `enterDeepSleep()` después de que la SD ya fue desmontada;
+- refactorizar el último tramo de sueño en un helper que asuma "storage ya cerrado" y sólo apague
+  periféricos/arme wake/entre a deep sleep;
+- o cambiar powerOffNow() para que el teardown irreversible se haga una sola vez y el fallback comparta
+  ese mismo estado;
+- añadir una prueba de estado/host para demostrar que ninguna llamada a Storage ocurre después del
+  punto de shutdown en el fallback.
+
+Executor response:
+Reviewer final check:
+
+## REV-058 — Timer-wake sin RTC vuelve a dormir con ALDO1-3 encendidos
+State: OPEN
+Severity: P1
+Subsystem: firmware / deep sleep / battery
+
+Hallazgo confirmado por código en el Paso 1.
+
+En un wake por timer, si `halClock.getEpochUtc()` falla tres veces, setup() entra al camino
+"clockless retry":
+- arma otro wake de 60 s hasta MAX_CLOCKLESS_RETRIES=5;
+- duerme IMU;
+- silencia amplificador;
+- cierra log;
+- desmonta SD;
+- llama DIRECTAMENTE `powerManager.startDeepSleep(gpio)`.
+
+Ese camino NO pasa por `sleepNow()`.
+
+En WS397 esto importa mucho porque en el comienzo del mismo boot `POWER_KEY.begin()` vuelve a encender
+ALDO1-3. `sleepNow()` es quien después:
+- suspende ES8311;
+- retiene el enable del amplificador;
+- y, sobre todo, llama `POWER_KEY.railsOffForSleep()` para cortar ALDO1-3.
+
+El FreeInk `powerDownRailsForSleep()` no sustituye esto en WS397: el perfil tiene los rails de
+display/audio gestionados por PMIC, no por los GPIO powerEnable genéricos.
+
+Por tanto un RTC que no responde puede provocar cinco ciclos de wake/re-sleep y, después del último,
+un deep sleep indefinido hasta OK CON los rails externos que acababan de ser restaurados todavía
+encendidos.
+
+Impacto para el usuario:
+- gran consumo de batería precisamente mientras el aparato parece "dormido";
+- si el RTC queda mudo durante la noche, puede reaparecer una versión del drenaje histórico por
+  panel/códec/amplificador alimentados;
+- después del quinto intento ya no hay timer de reintento: puede quedarse así hasta que el usuario
+  pulse OK.
+
+Arreglo esperado:
+- todo camino de deep sleep de WS397 debe converger en UNA rutina de quiesce que suspenda IMU/audio,
+  corte ALDO1-3 y preserve cualquier timer ya armado;
+- el camino clockless puede conservar el wake de 60 s, pero no debe saltarse el power teardown;
+- prueba estática/host del orden y prueba de hardware con RTC simulado/desconectado midiendo corriente.
+
+Executor response:
+Reviewer final check:
+
+## REV-059 — Suspender/apagar puede OOM por un cache de Noticias corrupto o enorme
+State: OPEN
+Severity: P1
+Subsystem: firmware / sleep screen / memory / SD
+
+Hallazgo confirmado por código; es un caso específico y de alta prioridad de REV-003.
+
+`paintWallpaperForSleep()` se ejecuta en la ruta de suspensión y apagado y llama
+`sleepscreen::readHeadlines()`.
+
+Antes de pintar:
+- `newspack::headlines()` -> `newspack::cached()` -> `readAll(pack.json)`;
+- `readAll()` hace `std::string.resize(f.size())` SIN comprobar un máximo;
+- si el paquete nuevo no da titulares, el fallback `/.crosspoint/rss/feeds.json` hace exactamente
+  otro `std::string.resize(f.size())` sin límite.
+
+El firmware compila con `-fno-exceptions`. Un tamaño patológico proveniente de una FAT/cache corrupta
+o un archivo accidentalmente enorme puede forzar una reserva imposible justo cuando el usuario pidió
+dormir/apagar.
+
+Impacto para el usuario:
+- PWR parece no apagar/suspender;
+- puede abortar/reiniciar durante la transición a sueño;
+- puede quedarse varios segundos trabajando/fragmentando memoria antes del fallo;
+- el dato que causa el problema es regenerable (Noticias), así que nunca debería tener permiso para
+  impedir el sueño.
+
+Arreglo esperado:
+- límite ANTES de resize() para manifest y fallback RSS;
+- tratar oversize/corrupto como cache inválido: omitir titulares y dormir normalmente;
+- reutilizar un helper de lectura acotada en todos los caches, no parchar sólo SleepScreen;
+- test con tamaños 0, límite, límite+1 y tamaño absurdo, asegurando que "sleep information" degrada
+  a sin titulares en vez de abortar.
+
+Executor response:
+Reviewer final check:
+
+## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
+State: OPEN
+Severity: P1
+Subsystem: freeink-sdk / deep sleep / recovery
+
+Hallazgo de resiliencia confirmado por código; no reproducido en hardware actual.
+
+En freeink-sdk:
+`PowerManager::deepSleepUntilPowerButton()` hace:
+1. `waitForPowerButtonRelease()`;
+2. `armPowerButtonWakeup()`;
+3. `deepSleep()`.
+
+El retorno booleano de `armPowerButtonWakeup()` se ignora.
+
+Para WS397 el perfil actual es correcto: wakePin=GPIO5, activo en LOW, y GPIO5 es RTC-capable en S3.
+Por eso NO afirmo que hoy falle normalmente.
+
+El problema es el fallo defensivo: si IDF rechaza el wake por una regresión de perfil, error de
+configuración o fallo excepcional al armar EXT1, la función lo LOGUEA y acto seguido entra igualmente
+a deep sleep. Sin un timer armado, el ESP no tiene una fuente normal de wake; el usuario lo percibe
+como equipo muerto y debe recurrir al hard-off del PMIC/PWR largo.
+
+Además `waitForPowerButtonRelease()` no tiene timeout: si GPIO5 queda físicamente atascado en LOW,
+la transición a sueño puede quedarse en un loop de delay(50) indefinido antes de dormir.
+
+Arreglo esperado:
+- no entrar a deep sleep sin comprobar una fuente de wake válida;
+- cambiar el contrato del SDK para que un fallo de armado pueda volver al firmware o caer a un recovery
+  explícito, en vez de dormir sin salida;
+- dar timeout/log accionable al wait de release; un pin atascado no debe hacer parecer congelado al equipo;
+- test de SDK donde armWakeOnPins falla y se demuestra que NO se llama deepSleep.
+
+Executor response:
+Reviewer final check:
+
+## REV-061 — Fallar al cortar los rails para dormir es silencioso para la política de energía
+State: OPEN
+Severity: P2
+Subsystem: firmware / PMIC / battery
+
+Hallazgo de hardening del Paso 1.
+
+`PowerKey::railsOffForSleep()` ya hace algo bueno: read-modify-write y readback de REG_LDO_ONOFF0,
+y devuelve false si algo falla.
+
+Pero `sleepNow()` llama:
+
+    if (BoardConfig::isWS397()) POWER_KEY.railsOffForSleep();
+
+y DESCARTA el resultado.
+
+Un fallo I2C transitorio al final del sueño puede dejar panel/códec/amplificador alimentados durante
+todo el deep sleep, que es el mismo tipo de drenaje que motivó el corte de ALDO1-3 originalmente.
+Además el log de devlog ya fue cerrado antes de este punto, por lo que el diagnóstico persistente es
+pobre.
+
+En el wake ocurre la cara opuesta: `PowerKey::begin()` hace una sola lectura de identidad del PMIC;
+si esa primera lectura falla, sale antes de restaurar ALDO1-3. El rescue del panel puede provocar un
+reinicio y dar una segunda oportunidad, pero la primera experiencia será un panel que no responde.
+
+Impacto:
+- fallo raro de I2C -> una noche con consumo mucho mayor aun diciendo "suspendido";
+- fallo al despertar -> arranque muy lento/panel negro hasta el rescue/restart.
+
+Arreglo esperado:
+- 2-3 reintentos cortos y acotados para el read/write/readback crítico de rails;
+- registrar en RTC RAM un flag de "rail-off failed" que pueda informarse al siguiente boot aunque la SD
+  ya estuviera cerrada;
+- no entrar en loops infinitos si el PMIC realmente murió;
+- hardware fault-injection desconectando/perturbando I2C para comprobar recuperación.
+
+Executor response:
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -2757,6 +2959,21 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
 - A partir de aquí la auditoría se hará por capas pequeñas para evitar análisis monolítico y bloqueos:
   arranque/energía -> memoria/tareas -> red/servidor -> input/gestos -> audio/voz -> UI/e-ink ->
   Lua -> SD/persistencia -> sync/estado -> OTA/recovery.
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — Paso 1: arranque, energía, sueño y reinicios
+- Auditados main.cpp, HalPowerManager, PowerKey, IdleSleep, RtcAlarm, SleepScreen, NewsPack,
+  HalStorage/SDCardManager, freeink PowerManager, panel rescue, timer/reminder wake y panic handling.
+- Nuevo REV-057 P1: fallback de apagado entra a enterDeepSleep DESPUÉS de desmontar la SD.
+- Nuevo REV-058 P1: clockless timer-wake salta sleepNow y puede dormir con ALDO1-3 encendidos.
+- Nuevo REV-059 P1: los caches de Noticias se leen con resize(f.size()) sin límite en la ruta de sleep.
+- Nuevo REV-060 P1: freeink deepSleepUntilPowerButton ignora fallo de armWake y el wait de release no tiene timeout.
+- Nuevo REV-061 P2: railsOffForSleep valida pero su error se ignora; restore inicial del PMIC tampoco reintenta.
+- Revisado como sano por código: light-sleep desarma siempre wake GPIO/ISR, panel rescue tiene tope anti-loop,
+  taps/PWR latcheados viejos se descartan, recordatorio sin atender se re-snoozea y vuelve a dormir.
+- Pregunta de producto pendiente al dueño: en boot se consideran vencidos timer/recordatorio hasta 30 s ANTES
+  (`nowEpoch + 30`). Confirmar si esa tolerancia es deseada o una alarma nunca debe adelantarse.
+- No se implementó ningún fix ni se publicó OTA desde el rol Reviewer.
 
 # Session log
 
