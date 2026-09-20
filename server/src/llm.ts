@@ -14,13 +14,19 @@ import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config";
 import { checkUrl, redactSecrets } from "./net";
 import { budgetField, emptyReplyMessage, planBudget } from "./llmBudget";
+import { describeProviderError, isRateLimit, providerMessage } from "./providerError";
 import { recordProviderFailure } from "./providerLog";
 import { searchWeb, asksForSearch, asksForReasoning, formatResults } from "./websearch";
 import type { Lang } from "./lang";
 
 // `code` es para el aparato: "no_key" se muestra distinto que un fallo del
 // proveedor, aunque los dos lleguen como texto.
-export type LlmCode = "no_key" | "provider_error" | "refused" | "bad_answer";
+// `rate_limited` estaba sólo en el camino de Anthropic (que lo saca del tipo de
+// excepción de su SDK); las APIs compatibles lo mandaban como `provider_error`,
+// o sea que un tope de uso llegaba al aparato con la misma cara que un
+// proveedor caído — y se REINTENTABA, que es lo peor que se puede hacer con un
+// límite por minuto.
+export type LlmCode = "no_key" | "provider_error" | "refused" | "bad_answer" | "rate_limited";
 
 export class LlmError extends Error {
   constructor(message: string, readonly status = 502, readonly code: LlmCode = "provider_error") {
@@ -292,10 +298,16 @@ async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltI
   // clave que les mandaste en el error de auth, así que se tacha primero.
   const body = redactSecrets(await res.text(), c.key);
   if (!res.ok) {
+    // Un LÍMITE DE USO no es "el proveedor falló" y no se puede tratar igual:
+    // sale como 429 `rate_limited` —igual que ya hacía el camino de Anthropic—
+    // para que el aparato no lo reintente (un reintento a los 500 ms contra un
+    // tope por minuto está condenado y encima gasta cupo), y con un mensaje que
+    // diga cuánto esperar en vez del JSON crudo del proveedor.
+    const limite = isRateLimit(res.status, providerMessage(body));
     throw new LlmError(
-      `${url.url.host} ${res.status}: ${body.slice(0, 200)}`,
-      res.status === 401 ? 500 : 502,
-      res.status === 401 ? "no_key" : "provider_error",
+      describeProviderError(url.url.host, res.status, body, c.model),
+      res.status === 401 ? 500 : limite ? 429 : 502,
+      res.status === 401 ? "no_key" : limite ? "rate_limited" : "provider_error",
     );
   }
   let data: { choices?: OpenAiChoice[]; usage?: OpenAiUsage };

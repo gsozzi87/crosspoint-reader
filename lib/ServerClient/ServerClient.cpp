@@ -34,7 +34,22 @@ constexpr unsigned long SLOW_MS = 15000;  // más que esto se anota aunque haya 
 constexpr size_t ERROR_BODY_MAX = 2048;  // un error nuestro es JSON corto
 constexpr size_t ERROR_TEXT_MAX = 120;   // lo que entra en un renglon del visor
 
-bool retryable(int status) { return status < 0 || status == 429 || (status >= 500 && status <= 599); }
+// SON DOS PREGUNTAS DISTINTAS, y estaban contestadas con el mismo predicado.
+//
+//   1. ¿lo reintento AHORA, con el backoff de 500/1500 ms?
+//   2. ¿esto puede andar MÁS TARDE, o sea va a la cola offline?
+//
+// Para un 429 las respuestas son opuestas: NO ahora —los topes que lo producen,
+// el mensual de la cuenta y el del proveedor de IA, se miden en minutos o en un
+// mes, no en un segundo y medio— y SÍ más tarde. Con una sola función, tener
+// las dos bien era imposible: con el 429 adentro, un límite de uso de Groq
+// costaba TRES llamadas condenadas, seis segundos de "Pensando" y tres
+// mordiscos al cupo en vez de uno; sacándolo de las dos se perdía la operación
+// encolada, que es justo lo que arregló F02.
+bool retryable(int status) { return status < 0 || (status >= 500 && status <= 599); }
+
+// La segunda pregunta. Incluye el 429 a propósito (ver arriba).
+bool retryableLater(int status) { return retryable(status) || status == 429; }
 
 std::string joinUrl(const std::string& base, const std::string& path) {
   if (path.empty()) return base;
@@ -363,7 +378,7 @@ ServerClient::Result ServerClient::postOrQueue(const std::string& path, const st
   // es transitorio por definición: el aparato recupera el acceso vinculándose,
   // y lo que se hizo mientras tanto tendría que seguir estando.
   const bool puedeAndarDespues = r == Result::NoNetwork || r == Result::Transport || r == Result::Unauthorized ||
-                                 (r == Result::HttpError && retryable(resp.status));
+                                 (r == Result::HttpError && retryableLater(resp.status));
   if (puedeAndarDespues) {
     // Con el id del intento en línea: la operación lógica es UNA y conserva su
     // id desde el primer intento hasta el replay de la cola.
@@ -552,7 +567,7 @@ int ServerClient::flushQueue(size_t maxItems) {
       const Body payload{"application/json", reinterpret_cast<const uint8_t*>(body.data()), body.size()};
       r = requestOnce("POST", joinUrl(base, path), &payload, true, id.empty() ? newRequestId() : id, resp);
       if (netpump::cancelRequested()) break;
-      if (!retryable(resp.status)) break;
+      if (!retryable(resp.status)) break;  // un 429 no se reintenta en el acto…
     }
     if (r == Result::Ok) {
       items.remove(0);
@@ -565,7 +580,11 @@ int ServerClient::flushQueue(size_t maxItems) {
     // servidor puede estar saturado, caído o el aparato sin vincular todavía, y
     // en los tres casos la operación sigue siendo válida. Antes se borraban los
     // tres y la acción desaparecía sin haber llegado nunca.
-    if (r == Result::HttpError && !retryable(resp.status)) {
+    // …pero TAMPOCO se tira: `retryableLater` es la que decide si la entrada
+    // se conserva, y el 429 se conserva. Con `retryable` acá, un tope de uso
+    // habría borrado la operación encolada, que es exactamente lo que arregló
+    // F02.
+    if (r == Result::HttpError && !retryableLater(resp.status)) {
       LOG_ERR(TAG, "queue: %s rechazado con %d (definitivo), se descarta", path.c_str(), resp.status);
       items.remove(0);
       changed = true;

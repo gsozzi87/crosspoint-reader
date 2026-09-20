@@ -2243,6 +2243,74 @@ chrome que dibuja `LuaAppsActivity` alrededor de la app, o alguna otra pantalla 
 Se vuelve a mirar con el log de 1.5.119.
 Reviewer final check:
 
+## REV-054 — Un tope de uso del proveedor llegaba como 502 y se REINTENTABA tres veces
+State: FIXED_PENDING_REVIEW
+Severity: P1
+Subsystem: server / firmware / red
+
+**Esto lo contestó el aparato solo, que era el punto de REV-048.** Primer log con 1.5.119:
+
+    [38310] [ERR] [SERVER] POST /api/voice -> http error (502): api.groq.com 429:
+            {"error":{"message":"Rate limit reached for model `openai/gpt-oss-120b` in organization `org_01m215hc0...
+
+O sea: la causa de los "502 en cada petición" del dueño es el **límite de uso de Groq**. No era la
+red, ni Railway, ni el proveedor caído, ni —y esto hay que decirlo— la radio fantasma de REV-052: en
+ese mismo log el WiFi conectó (`friendly wifi: saved network attempt 1`, `WiFi +0 ms tras la toma`) y
+la petición llegó y volvió con un HTTP de verdad. **REV-052 sigue siendo un defecto real pero NO era
+este síntoma.** Es la tercera hipótesis mía que el aparato corrige en esta sesión.
+
+Dos cosas estaban mal, y las dos importan:
+
+**1. Un 429 del proveedor salía como 502 `provider_error`.** El camino de Anthropic ya lo distinguía
+(`Anthropic.RateLimitError` → 429 `rate_limited`); el de las APIs compatibles con OpenAI mapeaba todo
+lo que no fuera 401 a 502. Un tope de uso y un proveedor caído llegaban con la misma cara, y se
+arreglan distinto: uno se espera o se cambia de modelo, el otro no.
+
+**2. Y por eso se REINTENTABA.** `retryable(429)` era true, así que el aparato mandó la misma toma
+tres veces con 500/1500 ms de backoff: tres llamadas condenadas (un tope por minuto no se destraba en
+un segundo y medio), seis segundos de "Pensando", **tres mordiscos al cupo en vez de uno**, y el
+motivo recién visible al final. Se ve en el log: `retry 1 after status 502` ×2 y el error a los
+6155 ms.
+
+Fix, servidor (`server/src/providerError.ts`, nuevo y puro):
+- `providerMessage()` saca `error.message` del JSON del proveedor en vez de volcar el cuerpo crudo.
+  Lo que el dueño veía era `{"error":{"message":"Rate limit reached for model ... in organization
+  org_01m215hc0...` — o sea el recorte de 120 caracteres del aparato gastado en un id de
+  organización, y el dato útil (`Please try again in 7m32.1s`) del otro lado del corte.
+- `isRateLimit()` no mira sólo el 429: algunos proveedores lo mandan como 400 con el texto.
+- `describeProviderError()` devuelve *"Te pasaste del límite de uso de api.groq.com con
+  openai/gpt-oss-120b. Probá de nuevo en 7m32.1s. Podés esperar o cambiar de modelo en Ajustes →
+  Avanzado → IA."* — que es lo accionable, y entra en lo que el aparato muestra.
+- `openAiRun` lo usa y manda **429 `rate_limited`**, igual que el camino de Anthropic. `LlmCode` gana
+  ese valor, que le faltaba.
+
+Fix, firmware — **y acá hay una trampa que casi me como**: `retryable()` contestaba DOS preguntas
+distintas con el mismo predicado.
+
+    1. ¿lo reintento AHORA, con el backoff de 500/1500 ms?
+    2. ¿lo conservo para MÁS TARDE (cola offline)?
+
+Para el 429 las respuestas son **opuestas**: no ahora, sí después. Sacar el 429 de la única función
+habría borrado la operación encolada ante un tope de uso — exactamente lo que arregló F02 en 1.5.53.
+Así que son dos: `retryable()` (transporte y 5xx) decide el reintento en línea, y `retryableLater()`
+(= `retryable` + 429) decide qué se conserva, en `postOrQueue` y en los dos puntos de `flushQueue`.
+
+Tests, los dos en CI:
+- `./test/provider_error/run.sh` (5 casos) con **el cuerpo real que devolvió Groq en el aparato**:
+  que se saque el mensaje y no el JSON, que un 429 y un 400-con-texto sean los dos topes, que el
+  mensaje diga cuánto esperar y qué hacer, que NO lleve el id de organización, que entre en 200
+  caracteres, y que lo que no es un tope siga llegando como antes.
+- `./test/retry_policy/run.sh` — las dos preguntas por separado, barriendo de -5 a 600, más la
+  invariante "lo que se reintenta en el acto siempre se conserva". Verificado que atrapa la
+  regresión: devolviendo el 429 a `retryable`, falla.
+
+Firmware: `pio run -e ws397` limpio. Las diecisiete suites en verde.
+**Sin OTA**: esto entra en el próximo release; 1.5.119 es lo que hay en el aparato.
+
+**Para el dueño, que es lo que de verdad cierra su problema**: está en el plan gratuito de Groq y lo
+agotó. Esto hace que el aparato lo DIGA y deje de gastar el triple, pero no le devuelve el cupo.
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -2359,6 +2427,19 @@ When an executor encounters one of these, first confirm whether current HEAD alr
    de dónde sale.
 5. **REV-051** — punto 5 (que el aparato trate un 502/503 de borde como indisponibilidad transitoria
    con mensaje claro) sigue SIN HACER. Es firmware y es el próximo que tomo salvo que digas otra cosa.
+
+### 2026-09-20 — Executor (Claude) — el aparato contestó: era el tope de Groq (REV-054)
+- Primer log con 1.5.119 y REV-048 hizo exactamente su trabajo: `http error (502): api.groq.com 429:
+  Rate limit reached for model openai/gpt-oss-120b`. La causa de los "502 en cada petición" es el
+  **límite de uso de Groq**.
+- **Corrección, la tercera de la sesión**: no era REV-052. En ese log el WiFi conectó y la petición
+  fue y volvió con un HTTP real. REV-052 es un defecto real pero no era este síntoma.
+- Se abre y se arregla REV-054: el 429 del proveedor salía como 502 `provider_error` (el camino de
+  Anthropic ya lo distinguía) y encima se reintentaba tres veces, gastando el triple de cupo.
+- Ojo con el detalle que casi rompo: `retryable()` contestaba dos preguntas opuestas para el 429.
+  Ahora son `retryable()` y `retryableLater()`; si no, se perdía la operación encolada (F02).
+- Dos suites nuevas en CI: `provider_error` (con el cuerpo real de Groq) y `retry_policy`.
+- Sin OTA: 1.5.119 sigue siendo lo publicado.
 
 # Session log
 
