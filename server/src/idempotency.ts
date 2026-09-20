@@ -122,3 +122,49 @@ export function cacheable(status: number, bodyBytes: number): boolean {
   if (status >= 500) return false;
   return bodyBytes <= MAX_BODY;
 }
+
+// La marca que deja un replay en el contexto del pedido.
+//
+// La pone el middleware de idempotencia ANTES de devolver la respuesta
+// guardada, y la mira el de medición, que lo envuelve por afuera. Sin esto, el
+// de medición sólo ve un 2xx y vuelve a cobrar consumo por un pedido que no
+// ejecutó nada (REV-044): el usuario con tope mensual lo gastaba más rápido
+// sólo porque la red lo obligó a reintentar.
+export const REPLAY_KEY = "idempotentReplay";
+
+export function isReplay(c: { get: (k: string) => unknown }): boolean {
+  return c.get(REPLAY_KEY) === true;
+}
+
+// El middleware. Vive acá y no en api.ts para poder componerlo en una prueba
+// junto con el de medición, que es donde estaba el defecto: el orden entre los
+// dos no se ve leyendo ninguno de los dos por separado.
+export function idempotency(cache: ReplayCache, accountOf: (c: any) => number) {
+  return async (c: any, next: () => Promise<void>) => {
+    if (c.req.method !== "POST") return next();
+    const id = (c.req.header("x-request-id") ?? "").trim();
+    if (!id) return next();  // la web no lo manda; ahí no hay reintento automático
+    const key = ReplayCache.key(accountOf(c), c.req.path, id);
+    const hit = cache.get(key);
+    if (hit) {
+      console.log(`replay ${c.req.path} (${id}): se devuelve la respuesta guardada, no se aplica de nuevo`);
+      c.set(REPLAY_KEY, true);
+      return new Response(hit.body.slice().buffer as ArrayBuffer, {
+        status: hit.status,
+        headers: { "content-type": hit.type },
+      });
+    }
+    await next();
+    // `clone()` porque el cuerpo de una Response se lee una sola vez y el que
+    // tiene que recibirlo es el aparato.
+    const copy = c.res.clone();
+    const body = new Uint8Array(await copy.arrayBuffer());
+    if (!cacheable(c.res.status, body.byteLength)) return;
+    cache.put(key, {
+      status: c.res.status,
+      type: c.res.headers.get("content-type") ?? "application/octet-stream",
+      body,
+      at: Date.now(),
+    });
+  };
+}

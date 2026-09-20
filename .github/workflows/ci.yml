@@ -221,7 +221,12 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # La versión sale de server/.bun-version, que es el único lugar donde
+          # está escrita (REV-046). Con `latest`, CI probaba con un Bun distinto
+          # del que corre en Railway y del que corre en la máquina de quien
+          # desarrolla: dos vueltas del test de net_lookup se cayeron por
+          # diferencias de runtime entre 1.3.11 y 1.4.2, no por el código.
+          bun-version-file: server/.bun-version
 
       - name: Install server deps
         working-directory: server
@@ -271,7 +276,12 @@ jobs:
 
       - uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # La versión sale de server/.bun-version, que es el único lugar donde
+          # está escrita (REV-046). Con `latest`, CI probaba con un Bun distinto
+          # del que corre en Railway y del que corre en la máquina de quien
+          # desarrolla: dos vueltas del test de net_lookup se cayeron por
+          # diferencias de runtime entre 1.3.11 y 1.4.2, no por el código.
+          bun-version-file: server/.bun-version
 
       - name: Install
         working-directory: server

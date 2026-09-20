@@ -690,6 +690,17 @@ function previewFeeds(items) {
   return feeds;
 }
 
+// Un diario RESUMIDO y un paper TRADUCIDO no son lo mismo, y llamarles a los
+// dos "resumidas" le hace creer al médico que le condensaron el abstract: desde
+// MEDICAL_SUMMARY_VERSION=4 el paper se traduce entero conservando el lenguaje
+// técnico, explícitamente sin resumir. El servidor los cuenta por separado.
+function packProcesadas(p) {
+  const partes = [];
+  if (p.chewed) partes.push(p.chewed + (p.chewed === 1 ? " resumida" : " resumidas"));
+  if (p.chewedMedical) partes.push(p.chewedMedical + (p.chewedMedical === 1 ? " paper traducido" : " papers traducidos"));
+  return partes.length ? partes.join(" · ") : "sin procesar todavía";
+}
+
 function noticiasView() {
   const med = S.medical || {};
   const totalSources = S.feeds.length;
@@ -717,7 +728,7 @@ function noticiasView() {
         .catch((e) => { newsPack = { error: e.message }; if (parts()[0] === "ajustes" && parts()[1] === "noticias") render(); });
     }
     const packText = newsPack === "loading" ? "Consultando…" : newsPack.error ? newsPack.error :
-      newsPack.items + " noticias listas · " + newsPack.chewed + " resumidas" + (newsPack.building ? " · preparando…" : "");
+      newsPack.items + " listas · " + packProcesadas(newsPack) + (newsPack.building ? " · preparando…" : "");
     html += '<div class="card"><h2><span class="grow">Paquete del lector</span><button class="ghost small" data-act="news-pack-refresh">Preparar ahora</button></h2>' +
       '<p class="hint">El servidor prepara los artículos y papers, y el lector recibe este paquete para abrirlo sin conexión.</p>' +
       '<p class="' + (newsPack.error ? "bad" : "muted") + '">' + esc(packText) + '</p></div>';
@@ -730,7 +741,7 @@ function noticiasView() {
       for (const f of feeds) {
         html += "<h3 style=\"margin-top:10px\">" + esc(f.name) + "</h3>";
         html += '<ul class="rows">' + f.items.slice(0, 10).map((it) => {
-          const inside = '<span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(it.when || "") + (it.chewed ? " · resumido" : "") + "</span>";
+          const inside = '<span class="title">' + esc(it.title) + '</span><span class="sub">' + esc(it.when || "") + (it.chewed ? (it.medical ? " · traducido" : " · resumido") : "") + "</span>";
           return '<li><div class="body">' + (it.link ? '<a href="' + attr(it.link) + '" target="_blank" rel="noopener" style="text-decoration:none">' + inside + "</a>" : inside) + "</div></li>";
         }).join("") + "</ul>";
       }

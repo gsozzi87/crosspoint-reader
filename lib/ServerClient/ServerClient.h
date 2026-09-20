@@ -62,7 +62,7 @@ class ServerClient {
 
   // Offline queue (SD, /.crosspoint/server-queue.json, bounded; the oldest
   // entry is dropped when full).
-  bool enqueue(const std::string& path, const std::string& json);
+  bool enqueue(const std::string& path, const std::string& json, const std::string& requestId = std::string());
   size_t queueSize();
   // Tira la cola entera sin reproducirla. Existe para cuando el aparato cambia
   // de cuenta: los POST pendientes llevan ids que son de la cuenta VIEJA (el
@@ -73,6 +73,36 @@ class ServerClient {
   // llama sola desde la primera petición de cada sesión de red; queda pública
   // por si alguna pantalla quiere forzarla.
   void flushOnConnect();
+
+  // ── Identidad de cuenta: de quién es lo que hay en la cola ────────────────
+  //
+  // La cola guarda POSTs con ids del STORE, y el servidor numera desde 1 en
+  // CADA cuenta. Reproducir la cola de la cuenta A contra la B no duplica: le
+  // tilda, le corre la fecha o le borra a B el objeto que casualmente tenga ese
+  // número. Desde `/board` se puede mudar un aparato de cuenta sin tocarle el
+  // token, así que el aparato no puede dar por hecho de quién es.
+  //
+  // La política vive ACÁ y no en una pantalla porque hay tres caminos que
+  // vacían la cola —`flushOnConnect()` (la primera petición de cualquier
+  // sesión), `devicesync::ifDue()` y la sincronización del hub— y una guardia
+  // puesta en uno solo deja los otros dos abiertos.
+  //
+  // `account` es opaco para ServerClient: es lo que devuelve `/api/pair/status`
+  // (el correo de la cuenta, o vacío en un servidor de una sola cuenta).
+  void setAccount(const std::string& account) { account_ = account; }
+  const std::string& account() const { return account_; }
+  // Aviso al resto del firmware de que el aparato cambió de cuenta, para que
+  // tire lo que tenga cacheado de la anterior. Puntero a función y no
+  // std::function: esto vive en el camino de red, no en la UI.
+  using AccountChangedFn = void (*)(const char* nuevaCuenta);
+  void setAccountChangedHandler(AccountChangedFn fn) { onAccountChanged_ = fn; }
+
+  // Pregunta de quién es el aparato AHORA. Devuelve si se pudo averiguar.
+  // Es un GET de ~200 bytes y se hace una vez por sesión de red, y sólo
+  // cuando hay algo encolado que mandar.
+  bool confirmAccount();
+  // Si la identidad de esta sesión de red ya está confirmada.
+  bool accountConfirmed() const { return identity_ == Identity::Confirmed; }
   // Mientras esté puesto, NINGUNA petición vacía la cola de paso.
   //
   // Existe por un orden que dejaba muerta la guardia de cuenta (F11): el
@@ -93,10 +123,19 @@ class ServerClient {
   static bool networkUp();
 
  private:
+  enum class Identity : uint8_t { Unknown, Confirmed };
+
   bool inFlush_ = false;  // flushQueue() usa request(): no reentrar
   bool flushedThisSession_ = false;
-  bool clockCheckedThisSession_ = false;  // el reloj ya se miró en esta sesión de red
-  bool holdFlush_ = false;                // ver setFlushHold()
+  bool clockCheckedThisSession_ = false;   // el reloj ya se miró en esta sesión de red
+  bool holdFlush_ = false;                 // ver setFlushHold()
+  bool inConfirm_ = false;                 // confirmAccount() usa request(): no reentrar
+  Identity identity_ = Identity::Unknown;  // por SESIÓN de red, no por arranque
+  std::string account_;                    // de qué cuenta se cree el aparato
+  AccountChangedFn onAccountChanged_ = nullptr;
+  // El id de la última petición de `request()`. Lo lee `postOrQueue()` para
+  // encolar con el MISMO id con el que se intentó en línea (ver REV-016).
+  std::string lastRequestId_;
   ServerClient() = default;
   struct Body {
     const char* contentType = nullptr;
