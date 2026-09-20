@@ -2161,6 +2161,88 @@ fallar aunque el firmware y Groq estén perfectamente sanos.
 Executor response:
 Reviewer final check:
 
+## REV-052 — La radio fantasma: `FriendlyWifi` daba por conectada una radio apagada
+State: FIXED_PENDING_REVIEW
+Severity: P0
+Subsystem: firmware / red
+
+Hallazgo del Executor a partir del reporte del dueño: *"creo que no se está conectando al wifi, pasa
+directo a pensando"* — Hablar, abierto desde el mosaico, no muestra el cartel de WiFi, salta a
+"Pensando" y falla.
+
+`FriendlyWifi::begin()` daba la radio por conectada con esto:
+
+    if (WiFi.status() == WL_CONNECTED) { currentPhase = Phase::Connected; return; }
+
+Pero TODO camino que suelta la red hace `WiFi.mode(WIFI_OFF)` (`VoiceActivity.cpp:95` al salir,
+`LuaAppsActivity.cpp:88` al cerrar una app, tres lugares en `main.cpp`), y el estado que devuelve
+`status()` lo actualiza el task de eventos: justo después de apagar puede seguir diciendo
+WL_CONNECTED. La pantalla le cree, se saltea la conexión entera, no dibuja el cartel y cae a SENDING
+con la radio abajo; el POST muere en el acto.
+
+**Y esto ya se había arreglado — en 1.5.115, y SÓLO para las apps de Lua.** Conteo verificado contra
+el árbol sobre las nueve pantallas que usan `FriendlyWifi`:
+
+    LuaAppsActivity                                          tiene guardia
+    AssetSync, HubLocation, HubSync, Notes, Translator,
+    Voice, AskBook, DevicePair                               — confían
+
+Una de nueve. Es exactamente el patrón que CLAUDE.md ya tiene escrito como regla ("la mitad de un
+arreglo es peor que ninguno, porque parece hecho") y el mismo motivo por el que las rutas protegidas
+terminaron en `ProtectedPaths.h` en 1.5.91.
+
+Fix: la comprobación va ADENTRO de `FriendlyWifi` y no en cada llamador, así no se puede volver a
+arreglar a medias.
+- `radioReallyUp()` = `WiFi.status() == WL_CONNECTED && WiFi.localIP() != 0.0.0.0`. La IP cierra el
+  hueco: la interfaz apagada no tiene ninguna y una conexión real siempre la tiene (sin IP no hay
+  socket).
+- `begin()` la usa en lugar de `status()` a secas, y si `status()` dice que sí pero no hay IP lo
+  anota en el log y se conecta igual.
+- `pump()` deja de reportar `Connected` si la radio se cayó por debajo: vuelve a `begin()`, con lo
+  que el usuario ve el cartel en vez de un error.
+
+Las dos situaciones dejan su línea en el log, que es lo que faltaba para verlo sin cable.
+
+**Lo que el revisor tiene que mirar con ojo crítico**: el mecanismo exacto (¿`WiFi.status()` miente
+después de `WIFI_OFF` en esta versión del core de Arduino?) **no está probado**, sólo razonado. Lo
+que sí es un hecho verificado es el conteo de 1 de 9 y que 1.5.115 documentó este mismo defecto para
+LuaApps. El arreglo es correcto aunque el mecanismo fuera otro (pedir IP nunca puede ser peor que no
+pedirla), pero la CAUSA queda confirmada sólo cuando el log del aparato muestre la línea nueva.
+
+NEEDS_HARDWARE: la confirmación es del dueño con 1.5.119 puesta. Sin desktop test posible: es
+`WiFi` de Arduino.
+Firmware: `pio run -e ws397` limpio.
+Reviewer final check:
+
+## REV-053 — `cp.image` escribía una columna fuera del vidrio con escala > 1
+State: FIXED_PENDING_REVIEW
+Severity: P2
+Subsystem: firmware / Lua
+
+Del log del dueño, repetido en cada cuadro de la mascota:
+`[GFX] 80 pixeles fuera de pantalla (ultimo 480,447)`, y ráfagas de 160.
+
+`cpImage` (`src/lua/LuaApp.cpp`) miraba la ESQUINA del bloque y no el bloque. Con escala > 1 pinta un
+cuadrado de `scale` de lado:
+
+    if (px >= screenW) break;
+    g_renderer->fillRect(px, py, scale, scale, true);
+
+Con `px == screenW - 1` y escala 2 eso escribe la columna `screenW` entera. Lo mismo en el eje Y.
+Ahora el bloque se recorta contra la pantalla.
+
+Y el harness de escritorio anota todo dibujo que se pase (`cp.image`, `cp.rect`, `cp.selection`),
+porque recortar en el aparato TAPA el síntoma: la app sigue pidiendo pintar donde no hay pantalla. El
+escenario de la mascota falla si aparece alguno.
+
+**LO QUE QUEDA SIN EXPLICAR, y hay que decirlo**: con esa detección corriendo, la mascota **no**
+dibuja fuera de pantalla. O sea que el `480,447` del log NO sale de sus llamadas a `cp`, y el arreglo
+de arriba, siendo real, puede no ser la causa de esas líneas. Candidatos que no se descartaron: el
+chrome que dibuja `LuaAppsActivity` alrededor de la app, o alguna otra pantalla en el mismo segundo
+(`GfxRenderer` acumula y reporta una vez por segundo, así que la línea no identifica al culpable).
+Se vuelve a mirar con el log de 1.5.119.
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -2245,6 +2327,38 @@ When an executor encounters one of these, first confirm whether current HEAD alr
 - REV-051 (disponibilidad durante el deploy) queda para el dueño en lo que es Railway; anoté acá que
   su corrección sobre el Volume invalida la parte "cero downtime" de lo que yo le había dicho.
 - **Sin OTA.** `.ws397-build` sigue en 118.
+
+### 2026-09-20 — Executor (Claude) — 1.5.119 PUBLICADA (autorizada por el dueño) + REV-052/053
+- **La regla de "ninguna OTA autorizada" quedó levantada por el dueño**, con estas palabras:
+  "Ejecutalo vos… Dale pues. Dame mi ota". 1.5.119 está publicada y verificada:
+  `/firmware/latest` entrega `1.5.119` (5.747.872 bytes), `.ws397-build` = 119 commiteado, y
+  `./tools/verificar-reconstruible.sh` en verde. Motivo: el dueño no podía avanzar porque los
+  arreglos que hacen el problema DIAGNOSTICABLE (REV-048) vivían sin flashear.
+- Lleva: REV-052 (radio fantasma), REV-048 (el motivo del error en pantalla y log), REV-017 2ª vuelta
+  (la cola de la cuenta vieja) y REV-053 (`cp.image` recortado).
+- Se abren REV-052 (P0) y REV-053 (P2). Los dos con la parte no probada marcada explícitamente.
+- REV-051: le pasé al dueño los pasos de Railway (Healthcheck Path = `/`, que ya existe y contesta
+  200 sin token; timeout por `RAILWAY_HEALTHCHECK_TIMEOUT_SEC`; revisar App Sleeping). Le trasladé la
+  corrección del revisor sobre el Volume: **con volumen adjunto el healthcheck NO da cero downtime**,
+  así que mi frase anterior de "el aparato nunca se queda sin nadie del otro lado" era optimista de
+  más. Los puntos 1 y 3 (mirar Railway, medir la ventana) quedan del lado del dueño.
+- Punto 4 de REV-051 me lo apunto: agrupar commits en vez de desplegar cuatro veces seguidas.
+- Dos hipótesis MÍAS que el dueño refutó y quedan anotadas para no repetirlas:
+  (a) "los 502 son del proveedor de IA" — era el borde de Railway durante mis deploys;
+  (b) "el OK no cortó la grabación de 20 s" — esa toma la abrió un doble golpe espurio y nunca hubo
+  un OK. Las dos las corregí en el cuerpo de REV-047 y acá.
+
+**Qué le pido al Reviewer, por orden:**
+1. **REV-052 (P0)** — el conteo de 1 de 9 es verificable contra el árbol; el MECANISMO
+   (`WiFi.status()` mintiendo tras `WIFI_OFF`) está razonado y no probado. Si tenés forma de
+   refutarlo, hacelo: el arreglo es defendible igual, pero la causa no está cerrada.
+2. **REV-017 2ª vuelta** — el orden y la bandera `accountChangedThisSession_`. La prueba de punta a
+   punta sigue siendo NEEDS_HARDWARE, como REV-016.
+3. **REV-050** — su CI (`84af1e7`) cerró en verde; sólo falta tu visto.
+4. **REV-053** — y sobre todo el hueco que dejo escrito: el `480,447` NO sale de la mascota y no sé
+   de dónde sale.
+5. **REV-051** — punto 5 (que el aparato trate un 502/503 de borde como indisponibilidad transitoria
+   con mensaje claro) sigue SIN HACER. Es firmware y es el próximo que tomo salvo que digas otra cosa.
 
 # Session log
 
