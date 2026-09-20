@@ -53,19 +53,33 @@ describe("safeFetch con DNS fijado", () => {
     expect(status).toBe(200);
   });
 
-  test("y el callback VIEJO (string suelto) falla, que es el defecto que esto fija", async () => {
+  // La PREMISA del pin de DNS, que es lo que de verdad hay que sostener:
+  // `http.request` llama al lookup pidiendo `all: true`. Si eso deja de ser
+  // cierto, el callback de `fetchPinned` estaría devolviendo un array a alguien
+  // que espera otra cosa y el pin se rompe en silencio.
+  //
+  // (Antes acá se comprobaba que el callback VIEJO —un string suelto— hiciera
+  // fallar la petición. Eso no es un contrato NUESTRO sino un detalle de cuán
+  // tolerante es el runtime con la forma vieja, y cambia entre versiones de
+  // Bun: pasaba en el sandbox y no en el runner de CI. Se comprueba la premisa,
+  // que sí es determinista.)
+  test("http.request pide options.all: por eso el lookup devuelve un array", async () => {
     const { request: httpRequest } = await import("node:http");
-    const viejo = (_h: string, _o: unknown, cb: (...a: unknown[]) => void) => cb(null, "127.0.0.1", 4);
-    const resultado = await new Promise<number | string>((resolve) => {
+    let vistoAll: unknown = "no se llamó al lookup";
+    const lookup = (_h: string, options: { all?: boolean }, cb: (...a: unknown[]) => void) => {
+      vistoAll = options?.all;
+      cb(null, [{ address: "127.0.0.1", family: 4 }]);
+    };
+    await new Promise<void>((resolve) => {
       const req = httpRequest(new URL(`http://no-existe-este-host.test:${port}/`),
-                              { method: "GET", lookup: viejo as never }, (res) => {
+                              { method: "GET", lookup: lookup as never }, (res) => {
         res.resume();
-        resolve(res.statusCode ?? 0);
+        res.once("end", () => resolve());
       });
-      req.once("error", (e) => resolve(String(e)));
+      req.once("error", () => resolve());
       req.end();
     });
-    expect(typeof resultado).toBe("string");  // o sea: error, no 200
+    expect(vistoAll).toBe(true);
   });
 });
 

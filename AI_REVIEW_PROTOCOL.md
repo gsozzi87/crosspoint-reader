@@ -1283,6 +1283,66 @@ Success criterion is not “opens correctly”. Success is:
 Executor response:
 Reviewer final check:
 
+## REV-042 — cppcheck: falso positivo por colisión de nombres (levantado por el ejecutor)
+State: FIXED_PENDING_REVIEW
+Severity: P3
+Subsystem: CI / análisis estático
+
+No estaba en la cola del revisor: apareció en la PRIMERA corrida real de CI después de arreglar
+REV-001, que es justamente para lo que sirve tener CI.
+
+`pio check --fail-on-defect ...` falla con:
+
+    src/activities/reader/DictionaryWordSelectActivity.cpp:96: [high:error]
+      Uninitialized struct member: box.start [uninitStructMember]
+      Uninitialized struct member: box.len
+
+Evidencia de que es falso: hay DOS structs privados distintos llamados `WordBox`, cada uno dentro de
+su propia clase — `DictionaryWordSelectActivity::WordBox` (x, y, width, row, text, style) y
+`DictionaryDefinitionActivity::WordBox` (start, len, x, y, width). El de la línea 96 **no tiene**
+`start` ni `len`, y sus seis campos se asignan en las líneas 90-95. cppcheck confundió los dos.
+
+Fix: supresión en línea acotada a ese `push_back`, con el motivo escrito al lado
+(`--inline-suppr` ya estaba en `check_flags` de platformio.ini). Verificado local:
+`pio check -e ws397 --fail-on-defect low --fail-on-defect medium --fail-on-defect high` ->
+**No defects found**.
+
+Para el revisor: suprimir es lo menos invasivo, pero la causa de fondo es que dos structs privados
+con el MISMO nombre y significados distintos conviven en el mismo subsistema, y eso confunde también
+a quien lee. Renombrar uno sería mejor — pero toca archivos de REV-006/REV-007, que no reclamé, y
+puede haber otro agente ahí. Queda a criterio del revisor cambiar la supresión por un rename.
+
+Reviewer final check:
+
+## REV-043 — El build `default` (ESP32-C3) está roto desde 1.5.106 (levantado por el ejecutor)
+State: FIXED_PENDING_REVIEW
+Severity: P1
+Subsystem: build / upstream
+
+Tampoco estaba en la cola: lo destapó la primera corrida real de CI.
+
+    src/main.cpp:458:5: error: 'codecsleep' has not been declared
+
+`#include "util/CodecSleep.h"` está adentro de `#if SOC_PM_SUPPORT_EXT1_WAKEUP`, pero la llamada
+`codecsleep::es8311Suspend()` de `sleepNow()` NO tiene guarda de preprocesador: su guarda es
+`if (BoardConfig::isWS397())`, que es de EJECUCIÓN. En el ESP32-C3 `SOC_PM_SUPPORT_EXT1_WAKEUP` es 0,
+así que el header no entra y no compila. Entró con el trabajo de suspensión del códec (1.5.106) y
+nadie lo vio porque CI estaba muerto desde 1.5.113 (REV-001).
+
+Alcance: el firmware que se publica por OTA (`ws397`, S3) NUNCA estuvo afectado — `Build ws397` da
+verde. Lo roto es la placa upstream X4/X3 del env `default`.
+
+Fix: el include sale del `#if`. El header sólo necesita Arduino/BoardConfig/Logging/Wire, que existen
+en el C3, y su contenido sigue protegido por la guarda de ejecución.
+
+Tests: **no verificado localmente** — en este sandbox sólo está instalado el paquete de framework de
+esp32s3, así que `pio run -e default` muere antes de compilar
+(`FileNotFoundError: .../esp32c3/sdkconfig.crosspoint`). Es correcto por inspección (mover un
+`#include` fuera de un `#if`) y lo confirma CI en la corrida siguiente. Si CI sigue roja ahí,
+reabrir.
+
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -1342,3 +1402,18 @@ Use short entries. Do not paste huge tool transcripts.
   abierto el release gate; (b) REV-017 deja abierta la política de flush de `flushOnConnect()` y
   `devicesync::ifDue`, que cambia el comportamiento de todos los aparatos y no la decide el ejecutor.
 - Sin reclamar, siguen OPEN: REV-003, 004, 006, 007, 008, 010-015, 018-033, 035-041.
+
+### 2026-09-20 — Executor (Claude) — lo que destapó la primera CI real
+- Con REV-001 arreglado, CI corrió de verdad por primera vez en 65 commits: **11 jobs creados**
+  (antes: cero). Verde en `Build ws397`, los otros cuatro builds S3, `unit-tests`, `clang-format` y
+  `Server typecheck`. Rojo en tres, y ninguno de los tres lo causó esta tanda:
+  - `Build default` (C3) roto desde 1.5.106 -> **REV-043**, arreglado.
+  - `cppcheck` con un falso positivo por colisión de nombres -> **REV-042**, suprimido con motivo.
+  - `ws397 desktop tests`: el paso `Resolución de nombres fijada` (test/net_lookup) afirmaba un
+    detalle del runtime — que `http.request` RECHACE la forma vieja del callback de lookup — y eso
+    cambia entre versiones de Bun: pasaba acá y fallaba en el runner. Se reemplazó por la premisa
+    que sí es nuestra y sí es determinista: que `http.request` llama al lookup con `options.all`.
+    El test positivo (el callback nuevo conecta) no se tocó.
+- Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
+  una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
+  el rojo, que es exactamente cómo CI se murió 65 commits.
