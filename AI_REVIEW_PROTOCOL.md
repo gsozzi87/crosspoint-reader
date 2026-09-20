@@ -2864,6 +2864,53 @@ Executor response:
 Reviewer final check:
 
 
+## REV-065 — El detector de stalls no puede recuperar un loop que nunca vuelve
+State: OPEN
+Severity: P1
+Subsystem: firmware / loopTask / watchdog / recovery
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+El firmware mide la duración de cada pasada DESPUÉS de:
+    activityManager.loop();
+
+y recién entonces registra un stall de red (>4 s) o de otra causa (>8 s).
+
+Eso sirve si una operación tarda mucho pero finalmente retorna. Si una Activity, mutex, callback,
+driver o espera bloqueante no vuelve nunca, el código de detección nunca se ejecuta.
+
+La build ws397 usa pioarduino platform-espressif32 55.03.37 = Arduino-ESP32 3.3.7. En esa versión,
+`cores/esp32/main.cpp` inicializa explícitamente:
+    loopTaskWDTEnabled = false;
+
+y sólo llama `esp_task_wdt_reset()` desde el loopTask cuando esa bandera fue habilitada.
+
+En el repositorio no hay ninguna llamada a `enableLoopWDT()`, `esp_task_wdt_add()` ni escritura de
+`loopTaskWDTEnabled` que suscriba al loop. El helper local `resetTaskWatchdogIfSubscribed()` usado
+por NetPump comprueba `esp_task_wdt_status(nullptr)` y por tanto es un no-op mientras el loopTask no
+esté suscripto.
+
+Impacto visible:
+- un deadlock o espera infinita que ceda CPU puede dejar la UI/PWR software congelados para siempre;
+- el logger de stalls no puede informar la causa porque está después del punto bloqueado;
+- el usuario sólo conserva el hard-off del PMIC de 10 s como escape físico;
+- un busy-loop puede llegar a disparar otros watchdogs del sistema si mata al idle task, pero eso NO
+  cubre el caso importante de una tarea bloqueada en mutex/semaphore/I/O que sí deja correr al scheduler.
+
+Fix recomendado:
+- suscribir explícitamente el loopTask a un watchdog/supervisor después del arranque;
+- NO usar ciegamente un timeout menor que las operaciones legítimas actuales: el propio firmware acepta
+  renders/CPU jobs de varios segundos y marca stalls no-red recién a 8 s;
+- elegir un presupuesto suficientemente holgado y alimentar el watchdog sólo en puntos de progreso
+  conocidos (NetPump ya tiene hook para hacerlo), no dentro de waits potencialmente infinitos;
+- conservar el panic/capture para que el siguiente boot pueda mostrar por qué reinició;
+- test: una Activity que bloquea >timeout debe producir reset/recovery; una operación larga pero que
+  bombea/progresa no debe producir falso positivo.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
