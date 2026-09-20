@@ -3,7 +3,7 @@
 // que publica mucho se come el paquete y los otros no aparecen nunca.
 import { expect, test } from "bun:test";
 
-import { carryUnavailable, interleave, rollingWindow, splitTitledAnswer, type PackItem } from "../../server/src/news";
+import { carryUnavailable, envInt, interleave, rollingWindow, splitTitledAnswer, type PackItem } from "../../server/src/news";
 
 const feed = (id: number, name: string, n: number) => ({
   feed: name,
@@ -168,4 +168,29 @@ test("sin la primera línea marcada, el cuerpo entero se conserva", () => {
   // Y un título SIN cuerpo no se lleva puesta la nota: el cuerpo queda vacío y
   // el llamador se queda con el texto de antes (hay un piso de 200 caracteres).
   expect(splitTitledAnswer("TÍTULO: solo el titulo")).toEqual({ title: "solo el titulo", text: "" });
+});
+
+// REV-005: un tope de configuración que no es un número no es un tope. Con
+// `Number("abc")` = NaN toda comparación da false, así que una variable mal
+// tipeada en Railway apagaba en silencio el cupo por medio, el tope de bajadas
+// y el de masticado a la vez.
+test("los topes de entorno rechazan basura, negativos y absurdos", () => {
+  const V = "NEWS_TEST_TOPE";
+  const con = (raw: string | undefined) => {
+    if (raw === undefined) delete process.env[V];
+    else process.env[V] = raw;
+    return envInt(V, 40, 1, 500);
+  };
+  expect(con(undefined)).toBe(40);   // sin poner nada, el default
+  expect(con("")).toBe(40);          // vacía es como no ponerla
+  expect(con("   ")).toBe(40);
+  expect(con("abc")).toBe(40);       // NaN: antes apagaba el tope entero
+  expect(con("NaN")).toBe(40);
+  expect(con("Infinity")).toBe(40);
+  expect(con("-5")).toBe(1);         // se recorta al mínimo
+  expect(con("0")).toBe(1);
+  expect(con("1e9")).toBe(500);      // y al máximo
+  expect(con("12")).toBe(12);        // un valor válido pasa tal cual
+  expect(con("12.9")).toBe(12);      // y se trunca
+  delete process.env[V];
 });

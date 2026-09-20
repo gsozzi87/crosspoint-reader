@@ -146,9 +146,21 @@ void XtcReaderActivity::renderPage() {
   const uint16_t pageHeight = xtc->getPageHeight();
   const uint8_t bitDepth = xtc->getBitDepth();
 
+  // The 2-bit renderer walks the planes with a byte-aligned column stride, which
+  // only matches the stored plane size when height is a multiple of 8. Anything
+  // else would read past the buffer (see xtc::canRender2Bit), so refuse the page
+  // instead of rendering out of bounds.
+  if (bitDepth == 2 && !xtc::canRender2Bit(pageWidth, pageHeight)) {
+    LOG_ERR("XTR", "Page %lu is %ux%u: 2-bit plane geometry is not indexable", currentPage, pageWidth, pageHeight);
+    renderer.clearScreen();
+    renderer.drawCenteredText(UI_12_FONT_ID, 300, tr(STR_PAGE_LOAD_ERROR), true, EpdFontFamily::BOLD);
+    renderer.displayBuffer();
+    return;
+  }
+
   size_t pageBufferSize;
   if (bitDepth == 2) {
-    pageBufferSize = ((static_cast<size_t>(pageWidth) * pageHeight + 7) / 8) * 2;
+    pageBufferSize = xtc::planeBytes(pageWidth, pageHeight) * 2;
   } else {
     pageBufferSize = ((pageWidth + 7) / 8) * pageHeight;
   }
@@ -178,7 +190,7 @@ void XtcReaderActivity::renderPage() {
   const uint16_t maxSrcY = pageHeight;
 
   if (bitDepth == 2) {
-    const size_t planeSize = (static_cast<size_t>(pageWidth) * pageHeight + 7) / 8;
+    const size_t planeSize = xtc::planeBytes(pageWidth, pageHeight);
     const uint8_t* plane1 = pageBuffer;
     const uint8_t* plane2 = pageBuffer + planeSize;
     const size_t colBytes = (pageHeight + 7) / 8;

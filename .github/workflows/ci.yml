@@ -242,8 +242,23 @@ jobs:
       - name: Filtro de URLs (SSRF)
         run: ./test/ssrf/run.sh
 
-      - name: Libros: lo que dice el bot
+      - name: "Libros: lo que dice el bot"
         run: ./test/libros/run.sh
+
+      - name: Geometría de las páginas XTC
+        run: ./test/xtc_geometry/run.sh
+
+      - name: Reintentos que no se aplican dos veces
+        run: ./test/idempotency/run.sh
+
+      - name: Log del aparato
+        run: ./test/device_log/run.sh
+
+      - name: Resolución de nombres fijada
+        run: ./test/net_lookup/run.sh
+
+      - name: EPUB armado a mano
+        run: ./test/epub/run.sh
 
   # El servidor: que compile de tipos y que el lockfile esté al día. Con
   # --frozen-lockfile, un package.json tocado sin actualizar el lock falla acá

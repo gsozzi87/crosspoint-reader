@@ -33,6 +33,7 @@ import { accountOf, bearerOf, requireTenant, type AppEnv } from "./tenant";
 import { withTimeZone } from "./store";
 import { normalizeLang } from "./lang";
 import { addUsage, audioSeconds, overQuota, QUOTA_CODE, QUOTA_MSG } from "./usage";
+import { cacheable, ReplayCache } from "./idempotency";
 
 export const api = new Hono<AppEnv>();
 
@@ -110,8 +111,41 @@ api.use("*", async (c, next) => {
   }
 });
 
-// Lo usa Settings -> Prueba de servidor. X-Request-Id viene en cada pedido del
-// aparato (estable entre reintentos); por ahora solo lo devolvemos.
+// ── Reintentos: un POST no se aplica dos veces ──────────────────────────────
+// El aparato manda el MISMO `X-Request-Id` en los tres intentos de una
+// petición. Si el primero se aplicó y la respuesta se perdió (conexión cortada,
+// 5xx con el trabajo ya hecho), el reintento tiene que recibir la respuesta
+// guardada y no volver a ejecutar el handler. Ver idempotency.ts.
+const replays = new ReplayCache();
+
+api.use("*", async (c, next) => {
+  if (c.req.method !== "POST") return next();
+  const id = (c.req.header("x-request-id") ?? "").trim();
+  if (!id) return next();  // la web no lo manda; ahí no hay reintento automático
+  const key = ReplayCache.key(accountOf(c), c.req.path, id);
+  const hit = replays.get(key);
+  if (hit) {
+    console.log(`replay ${c.req.path} (${id}): se devuelve la respuesta guardada, no se aplica de nuevo`);
+    return new Response(hit.body.slice().buffer as ArrayBuffer, {
+      status: hit.status,
+      headers: { "content-type": hit.type },
+    });
+  }
+  await next();
+  // `clone()` porque el cuerpo de una Response se lee una sola vez y el que
+  // tiene que recibirlo es el aparato.
+  const copy = c.res.clone();
+  const body = new Uint8Array(await copy.arrayBuffer());
+  if (!cacheable(c.res.status, body.byteLength)) return;
+  replays.put(key, {
+    status: c.res.status,
+    type: c.res.headers.get("content-type") ?? "application/octet-stream",
+    body,
+    at: Date.now(),
+  });
+});
+
+// Lo usa Settings -> Prueba de servidor.
 api.get("/ping", (c) => c.json({ ok: true, now: Date.now(), requestId: c.req.header("x-request-id") ?? null }));
 
 api.route("/ask", ask);              // POST /api/ask         → Claude sobre el capítulo

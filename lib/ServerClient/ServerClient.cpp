@@ -1,14 +1,14 @@
 #include "ServerClient.h"
-#include <HalClock.h>
-#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <HalClock.h>
 #include <Logging.h>
 #include <NetPump.h>
 #include <PersistableStore.h>
 #include <WiFi.h>
 #include <esp_random.h>
+#include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include "ServerCredentialStore.h"
 
@@ -41,14 +41,22 @@ bool ServerClient::networkUp() { return WiFi.status() == WL_CONNECTED; }
 
 const char* ServerClient::resultName(Result r) {
   switch (r) {
-    case Result::Ok: return "ok";
-    case Result::Queued: return "queued";
-    case Result::NoNetwork: return "no network";
-    case Result::NoServer: return "no server url";
-    case Result::NoToken: return "no token";
-    case Result::Transport: return "transport error";
-    case Result::Unauthorized: return "unauthorized";
-    case Result::HttpError: return "http error";
+    case Result::Ok:
+      return "ok";
+    case Result::Queued:
+      return "queued";
+    case Result::NoNetwork:
+      return "no network";
+    case Result::NoServer:
+      return "no server url";
+    case Result::NoToken:
+      return "no token";
+    case Result::Transport:
+      return "transport error";
+    case Result::Unauthorized:
+      return "unauthorized";
+    case Result::HttpError:
+      return "http error";
   }
   return "?";
 }
@@ -61,9 +69,8 @@ std::string ServerClient::newRequestId() {
   return buf;
 }
 
-ServerClient::Result ServerClient::requestOnce(const char* method, const std::string& url, const Body* body,
-                                               bool auth, const std::string& requestId, Response& out,
-                                               uint32_t timeoutMs) {
+ServerClient::Result ServerClient::requestOnce(const char* method, const std::string& url, const Body* body, bool auth,
+                                               const std::string& requestId, Response& out, uint32_t timeoutMs) {
   out.status = 0;
   out.body.clear();
 #if defined(FREEINK_NET_WOLFSSL)
@@ -175,6 +182,7 @@ void ServerClient::ensureClockForTls() {
 
 void ServerClient::flushOnConnect() {
   if (inFlush_) return;
+  if (holdFlush_) return;  // se está averiguando de qué cuenta es el aparato
   if (!networkUp()) {
     flushedThisSession_ = false;  // la próxima vez que haya red se vuelve a intentar
     clockCheckedThisSession_ = false;
@@ -189,8 +197,8 @@ void ServerClient::flushOnConnect() {
   LOG_INF(TAG, "al conectarse se subieron %d pendientes", done);
 }
 
-ServerClient::Result ServerClient::request(const char* method, const std::string& path, const Body* body,
-                                           bool auth, Response& out, uint32_t timeoutMs) {
+ServerClient::Result ServerClient::request(const char* method, const std::string& path, const Body* body, bool auth,
+                                           Response& out, uint32_t timeoutMs) {
   if (!networkUp()) {
     flushedThisSession_ = false;
     clockCheckedThisSession_ = false;
@@ -258,7 +266,9 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
     // sí se reintenta, porque llega ANTES del tope.
     const uint32_t tope = timeoutMs ? timeoutMs : TIMEOUT_MS;
     if (out.status < 0 && took >= tope) {
-      LOG_ERR(TAG, "%s %s: venció el tope de %lu ms sin que la conexión se cayera: el servidor sigue trabajando, no se reintenta",
+      LOG_ERR(TAG,
+              "%s %s: venció el tope de %lu ms sin que la conexión se cayera: el servidor sigue trabajando, no se "
+              "reintenta",
               method, path.c_str(), (unsigned long)tope);
       break;
     }
@@ -295,7 +305,7 @@ ServerClient::Result ServerClient::postBytes(const std::string& path, const char
 }
 
 ServerClient::Result ServerClient::postOrQueue(const std::string& path, const std::string& json, Response* out,
-                                              const uint32_t timeoutMs) {
+                                               const uint32_t timeoutMs) {
   Response local;
   Response& resp = out ? *out : local;
   const Result r = timeoutMs > 0 ? postJson(path, json, resp, timeoutMs) : postJson(path, json, resp);
@@ -307,9 +317,8 @@ ServerClient::Result ServerClient::postOrQueue(const std::string& path, const st
   // pantalla ya la había dado por hecha. El 401 es el caso más doloroso, porque
   // es transitorio por definición: el aparato recupera el acceso vinculándose,
   // y lo que se hizo mientras tanto tendría que seguir estando.
-  const bool puedeAndarDespues =
-      r == Result::NoNetwork || r == Result::Transport || r == Result::Unauthorized ||
-      (r == Result::HttpError && retryable(resp.status));
+  const bool puedeAndarDespues = r == Result::NoNetwork || r == Result::Transport || r == Result::Unauthorized ||
+                                 (r == Result::HttpError && retryable(resp.status));
   if (puedeAndarDespues) {
     return enqueue(path, json) ? Result::Queued : r;
   }
@@ -357,6 +366,12 @@ size_t ServerClient::queueSize() {
 }
 
 int ServerClient::flushQueue(size_t maxItems) {
+  // La cola lleva ids que son de UNA cuenta. Mientras no se sepa de cuál, no
+  // se reproduce (ver setFlushHold).
+  if (holdFlush_) {
+    LOG_INF(TAG, "la cola espera: todavía no se sabe de qué cuenta es el aparato");
+    return 0;
+  }
   if (!networkUp()) return -1;
   const std::string base = SERVER_STORE.getBaseUrl();
   if (base.empty() || !SERVER_STORE.hasToken()) return -1;
@@ -373,8 +388,7 @@ int ServerClient::flushQueue(size_t maxItems) {
     // antes de que el dueño cancelara se saca igual de la cola (si no, volvía
     // a subirse en la próxima sincronización), y el siguiente ni se intenta.
     if (netpump::cancelRequested()) {
-      LOG_INF(TAG, "queue: se corta por %s, quedan %u pendientes", netpump::cancelReason(),
-              (unsigned)items.size());
+      LOG_INF(TAG, "queue: se corta por %s, quedan %u pendientes", netpump::cancelReason(), (unsigned)items.size());
       break;
     }
     JsonObjectConst item = items[0].as<JsonObjectConst>();
@@ -418,8 +432,7 @@ int ServerClient::flushQueue(size_t maxItems) {
       ++done;
       continue;
     }
-    LOG_DBG(TAG, "queue: se detiene en %s (%s, estado %d): queda pendiente", path.c_str(), resultName(r),
-            resp.status);
+    LOG_DBG(TAG, "queue: se detiene en %s (%s, estado %d): queda pendiente", path.c_str(), resultName(r), resp.status);
     break;
   }
   if (changed) PersistableStoreBase::writeDocToFile(QUEUE_PATH, doc);

@@ -24,4 +24,18 @@ curl -fsS -X PUT "$put_url" \
   -H "Content-Type: application/octet-stream" \
   --data-binary "@$bin"
 echo
+
+# El PUT contestó 200, pero eso no dice qué quedó servido. Sin esta comprobación
+# el repositorio podía quedar diciendo N mientras /firmware/latest seguía
+# entregando N-1, y el único síntoma era que el aparato no veía la
+# actualización (la comparación es major.minor.patch estricta).
+echo "Verificando lo que quedó servido en $WS397_OTA_URL..."
+servido=$(curl -fsS -m 30 "$WS397_OTA_URL" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+if [ "$servido" != "$version" ]; then
+  echo "ERROR: se subió $version pero /firmware/latest entrega '${servido:-nada}'." >&2
+  echo "       El release NO está publicado. No anunciarlo hasta que coincidan." >&2
+  exit 1
+fi
+echo "OK: /firmware/latest entrega $servido"
+
 echo "Listo: en el aparato, Settings -> Check for updates instala $version"

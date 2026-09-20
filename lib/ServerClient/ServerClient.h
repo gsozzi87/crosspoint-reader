@@ -55,11 +55,10 @@ class ServerClient {
   Result postJson(const std::string& path, const std::string& json, Response& out, uint32_t timeoutMs = 0,
                   bool auth = true);
   // POST a raw body (e.g. audio/wav) with the token. Retries like postJson.
-  Result postBytes(const std::string& path, const char* contentType, const uint8_t* data, size_t len,
-                   Response& out, uint32_t timeoutMs = 0);
+  Result postBytes(const std::string& path, const char* contentType, const uint8_t* data, size_t len, Response& out,
+                   uint32_t timeoutMs = 0);
   // postJson, and on NoNetwork/Transport the request is queued instead (Queued).
-  Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr,
-                     uint32_t timeoutMs = 0);
+  Result postOrQueue(const std::string& path, const std::string& json, Response* out = nullptr, uint32_t timeoutMs = 0);
 
   // Offline queue (SD, /.crosspoint/server-queue.json, bounded; the oldest
   // entry is dropped when full).
@@ -74,6 +73,15 @@ class ServerClient {
   // llama sola desde la primera petición de cada sesión de red; queda pública
   // por si alguna pantalla quiere forzarla.
   void flushOnConnect();
+  // Mientras esté puesto, NINGUNA petición vacía la cola de paso.
+  //
+  // Existe por un orden que dejaba muerta la guardia de cuenta (F11): el
+  // chequeo de identidad es `GET /api/pair/status`, o sea una petición, y
+  // `request()` llama a `flushOnConnect()` ANTES de mandar nada. La cola se
+  // subía mientras se preguntaba de quién era el aparato, así que llegar a la
+  // comparación ya era tarde. Quien pregunte por la identidad pone esto
+  // primero.
+  void setFlushHold(bool hold) { holdFlush_ = hold; }
   void ensureClockForTls();
   // Replays queued POSTs in order while the network holds. Returns how many
   // were delivered (or rejected by the server and dropped); stops at the first
@@ -85,9 +93,10 @@ class ServerClient {
   static bool networkUp();
 
  private:
-  bool inFlush_ = false;            // flushQueue() usa request(): no reentrar
+  bool inFlush_ = false;  // flushQueue() usa request(): no reentrar
   bool flushedThisSession_ = false;
   bool clockCheckedThisSession_ = false;  // el reloj ya se miró en esta sesión de red
+  bool holdFlush_ = false;                // ver setFlushHold()
   ServerClient() = default;
   struct Body {
     const char* contentType = nullptr;
