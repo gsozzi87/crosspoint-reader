@@ -1087,7 +1087,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-025 — Lua app visual regression
-State: OPEN
+State: CONFIRMED
 Severity: P2
 Subsystem: Lua UI
 
@@ -1101,6 +1101,17 @@ Visually audit:
 There are manual ROW1/ROW2 sizes and manual coordinates. Verify selector, circle, title, subtitle, metadata and scrolling never overlap on real WS397 geometry.
 
 Pay special attention to title + long subtitle rows; previous device behavior showed an indicator obscuring subtitles.
+
+Reviewer hardware evidence (2026-09-20):
+- Confirmado por log real al abrir `mascota`: `[GFX] 80 pixeles fuera de pantalla (ultimo 480,447)`
+  y también ráfagas de 160 píxeles. Se repite en múltiples renders, no es un evento aislado.
+- El error aparece inmediatamente después de `[LUA] mascota abierta` y vuelve durante sus refrescos,
+  por lo que la hipótesis de regresión visual ya es bug confirmado.
+- No hay crash en el log, pero el renderer está intentando escribir coordenadas fuera del viewport;
+  eso puede traducirse en elementos cortados, selector/figura pegados al borde y ruido diagnóstico.
+
+Impacto visible: la mascota o alguno de sus elementos puede quedar recortado/deformado en el borde
+derecho/inferior; además cada render llena el log con errores GFX.
 
 Executor response:
 Reviewer final check:
