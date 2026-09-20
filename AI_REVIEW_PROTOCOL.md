@@ -784,7 +784,7 @@ Impacto: el defecto original podía duplicar una nota/recordatorio después de u
 El código ya evita ese camino; queda validar la integración real aparato+SD+red.
 
 ## REV-017 — Offline queue + account reassignment
-State: OPEN — encontré un P0 residual con entradas legacy sin sello
+State: FIXED_PENDING_REVIEW (2ª vuelta)
 Severity: P0
 Subsystem: multi-account sync
 
@@ -898,6 +898,47 @@ Lo que se verificó es que compila (`pio run -e ws397` SUCCESS) y el contrato de
 leído del servidor: `{paired, account, single}` con `account: null` en modo de una sola cuenta (por eso
 "vacío" se trata como identidad CONOCIDA y sigue vaciando: ahí hay una sola cuenta y la cola es de ésa).
 Queda como NEEDS_HARDWARE la comprobación de punta a punta.
+Executor response (2ª vuelta): CONFIRMED, el revisor tiene razón y el defecto es mío.
+State: FIXED_PENDING_REVIEW.
+
+Verificado línea por línea contra el árbol. El orden era exactamente el que describe: `flushQueue()`
+leía `QUEUE_PATH` en `doc`/`items` (líneas 478-481) y recién después llamaba a `confirmAccount()`
+(493), que ante un cambio de cuenta llama a `clearQueue()` (461) — y eso vacía el ARCHIVO, no la
+lista que ya estaba en memoria. El bucle seguía iterando el snapshot. Una entrada sellada se
+descartaba por el `acct`, pero una entrada SIN sellar pasaba: el `if` sólo se disparaba cuando el
+campo existía, y el comentario daba por buena una premisa ("un cambio de cuenta habría vaciado la
+cola") que es falsa dentro de la misma llamada. **Una acción de la cuenta A podía salir una vez
+contra la B.**
+
+Fix, y son dos cosas porque el revisor señaló dos caminos:
+1. **El orden.** Primero una SONDA barata (leer la tarjeta y ver si hay algo) para no pagar una
+   petición con la cola vacía, que es el caso normal y era la razón del orden anterior; después
+   `confirmAccount()`; y **recién entonces** se lee la cola de verdad. Si `confirmAccount()` la
+   vació, la lectura de verdad devuelve una cola vacía y no hay snapshot que valga.
+2. **La presunción sobre las entradas sin sellar.** `accountChangedThisSession_` queda puesto en
+   `confirmAccount()` cuando detecta el cambio, ANTES de `clearQueue()`. Con esa bandera, una entrada
+   sin sello no se da por buena — que es el caso que el revisor marcó para la tarjeta dañada, donde
+   `clearQueue()` no puede escribir y el archivo conserva lo viejo.
+
+La regla salió del bucle y vive en **`lib/ServerClient/QueueAccount.h`** (`queueacct::allowed` /
+`refusal`), puro y sin nada del aparato adentro. Es el mismo motivo por el que las rutas protegidas
+terminaron en `ProtectedPaths.h` en 1.5.91: una regla escrita como un `if` con su premisa al lado se
+separa de la verdad, y acá ya se había separado. `refusal()` devuelve motivos DISTINTOS para "es de
+otra cuenta" y "es vieja y el aparato acaba de cambiar de cuenta", que mandan a mirar cosas distintas.
+
+Tests: `./test/queue_account/run.sh` — sellada con la cuenta de ahora, sellada con otra, sellada con
+la cuenta vieja tras el cambio, **el caso del revisor** (vieja + cambio recién), vieja sin cambio (que
+tiene que seguir saliendo: si no, un aparato que actualiza por OTA con cosas encoladas las perdería
+sin motivo), los tres casos del servidor de una sola cuenta, y que los motivos del log existan y sean
+distintos. Verificado que la prueba atrapa el defecto: restaurando la premisa vieja
+(`return true` para las sin sellar), 2 fallos. Agregado a CI.
+Firmware: `pio run -e ws397` limpio. **Sin OTA.**
+
+NEEDS_HARDWARE: la prueba de punta a punta que pide el revisor (sembrar una cola legacy de la cuenta A
+en la tarjeta, mudar el aparato a B, llamar `flushQueue()` y ver que no sale NI UN POST) sigue sin
+poder correrse acá — es ESP32 + SD + red. Lo que sí queda cubierto de escritorio es la DECISIÓN, y el
+orden que la habilitaba pasó a ser estructuralmente imposible. Va al mismo cajón que REV-016.
+
 Reviewer final check:
 NO VERIFICADO. La política global nueva es mejor y cubre los tres caminos de vaciado, pero encontré un
 agujero concreto dentro de `flushQueue()`.
@@ -2075,7 +2116,10 @@ cuerpos grandes conocidos, Voice y Translate, el servidor declara Content-Length
 optimización sí actúa donde importa. El test además comprueba que la respuesta original llega entera.
 
 No lo marco VERIFIED todavía sólo porque la corrida CI del HEAD `84af1e7` sigue en progreso al
-momento de esta revisión. El commit anterior, que contiene REV-047/048/049, ya tuvo CI verde tras el
+momento de esta revisión.
+
+Executor: esa corrida **cerró en verde** (run 35485951629, HEAD `84af1e7`, doce jobs). Queda a la
+espera del visto del revisor, nada más. El commit anterior, que contiene REV-047/048/049, ya tuvo CI verde tras el
 arreglo de clang-format.
 
 Impacto: reduce picos de memoria del servidor durante errores/respuestas grandes; no cambia el
@@ -2188,6 +2232,19 @@ When an executor encounters one of these, first confirm whether current HEAD alr
 - Se abre REV-051: la indisponibilidad durante deploy es un problema propio. Railway documenta que servicios con Volume pueden tener breve downtime incluso con healthcheck.
 - Validación externa adicional: el digest de Dockerfile corresponde a oven/bun:1.4.2-debian; REV-046 queda cerrado.
 - Ninguna OTA autorizada.
+
+### 2026-09-20 — Executor (Claude) — REV-017 segunda vuelta, sobre ws397 a2727ec
+- El revisor reabrió REV-017 como P0 y tenía razón: `flushQueue()` leía la cola ANTES de
+  `confirmAccount()`, así que `clearQueue()` vaciaba el archivo y el bucle seguía con el snapshot.
+  Una entrada sin sellar (firmware anterior) podía salir una vez contra la cuenta nueva.
+- Arreglado en dos frentes: el orden (sonda barata → confirmar → leer de verdad) y
+  `accountChangedThisSession_`, que cubre el caso de la tarjeta que no se puede escribir.
+- La regla salió del bucle a `lib/ServerClient/QueueAccount.h`, puro y probado de escritorio
+  (`./test/queue_account/run.sh`, en CI). La prueba de punta a punta sigue siendo NEEDS_HARDWARE.
+- CI del HEAD anterior (`84af1e7`, REV-050) cerró en verde.
+- REV-051 (disponibilidad durante el deploy) queda para el dueño en lo que es Railway; anoté acá que
+  su corrección sobre el Volume invalida la parte "cero downtime" de lo que yo le había dicho.
+- **Sin OTA.** `.ws397-build` sigue en 118.
 
 # Session log
 

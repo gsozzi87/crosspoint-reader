@@ -10,6 +10,7 @@
 #include <esp_random.h>
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
+#include "QueueAccount.h"
 #include "ServerCredentialStore.h"
 #include "ServerErrorText.h"
 
@@ -458,6 +459,9 @@ bool ServerClient::confirmAccount() {
   const std::string ahora(acc ? acc : "");
   if (ahora != account_) {
     LOG_INF(TAG, "el aparato cambió de cuenta: se descarta lo de la anterior");
+    // Queda anotado para toda la sesión: si `clearQueue()` no pudo escribir la
+    // tarjeta, las entradas SIN sellar tampoco se pueden dar por buenas.
+    accountChangedThisSession_ = true;
     clearQueue();
     account_ = ahora;
     if (onAccountChanged_) onAccountChanged_(account_.c_str());
@@ -475,22 +479,32 @@ int ServerClient::flushQueue(size_t maxItems) {
   const std::string base = SERVER_STORE.getBaseUrl();
   if (base.empty() || !SERVER_STORE.hasToken()) return -1;
 
-  JsonDocument doc;
-  if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc) || !doc["items"].is<JsonArray>()) return 0;
-  JsonArray items = doc["items"].as<JsonArray>();
-  if (items.size() == 0) return 0;
+  // Primero, ¿hay algo? Es una lectura de la tarjeta y nada más: con la cola
+  // vacía —el caso normal— no se paga ninguna petición de red.
+  {
+    JsonDocument sonda;
+    if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, sonda) || !sonda["items"].is<JsonArray>()) return 0;
+    if (sonda["items"].as<JsonArray>().size() == 0) return 0;
+  }
 
   // EL PORTÓN, y está acá para que valga en los TRES caminos que vacían la
   // cola: `flushOnConnect()` (la primera petición de cualquier sesión de red),
   // `devicesync::ifDue()` y la sincronización del hub. Puesto en una pantalla
   // dejaba los otros dos abiertos, que es lo que pasaba.
   //
-  // Se pregunta una vez por sesión de red y SÓLO si hay algo encolado: con la
-  // cola vacía —el caso normal— esto no cuesta ni una petición. Si no se puede
-  // averiguar, la cola espera a la próxima sesión, igual que cuando no hay red:
-  // perder una vuelta no cuesta nada, aplicarla sobre la cuenta equivocada le
-  // borra cosas a otro.
+  // Si no se puede averiguar, la cola espera a la próxima sesión, igual que
+  // cuando no hay red: perder una vuelta no cuesta nada, aplicarla sobre la
+  // cuenta equivocada le borra cosas a otro.
   if (!confirmAccount()) return 0;
+
+  // Y RECIÉN ACÁ se lee la cola de verdad. El orden importa: `confirmAccount()`
+  // puede haber llamado a `clearQueue()`, que vacía el ARCHIVO — una lista
+  // leída antes seguiría viva en memoria y el bucle la mandaría igual. Es el
+  // agujero que encontró el revisor sobre la primera versión de esto.
+  JsonDocument doc;
+  if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc) || !doc["items"].is<JsonArray>()) return 0;
+  JsonArray items = doc["items"].as<JsonArray>();
+  if (items.size() == 0) return 0;
 
   int done = 0;
   bool changed = false;
@@ -506,19 +520,20 @@ int ServerClient::flushQueue(size_t maxItems) {
     const std::string path = item["path"] | "";
     const std::string body = item["body"] | "";
     const std::string id = item["id"] | "";
-    // Segunda línea de defensa: una entrada sellada con OTRA cuenta no sale,
-    // se tira. Cubre el caso en que `clearQueue()` no pudo escribir la tarjeta.
-    // Sin sello = la escribió un firmware anterior a REV-017: como la identidad
-    // de esta sesión ya está confirmada y un cambio de cuenta habría vaciado la
-    // cola, es de la cuenta actual.
-    if (item["acct"].is<const char*>()) {
-      const std::string sello = item["acct"] | "";
-      if (sello != account_) {
-        LOG_ERR(TAG, "queue: se descarta %s, es de otra cuenta", path.c_str());
-        items.remove(0);
-        changed = true;
-        continue;
-      }
+    // Segunda línea de defensa: la regla vive en `queueacct` (un header puro,
+    // probado de escritorio) para que sea UNA sola y no un `if` con una
+    // premisa escrita al lado. Cubre el caso en que `clearQueue()` no pudo
+    // escribir la tarjeta, y el de una entrada sin sellar de un firmware
+    // anterior justo después de un cambio de cuenta.
+    queueacct::Entry entrada;
+    entrada.sealed = item["acct"].is<const char*>();
+    if (entrada.sealed) entrada.account = item["acct"] | "";
+    const queueacct::Session sesion{account_, accountChangedThisSession_};
+    if (const char* porque = queueacct::refusal(entrada, sesion)) {
+      LOG_ERR(TAG, "queue: se descarta %s, %s", path.c_str(), porque);
+      items.remove(0);
+      changed = true;
+      continue;
     }
     Response resp;
     Result r = Result::Transport;
