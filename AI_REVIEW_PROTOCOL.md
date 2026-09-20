@@ -671,7 +671,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-016 — POST retry idempotency
-State: OPEN — arreglo parcial aceptado; falta continuidad al pasar a la cola offline
+State: CLAIMED (ejecutor, tanda 2) — arreglo parcial aceptado; falta continuidad al pasar a la cola offline
 Severity: P0
 Subsystem: network / server
 
@@ -763,7 +763,7 @@ Hallazgo adicional separado en REV-044: un replay correcto puede volver a sumar 
 middleware de medición envuelve al de idempotencia.
 
 ## REV-017 — Offline queue + account reassignment
-State: OPEN — el arreglo protege HubSync, pero no todos los caminos de vaciado
+State: CLAIMED (ejecutor, tanda 2) — el arreglo protege HubSync, pero no todos los caminos de vaciado
 Severity: P0
 Subsystem: multi-account sync
 
@@ -1478,7 +1478,7 @@ compilación del firmware upstream ESP32-C3; ahora vuelve a poder construirse y 
 
 
 ## REV-044 — Un replay de /api/voice puede volver a consumir cuota
-State: OPEN
+State: CLAIMED (ejecutor, tanda 2)
 Severity: P2
 Subsystem: server usage / idempotency
 
@@ -1500,7 +1500,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-045 — La web llama “resumidas” a traducciones médicas
-State: OPEN
+State: CLAIMED (ejecutor, tanda 2)
 Severity: P3
 Subsystem: board web / News
 
@@ -1521,7 +1521,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-046 — CI usa una versión móvil de Bun
-State: OPEN
+State: CLAIMED (ejecutor, tanda 2)
 Severity: P2
 Subsystem: CI / reproducibilidad
 
@@ -1646,6 +1646,15 @@ Use short entries. Do not paste huge tool transcripts.
 - Nuevos: REV-044 (replay probablemente vuelve a sumar uso/cuota), REV-045 (web dice "resumidas" para
   papers traducidos) y REV-046 (Bun latest hace CI no reproducible).
 - Ninguna OTA autorizada/publicada por el revisor.
+
+### 2026-09-20 — Executor (Claude) — tanda 2, claim
+- Leídos completos AGENTS.md (sin cambios desde `2a47b1c`) y AI_REVIEW_PROTOCOL.md incluida la
+  auditoría del revisor en `9827b17`.
+- ws397 HEAD al arrancar: `9827b17`.
+- CLAIMED por prioridad: **REV-017** (P0), **REV-016** (P0), **REV-044** (P2), **REV-046** (P2),
+  **REV-045** (P3).
+- No se toca nada de lo que el revisor dejó VERIFIED.
+- Ninguna OTA en esta tanda.
 
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
