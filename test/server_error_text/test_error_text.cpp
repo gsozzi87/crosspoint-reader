@@ -4,10 +4,10 @@
 // Lo que se prueba es lo que puede salir mal de verdad: recortar en el medio de
 // un caracter UTF-8 (los mensajes del proveedor vienen con acentos y comillas
 // tipograficas) y los saltos de linea, que parten el renglon del log.
-#include "ServerErrorText.h"
-
 #include <cstdio>
 #include <string>
+
+#include "ServerErrorText.h"
 
 static int fallos = 0;
 
@@ -25,11 +25,16 @@ static bool utf8Valido(const std::string& s) {
   while (i < s.size()) {
     const unsigned char c = static_cast<unsigned char>(s[i]);
     size_t largo = 0;
-    if (c < 0x80) largo = 1;
-    else if ((c & 0xE0) == 0xC0) largo = 2;
-    else if ((c & 0xF0) == 0xE0) largo = 3;
-    else if ((c & 0xF8) == 0xF0) largo = 4;
-    else return false;  // un byte de continuacion suelto
+    if (c < 0x80)
+      largo = 1;
+    else if ((c & 0xE0) == 0xC0)
+      largo = 2;
+    else if ((c & 0xF0) == 0xE0)
+      largo = 3;
+    else if ((c & 0xF8) == 0xF0)
+      largo = 4;
+    else
+      return false;  // un byte de continuacion suelto
     if (i + largo > s.size()) return false;
     for (size_t k = 1; k < largo; ++k) {
       if ((static_cast<unsigned char>(s[i + k]) & 0xC0) != 0x80) return false;
@@ -53,8 +58,7 @@ int main() {
 
   // Saltos de linea y tabulaciones se vuelven espacios: un mensaje del
   // proveedor viene con el JSON de su error adentro y lo parte en dos.
-  chk("saltos", servererr::tidy("linea uno\nlinea dos\r\n\tsangrada", 120),
-      "linea uno linea dos   sangrada");
+  chk("saltos", servererr::tidy("linea uno\nlinea dos\r\n\tsangrada", 120), "linea uno linea dos   sangrada");
 
   // El caso que motiva el header: el corte cae EN EL MEDIO de una "é" (dos
   // bytes). Se retrocede al principio del caracter en vez de dejar medio.
