@@ -1774,6 +1774,36 @@ job con acceso a Railway; queda propuesto y sin implementar. Lo que sí queda: e
 Tests: `./test/provider_log/run.sh` (6 casos: vacío, orden más-nuevo-primero, el tope de 20 recorta
 por el lado correcto, un cuerpo de 5000 caracteres se recorta a 300, lo que no es `Error` también se
 anota, y cada entrada lleva su hora). Agregado a CI.
+
+**CORRECCIÓN DEL EXECUTOR (misma sesión, después de la primera respuesta).** El dueño objetó:
+*"la versión 117 tenía la misma configuración y no fallaba, no le he cambiado nada eh"*, y mandó la
+prueba viva ya arreglada: `api.groq.com/openai/gpt-oss-120b → "ok" (195 ms)`. Tenía razón y mi
+diagnóstico estaba mezclando dos cosas:
+
+- **REV-049 es real y quedó demostrado** — pero lo que explicaba era la PRUEBA de `/board`, que pedía
+  10 tokens y con un modelo de razonamiento iba a dar vacío SIEMPRE, también en la 117. O sea que era
+  un defecto latente, no una regresión, y no es lo que el aparato estaba sufriendo.
+- **Los 502 del aparato fueron MIS DESPLIEGUES.** La cronología, verificada contra git y el log del
+  dueño: la tanda 2 se fusionó a `ws397` a las **02:07:49**; sus 502 son de **02:13 a 02:15**, o sea
+  dentro de la reconstrucción de Railway (el Dockerfile trae Piper y la Biblia: son varios minutos).
+  Y la prueba que lo cierra está en su propio log: hay un **502 en `/firmware/latest`**, que es un
+  archivo estático del volumen y cuyo handler (`firmware.ts`) sólo puede devolver 200, 404, 401 o 400
+  — **no tiene un 502 en ninguna rama**. Ese 502 sólo puede venir del borde de Railway, o sea de que
+  no había contenedor escuchando. Encaja también con que `GET /api/hub` y `GET /api/news/pack`
+  anduvieran: fueron antes o después de la ventana, no durante.
+- **Y encaja con "antes no pasaba"**: en la época de la 117 nadie desplegaba el servidor cuatro veces
+  en una noche.
+
+Lo que esto NO cambia: los tres arreglos siguen siendo correctos y necesarios (el motivo del error ya
+no se tira, los fallos del proveedor quedan a la vista, y la prueba de `/board` dejó de dar por bueno
+un texto vacío). Lo que cambia es la conclusión: no hay evidencia de que la integración viva estuviera
+rota, y la parte de REV-047 que sigue abierta de verdad es la **3** del revisor — que un despliegue no
+tire 502 a la cara del aparato. Eso es configuración de Railway (health check + solapamiento de
+contenedores), no código, y es del dueño.
+
+**Regla que sale de acá, y me la aplico a mí mismo**: antes de explicar un síntoma con una teoría del
+código, fechar el síntoma contra los DESPLIEGUES. Es la misma disciplina de "antes de diagnosticar un
+log, fecharlo" (1.5.94), una capa más afuera.
 Reviewer final check:
 
 ## REV-048 — El firmware oculta el mensaje útil de los errores HTTP 4xx/5xx
@@ -1948,6 +1978,38 @@ Verificado que atrapan el defecto: revirtiendo las dos mitades del fix, 2 de 4 f
 (`Expected: 1088, Received: 64`). Agregado a CI.
 Reviewer final check:
 
+## REV-050 — El middleware de idempotencia copiaba el cuerpo ANTES de decidir si lo iba a guardar
+State: FIXED_PENDING_REVIEW
+Severity: P2
+Subsystem: server / memoria
+
+Hallazgo del Executor sobre su propio código de la tanda 2, buscando si el 502 del dueño podía ser un
+contenedor caído.
+
+`idempotency()` hacía `c.res.clone()` + `await copy.arrayBuffer()` en **todo** POST y recién después
+miraba el estado y el tamaño. O sea que pagaba el cuerpo DOS veces en memoria para, acto seguido,
+tirar un 5xx o una respuesta más grande que `MAX_BODY`. Por ese middleware pasan los cientos de KB de
+ADPCM de `/api/voice` y `/api/translate`, en un contenedor de 512 MB compartido con Piper.
+
+No hay evidencia de que haya causado los 502 (ver la corrección en REV-047: fueron los despliegues),
+pero es un pico de memoria gratis en el camino más caro del servidor.
+
+Fix: lo que se puede descartar sin tocar el cuerpo se descarta antes de copiarlo — el 5xx por el
+estado, y el tamaño por `content-length` **cuando está**. Adentro del middleware Hono todavía no lo
+puso, pero `/api/voice` y `/api/translate` lo declaran ellos mismos (`framed()` en `voice.ts`,
+`translate.ts`), que son justamente los dos que no hay que copiar para después tirar.
+
+**Lo que se probó y se descartó**: leer el clon con un tope que cancele. Con un reproductor mínimo en
+Bun, cancelar una rama del `tee` de `clone()` deja colgada a la otra — o sea la respuesta que espera
+el aparato. Un cuelgue es peor que el pico que evitaba, así que no va. Queda anotado para no volver a
+intentarlo.
+
+Tests: tres casos nuevos en `./test/idempotency/run.sh` — una respuesta que declara ser más grande que
+`MAX_BODY` no se clona (se cuenta) ni se guarda y el aparato la recibe entera; un 5xx tampoco se
+guarda, así el reintento vuelve a intentar de verdad; y una del tamaño de `/api/voice` (300 KB) sí se
+guarda y se repite sin volver a ejecutar el handler.
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -1998,6 +2060,17 @@ When an executor encounters one of these, first confirm whether current HEAD alr
 - Tres suites nuevas en CI: `server_error_text`, `provider_log`, `llm_budget`. Las quince en verde,
   `bunx tsc --noEmit` limpio, `node --check app.js` limpio, `pio run -e ws397` limpio.
 - **Sin OTA.** `.ws397-build` sigue en 118. Nada marcado VERIFIED.
+
+### 2026-09-20 — Executor (Claude) — corrección: los 502 eran los despliegues, no el proveedor
+- El dueño objetó que la 117 andaba con la MISMA configuración, y la prueba viva ya daba `→ "ok"`.
+- Verificado contra git: tanda 2 fusionada a `ws397` 02:07:49, los 502 del log 02:13–02:15, o sea
+  dentro de la reconstrucción de Railway. Y en su log hay un 502 en `/firmware/latest`, que es un
+  archivo estático cuyo handler no tiene ninguna rama 502: sólo puede ser el borde de Railway.
+- REV-049 sigue confirmado, pero explicaba la PRUEBA de /board (10 tokens con un modelo que razona),
+  no los 502 del aparato. Corregido en el cuerpo de REV-047.
+- Se abre y se arregla REV-050 (el clone del middleware de idempotencia, mío, de la tanda 2).
+- Queda para el dueño, y es configuración y no código: que un despliegue de Railway no tire 502 a la
+  cara del aparato (health check + solapamiento de contenedores).
 
 # Session log
 

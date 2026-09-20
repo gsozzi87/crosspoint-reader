@@ -155,8 +155,27 @@ export function idempotency(cache: ReplayCache, accountOf: (c: any) => number) {
       });
     }
     await next();
+    // Lo que se puede descartar SIN tocar el cuerpo se descarta antes de
+    // copiarlo: `clone()` deja el cuerpo dos veces en memoria, y por acá pasan
+    // los cientos de KB de ADPCM de /api/voice en un contenedor de 512 MB
+    // compartido con Piper.
+    //
+    // Un 5xx nunca se guarda (el reintento existe para pasarle por arriba).
+    if (c.res.status >= 500) return;
+    // Y el largo, CUANDO se sabe. Adentro del middleware el cuerpo es siempre
+    // un ReadableStream y Hono todavía no puso `content-length` — pero los dos
+    // caminos que devuelven cuerpos grandes (`/api/voice` y `/api/translate`)
+    // lo declaran ellos mismos, que son justamente los que no hay que copiar
+    // para después tirar.
+    const declared = Number(c.res.headers.get("content-length") ?? Number.NaN);
+    if (Number.isFinite(declared) && !cacheable(c.res.status, declared)) return;
     // `clone()` porque el cuerpo de una Response se lee una sola vez y el que
     // tiene que recibirlo es el aparato.
+    //
+    // NO se lee con un tope que cancele: en Bun, cancelar una rama del `tee`
+    // de `clone()` puede dejar colgada a la otra — o sea la respuesta del
+    // aparato —, y eso es peor que el pico de memoria que evitaría. Verificado
+    // con un reproductor mínimo antes de descartarlo.
     const copy = c.res.clone();
     const body = new Uint8Array(await copy.arrayBuffer());
     if (!cacheable(c.res.status, body.byteLength)) return;
