@@ -455,35 +455,11 @@ void HubSyncActivity::cacheSpokenNotices() {
 // numeran desde 1 EN CADA CUENTA, asi que reproducir la cola de la cuenta
 // vieja contra la nueva tilda o borra lo que le haya tocado el mismo numero.
 bool HubSyncActivity::checkAccount() {
-  ServerClient::Response resp;
-  // La pregunta no puede disparar la subida que está por autorizar.
-  SERVER_CLIENT.setFlushHold(true);
-  const ServerClient::Result r = SERVER_CLIENT.get("/api/pair/status", resp);
-  SERVER_CLIENT.setFlushHold(false);
-  if (r != ServerClient::Result::Ok) {
-    LOG_ERR(TAG, "no se pudo saber de que cuenta es el aparato (status %d): la cola espera", resp.status);
-    return false;
-  }
-  JsonDocument doc;
-  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
-    LOG_ERR(TAG, "/api/pair/status contesto algo que no es JSON: la cola espera");
-    return false;
-  }
-  const char* acc = doc["account"] | "";
-  // Sin cuentas (`single`) o sin vincular no hay con que comparar, pero la
-  // identidad ESTA contestada: en el servidor de una sola cuenta la cola es de
-  // esa cuenta y tiene que salir.
-  if (!acc || !*acc) return true;
-  const std::string now(acc);
-  if (HUB_STORE.account == now) return true;
-  if (!HUB_STORE.account.empty()) {
-    LOG_INF(TAG, "el aparato cambio de cuenta: se descarta lo de la anterior");
-    SERVER_CLIENT.clearQueue();
-    HUB_STORE.clearAccountContent();
-  }
-  HUB_STORE.account = now;
-  HUB_STORE.saveToFile();
-  return true;
+  // La política vive en ServerClient (REV-017): la cola sale por tres caminos
+  // distintos y una guardia puesta sólo acá dejaba abiertos los otros dos.
+  // Acá queda la parte que es del aparato y no del cliente HTTP: qué se tira de
+  // la caché cuando la cuenta cambió, que lo hace `onAccountChanged` de main.
+  return SERVER_CLIENT.confirmAccount();
 }
 
 void HubSyncActivity::runSync() {

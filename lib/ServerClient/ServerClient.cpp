@@ -186,6 +186,7 @@ void ServerClient::flushOnConnect() {
   if (!networkUp()) {
     flushedThisSession_ = false;  // la próxima vez que haya red se vuelve a intentar
     clockCheckedThisSession_ = false;
+    identity_ = Identity::Unknown;  // otra sesión de red, se vuelve a confirmar
     return;
   }
   if (flushedThisSession_) return;
@@ -202,6 +203,7 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
   if (!networkUp()) {
     flushedThisSession_ = false;
     clockCheckedThisSession_ = false;
+    identity_ = Identity::Unknown;
     return Result::NoNetwork;
   }
   ensureClockForTls();
@@ -220,6 +222,10 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
   // One id across the retries of a request: a server that applied the first
   // attempt but lost the response can recognise the replay.
   const std::string requestId = newRequestId();
+  // Lo lee `postOrQueue()` si esto termina yendo a la cola. Se asigna DESPUÉS
+  // de `flushOnConnect()` (que también hace peticiones), así que el que queda
+  // es el de esta petición.
+  lastRequestId_ = requestId;
   // SIN AHORRO DE ENERGÍA DEL WIFI MIENTRAS HAY UNA PETICIÓN EN CURSO. Con el
   // modem sleep puesto (el default), en algunos routers domésticos —el
   // INFINITUM del dueño, no el otro— una de cada dos conexiones nuevas se
@@ -320,7 +326,9 @@ ServerClient::Result ServerClient::postOrQueue(const std::string& path, const st
   const bool puedeAndarDespues = r == Result::NoNetwork || r == Result::Transport || r == Result::Unauthorized ||
                                  (r == Result::HttpError && retryable(resp.status));
   if (puedeAndarDespues) {
-    return enqueue(path, json) ? Result::Queued : r;
+    // Con el id del intento en línea: la operación lógica es UNA y conserva su
+    // id desde el primer intento hasta el replay de la cola.
+    return enqueue(path, json, lastRequestId_) ? Result::Queued : r;
   }
   return r;
 }
@@ -329,7 +337,7 @@ ServerClient::Result ServerClient::postOrQueue(const std::string& path, const st
 // {"items":[{"id":"...","path":"/api/x","body":"{...}"}]} on the SD card. Small
 // and rewritten whole: it is a safety net for a handful of requests, not a log.
 
-bool ServerClient::enqueue(const std::string& path, const std::string& json) {
+bool ServerClient::enqueue(const std::string& path, const std::string& json, const std::string& requestId) {
   if (json.size() > QUEUE_MAX_BODY) {
     LOG_ERR(TAG, "queue: body too large (%u bytes)", (unsigned)json.size());
     return false;
@@ -342,7 +350,17 @@ bool ServerClient::enqueue(const std::string& path, const std::string& json) {
     items.remove(0);
   }
   JsonObject item = items.add<JsonObject>();
-  item["id"] = newRequestId();
+  // EL ID VIENE DEL PRIMER INTENTO, no se inventa uno nuevo (REV-016). Si el
+  // servidor alcanzó a aplicar el POST y la respuesta se perdió, el replay de
+  // la cola llega con el MISMO `X-Request-Id` y el servidor lo reconoce en vez
+  // de aplicarlo otra vez. Con un id nuevo, la nota o el recordatorio quedaban
+  // duplicados y no había forma de saberlo desde ningún lado.
+  item["id"] = requestId.empty() ? newRequestId() : requestId;
+  // DE QUÉ CUENTA ES ESTA ENTRADA (REV-017). Es la segunda línea de defensa: el
+  // portón está en `flushQueue()`, pero si `clearQueue()` no pudo escribir la
+  // tarjeta —y una tarjeta que no escribe es un caso real acá— las entradas
+  // viejas siguen en el archivo. Con el sello, igual no salen.
+  if (!account_.empty()) item["acct"] = account_;
   item["path"] = path;
   item["body"] = json;
   const bool ok = PersistableStoreBase::writeDocToFile(QUEUE_PATH, doc);
@@ -365,11 +383,54 @@ size_t ServerClient::queueSize() {
   return doc["items"].is<JsonArray>() ? doc["items"].as<JsonArray>().size() : 0;
 }
 
+// De quién es el aparato AHORA. Devuelve si se pudo averiguar.
+//
+// `/api/pair/status` no necesita que el aparato esté vinculado: en un servidor
+// de una sola cuenta contesta `single:true` con `account` nulo, y ahí no hay
+// nada que comparar. En uno multiusuario devuelve el correo de la cuenta dueña
+// del token.
+//
+// Si cambió, la cola de la cuenta anterior se TIRA (sus ids no significan nada
+// en la cuenta nueva) y se avisa al resto del firmware para que suelte lo que
+// tenga cacheado.
+bool ServerClient::confirmAccount() {
+  if (identity_ == Identity::Confirmed) return true;
+  if (inConfirm_) return false;  // no reentrar: esto hace una petición
+
+  inConfirm_ = true;
+  // La pregunta no puede disparar la subida que está por autorizar:
+  // `request()` llama a `flushOnConnect()` antes de mandar nada.
+  const bool holdAnterior = holdFlush_;
+  holdFlush_ = true;
+  Response resp;
+  const Result r = get("/api/pair/status", resp);
+  holdFlush_ = holdAnterior;
+  inConfirm_ = false;
+
+  if (r != Result::Ok) {
+    LOG_ERR(TAG, "no se pudo saber de qué cuenta es el aparato (status %d): la cola espera", resp.status);
+    return false;
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+    LOG_ERR(TAG, "/api/pair/status contestó algo que no es JSON: la cola espera");
+    return false;
+  }
+  const char* acc = doc["account"] | "";
+  const std::string ahora(acc ? acc : "");
+  if (ahora != account_) {
+    LOG_INF(TAG, "el aparato cambió de cuenta: se descarta lo de la anterior");
+    clearQueue();
+    account_ = ahora;
+    if (onAccountChanged_) onAccountChanged_(account_.c_str());
+  }
+  identity_ = Identity::Confirmed;
+  return true;
+}
+
 int ServerClient::flushQueue(size_t maxItems) {
-  // La cola lleva ids que son de UNA cuenta. Mientras no se sepa de cuál, no
-  // se reproduce (ver setFlushHold).
   if (holdFlush_) {
-    LOG_INF(TAG, "la cola espera: todavía no se sabe de qué cuenta es el aparato");
+    LOG_INF(TAG, "la cola espera: se está averiguando de qué cuenta es el aparato");
     return 0;
   }
   if (!networkUp()) return -1;
@@ -380,6 +441,18 @@ int ServerClient::flushQueue(size_t maxItems) {
   if (!PersistableStoreBase::readDocFromFile(QUEUE_PATH, doc) || !doc["items"].is<JsonArray>()) return 0;
   JsonArray items = doc["items"].as<JsonArray>();
   if (items.size() == 0) return 0;
+
+  // EL PORTÓN, y está acá para que valga en los TRES caminos que vacían la
+  // cola: `flushOnConnect()` (la primera petición de cualquier sesión de red),
+  // `devicesync::ifDue()` y la sincronización del hub. Puesto en una pantalla
+  // dejaba los otros dos abiertos, que es lo que pasaba.
+  //
+  // Se pregunta una vez por sesión de red y SÓLO si hay algo encolado: con la
+  // cola vacía —el caso normal— esto no cuesta ni una petición. Si no se puede
+  // averiguar, la cola espera a la próxima sesión, igual que cuando no hay red:
+  // perder una vuelta no cuesta nada, aplicarla sobre la cuenta equivocada le
+  // borra cosas a otro.
+  if (!confirmAccount()) return 0;
 
   int done = 0;
   bool changed = false;
@@ -395,6 +468,20 @@ int ServerClient::flushQueue(size_t maxItems) {
     const std::string path = item["path"] | "";
     const std::string body = item["body"] | "";
     const std::string id = item["id"] | "";
+    // Segunda línea de defensa: una entrada sellada con OTRA cuenta no sale,
+    // se tira. Cubre el caso en que `clearQueue()` no pudo escribir la tarjeta.
+    // Sin sello = la escribió un firmware anterior a REV-017: como la identidad
+    // de esta sesión ya está confirmada y un cambio de cuenta habría vaciado la
+    // cola, es de la cuenta actual.
+    if (item["acct"].is<const char*>()) {
+      const std::string sello = item["acct"] | "";
+      if (sello != account_) {
+        LOG_ERR(TAG, "queue: se descarta %s, es de otra cuenta", path.c_str());
+        items.remove(0);
+        changed = true;
+        continue;
+      }
+    }
     Response resp;
     Result r = Result::Transport;
     // The queued id is the request id, so a replay after a lost response is

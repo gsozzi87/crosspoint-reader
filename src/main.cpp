@@ -17,6 +17,7 @@
 #include <NetPump.h>
 #include <PowerManager.h>
 #include <SPI.h>
+#include <ServerClient.h>
 #include <ServerCredentialStore.h>
 #include <WiFi.h>
 #include <XteinkDetect.h>
@@ -1362,6 +1363,17 @@ void setup() {
   // cuenta; nunca hay que escribir un token de 64 caracteres con la palanca.
   SERVER_STORE.ensureToken();
   HUB_STORE.loadFromFile();
+  // De qué cuenta se cree el aparato, y qué hacer si resulta que ya no lo es
+  // (REV-017). ServerClient decide CUÁNDO preguntar y retiene la cola hasta
+  // saberlo; lo que es del aparato —tirar la caché de la cuenta anterior— se
+  // hace acá.
+  SERVER_CLIENT.setAccount(HUB_STORE.account);
+  SERVER_CLIENT.setAccountChangedHandler([](const char* nuevaCuenta) {
+    LOG_INF("MAIN", "cuenta nueva: se suelta lo que quedaba de la anterior");
+    HUB_STORE.clearAccountContent();
+    HUB_STORE.account = nuevaCuenta ? nuevaCuenta : "";
+    HUB_STORE.saveToFile();
+  });
   OPDS_STORE.loadFromFile();
   // ws397: la ganancia del micrófono se calibra en Ajustes -> Prueba de audio y
   // vale para todo el aparato (el dictado incluido), así que se aplica acá.

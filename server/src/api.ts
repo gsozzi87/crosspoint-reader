@@ -31,9 +31,9 @@ import { accountApi, pairStatus, startPairing } from "./accounts";
 import { readBody } from "./net";
 import { accountOf, bearerOf, requireTenant, type AppEnv } from "./tenant";
 import { withTimeZone } from "./store";
-import { normalizeLang } from "./lang";
-import { addUsage, audioSeconds, overQuota, QUOTA_CODE, QUOTA_MSG } from "./usage";
-import { cacheable, ReplayCache } from "./idempotency";
+
+import { idempotency, ReplayCache } from "./idempotency";
+import { metering } from "./metering";
 
 export const api = new Hono<AppEnv>();
 
@@ -68,82 +68,20 @@ api.use("*", requireTenant);
 // compañía); ver `withTimeZone` en store.ts.
 api.use("*", async (c, next) => withTimeZone(accountOf(c), () => next()));
 
-// ── Tope mensual ────────────────────────────────────────────────────────────
-// Lo único que se cobra es lo que le cuesta plata al operador: el modelo y la
-// transcripción. Pasado el tope, estas cuatro rutas contestan 429 en el idioma
-// del pedido y TODO lo demás (hub, calendario, biblia, música, fotos, noticias)
-// sigue andando. Sin `DATABASE_URL` o sin topes puestos, `overQuota` es false y
-// esto no hace nada.
-// Una tabla y no una lista de rutas: hay rutas que gastan modelo pero NO mandan
-// audio, y con la lista pelada los 40 KB de JSON de un capítulo de la Biblia se
-// cobraban como segundos de audio. `audio` dice si el cuerpo es una toma del
-// micrófono; `llm` cuántas llamadas al modelo hace la ruta.
+// ── Tope mensual y reintentos ───────────────────────────────────────────────
+// Los dos middlewares viven en su propio archivo (metering.ts, idempotency.ts)
+// y acá sólo se los enchufa, EN ESTE ORDEN.
 //
-// Las que faltaban: /api/bible/ask (chatText con hasta 40 KB de capítulo, la
-// llamada más cara del sistema) y /api/calendar/dictate (chatJson). Las dos
-// pasaban por afuera del tope y no sumaban nada. (/api/suggest se fue en 1.5.108
-// con las sugerencias de Mi día, que eran de los viajes.)
-const METERED: { path: string; llm: number; audio: boolean }[] = [
-  { path: "/api/ask", llm: 1, audio: false },
-  { path: "/api/voice", llm: 1, audio: true },
-  { path: "/api/transcribe", llm: 0, audio: true },
-  { path: "/api/translate", llm: 1, audio: true },
-  { path: "/api/bible/ask", llm: 1, audio: false },
-  { path: "/api/calendar/dictate", llm: 1, audio: false },
-];
+// El orden importa y es la mitad del arreglo de REV-044: medición por AFUERA
+// —tiene que poder contestar 429 antes de tocar nada— e idempotencia por
+// adentro. Como la de afuera sólo ve el estado de la respuesta, un replay le
+// parecía un 2xx normal y volvía a cobrar consumo por un pedido que no ejecutó
+// nada. Ahora el replay deja una marca en el contexto (`isReplay`) y la
+// medición la mira.
+api.use("*", metering());
 
-api.use("*", async (c, next) => {
-  const path = c.req.path;
-  const m = METERED.find((e) => path === e.path || path.startsWith(`${e.path}/`));
-  if (!m) return next();
-  const acc = accountOf(c);
-  if (await overQuota(acc)) {
-    const lang = normalizeLang(c.req.query("lang"));
-    return c.json({ ok: false, error: QUOTA_MSG[lang], code: QUOTA_CODE }, 429);
-  }
-  const declaredBytes = Number(c.req.header("content-length") ?? 0) || 0;
-  const type = c.req.header("content-type");
-  await next();
-  const bytes = m.audio ? c.get("bodyBytes") ?? declaredBytes : 0;
-  // Solo se cobra lo que salió bien: un 502 del proveedor no se le carga a nadie.
-  if (c.res.status < 400) {
-    void addUsage(acc, { llm: m.llm, sttSeconds: m.audio ? audioSeconds(bytes, type) : 0 });
-  }
-});
-
-// ── Reintentos: un POST no se aplica dos veces ──────────────────────────────
-// El aparato manda el MISMO `X-Request-Id` en los tres intentos de una
-// petición. Si el primero se aplicó y la respuesta se perdió (conexión cortada,
-// 5xx con el trabajo ya hecho), el reintento tiene que recibir la respuesta
-// guardada y no volver a ejecutar el handler. Ver idempotency.ts.
 const replays = new ReplayCache();
-
-api.use("*", async (c, next) => {
-  if (c.req.method !== "POST") return next();
-  const id = (c.req.header("x-request-id") ?? "").trim();
-  if (!id) return next();  // la web no lo manda; ahí no hay reintento automático
-  const key = ReplayCache.key(accountOf(c), c.req.path, id);
-  const hit = replays.get(key);
-  if (hit) {
-    console.log(`replay ${c.req.path} (${id}): se devuelve la respuesta guardada, no se aplica de nuevo`);
-    return new Response(hit.body.slice().buffer as ArrayBuffer, {
-      status: hit.status,
-      headers: { "content-type": hit.type },
-    });
-  }
-  await next();
-  // `clone()` porque el cuerpo de una Response se lee una sola vez y el que
-  // tiene que recibirlo es el aparato.
-  const copy = c.res.clone();
-  const body = new Uint8Array(await copy.arrayBuffer());
-  if (!cacheable(c.res.status, body.byteLength)) return;
-  replays.put(key, {
-    status: c.res.status,
-    type: c.res.headers.get("content-type") ?? "application/octet-stream",
-    body,
-    at: Date.now(),
-  });
-});
+api.use("*", idempotency(replays, accountOf));
 
 // Lo usa Settings -> Prueba de servidor.
 api.get("/ping", (c) => c.json({ ok: true, now: Date.now(), requestId: c.req.header("x-request-id") ?? null }));

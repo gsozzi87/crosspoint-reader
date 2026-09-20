@@ -1,5 +1,15 @@
 # Railway detecta este Dockerfile (Root Directory = server). Bun + Piper (voz
 # local, sin tokens) con una voz por idioma. Las voces pesan ~60 MB cada una.
+# El runtime de producción va fijado por DIGEST, que es más fuerte que una
+# etiqueta: la imagen no puede cambiar debajo. CI instala Bun con la versión de
+# `server/.bun-version` (ver REV-046); las dos tienen que ser la MISMA versión,
+# o se prueba con un runtime distinto del que se despliega.
+#
+# PENDIENTE DE CONFIRMAR POR EL DUEÑO: desde el sandbox no se puede resolver a
+# qué versión corresponde este digest (el registro de Docker pide autenticación
+# y el proxy la bloquea). Si no coincide con .bun-version, hay que alinear las
+# dos — mejor volviendo a fijar el digest de la versión elegida que aflojando
+# esta línea.
 FROM oven/bun:1-debian@sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && rm -rf /var/lib/apt/lists/*

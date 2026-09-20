@@ -634,7 +634,15 @@ news.get("/status", async (c) => {
     building: running.has(acc),
     at: pack.at,
     items: pack.items.length,
-    chewed: pack.items.filter((item) => item.chewed).length,
+    // Se cuentan POR SEPARADO porque no es lo mismo (REV-045). En un diario
+    // `chewed` quiere decir reescrito para pantalla chica, o sea resumido. En
+    // un paper, desde MEDICAL_SUMMARY_VERSION=4, quiere decir TRADUCIDO
+    // técnicamente y explícitamente NO resumido. Decirle "resumidas" a las dos
+    // cosas le hace creer al médico que le condensaron el abstract.
+    // `medicalVersion` sólo lo llevan los papers, así que no hace falta guardar
+    // nada nuevo para distinguirlos.
+    chewed: pack.items.filter((item) => item.chewed && item.medicalVersion === undefined).length,
+    chewedMedical: pack.items.filter((item) => item.chewed && item.medicalVersion !== undefined).length,
   });
 });
 
@@ -643,7 +651,17 @@ news.get("/preview", async (c) => {
   return c.json({
     ok: true,
     at: pack.at,
-    items: pack.items.map(({ id, feed, title, when, chewed, link }) => ({ id, feed, title, when, chewed, link })),
+    // `medical` va aparte del nombre del medio: el usuario puede renombrar la
+    // fuente y el nombre dejaría de servir para saber qué es.
+    items: pack.items.map(({ id, feed, title, when, chewed, link, medicalVersion }) => ({
+      id,
+      feed,
+      title,
+      when,
+      chewed,
+      link,
+      medical: medicalVersion !== undefined,
+    })),
   });
 });
 

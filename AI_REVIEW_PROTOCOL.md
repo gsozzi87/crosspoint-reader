@@ -671,7 +671,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-016 — POST retry idempotency
-State: CLAIMED (ejecutor, tanda 2) — arreglo parcial aceptado; falta continuidad al pasar a la cola offline
+State: FIXED_PENDING_REVIEW (tanda 2) — id continuo hasta la cola; la parte C++ es NEEDS_HARDWARE
 Severity: P0
 Subsystem: network / server
 
@@ -691,7 +691,42 @@ Build a fault-injection test where the server commits and then deliberately drop
 
 If necessary, introduce a persisted request/idempotency key and server-side deduplication.
 
-Executor response: CONFIRMED, y demostrado en los dos sentidos contra un servidor real.
+Executor response (tanda 2): CONFIRMADO el hueco. El revisor leyó bien el código.
+
+Verificado en el árbol antes de tocar nada: `enqueue()` hacía `item["id"] = newRequestId()` sin
+condición, y `postOrQueue()` llamaba a `enqueue(path, json)` sin pasarle nada. O sea que el id del
+intento en línea se perdía y la entrada de la cola nacía con uno nuevo. La secuencia que describe el
+revisor —commit remoto + pérdida total de la respuesta + paso a cola— duplicaba de verdad.
+
+Fix (mínimo, tres líneas de lógica):
+- `request()` guarda el id de la petición en `lastRequestId_`. Se asigna DESPUÉS de `flushOnConnect()`
+  (que también hace peticiones), así que el que queda es el de ESTA petición.
+- `postOrQueue()` encola con ese id: `enqueue(path, json, lastRequestId_)`.
+- `enqueue(path, json, requestId)` lo usa y sólo inventa uno si viene vacío (los llamadores directos
+  de `enqueue`, que no pasaron por un intento en línea).
+
+Así la operación lógica tiene UN id desde el primer intento hasta el replay de la cola, que es
+exactamente lo que pide el revisor.
+
+Tests: `./test/idempotency/run.sh` pasa de 7 a 18 pruebas en tres archivos.
+- **`journey.test.ts` es el recorrido completo que faltaba**, contra los middlewares de VERDAD
+  (no una maqueta): se aplica, se pierde la respuesta, se reproduce con el mismo id -> **una** nota, y
+  le vuelve la misma respuesta que se había perdido (`{ok:true,id:1}`). Con un id nuevo —o sea como
+  estaba— la misma prueba deja **dos** notas: el defecto queda escrito como prueba, no sólo el
+  arreglo. Más: dos operaciones distintas del usuario siguen siendo dos, y una cola de tres
+  operaciones reproducida entera no duplica ninguna.
+- Y una prueba que fija el ORDEN de los middlewares en api.ts, que es contrato y no se ve leyendo
+  ninguno de los dos archivos por separado.
+
+**Lo que NO está automatizado, y hay que decirlo**: que `postOrQueue()` efectivamente le pase el id a
+`enqueue()` es C++ y no hay arnés de escritorio para `ServerClient`. Se verificó por lectura y por
+compilación (`pio run -e ws397` SUCCESS). La prueba automática cubre el otro lado, que es donde
+ocurría la duplicación: el servidor reconociendo el id repetido.
+
+**NEEDS_HARDWARE**: dictar una nota con el WiFi a punto de caerse hasta forzar el encolado, y
+comprobar en `/board` que queda UNA sola después de la sincronización.
+
+Commit(s): en esta tanda. CONFIRMED, y demostrado en los dos sentidos contra un servidor real.
 
 Evidencia (HEAD 2a47b1c):
 - El aparato YA hace su parte: `ServerClient::request()` genera UN `X-Request-Id` por petición y lo
@@ -763,7 +798,7 @@ Hallazgo adicional separado en REV-044: un replay correcto puede volver a sumar 
 middleware de medición envuelve al de idempotencia.
 
 ## REV-017 — Offline queue + account reassignment
-State: CLAIMED (ejecutor, tanda 2) — el arreglo protege HubSync, pero no todos los caminos de vaciado
+State: FIXED_PENDING_REVIEW (tanda 2) — política global en ServerClient; 4 comprobaciones NEEDS_HARDWARE
 Severity: P0
 Subsystem: multi-account sync
 
@@ -780,7 +815,61 @@ Consider refusing to flush until account identity is known.
 
 Add a regression test.
 
-Executor response: CONFIRMED, y **la teoría se queda corta**: el agujero es más grande y la guardia
+Executor response (tanda 2): CONFIRMADO lo que quedaba abierto. Arreglado con política GLOBAL.
+
+El revisor tiene razón en los dos caminos. Verificado en el árbol:
+- `ServerClient::request()` llama a `flushOnConnect()` como primera cosa (antes de mandar nada), así
+  que la PRIMERA petición de cualquier sesión de red vaciaba la cola: Hablar, Noticias, la Biblia, el
+  Traductor, Vincular.
+- `devicesync::ifDue()` (src/sync/Sync.cpp) llama a `SERVER_CLIENT.flushQueue()` directo.
+- `ServerTestActivity` es el cuarto camino, pero ahí el usuario lo pide a propósito.
+
+**La guardia se movió de la pantalla al cliente HTTP**, que es donde se juntan los tres caminos:
+
+1. `ServerClient` tiene identidad de SESIÓN DE RED (`Identity::Unknown|Confirmed`), que se reinicia
+   donde ya se reiniciaban `flushedThisSession_` y `clockCheckedThisSession_` (o sea cuando se cae la
+   red).
+2. `ServerClient::confirmAccount()` pregunta `/api/pair/status`, compara con la cuenta que el aparato
+   cree tener, y si cambió TIRA la cola y avisa al firmware (`AccountChangedFn`, puntero a función y
+   no `std::function`: esto vive en el camino de red). Se protege de reentrar con `inConfirm_` y pone
+   `holdFlush_` mientras pregunta, porque la pregunta ES una petición y si no dispararía el vaciado
+   que está por autorizar.
+3. **`flushQueue()` no sale sin identidad confirmada**, y eso vale para los tres caminos por
+   construcción. Si no se puede confirmar, la cola espera a la próxima sesión, igual que sin red.
+4. **Sello por entrada**: `enqueue()` graba `acct` con la cuenta del momento y `flushQueue()` descarta
+   la entrada cuyo sello no coincide. Es la segunda línea de defensa para el caso en que
+   `clearQueue()` no pueda ESCRIBIR la tarjeta — una tarjeta que no escribe es un caso real en este
+   aparato (ver "La tarjeta dañada" en CLAUDE.md) y ahí el portón solo no alcanzaría.
+
+**El modo single-account no se rompe y no queda retenido**: en un servidor sin cuentas
+`/api/pair/status` contesta `{paired:true, account:null, single:true}`, o sea que la identidad SÍ
+queda confirmada (con cuenta vacía) y la cola sale normalmente. Un aparato sin vincular contesta
+`account:null` igual. Lo único que retiene es no poder hablar con el servidor, y ahí tampoco se podría
+subir nada.
+
+**Costo**: una petición de ~200 bytes por sesión de red, y **sólo si hay algo encolado** — la
+comprobación va después de leer la cola y salir temprano si está vacía, que es el caso normal.
+
+`HubSyncActivity::checkAccount()` pasa a ser `return SERVER_CLIENT.confirmAccount();` (35 líneas
+menos, y deja de haber dos copias de la misma regla). `main.cpp` siembra la cuenta desde
+`HUB_STORE.account` al arrancar y registra el handler que limpia la caché.
+
+Tests: **no hay prueba automática y hay que decirlo.** Es firmware con red, SD y multiusuario, y no
+existe arnés de escritorio para `ServerClient` (no hay ninguno en `test/`; `PersistableStoreBase` tira
+de `HalStorage` -> SdFat). Lo verificado acá es que compila (`pio run -e ws397` SUCCESS, RAM 28,6 %,
+Flash 87,6 %) y el contrato de `/api/pair/status` leído del servidor.
+
+**NEEDS_HARDWARE, para que el dueño lo pruebe** (los cuatro con el aparato delante):
+1. Tildar algo sin WiFi (queda en cola) -> mudar el aparato a otra cuenta desde `/board` -> abrir
+   **Hablar** (no el hub) -> en el log tiene que salir `el aparato cambió de cuenta: se descarta lo de
+   la anterior` y NO se le tiene que tocar nada a la cuenta nueva.
+2. Lo mismo dejando que dispare la sincronización oportunista en vez de Hablar.
+3. Servidor de una sola cuenta: tildar sin WiFi y reconectar -> la cola tiene que SALIR igual
+   (sin esto el arreglo sería una regresión).
+4. Con el servidor caído (502 en `/api/pair/status`): la cola tiene que QUEDARSE, con la línea
+   `no se pudo saber de qué cuenta es el aparato`, y salir en la sincronización siguiente.
+
+Commit(s): en esta tanda. CONFIRMED, y **la teoría se queda corta**: el agujero es más grande y la guardia
 F11 estaba anulada por su propia implementación.
 
 Lo que dice la teoría (cierto): `HubSyncActivity::checkAccount()` tenía tres `return` mudos — fallo de
@@ -1478,7 +1567,7 @@ compilación del firmware upstream ESP32-C3; ahora vuelve a poder construirse y 
 
 
 ## REV-044 — Un replay de /api/voice puede volver a consumir cuota
-State: CLAIMED (ejecutor, tanda 2)
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: server usage / idempotency
 
@@ -1496,11 +1585,36 @@ para que usage no vuelva a cobrarlo, o el orden/contrato de middleware debe camb
 Impacto posible: no duplica la acción, pero un usuario con límites mensuales puede agotar su cuota más
 rápido sólo porque la red obligó a reintentar.
 
-Executor response:
+Executor response: CONFIRMADO, y reproducido en una prueba que falla sin el arreglo.
+
+Evidencia: el middleware de medición se registraba en api.ts ANTES que el de idempotencia, hace
+`await next()` y al volver sólo mira `c.res.status < 400`. No tiene forma de saber que la respuesta
+salió de la caché. En un replay no corre STT, ni modelo, ni TTS — y cobraba igual.
+
+Fix:
+- El middleware de idempotencia deja `c.set("idempotentReplay", true)` antes de devolver la respuesta
+  guardada (`REPLAY_KEY` / `isReplay()` en idempotency.ts).
+- La medición pregunta por esa marca: `shouldCharge(status, replay)` = `status < 400 && !replay`.
+- Los dos middlewares salieron de api.ts a su propio archivo (`metering.ts`, y el de idempotencia a
+  `idempotency.ts`) **para poder componerlos en una prueba**: el defecto no estaba en ninguno de los
+  dos sino en el orden entre ellos, y eso no se ve leyendo cada uno por separado. api.ts sólo los
+  enchufa, con el orden comentado y con una prueba que lo fija.
+
+Tests: `test/idempotency/metering.test.ts`, seis pruebas que componen los middlewares REALES en un
+Hono con un espía sobre `addUsage`: el primer pedido cobra una vez; el reintento con el mismo id no
+ejecuta el handler y **no cobra**; otro id sí cobra; sin `X-Request-Id` (la web) se cobra siempre; una
+ruta fuera de METERED nunca cobra; y `shouldCharge` con las dos reglas.
+
+**Verificado que la prueba atrapa el defecto**: sacando la regla del replay de `shouldCharge`, la
+prueba falla con `Expected: 1, Received: 2`. Con el arreglo, 6 pass.
+
+Nota sobre el alcance: `addUsage()` no hace nada sin `DATABASE_URL`, así que en un servidor de una
+sola cuenta esto nunca se notó. Afecta a la instalación multiusuario con topes puestos, que es donde
+el revisor lo ubicó.
 Reviewer final check:
 
 ## REV-045 — La web llama “resumidas” a traducciones médicas
-State: CLAIMED (ejecutor, tanda 2)
+State: FIXED_PENDING_REVIEW
 Severity: P3
 Subsystem: board web / News
 
@@ -1517,11 +1631,28 @@ El paquete y el aparato están correctos; es sólo semántica de la web. Cambiar
 Impacto de producto: el médico puede creer que el abstract fue condensado cuando en realidad se
 tradujo conservando el contenido técnico.
 
-Executor response:
+Executor response: CONFIRMADO. Se eligió **contadores separados** y no una palabra neutra.
+
+El revisor ofrecía las dos opciones. "Procesadas" es neutro pero no dice nada: el médico sigue sin
+saber si le condensaron el abstract. Y la distinción ya existe en los datos, así que no hace falta
+guardar nada nuevo: `PackItem.medicalVersion` sólo lo llevan los papers.
+
+Fix:
+- `GET /api/news/status` devuelve `chewed` (sólo diarios) y `chewedMedical` (sólo papers).
+- `GET /api/news/preview` agrega `medical` por ítem. Va aparte del nombre del medio a propósito: el
+  usuario puede renombrar la fuente y el nombre dejaría de servir para saber qué es.
+- La web dice `"3 listas · 1 resumida · 1 paper traducido"` (con singular y plural) y por ítem
+  `· resumido` o `· traducido` según corresponda.
+
+Verificado contra un servidor real con un paquete sembrado (un diario masticado, un paper traducido y
+un paper sin traducir):
+`{"items":3,"chewed":1,"chewedMedical":1}` y en el preview `1-1 medical=false`, `2-1 medical=true`.
+Y con Chromium a 360 px: `3 listas · 1 resumida · 1 paper traducido`, `10:00 · resumido`,
+`09:00 · traducido`, sin errores de consola y sin irse de ancho.
 Reviewer final check:
 
 ## REV-046 — CI usa una versión móvil de Bun
-State: CLAIMED (ejecutor, tanda 2)
+State: FIXED_PENDING_REVIEW (falta confirmar el digest del Dockerfile)
 Severity: P2
 Subsystem: CI / reproducibilidad
 
@@ -1539,7 +1670,34 @@ despliega.
 Impacto de producto: no se nota directamente en el aparato. Puede hacer que una actualización futura
 de Bun vuelva rojo CI o, peor, cambie comportamiento de red entre lo probado y lo desplegado.
 
-Executor response:
+Executor response: CONFIRMADO, y con un dato que el hallazgo no tenía: **producción ya está fijada,
+CI no.**
+
+`server/Dockerfile` arranca con `FROM oven/bun:1-debian@sha256:4f6e31d1…` — fijado por DIGEST (más
+fuerte que una etiqueta: la imagen no puede cambiar debajo), desde `0789537` del 2026-09-15. CI, en
+cambio, instalaba `bun-version: latest` en los dos jobs. O sea que **CI probaba con un runtime
+distinto del que se despliega**, que es peor que "no reproducible".
+
+Fix:
+- `server/.bun-version` con la versión, y los dos jobs pasan a `bun-version-file: server/.bun-version`
+  (entrada soportada por `oven-sh/setup-bun@v2`, verificada en su `action.yml`). Un solo lugar donde
+  está escrita: una versión repetida en dos jobs se despareja sola.
+- El Dockerfile queda con su digest —no se afloja a una etiqueta móvil— y con el comentario que ata
+  las dos cosas.
+
+**Por qué 1.4.2 y no otra**: es la única versión con evidencia de haber pasado la batería completa —
+la corrida verde 35478957781, doce jobs, corrió sobre 1.4.2. Elegir otro número habría sido
+justamente el cambio a ciegas que el pedido prohíbe. El sandbox tiene 1.3.11 y ahí las once suites y
+el `tsc` también pasan, así que el código no depende de ninguna de las dos.
+
+**Lo que NO pude verificar, y es lo que queda para el dueño**: a qué versión corresponde el digest del
+Dockerfile. El registro de Docker pide autenticación y el proxy de este sandbox la bloquea
+(`UNAUTHORIZED` en `registry-1.docker.io`). Si ese digest no es 1.4.2, hay que alinear los dos —
+**mejor volviendo a fijar el digest de la versión elegida que aflojando el Dockerfile a una etiqueta
+móvil**. Queda escrito en el propio Dockerfile para que no se pierda.
+
+Tests: las once suites y `bunx tsc --noEmit` en verde con 1.3.11 (local); CI lo va a correr con 1.4.2
+en la próxima pasada, que es la verificación que falta.
 Reviewer final check:
 
 ---
@@ -1655,6 +1813,32 @@ Use short entries. Do not paste huge tool transcripts.
   **REV-045** (P3).
 - No se toca nada de lo que el revisor dejó VERIFIED.
 - Ninguna OTA en esta tanda.
+
+### 2026-09-20 — Executor (Claude) — tanda 2 cerrada, para revisión
+- Base: ws397 `9827b17`. Nadie más tocó el protocolo mientras tanto (se re-fetcheó antes de escribir).
+- Los cinco reclamados quedan en **FIXED_PENDING_REVIEW**. Nada marcado VERIFIED: eso es del revisor.
+- **REV-017 (P0)**: la guardia se movió de la pantalla al cliente HTTP. Identidad por sesión de red en
+  `ServerClient` + sello de cuenta por entrada de cola; los tres caminos de vaciado quedan cubiertos
+  por construcción. El single-account sigue saliendo (`/api/pair/status` contesta `single:true` y eso
+  CONFIRMA la identidad, no la deja pendiente). Cuesta una petición de 200 bytes por sesión, y sólo si
+  hay algo encolado.
+- **REV-016 (P0)**: el id nace una vez y acompaña hasta el replay offline (`lastRequestId_` ->
+  `postOrQueue` -> `enqueue`). El recorrido completo quedó como prueba automática, con la variante
+  "id nuevo" documentando el defecto.
+- **REV-044**: confirmado y arreglado; la prueba falla sin el arreglo (`Expected: 1, Received: 2`).
+- **REV-045**: contadores separados en vez de palabra neutra — la distinción ya estaba en los datos.
+- **REV-046**: producción ya estaba fijada por digest; CI no. Ahora las dos salen de
+  `server/.bun-version`.
+- Verificado: `pio run -e ws397` SUCCESS (RAM 28,6 %, Flash 87,6 %), `bunx tsc --noEmit` limpio,
+  `node --check` de la web, las once suites de escritorio en verde (idempotency pasó de 7 a 18
+  pruebas), y Chromium a 360 px sobre Noticias.
+- **Dos cosas que el ejecutor NO puede verificar y quedan para el dueño/revisor:**
+  1. **REV-016/017 NEEDS_HARDWARE**: no existe arnés de escritorio para `ServerClient` (no hay
+     ninguno en `test/`, y `PersistableStoreBase` tira de `HalStorage` -> SdFat). Las cuatro
+     comprobaciones con el aparato están listadas en REV-017 y una en REV-016.
+  2. **REV-046**: a qué versión corresponde el digest del Dockerfile. El registro de Docker pide
+     autenticación y el proxy del sandbox la bloquea.
+- **Ninguna OTA publicada.** `.ws397-build` sigue en 118 y `/firmware/latest` entrega 1.5.118.
 
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
