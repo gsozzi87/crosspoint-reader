@@ -2203,6 +2203,14 @@ arreglar a medias.
 
 Las dos situaciones dejan su línea en el log, que es lo que faltaba para verlo sin cable.
 
+**IMPORTANTE, actualizado después de publicar 1.5.119: esto NO era el síntoma del dueño.** El primer
+log con esa versión muestra el WiFi conectando bien (`friendly wifi: saved network attempt 1`,
+`WiFi +0 ms tras la toma`) y la petición yendo y volviendo con un HTTP real; lo que fallaba era el
+tope de uso de Groq (REV-054). O sea que "pasa directo a Pensando" era el comportamiento CORRECTO
+—la radio ya estaba arriba— y yo lo leí como un fallo. **No verificar este REV como "arregló el
+problema del dueño"**: es un defecto latente, sostenido por el conteo de 1 de 9 y por lo que 1.5.115
+documentó para LuaApps, y nada más.
+
 **Lo que el revisor tiene que mirar con ojo crítico**: el mecanismo exacto (¿`WiFi.status()` miente
 después de `WIFI_OFF` en esta versión del core de Arduino?) **no está probado**, sólo razonado. Lo
 que sí es un hecho verificado es el conteo de 1 de 9 y que 1.5.115 documentó este mismo defecto para
@@ -2440,6 +2448,63 @@ When an executor encounters one of these, first confirm whether current HEAD alr
   Ahora son `retryable()` y `retryableLater()`; si no, se perdía la operación encolada (F02).
 - Dos suites nuevas en CI: `provider_error` (con el cuerpo real de Groq) y `retry_policy`.
 - Sin OTA: 1.5.119 sigue siendo lo publicado.
+
+
+### 2026-09-20 — Executor (Claude) — PARTE COMPLETO para el Reviewer: 1.5.119 publicada y lo que sigue
+
+Pedido expreso del dueño: que te llegue todo esto junto.
+
+**1. Estado operativo del aparato y del servidor.**
+- **1.5.119 está PUBLICADA y en el aparato del dueño.** `/firmware/latest` entrega `1.5.119`
+  (5.747.872 bytes), `.ws397-build` = 119 commiteado, `verificar-reconstruible.sh` en verde. La
+  autorizó el dueño con todas las letras ("Ejecutalo vos… Dale pues. Dame mi ota") después de que la
+  regla de "ninguna OTA autorizada" lo dejara sin poder diagnosticar nada.
+- **El dueño CAMBIÓ EL MODELO de IA** desde `/board` después de REV-054. O sea que
+  `openai/gpt-oss-120b` ya no es el modelo en producción: cualquier verificación viva que hagas
+  contra `/api/board/config/test` va a mirar otro modelo, y el tope de Groq que disparó REV-054 puede
+  no reproducirse. No lo tomes como que el defecto no existía.
+
+**2. Qué lleva 1.5.119 (lo que el dueño YA tiene corriendo).**
+- REV-052 — la radio fantasma en las nueve pantallas.
+- REV-048 — el motivo del error en la pantalla y en el log. **Funcionó a la primera**: es lo que
+  identificó REV-054 en el primer log, sin adivinanzas.
+- REV-017 2ª vuelta — la cola de la cuenta vieja (tu P0 reabierto).
+- REV-053 — `cp.image` recortado.
+
+**3. Qué está en `ws397` pero NO publicado.**
+- REV-054 entero (servidor + firmware). El servidor ya está desplegado; la parte de firmware
+  —`retryable` / `retryableLater`— entra en el próximo release. Si el dueño ve un 429 antes de eso,
+  el aparato todavía lo va a reintentar tres veces.
+
+**4. Lo que te pido revisar, por orden.**
+1. **REV-054 (P1)** — y sobre todo la separación `retryable()` / `retryableLater()`. Es donde casi
+   rompo F02: sacar el 429 de la única función habría borrado la operación encolada. Mirá los tres
+   puntos de uso (`request`, `postOrQueue`, los dos de `flushQueue`) y decime si me falta alguno.
+2. **REV-017 2ª vuelta (P0)** — el orden sonda→confirmar→leer y `accountChangedThisSession_`.
+3. **REV-050** — su CI (`84af1e7`) cerró en verde; sólo falta tu visto.
+4. **REV-052 (P0)** — **con la advertencia de arriba**: no era el síntoma del dueño. El conteo de
+   1 de 9 es verificable; el mecanismo no está probado. Si lo podés refutar, mejor.
+5. **REV-053** — y el hueco que dejo escrito: el `480,447` NO sale de la mascota y sigue sin dueño.
+
+**5. Lo que queda SIN HACER y es tuyo o del dueño.**
+- **REV-051** — los puntos 1 y 3 (mirar si el servicio tiene Volume y Healthcheck Path, medir la
+  ventana real) son del dueño: no tengo acceso a Railway. Le pasé los pasos y le trasladé tu
+  corrección sobre el Volume. El **punto 5** (que el aparato trate un 502/503 de borde como
+  indisponibilidad transitoria con mensaje claro) es firmware y **no está hecho**: es el próximo que
+  tomo salvo que digas otra cosa.
+- **REV-016 y REV-017** siguen necesitando la prueba de punta a punta en hardware.
+
+**6. Mis errores de esta sesión, anotados para que no se repitan.** Tres hipótesis mías que el
+aparato o el dueño refutaron:
+- "los 502 son del proveedor de IA" → eran el borde de Railway durante MIS deploys (REV-047);
+- "el OK no cortó la grabación de 20 s" → esa toma la abrió un doble golpe espurio, nunca hubo un OK;
+- "la radio fantasma es el síntoma del dueño" → era el tope de Groq (REV-054).
+La regla que sale, y me la aplico: **antes de explicar un síntoma con una teoría del código, fechar
+el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo que encaja.**
+
+**7. Higiene.** Diecisiete suites en verde, `bunx tsc --noEmit` limpio, `node --check app.js` limpio,
+`pio run -e ws397` limpio. Suites nuevas de esta tanda en CI: `queue_account`, `provider_error`,
+`retry_policy` (más `server_error_text`, `provider_log` y `llm_budget` de la anterior).
 
 # Session log
 
