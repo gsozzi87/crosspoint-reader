@@ -336,3 +336,13 @@ assert(not fake.tick(), "y el tick siguiente no repinta")
 cp.save("")
 assert(fake.key("back") == false, "Atrás sale de la app")
 assert(type(cp.load()) == "string" and cp.load():find("mascota1;", 1, true), "al salir se guardó")
+
+-- Nada se puede salir del vidrio: en el aparato eso llena el log con
+-- "N pixeles fuera de pantalla" en CADA cuadro (confirmado en hardware).
+if fake.fuera and #fake.fuera > 0 then
+  local vistos, unicos = {}, {}
+  for _, l in ipairs(fake.fuera) do
+    if not vistos[l] then vistos[l] = true; unicos[#unicos + 1] = l end
+  end
+  error("dibujos fuera de pantalla (" .. #fake.fuera .. "):\n  " .. table.concat(unicos, "\n  "))
+end
