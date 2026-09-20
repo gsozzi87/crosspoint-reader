@@ -49,9 +49,10 @@
 #include <driver/gpio.h>
 #include <driver/rtc_io.h>
 #include <esp_system.h>
-
-#include "util/CodecSleep.h"
 #endif
+// Fuera del #if: `sleepNow()` lo llama sin guarda de preprocesador (la guarda
+// es `BoardConfig::isWS397()`, de ejecución), así que en una placa sin EXT1
+// —el C3 del env `default`— el include faltaba y no compilaba.
 #include "RecentBooksStore.h"
 #include "SdCardFontSystem.h"
 #include "TaskConfig.h"
@@ -70,6 +71,7 @@
 #include "util/BatteryLog.h"
 #include "util/ButtonNavigator.h"
 #include "util/CardLayout.h"
+#include "util/CodecSleep.h"
 #include "util/IdleSleep.h"
 #include "util/NetPumpHooks.h"
 #include "util/PowerKey.h"
@@ -103,7 +105,7 @@ constexpr unsigned long X4PRO_POWER_CLICK_MAX_HOLD_MS = 300;
 // Suspender pasa al SOLTAR y no al cruzar el umbral: si durmiera a los 1,2 s
 // con el botón abajo, nunca se podría llegar a los 3.
 constexpr unsigned long POWER_HOLD_ACTION_MS = 1200;  // aparece la barrita (cuánto falta para apagar)
-constexpr unsigned long POWER_HOLD_WARN_MS = 2300;                   // el cartel pasa a "Apagando..."
+constexpr unsigned long POWER_HOLD_WARN_MS = 2300;    // el cartel pasa a "Apagando..."
 // Cada cuánto se repinta la barrita. El panel no tiene refresco por región expuesto
 // (FreeInkDisplay::displayWindow existe pero está marcado EXPERIMENTAL y no sube ni a
 // HalDisplay ni a GfxRenderer), así que cada paso es un parcial de pantalla entera de
@@ -1611,7 +1613,8 @@ void loop() {
   // sigue siendo un toque normal (pasa la página, elige).
   if (restWakeHeldPending) {
     restWakeHeldPending = false;
-    static const MappedInputManager::Button KEYS[] = {MappedInputManager::Button::Back, MappedInputManager::Button::Confirm,
+    static const MappedInputManager::Button KEYS[] = {MappedInputManager::Button::Back,
+                                                      MappedInputManager::Button::Confirm,
                                                       MappedInputManager::Button::Up, MappedInputManager::Button::Down};
     for (const MappedInputManager::Button k : KEYS) {
       if (mappedInputManager.isPressed(k)) {
@@ -2057,11 +2060,13 @@ void loop() {
   const unsigned long netMs = netpump::passMs();
   const bool fueLaRed = netMs * 2 >= loopDuration;
   if (fueLaRed && loopDuration >= LOOP_STALL_NET_MS) {
-    LOG_ERR("LOOP", "el loop estuvo %lu ms sin atender a nadie: lo tuvo la red en «%s» (%lu ms), "
+    LOG_ERR("LOOP",
+            "el loop estuvo %lu ms sin atender a nadie: lo tuvo la red en «%s» (%lu ms), "
             "se bombeó %lu veces (PWR y Atrás siguieron vivos)",
             loopDuration, netpump::passWhat(), netMs, static_cast<unsigned long>(netpump::passTicks()));
   } else if (!fueLaRed && loopDuration >= LOOP_STALL_OTHER_MS) {
-    LOG_ERR("LOOP", "el loop estuvo %lu ms sin atender a nadie y NO fue la red (%lu ms de red): "
+    LOG_ERR("LOOP",
+            "el loop estuvo %lu ms sin atender a nadie y NO fue la red (%lu ms de red): "
             "pantalla %s. Eso no tiene bombeo y hay que ir a buscarlo ahí",
             loopDuration, netMs, activityManager.currentActivityName());
   }

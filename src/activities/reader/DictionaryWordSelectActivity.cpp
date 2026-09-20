@@ -93,6 +93,11 @@ void DictionaryWordSelectActivity::extractWords() {
       box.width = 0;  // measured below, once the advance table is ready
       box.row = rowCount;
       box.text = text;
+      // cppcheck-suppress uninitStructMember  // colisión de nombres, ver abajo
+      //
+      // cppcheck confunde este `WordBox` con el de DictionaryDefinitionActivity,
+      // que es otra estructura privada de otra clase y tiene `start` y `len`.
+      // Ésta no los tiene: sus seis campos se asignan todos arriba.
       words.push_back(box);
       rowHasWords = true;
 
