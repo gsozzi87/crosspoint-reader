@@ -30,9 +30,8 @@ struct LangInfo {
   const char* code;
   const char* name;
 };
-const LangInfo LANGS[] = {{"es", "Español"}, {"en", "English"},   {"fr", "Français"},
-                          {"de", "Deutsch"}, {"pt", "Português"}, {"ru", "Русский"},
-                          {"it", "Italiano"}};
+const LangInfo LANGS[] = {{"es", "Español"},   {"en", "English"}, {"fr", "Français"}, {"de", "Deutsch"},
+                          {"pt", "Português"}, {"ru", "Русский"}, {"it", "Italiano"}};
 
 // Word-wraps into at most maxLines lines for the two text panes.
 void drawWrapped(const GfxRenderer& renderer, int font, int x, int y, int w, int lineH, int maxLines,
@@ -220,8 +219,9 @@ void TranslatorActivity::performRequest() {
   recorder.release();
   WiFi.setSleep(true);
   if (r != ServerClient::Result::Ok) {
-    char detail[96];
-    snprintf(detail, sizeof(detail), "%s (%d)", ServerClient::resultName(r), resp.status);
+    // REV-048: el motivo que mando el servidor, no solo el numero: un 502 es
+    // igual para un modelo que ya no existe, el proveedor caido o el STT roto.
+    const std::string detail = ServerClient::describeFailure(r, resp);
     fail(StrId::STR_ASK_FAILED, detail);
     return;
   }

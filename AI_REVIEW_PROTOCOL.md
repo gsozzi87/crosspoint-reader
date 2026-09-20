@@ -1713,7 +1713,7 @@ Reviewer final check:
 
 
 ## REV-047 — Integración IA viva puede estar rota aunque CI esté verde
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: server / live provider / observability
 
@@ -1739,11 +1739,45 @@ Acción:
 Impacto de producto: Hablar, Preguntar al libro, Traductor y cualquier función que use el modelo
 pueden quedar inutilizables a la vez aunque el resto del aparato sincronice normalmente.
 
-Executor response:
+Executor response: CONFIRMED (la parte de observabilidad). State: FIXED_PENDING_REVIEW.
+
+La premisa es correcta y el log del dueño la sostiene sin ambigüedad: en la MISMA ventana en la que
+`POST /api/voice` y `POST /api/bible/ask` devolvían 502, `GET /api/hub` sincronizó, `GET /api/news/pack`
+bajó 40 notas y `POST /api/transcribe` devolvió texto. O sea el contenedor arriba, la red arriba, el
+token bien, el STT bien. Y `/api/bible/ask` no toca el micrófono ni el STT: es modelo y nada más. Eso
+descarta Railway, la red y la transcripción, y deja al proveedor del modelo — que es adonde apuntaba
+el revisor.
+
+También descarta la sospecha que yo tenía encima (que algo de mi tanda 2 estuviera volteando el
+contenedor): un contenedor caído da 502 en TODO, y `/api/hub` y `/api/news/pack` pasaron.
+
+Fix (el que se puede hacer sin clave del proveedor a mano):
+- `server/src/providerLog.ts` (nuevo): anillo en memoria con los últimos 20 fallos del proveedor
+  (hora, `llm`/`stt`, quién lo pidió, mensaje recortado a 300). En memoria a propósito: escribir un
+  archivo en el camino de error de cada petición convierte un proveedor caído en un disco lleno, y lo
+  que interesa es si está fallando AHORA.
+- Se anota en UN solo lugar por cada puerta: `chatSearch` y `chatJson` en `llm.ts` (envueltas por
+  `noting()`, que anota y relanza) y el 4xx/5xx del STT en `transcribe.ts`. Con eso quedan cubiertos
+  Hablar, Preguntarle al libro, el Traductor, la Biblia y el calendario sin tocar ninguno de sus
+  `catch`.
+- `GET /api/board/state` lo devuelve (`providerFailures`, los 8 más nuevos) y `/board` → Ajustes →
+  Avanzado → IA lo muestra debajo de Probar. Con eso un 502 generalizado se diagnostica desde el
+  teléfono, sin el aparato y sin entrar a los logs de Railway.
+- `/api/board/config/test` ya existía y es la prueba viva que el revisor pedía; lo que le faltaba era
+  no dar por bueno un texto vacío. Ver REV-049.
+
+NEEDS_HARDWARE / NEEDS_PRODUCTION: nada del aparato. Lo que no se puede hacer desde acá es el punto 3
+del revisor (smoke check de producción DESPUÉS del deploy) porque haría falta la clave real en CI o un
+job con acceso a Railway; queda propuesto y sin implementar. Lo que sí queda: el dato aparece solo en
+`/board` la próxima vez que falle, sin que el dueño tenga que reportar nada.
+
+Tests: `./test/provider_log/run.sh` (6 casos: vacío, orden más-nuevo-primero, el tope de 20 recorta
+por el lado correcto, un cuerpo de 5000 caracteres se recorta a 300, lo que no es `Error` también se
+anota, y cada entrada lleva su hora). Agregado a CI.
 Reviewer final check:
 
 ## REV-048 — El firmware oculta el mensaje útil de los errores HTTP 4xx/5xx
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware UX / diagnostics
 
@@ -1769,12 +1803,43 @@ mostrar, además del status, un `error` corto y sanitizado cuando el body sea JS
 Impacto de producto: el usuario ve "no se puede obtener respuesta (502)" para causas totalmente
 distintas y no puede saber qué corregir. También dificulta brutalmente soporte y auditoría remota.
 
-Executor response:
+Executor response: CONFIRMED. State: FIXED_PENDING_REVIEW.
+
+Verificado contra el árbol. Eran CINCO copias del mismo `snprintf(detail, sizeof(detail), "%s (%d)",
+ServerClient::resultName(r), resp.status)` — `AskBookActivity`, `TranslatorActivity`, `VoiceActivity`,
+`BibleActivity` y `SpeechToText` — y ninguna miraba el cuerpo. El cuerpo SÍ estaba: `ServerClient`
+sólo vacía `out.body` cuando la petición se cancela; en un `HttpError` queda entero. O sea que el
+motivo llegaba al aparato y se tiraba a un metro de la pantalla.
+
+Fix:
+- `lib/ServerClient/ServerErrorText.h` (nuevo, puro y sin nada del aparato adentro): `servererr::tidy`
+  recorta a N bytes SIN partir un carácter UTF-8 y cambia saltos de línea y tabulaciones por espacios.
+  Lo de UTF-8 no es cosmético: los mensajes del proveedor vienen con acentos y comillas tipográficas, y
+  cortar a 120 bytes a secas deja medio carácter (un cuadrito en el visor y un byte inválido en el log).
+- `ServerClient::errorText(resp)` saca el campo `error` del JSON de error (sólo si el cuerpo empieza
+  con `{` y mide menos de 2 KB: un cuerpo grande no es un error nuestro y parsearlo costaría heap del
+  escaso justo cuando la petición ya salió mal) y lo pasa por `tidy`.
+- `ServerClient::describeFailure(r, resp)` arma el renglón completo, y las cinco copias pasan a
+  llamarlo. De paso el `LOG_ERR` de `request()` lo usa también, así que **toda** petición fallida —las
+  sesenta y pico de llamadores, no sólo las cinco pantallas— deja el motivo en el log del aparato.
+  Eso es lo que convierte `http error (502)` en
+  `http error (502): openai/gpt-oss-120b contestó 200 pero sin texto, finish_reason=length…`.
+
+Por qué la extracción sigue usando ArduinoJson y no un parser a mano: un `{"data":{"error":…},…}` haría
+que un escaneo ingenuo tomara el campo equivocado, y ArduinoJson ya es dependencia y ya parsea
+`resp.body` en las cinco pantallas dos líneas más abajo. Lo que se sacó a un header puro es lo que
+tiene riesgo propio y no estaba probado en ningún lado.
+
+Tests: `./test/server_error_text/run.sh` (recorte, vacío, límite justo, saltos de línea, y un barrido
+de TODOS los largos de corte sobre una cadena con acentos y sobre una con un emoji de 4 bytes,
+comprobando con un validador de UTF-8 que nunca queda medio carácter). Verificado que la prueba
+atrapa el defecto: sacando el retroceso de UTF-8 da 6 fallos. Agregado a CI.
+Firmware: `pio run -e ws397` limpio (flash 87,7 %, RAM 28,7 %). **Sin OTA.**
 Reviewer final check:
 
 
 ## REV-049 — Groq GPT-OSS puede devolver content vacío por presupuesto de salida/reasoning
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: server / LLM provider compatibility
 
@@ -1818,7 +1883,69 @@ Impacto de producto: Hablar, Traductor y otras funciones con LLM pueden mostrar 
 aunque Groq esté sano y la clave sea correcta. El usuario sólo ve "no se puede obtener respuesta" porque
 REV-048 además oculta el body útil del servidor.
 
-Executor response:
+Executor response: CONFIRMED en mecanismo, PARCIAL en ejecución (falta reproducir contra Groq real).
+State: FIXED_PENDING_REVIEW.
+
+Los tres factores que nombra el revisor están los tres en el árbol y se verificaron uno por uno:
+
+1. `/config/test` pedía `maxTokens: 10`. CONFIRMADO en `board.ts`.
+2. El cliente mandaba `max_tokens`. CONFIRMADO en `openAiRun`.
+3. `reasoning_effort:"low"` sin reservar salida. CONFIRMADO.
+
+Y hay un cuarto que el revisor no nombró y es el que hacía el daño de verdad: **`openAiRun` no miraba
+el vacío**. `text = msg?.content ?? ""` seguía de largo, así que el vacío salía por el lado equivocado
+tres capas más arriba — `chatJson` tirando "el modelo no devolvió JSON" y el Traductor
+"empty translation" —, y los dos con 502. Por eso el síntoma parecía "el proveedor está caído": la
+causa llegaba disfrazada.
+
+Fix:
+- `server/src/llmBudget.ts` (nuevo, puro y sin red): `isReasoningModel` (por FAMILIA y no por nombre
+  exacto: gpt-oss, o1/o3/o4, deepseek-reasoner, magistral, qwq, cualquier `*thinking*` — una lista
+  exacta se congela), `usesCompletionTokens` (por HOST, porque el campo lo define la API y no el
+  modelo), `planBudget` y `budgetField`.
+- `max_completion_tokens` **sólo** en `groq.com` y `openai.com`; los demás compatibles (DeepSeek y
+  compañía) siguen con `max_tokens`, porque un campo que el proveedor no conoce es un 400. Nunca los
+  dos a la vez, que también es un 400 en OpenAI. El regex del host no se deja engañar por
+  `api.groq.com.evil.test`.
+- Al modelo que razona se le suma `REASONING_HEADROOM` (1024) AL PEDIDO, no se le pone un piso: el
+  razonamiento sale del mismo presupuesto que la respuesta, así que reservarle lugar es la cuenta
+  correcta. Y no es gasto nuevo: esos tokens el modelo YA los estaba gastando — la diferencia es que
+  antes los gastaba y encima devolvía vacío, o sea que se pagaban dos veces (la llamada perdida y el
+  reintento).
+- Un 200 con `content` vacío ahora TIRA un `LlmError("bad_answer")` con diagnóstico: modelo,
+  `finish_reason`, tokens de salida, tokens de razonamiento, cuántos caracteres razonó (Groq devuelve
+  el razonamiento en `message.reasoning`, aparte del contenido) y el presupuesto que se usó. Y el
+  mensaje separa las TRES causas, que mandan a lugares distintos: "se quedó sin presupuesto",
+  "razonó y no escribió" y "el proveedor no devolvió nada" (ésta no se arregla subiendo el
+  presupuesto, y el mensaje no dice que sí). Se salta cuando la búsqueda incorporada está puesta:
+  ahí un turno sin texto es legítimo.
+- `/api/board/config/test` pide 64 tokens y trata el vacío como **ERROR**, no como éxito. Eso es lo
+  que hacía que la prueba informara `→ "" (131 ms)` con cara de que todo estaba bien.
+
+Lo que NO se hizo y por qué:
+- **`include_reasoning:false` — NO implementado a propósito.** Es un campo que sólo entiende Groq y no
+  ahorra un token (controla si el razonamiento VUELVE, no si se genera), así que el beneficio es cero
+  y el riesgo es un 400 en producción que no puedo probar desde acá. Queda propuesto para cuando se
+  pueda ejercitar contra Groq real.
+- **No se cambió de modelo como parche**, como pidió el revisor: `openai/gpt-oss-120b` sigue siendo el
+  configurado y lo que se arregló es la integración.
+
+NEEDS_PRODUCTION: la reproducción con 10/128/512/1024/2048 contra Groq real sigue pendiente — acá no
+hay clave del proveedor y el proxy no deja salir. Lo que sí se puede afirmar es que el camino entero
+está ejercitado contra un proveedor falso que contesta exactamente lo que Groq contestó en producción.
+El dato que lo cierra es volver a correr `/board` → Ajustes → Avanzado → IA → Probar después del
+deploy: tiene que decir `→ "ok"`, o un ERROR con la causa escrita.
+
+Tests: `./test/llm_budget/run.sh`, en dos partes.
+- `budget.test.ts` (7 casos): qué modelos razonan y cuáles no, el campo por host, el presupuesto del
+  que razona, el del que no, el del clasificador de voz (`chatJson`, 1024), que `budgetField` arma UN
+  solo campo, y que un `wanted` de 0 o NaN no se convierte en cero.
+- `empty_reply.test.ts` (4 casos): el mensaje de las tres causas, y el camino ENTERO contra un
+  `Bun.serve` que contesta como Groq (200 + `content:""` + `finish_reason:"length"` +
+  `reasoning_tokens`), comprobando que `chatText` tira el error diagnóstico y NO el "no devolvió JSON"
+  de antes, más el cuerpo del pedido para ver qué campo y qué valor salieron.
+Verificado que atrapan el defecto: revirtiendo las dos mitades del fix, 2 de 4 fallan
+(`Expected: 1088, Received: 64`). Agregado a CI.
 Reviewer final check:
 
 ---
@@ -1854,6 +1981,23 @@ When an executor encounters one of these, first confirm whether current HEAD alr
   además el cliente usa `max_tokens` deprecated en vez de `max_completion_tokens`.
 - Próximo paso del Executor: reproducir con Groq real y capturar finish_reason/usage antes de cambiar lógica.
 - Ninguna OTA autorizada.
+
+
+### 2026-09-20 — Executor (Claude) — REV-047 / REV-048 / REV-049 sobre ws397 41bd758
+- El dueño reportó "Error 502 en cada peticion, antes no pasaba". Fechado y acotado con SU log: en la
+  misma ventana `/api/hub`, `/api/news/pack` y `/api/transcribe` andaban, y `/api/bible/ask` (que no
+  toca el micrófono) también daba 502. Es el modelo, no Railway ni la red ni el STT.
+- REV-048 CONFIRMED y arreglado: `describeFailure()` en `ServerClient` — el motivo del servidor va a
+  las cinco pantallas Y a la línea de error de toda petición. Header puro `ServerErrorText.h` con el
+  recorte que no parte UTF-8, con prueba propia.
+- REV-049 CONFIRMED (más un cuarto factor que faltaba: nadie miraba el `content` vacío). `llmBudget.ts`
+  nuevo: `max_completion_tokens` donde corresponde, lugar para el razonamiento, y el 200 vacío pasa a
+  ser un error con diagnóstico. `/config/test` deja de dar por bueno un texto vacío.
+- REV-047 CONFIRMED en su parte de observabilidad: `providerLog.ts` guarda los últimos 20 fallos del
+  proveedor y `/board` → IA los muestra. El smoke check post-deploy queda propuesto, no hecho.
+- Tres suites nuevas en CI: `server_error_text`, `provider_log`, `llm_budget`. Las quince en verde,
+  `bunx tsc --noEmit` limpio, `node --check app.js` limpio, `pio run -e ws397` limpio.
+- **Sin OTA.** `.ws397-build` sigue en 118. Nada marcado VERIFIED.
 
 # Session log
 

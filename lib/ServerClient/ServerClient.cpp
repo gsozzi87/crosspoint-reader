@@ -11,6 +11,7 @@
 #include <ws397_version.h>  // ws397: build number lives here, not in a -D flag
 
 #include "ServerCredentialStore.h"
+#include "ServerErrorText.h"
 
 #if defined(FREEINK_NET_WOLFSSL)
 #include <SecureClient.h>
@@ -27,6 +28,10 @@ constexpr int ATTEMPTS = 3;
 constexpr uint32_t BACKOFF_MS[ATTEMPTS - 1] = {500, 1500};
 
 constexpr unsigned long SLOW_MS = 15000;  // más que esto se anota aunque haya salido bien
+
+// REV-048: hasta donde se mira el cuerpo de un error y cuanto se muestra.
+constexpr size_t ERROR_BODY_MAX = 2048;  // un error nuestro es JSON corto
+constexpr size_t ERROR_TEXT_MAX = 120;   // lo que entra en un renglon del visor
 
 bool retryable(int status) { return status < 0 || status == 429 || (status >= 500 && status <= 599); }
 
@@ -59,6 +64,39 @@ const char* ServerClient::resultName(Result r) {
       return "http error";
   }
   return "?";
+}
+
+// REV-048: el motivo que manda el servidor, no solo el numero.
+//
+// Nuestros errores son JSON corto ({ok:false, error, code}) y ahi adentro esta
+// lo unico que distingue un modelo que ya no existe de un proveedor caido o de
+// una clave vencida. El servidor ya lo redacta (redactSecrets), asi que lo que
+// llega se puede mostrar y loguear tal cual.
+std::string ServerClient::errorText(const Response& resp) {
+  const std::string& body = resp.body;
+  const size_t start = body.find_first_not_of(" \r\n\t");
+  if (start == std::string::npos || body[start] != '{') return {};
+  // Un cuerpo grande no es un error nuestro (y parsearlo costaria heap del
+  // escaso justo cuando la peticion ya salio mal).
+  if (body.size() - start > ERROR_BODY_MAX) return {};
+  JsonDocument doc;
+  if (deserializeJson(doc, body.c_str() + start, body.size() - start) != DeserializationError::Ok) return {};
+  const char* err = doc["error"] | "";
+  if (!*err) return {};
+  return servererr::tidy(err, ERROR_TEXT_MAX);
+}
+
+std::string ServerClient::describeFailure(Result r, const Response& resp) {
+  std::string out = resultName(r);
+  out += " (";
+  out += std::to_string(resp.status);
+  out += ")";
+  const std::string why = errorText(resp);
+  if (!why.empty()) {
+    out += ": ";
+    out += why;
+  }
+  return out;
 }
 
 std::string ServerClient::newRequestId() {
@@ -289,7 +327,7 @@ ServerClient::Result ServerClient::request(const char* method, const std::string
   }
   if (wifiDormia) WiFi.setSleep(true);
   if (result != Result::Ok) {
-    LOG_ERR(TAG, "%s %s -> %s (status %d)", method, path.c_str(), resultName(result), out.status);
+    LOG_ERR(TAG, "%s %s -> %s", method, path.c_str(), describeFailure(result, out).c_str());
   }
   return result;
 }

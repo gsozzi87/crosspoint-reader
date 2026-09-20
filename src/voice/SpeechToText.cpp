@@ -36,12 +36,12 @@ bool SpeechToText::transcribe(const VoiceRecorder& take, std::string& text, std:
   LOG_DBG(TAG, "POST /api/transcribe: %u bytes", (unsigned)bytes);
   ServerClient::Response resp;
   const ServerClient::Result r = SERVER_CLIENT.postBytes(std::string("/api/transcribe?lang=") + uiLanguageCode(),
-                                                        "audio/adpcm", body, bytes, resp, TRANSCRIBE_TIMEOUT_MS);
+                                                         "audio/adpcm", body, bytes, resp, TRANSCRIBE_TIMEOUT_MS);
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
-    char buf[96];
-    snprintf(buf, sizeof(buf), "%s (%d)", ServerClient::resultName(r), resp.status);
-    detail = buf;
+    // REV-048: el motivo que mando el servidor, no solo el numero: un 502 es
+    // igual para un modelo que ya no existe, el proveedor caido o el STT roto.
+    detail = ServerClient::describeFailure(r, resp);
     return false;
   }
   JsonDocument doc;

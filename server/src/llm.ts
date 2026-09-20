@@ -13,6 +13,8 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { config } from "./config";
 import { checkUrl, redactSecrets } from "./net";
+import { budgetField, emptyReplyMessage, planBudget } from "./llmBudget";
+import { recordProviderFailure } from "./providerLog";
 import { searchWeb, asksForSearch, asksForReasoning, formatResults } from "./websearch";
 import type { Lang } from "./lang";
 
@@ -215,11 +217,23 @@ async function anthropicText(o: Options, schema?: object): Promise<string> {
 }
 
 type OpenAiChoice = {
+  // REV-049: por qué paró. "length" con el texto vacío es un modelo de
+  // razonamiento que se comió el presupuesto pensando, y es lo único que
+  // distingue ese caso de "el proveedor no devolvió nada".
+  finish_reason?: string;
   message?: {
     content?: string;
+    // Groq devuelve el razonamiento APARTE del contenido para gpt-oss. Si esto
+    // viene lleno y `content` vacío, el modelo pensó y no llegó a escribir.
+    reasoning?: string;
     // Groq: lo que ejecutó el sistema agéntico (búsqueda, código).
     executed_tools?: { type?: string; search_results?: { results?: { title?: string; url?: string; content?: string; score?: number }[] } }[];
   };
+};
+
+type OpenAiUsage = {
+  completion_tokens?: number;
+  completion_tokens_details?: { reasoning_tokens?: number };
 };
 
 async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltInSearch): Promise<ChatResult> {
@@ -243,7 +257,11 @@ async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltI
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${c.key}` },
     body: JSON.stringify({
       model: c.model,
-      max_tokens: o.maxTokens ?? 1024,
+      // REV-049: `max_completion_tokens` donde lo entienden (OpenAI y Groq lo
+      // piden y dan `max_tokens` por deprecado) y con lugar para el
+      // razonamiento: si el presupuesto no lo contempla, el modelo se lo come
+      // pensando y devuelve el texto VACÍO.
+      ...budgetField(c.baseUrl, c.model, o.maxTokens ?? 1024),
       messages: [
         { role: "system", content: system },
         { role: "user", content: o.user },
@@ -280,14 +298,33 @@ async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltI
       res.status === 401 ? "no_key" : "provider_error",
     );
   }
-  let data: { choices?: OpenAiChoice[] };
+  let data: { choices?: OpenAiChoice[]; usage?: OpenAiUsage };
   try {
     data = JSON.parse(body);
   } catch {
     throw new LlmError(`respuesta ilegible del proveedor: ${body.slice(0, 120)}`, 502, "bad_answer");
   }
-  const msg = data.choices?.[0]?.message;
+  const choice = data.choices?.[0];
+  const msg = choice?.message;
   let text = msg?.content ?? "";
+  // REV-049: un 200 con el texto vacío NO se deja pasar. Antes seguía de largo
+  // y salía por el lado equivocado — `chatJson` decía "el modelo no devolvió
+  // JSON" y el Traductor "empty translation" —, o sea que la causa (un
+  // presupuesto que el razonamiento se comió) llegaba disfrazada de otra cosa.
+  if (!text.trim() && builtIn === "none") {
+    throw new LlmError(
+      emptyReplyMessage({
+        model: c.model,
+        finishReason: choice?.finish_reason,
+        reasoningChars: (msg?.reasoning ?? "").length,
+        completionTokens: data.usage?.completion_tokens,
+        reasoningTokens: data.usage?.completion_tokens_details?.reasoning_tokens,
+        budget: planBudget(c.baseUrl, c.model, o.maxTokens ?? 1024).value,
+      }),
+      502,
+      "bad_answer",
+    );
+  }
   const sources: Source[] = [];
   for (const t of msg?.executed_tools ?? []) {
     for (const r of t.search_results?.results ?? []) {
@@ -307,9 +344,26 @@ export async function chatText(o: Options): Promise<string> {
   return (await chatSearch(o)).text;
 }
 
+// REV-047: todo fallo del proveedor queda anotado, una sola vez y en un solo
+// lugar. `chatSearch` y `chatJson` son las dos puertas: envolverlas acá cubre
+// Hablar, Preguntarle al libro, el Traductor, la Biblia y el calendario sin
+// tocar ninguno de sus catch.
+async function noting<T>(where: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    recordProviderFailure("llm", where, err);
+    throw err;
+  }
+}
+
 // Igual que chatText pero contando qué se buscó y de dónde salió, para poder
 // mostrar las fuentes en el aparato.
 export async function chatSearch(o: Options): Promise<ChatResult> {
+  return noting("chatSearch", () => chatSearchRun(o));
+}
+
+async function chatSearchRun(o: Options): Promise<ChatResult> {
   const cfg = await config();
   const lang0: Lang = o.lang ?? "es";
   // REGLA DEL DUEÑO (1.5.41, reafirmada después de 1.5.102): buscar SOLO si el
@@ -366,6 +420,10 @@ export async function providerLabel(): Promise<string> {
 }
 
 export async function chatJson<T>(o: Options, schema: object): Promise<T> {
+  return noting("chatJson", () => chatJsonRun<T>(o, schema));
+}
+
+async function chatJsonRun<T>(o: Options, schema: object): Promise<T> {
   const c = (await config()).llm;
   const raw = c.provider === "anthropic" ? await anthropicText(o, schema) : await openAiText(o, schema);
   // Algunos modelos igual encierran el JSON en ```json … ```

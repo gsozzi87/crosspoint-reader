@@ -528,8 +528,9 @@ void BibleActivity::performAsk() {
   WiFi.setSleep(true);
   suppressAssetOffer = true;
   if (r != ServerClient::Result::Ok) {
-    char why[96];
-    snprintf(why, sizeof(why), "%s (%d)", ServerClient::resultName(r), resp.status);
+    // REV-048: el motivo que mando el servidor, no solo el numero: un 502 es
+    // igual para un modelo que ya no existe, el proveedor caido o el STT roto.
+    const std::string why = ServerClient::describeFailure(r, resp);
     fail(StrId::STR_ASK_FAILED, why);
     return;
   }

@@ -229,14 +229,14 @@ void VoiceActivity::performRequest() {
   // La línea de tiempos del aparato, para no tener que deducir de los sellos:
   // cuánto se habló, cuánto se esperó al WiFi después de hablar y cuánto tardó
   // la ida y vuelta (con reintentos adentro; ServerClient ya loguea cada uno).
-  LOG_INF(TAG, "tiempos: toma %lu ms, WiFi +%lu ms tras la toma, ida y vuelta %lu ms%s",
-          tRecordEnd - tRecordStart, tWifiUp > tRecordEnd ? tWifiUp - tRecordEnd : 0UL, reqMs,
-          reqMs > 15000 ? " — LENTO" : "");
+  LOG_INF(TAG, "tiempos: toma %lu ms, WiFi +%lu ms tras la toma, ida y vuelta %lu ms%s", tRecordEnd - tRecordStart,
+          tWifiUp > tRecordEnd ? tWifiUp - tRecordEnd : 0UL, reqMs, reqMs > 15000 ? " — LENTO" : "");
   recorder.release();
   if (r != ServerClient::Result::Ok) {
     WiFi.setSleep(true);
-    char detail[96];
-    snprintf(detail, sizeof(detail), "%s (%d)", ServerClient::resultName(r), resp.status);
+    // REV-048: el motivo que mando el servidor, no solo el numero: un 502 es
+    // igual para un modelo que ya no existe, el proveedor caido o el STT roto.
+    const std::string detail = ServerClient::describeFailure(r, resp);
     fail(StrId::STR_ASK_FAILED, detail);
     return;
   }
