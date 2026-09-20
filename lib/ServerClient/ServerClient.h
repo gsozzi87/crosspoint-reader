@@ -144,7 +144,11 @@ class ServerClient {
   bool holdFlush_ = false;                 // ver setFlushHold()
   bool inConfirm_ = false;                 // confirmAccount() usa request(): no reentrar
   Identity identity_ = Identity::Unknown;  // por SESIÓN de red, no por arranque
-  std::string account_;                    // de qué cuenta se cree el aparato
+  // REV-017: si en ESTA sesión se descubrió que el aparato cambió de cuenta.
+  // Con esto puesto, una entrada de la cola sin sello (firmware anterior) no se
+  // puede dar por buena, porque `clearQueue()` pudo no haber podido escribir.
+  bool accountChangedThisSession_ = false;
+  std::string account_;  // de qué cuenta se cree el aparato
   AccountChangedFn onAccountChanged_ = nullptr;
   // El id de la última petición de `request()`. Lo lee `postOrQueue()` para
   // encolar con el MISMO id con el que se intentó en línea (ver REV-016).
