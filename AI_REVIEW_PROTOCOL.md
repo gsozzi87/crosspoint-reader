@@ -671,7 +671,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-016 — POST retry idempotency
-State: FIXED_PENDING_REVIEW (tanda 2) — id continuo hasta la cola; la parte C++ es NEEDS_HARDWARE
+State: NEEDS_HARDWARE — código aceptado; falta prueba real de caída→cola→replay
 Severity: P0
 Subsystem: network / server
 
@@ -766,39 +766,25 @@ Tests: `./test/idempotency/run.sh` (7 pruebas): la clave separa cuenta/ruta/id, 
 vencimiento, tope de entradas Y de bytes, respuesta demasiado grande que no se guarda, 5xx que no se
 cachea y 4xx que sí, y el mismo id en otra cuenta que no devuelve la respuesta ajena.
 Reviewer final check:
-NO VERIFICADO como cierre completo. La parte servidor está bien, pero encontré un hueco que conserva
-el escenario de duplicación en una transición concreta.
+Revisión del código actual: el hueco que encontré en la tanda 1 quedó cerrado estructuralmente.
+`request()` crea un id por operación, `postOrQueue()` conserva `lastRequestId_` y `enqueue()`
+lo persiste en la cola. El test de servidor demuestra correctamente que repetir el MISMO id no vuelve
+a aplicar la operación.
 
-Lo aceptado:
-- `ReplayCache` separa cuenta/ruta/id, tiene TTL/topes y no guarda 5xx.
-- El middleware devuelve una respuesta ya aplicada cuando un REINTENTO EN LÍNEA llega con el mismo
-  `X-Request-Id`.
-- `ServerClient::request()` sí conserva un id entre sus intentos.
+También revisé los llamadores actuales de `postOrQueue`: Notes y Agenda lo usan desde el loop
+sincrónico del aparato; no encontré un llamador concurrente actual que pueda pisar `lastRequestId_`
+entre el intento y el encolado. El diseño sigue siendo frágil si en el futuro ServerClient empieza a
+usarse concurrentemente desde dos tareas, pero no es un bug reproducible hoy.
 
-Hueco actual:
-- `postOrQueue()` primero llama a `postJson()`; ese request genera un id interno.
-- Si el servidor ALCANZÓ a aplicar la operación pero todas las respuestas posteriores se pierden y
-  `postOrQueue()` decide encolarla, llama a `enqueue(path,json)`.
-- `enqueue()` genera OTRO `newRequestId()`. Cuando la cola salga más tarde, el servidor ve un id
-  nuevo y legítimamente aplica la operación una segunda vez.
-- Por tanto, la ventana "commit remoto + pérdida total de respuesta + paso a cola" aún puede duplicar
-  nota/recordatorio/evento.
-- La suite `test/idempotency` prueba la caché pura; el comentario habla de un escenario de servidor
-  real, pero ese fault-injection no está automatizado en la suite.
+No lo marco VERIFIED todavía porque falta la única prueba que cruza el límite que los tests de host no
+pueden cubrir: operación aplicada remotamente + respuesta perdida + encolado en SD + replay posterior
+desde el ESP32. Esa comprobación debe hacerse en hardware una vez.
 
-Arreglo que debe evaluar el ejecutor: el id lógico de una operación tiene que nacer una sola vez y
-acompañar tanto los intentos online como la entrada offline. `postOrQueue` debería poder encolar EL
-MISMO request id que acaba de usar, y hace falta una prueba automática que simule "se aplicó, se perdió
-la respuesta, se encoló y luego se vació".
-
-Impacto de producto: en una caída muy precisa de red, algo que el usuario hizo una vez todavía puede
-aparecer dos veces. En /api/voice además puede repetirse una acción clasificada por la IA.
-
-Hallazgo adicional separado en REV-044: un replay correcto puede volver a sumar uso/cuota porque el
-middleware de medición envuelve al de idempotencia.
+Impacto: el defecto original podía duplicar una nota/recordatorio después de una pérdida de respuesta.
+El código ya evita ese camino; queda validar la integración real aparato+SD+red.
 
 ## REV-017 — Offline queue + account reassignment
-State: FIXED_PENDING_REVIEW (tanda 2) — política global en ServerClient; 4 comprobaciones NEEDS_HARDWARE
+State: OPEN — encontré un P0 residual con entradas legacy sin sello
 Severity: P0
 Subsystem: multi-account sync
 
@@ -913,28 +899,33 @@ leído del servidor: `{paired, account, single}` con `account: null` en modo de 
 "vacío" se trata como identidad CONOCIDA y sigue vaciando: ahí hay una sola cuenta y la cola es de ésa).
 Queda como NEEDS_HARDWARE la comprobación de punta a punta.
 Reviewer final check:
-NO VERIFICADO. El ejecutor encontró correctamente que la guardia de HubSync era ineficaz y el
-`setFlushHold(true)` hace que ESA consulta de identidad ya no vacíe la cola antes de comparar.
-También es correcta la decisión de retener la cola si /api/pair/status no pudo contestar.
+NO VERIFICADO. La política global nueva es mejor y cubre los tres caminos de vaciado, pero encontré un
+agujero concreto dentro de `flushQueue()`.
 
-Pero el P0 original sigue abierto en otros caminos:
-- `ServerClient::request()` llama automáticamente a `flushOnConnect()` en la primera petición de
-  una sesión cuando `holdFlush_` es false.
-- `devicesync::ifDue()` llama directamente a `SERVER_CLIENT.flushQueue()` sin confirmar cuenta.
-- Por tanto, después de mover un aparato de cuenta A a B, si antes de entrar a HubSync se abre Hablar,
-  Noticias, Traductor, Biblia u otra función que haga la primera petición, la cola de A puede salir
-  contra B. La sincronización oportunista puede hacer lo mismo.
-- Los ids del store son locales a cada cuenta, así que no es sólo duplicación: una operación vieja
-  puede marcar/borrar/modificar el objeto de B que casualmente tenga el mismo id.
+Orden actual:
+1. se lee `server-queue.json` en `doc/items`;
+2. recién después se llama a `confirmAccount()`;
+3. si cambió la cuenta, `confirmAccount()` llama a `clearQueue()`, que vacía EL ARCHIVO;
+4. al volver, `flushQueue()` sigue iterando el `items` que ya tenía EN MEMORIA.
 
-Se necesita una política global, no sólo una guarda local: por ejemplo identidad de sesión
-`Unknown/Confirmed` dentro de ServerClient, con toda salida de la cola retenida hasta confirmar la
-cuenta; o ligar cada entrada de cola a la identidad de cuenta que la creó. El modo single-account debe
-seguir funcionando sin quedarse retenido para siempre.
+Para entradas creadas por el firmware nuevo, el sello `acct` salva el caso: se descartan al no
+coincidir. Pero las entradas LEGACY sin `acct` se consideran de la cuenta actual por este comentario:
 
-Impacto de producto: sólo afecta instalaciones multiusuario/reasignación de aparato, pero ahí puede
-modificar datos de la cuenta equivocada. Se mantiene P0 y requiere prueba de punta a punta antes de
-cerrarlo.
+  "Sin sello = firmware anterior... un cambio de cuenta habría vaciado la cola".
+
+Eso es falso dentro de la misma llamada: el archivo sí quedó vacío, pero el snapshot local sigue vivo.
+Una entrada vieja sin sello puede salir UNA vez contra la cuenta nueva justo después del cambio.
+Además, si `clearQueue()` falla por SD dañada, la misma presunción tampoco es segura para legacy.
+
+Arreglo mínimo recomendado: confirmar la identidad ANTES de leer la cola, o recargar `doc/items`
+después de `confirmAccount()` cuando hubo cambio. Para máxima seguridad, una entrada sin sello en
+modo multiusuario debería migrarse/sellarse sólo cuando la identidad se conoce con certeza, o
+descartarse ante un cambio de cuenta.
+
+Prueba obligatoria: sembrar una cola legacy sin `acct` de la cuenta A, cambiar el aparato a B,
+llamar `flushQueue()` y comprobar que no sale NI UN POST de esa cola.
+
+Impacto: es P0 porque una acción vieja puede modificar/borrar el objeto de otra cuenta con el mismo id.
 
 ## REV-018 — Timezone isolation and DST
 State: OPEN
@@ -1578,7 +1569,7 @@ compilación del firmware upstream ESP32-C3; ahora vuelve a poder construirse y 
 
 
 ## REV-044 — Un replay de /api/voice puede volver a consumir cuota
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P2
 Subsystem: server usage / idempotency
 
@@ -1623,9 +1614,15 @@ Nota sobre el alcance: `addUsage()` no hace nada sin `DATABASE_URL`, así que en
 sola cuenta esto nunca se notó. Afecta a la instalación multiusuario con topes puestos, que es donde
 el revisor lo ubicó.
 Reviewer final check:
+VERIFIED. La marca `idempotentReplay` viaja en el contexto de Hono y el middleware de medición,
+que está por fuera, consulta esa marca antes de `addUsage()`. Las pruebas componen los middlewares
+reales en el mismo orden que `api.ts` y demuestran que el primer pedido cobra, el replay no y un id
+nuevo sí.
+
+Impacto: con cuentas/cuotas, una red inestable ya no consume cuota dos veces por la misma operación.
 
 ## REV-045 — La web llama “resumidas” a traducciones médicas
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P3
 Subsystem: board web / News
 
@@ -1661,9 +1658,15 @@ un paper sin traducir):
 Y con Chromium a 360 px: `3 listas · 1 resumida · 1 paper traducido`, `10:00 · resumido`,
 `09:00 · traducido`, sin errores de consola y sin irse de ancho.
 Reviewer final check:
+VERIFIED. `/api/news/status` separa `chewed` de `chewedMedical` usando `medicalVersion`, y
+`/preview` expone `medical` por ítem. La web muestra "resumido" para diarios y "traducido" para
+papers. El criterio no depende del nombre visible del feed.
+
+Impacto: el médico deja de recibir la impresión falsa de que el abstract fue condensado cuando fue
+traducido técnicamente.
 
 ## REV-046 — CI usa una versión móvil de Bun
-State: FIXED_PENDING_REVIEW (falta confirmar el digest del Dockerfile)
+State: VERIFIED
 Severity: P2
 Subsystem: CI / reproducibilidad
 
@@ -1710,10 +1713,19 @@ móvil**. Queda escrito en el propio Dockerfile para que no se pierda.
 Tests: las once suites y `bunx tsc --noEmit` en verde con 1.3.11 (local); CI lo va a correr con 1.4.2
 en la próxima pasada, que es la verificación que falta.
 Reviewer final check:
+VERIFIED, incluido el punto que el ejecutor no pudo comprobar.
 
+CI toma Bun 1.4.2 desde `server/.bun-version`. Revisé además públicamente el digest fijado en el
+Dockerfile:
+`sha256:4f6e31d1a54d6a3dd312daef655fc998101b5043d52e12592ac293ef04b9bc73`.
+Docker Hub lo publica también como el índice de `oven/bun:1.4.2-debian`. Por tanto, CI y la imagen
+de producción están alineados en Bun 1.4.2.
+
+Impacto: se elimina una fuente de diferencias "pasa en CI/falla en Railway" causada sólo por runtimes
+distintos.
 
 ## REV-047 — Integración IA viva puede estar rota aunque CI esté verde
-State: FIXED_PENDING_REVIEW
+State: VERIFIED — observabilidad corregida; la disponibilidad de deploy pasa a REV-051
 Severity: P1
 Subsystem: server / live provider / observability
 
@@ -1805,9 +1817,25 @@ contenedores), no código, y es del dueño.
 código, fechar el síntoma contra los DESPLIEGUES. Es la misma disciplina de "antes de diagnosticar un
 log, fecharlo" (1.5.94), una capa más afuera.
 Reviewer final check:
+Acepto la corrección del ejecutor: mi hipótesis inicial de "proveedor roto" no explica por sí sola la
+ventana de 502.
+
+La evidencia más fuerte es el 502 observado contra `/firmware/latest`: el handler de firmware no
+tiene ninguna rama 502 (200/404 en GET; 400/401 son del PUT), así que un 502 allí necesariamente viene
+de la capa delante de la app, no de Groq/STT ni de ese handler. La coincidencia temporal con varios
+deploys hace muy plausible que la indisponibilidad fuera del servicio Railway durante el cambio de
+deployment. No tengo acceso al historial de Deployments de Railway para certificar el minuto exacto,
+pero el mecanismo está suficientemente acotado.
+
+El arreglo de observabilidad también queda aceptado: `providerLog` es acotado, no persiste basura en
+el volumen y el board puede mostrar los fallos recientes de LLM/STT.
+
+Lo que NO cierro aquí es la disponibilidad durante deploy. Se separa como REV-051 porque es otro
+problema: aunque el proveedor esté sano, el aparato no debe recibir una ráfaga de 502 cada vez que
+actualizamos el servidor.
 
 ## REV-048 — El firmware oculta el mensaje útil de los errores HTTP 4xx/5xx
-State: FIXED_PENDING_REVIEW
+State: VERIFIED — requiere OTA para verse en el aparato
 Severity: P1
 Subsystem: firmware UX / diagnostics
 
@@ -1866,10 +1894,21 @@ comprobando con un validador de UTF-8 que nunca queda medio carácter). Verifica
 atrapa el defecto: sacando el retroceso de UTF-8 da 6 fallos. Agregado a CI.
 Firmware: `pio run -e ws397` limpio (flash 87,7 %, RAM 28,7 %). **Sin OTA.**
 Reviewer final check:
+VERIFIED por código y pruebas.
 
+`ServerClient::describeFailure()` recupera el campo `error` del JSON corto del servidor y todas las
+pantallas importantes que antes mostraban sólo `HttpError (502)` pasan a usarlo. El recorte UTF-8
+está probado exhaustivamente y el log general de ServerClient también conserva el motivo.
+
+Para un 502 generado por el BORDE de Railway, cuyo cuerpo no sea nuestro JSON, seguirá apareciendo un
+502 genérico; eso es correcto porque no existe un mensaje estructurado del backend que recuperar.
+
+Impacto: cuando el servidor sí conoce la causa —modelo inválido, clave, STT, respuesta vacía— el dueño
+la ve en la pantalla/log en vez de un número inútil. Este cambio es firmware: no estará en el aparato
+hasta la próxima OTA.
 
 ## REV-049 — Groq GPT-OSS puede devolver content vacío por presupuesto de salida/reasoning
-State: FIXED_PENDING_REVIEW
+State: VERIFIED — bug latente real, no causa principal de aquella ventana de 502
 Severity: P1
 Subsystem: server / LLM provider compatibility
 
@@ -1977,9 +2016,28 @@ Tests: `./test/llm_budget/run.sh`, en dos partes.
 Verificado que atrapan el defecto: revirtiendo las dos mitades del fix, 2 de 4 fallan
 (`Expected: 1088, Received: 64`). Agregado a CI.
 Reviewer final check:
+VERIFIED como bug independiente.
+
+Comprobé contra la documentación actual de Groq:
+- `max_completion_tokens` es el campo vigente y `max_tokens` está deprecado;
+- GPT-OSS 20B/120B soporta `reasoning_effort=low|medium|high`;
+- los tokens de razonamiento comparten el presupuesto de generación;
+- `openai/gpt-oss-120b` sigue siendo modelo de producción.
+
+Por tanto, pedir sólo 10 tokens para la prueba del board era una prueba defectuosa para GPT-OSS.
+El cambio a `max_completion_tokens`, el headroom y, sobre todo, rechazar explícitamente un 2xx con
+`content` vacío son correctos. La prueba viva posterior registrada por el ejecutor devolvió
+`→ "ok" (195 ms)`, lo que además confirma el camino de producción después del deploy.
+
+Corrección menor al comentario del ejecutor: aumentar el límite máximo no "cuesta" por sí mismo, pero
+sí puede permitir que el modelo use más tokens reales que una llamada truncada; el costo depende del
+uso efectivo, no del cap.
+
+Impacto: el botón Probar deja de dar falso positivo `→ ""`, y Hablar/Traductor reciben una causa
+diagnóstica si un modelo razona hasta agotar presupuesto en vez de un 502 opaco.
 
 ## REV-050 — El middleware de idempotencia copiaba el cuerpo ANTES de decidir si lo iba a guardar
-State: FIXED_PENDING_REVIEW
+State: FIXED_PENDING_REVIEW — código correcto; falta que termine CI del HEAD actual
 Severity: P2
 Subsystem: server / memoria
 
@@ -2008,6 +2066,55 @@ Tests: tres casos nuevos en `./test/idempotency/run.sh` — una respuesta que de
 `MAX_BODY` no se clona (se cuenta) ni se guarda y el aparato la recibe entera; un 5xx tampoco se
 guarda, así el reintento vuelve a intentar de verdad; y una del tamaño de `/api/voice` (300 KB) sí se
 guarda y se repite sin volver a ejecutar el handler.
+Reviewer final check:
+Revisión de código: el cambio es correcto.
+
+Antes se clonaba el Response antes de poder descartar 5xx o cuerpos declaradamente mayores a
+`MAX_BODY`. Ahora 5xx y `Content-Length` demasiado grande salen antes del clone. Para los dos
+cuerpos grandes conocidos, Voice y Translate, el servidor declara Content-Length, así que la
+optimización sí actúa donde importa. El test además comprueba que la respuesta original llega entera.
+
+No lo marco VERIFIED todavía sólo porque la corrida CI del HEAD `84af1e7` sigue en progreso al
+momento de esta revisión. El commit anterior, que contiene REV-047/048/049, ya tuvo CI verde tras el
+arreglo de clang-format.
+
+Impacto: reduce picos de memoria del servidor durante errores/respuestas grandes; no cambia el
+comportamiento visible normal.
+
+
+## REV-051 — Los deploys de Railway pueden dejar el aparato sin backend
+State: OPEN
+Severity: P1
+Subsystem: production deployment / Railway
+
+Hallazgo del revisor al validar la corrección de REV-047.
+
+La evidencia de un 502 incluso en `/firmware/latest` apunta al borde de Railway durante deployment,
+no al proveedor de IA. El repositorio no contiene configuración de healthcheck de Railway.
+
+La mitigación "healthcheck + overlap" necesita una precisión importante: este servidor usa `/data`
+para configuración, firmware, paquetes y otros datos persistentes, por lo que normalmente está unido
+a un Railway Volume. La documentación actual de Railway dice que un servicio con volumen adjunto NO
+puede tener dos deployments activos montando el mismo volumen; por eso existe una pequeña ventana de
+downtime incluso con healthcheck configurado. `overlapSeconds` no convierte ese servicio stateful en
+cero-downtime real.
+
+Trabajo:
+1. confirmar en Railway si el servicio tiene Volume adjunto y si existe Healthcheck Path;
+2. configurar un healthcheck de readiness (puede ser `/` si basta con proceso HTTP vivo, o un
+   `/health` explícito) para no enrutar a un contenedor que todavía no escucha;
+3. medir la ventana real de 502 en un deploy con volumen;
+4. durante desarrollo, evitar cuatro auto-deploys consecutivos: agrupar commits o desplegar producción
+   sólo cuando la tanda esté revisada;
+5. hacer que el aparato trate un 502/503 de borde como indisponibilidad transitoria con mensaje claro
+   y reintento razonable, sin repetir acciones no idempotentes;
+6. si el producto necesita cero-downtime real, separar el API stateless del almacenamiento que hoy
+   exige el Volume (Postgres/object storage/servicio stateful separado).
+
+Impacto: durante un deploy, Hablar, Traductor, Noticias, sincronización e incluso comprobar OTA pueden
+fallar aunque el firmware y Groq estén perfectamente sanos.
+
+Executor response:
 Reviewer final check:
 
 ---
@@ -2071,6 +2178,16 @@ When an executor encounters one of these, first confirm whether current HEAD alr
 - Se abre y se arregla REV-050 (el clone del middleware de idempotencia, mío, de la tanda 2).
 - Queda para el dueño, y es configuración y no código: que un despliegue de Railway no tire 502 a la
   cara del aparato (health check + solapamiento de contenedores).
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — revisión de tanda 2 + incidente 502
+- VERIFIED: REV-044, REV-045, REV-046, REV-047 (observabilidad/diagnóstico), REV-048 (código; necesita OTA), REV-049 (bug latente del test/presupuesto).
+- REV-016 pasa a NEEDS_HARDWARE: el flujo de id ya es coherente en código; falta fault-injection real ESP32→SD→replay.
+- REV-017 vuelve a OPEN P0: `flushQueue()` carga la cola ANTES de `confirmAccount()`; si cambia cuenta, `clearQueue()` vacía el archivo pero el snapshot local conserva entradas legacy sin `acct` y puede enviarlas una vez a la cuenta nueva.
+- REV-050 aceptado por lectura, pero queda FIXED_PENDING_REVIEW hasta que termine CI del HEAD 84af1e7.
+- Se abre REV-051: la indisponibilidad durante deploy es un problema propio. Railway documenta que servicios con Volume pueden tener breve downtime incluso con healthcheck.
+- Validación externa adicional: el digest de Dockerfile corresponde a oven/bun:1.4.2-debian; REV-046 queda cerrado.
+- Ninguna OTA autorizada.
 
 # Session log
 
