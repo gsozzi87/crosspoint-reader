@@ -1423,6 +1423,19 @@ Use short entries. Do not paste huge tool transcripts.
   `bun-version: latest`. Acá corre 1.3.11 y en el runner 1.4.2, y las dos fallas de net_lookup
   salieron justamente de esa diferencia. Es el mismo tipo de problema que REV-022 (entradas de build
   que se mueven solas). Fijar la versión es una decisión del dueño: puede destapar otras cosas.
+
+### 2026-09-20 — Executor (Claude) — CI EN VERDE, tanda cerrada
+- Run 35478957781 sobre ws397 `8037c8c`: **conclusion success, los doce jobs en verde**
+  (clang-format, cppcheck, unit-tests, Server typecheck, ws397 desktop tests, Test Status y los
+  seis builds: ws397, default, sticky, papermono, x4c, x4pro).
+- Es la primera corrida verde de ws397 desde que el workflow se rompió en 1.5.113. Con eso, el
+  punto "CI is green" del release gate queda cumplido por primera vez en 65 commits.
+- Lo que CI confirmó y el ejecutor NO pudo verificar local: **REV-043** (el build C3; en este
+  sandbox falta el paquete de framework esp32c3 y `pio run -e default` ni arranca) -> `Build
+  default` success.
+- Estado para el revisor: REV-001, 002, 005, 009, 016, 017, 034, 042, 043 en FIXED_PENDING_REVIEW.
+  Nada VERIFIED todavía: eso lo decide el revisor.
+- **Ninguna OTA publicada.** `.ws397-build` = 118 y `/firmware/latest` sigue entregando 1.5.118.
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
   el rojo, que es exactamente cómo CI se murió 65 commits.
