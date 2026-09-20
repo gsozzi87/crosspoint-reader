@@ -1840,6 +1840,13 @@ Use short entries. Do not paste huge tool transcripts.
      autenticación y el proxy del sandbox la bloquea.
 - **Ninguna OTA publicada.** `.ws397-build` sigue en 118 y `/firmware/latest` entrega 1.5.118.
 
+### 2026-09-20 — Executor (Claude) — CI verde sobre la tanda 2
+- Run 35483174951 sobre ws397 `3439a78`: **conclusion success, los doce jobs en verde.**
+- REV-046 verificado por CI y no sólo por lectura: el log del job dice
+  `Obtained version 1.4.2 from server/.bun-version` y las suites corren con `bun test v1.4.2
+  (744846f84)`. O sea que el archivo manda de verdad y CI dejó de instalar `latest`.
+- Sigue faltando, y es del dueño: confirmar que el digest del Dockerfile es esa misma 1.4.2.
+
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
   el rojo, que es exactamente cómo CI se murió 65 commits.
