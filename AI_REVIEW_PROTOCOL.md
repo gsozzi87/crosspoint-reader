@@ -2952,6 +2952,55 @@ Executor response:
 Reviewer final check:
 
 
+## REV-067 — El auto deep-sleep ignora el cable USB aunque el light sleep lo protege
+State: OPEN
+Severity: P2
+Subsystem: firmware / USB / auto-sleep / deep sleep
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+En `loop()` el auto-sleep se evalúa ANTES del bloque de light sleep:
+
+    const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
+    if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
+        enterDeepSleep(true);
+        return;
+    }
+
+Recién DESPUÉS, dentro del bloque WS397 de light sleep, se calcula:
+
+    const bool cablePuesto = POWER_KEY.vbusPresent() || gpio.isUsbConnected();
+
+y `cablePuesto` bloquea el light sleep con un comentario explícito: el USB CDC no sobrevive al
+reposo y, enchufado, ahorrar batería no justifica hacer desaparecer el dispositivo de la computadora.
+
+Ese mismo criterio NO protege el deep sleep. Además `CrossPointSettings::getSleepTimeoutMs()` fuerza
+10 minutos en WS397, y el cable USB no reinicia `lastActivityTime`.
+
+Resultado: un WS397 conectado por USB pero sin interacción humana puede, a los 10 min, entrar en deep
+sleep, cortar HWCDC y desaparecer del host, exactamente el efecto que el código intenta evitar en
+light sleep.
+
+Impacto visible:
+- consola/serial USB se desconecta sola después de ~10 min de inactividad aunque el cable siga puesto;
+- el aparato puede parecer muerto/desconectado en la computadora hasta que se despierte físicamente;
+- en WS397 el wake profundo normal es OK/GPIO5, no el PMIC PWR, así que reconectar/interactuar desde el
+  host no necesariamente lo recupera;
+- no afecta USB Drive activo si esa Activity mantiene sus propias guardias, pero sí el estado normal
+  conectado por CDC/carga.
+
+Fix recomendado:
+- calcular el estado real de VBUS/cable ANTES de decidir auto deep-sleep en WS397;
+- mientras haya cable, no disparar el timeout automático (mantener despierto o usar sólo una política
+  que preserve USB);
+- conservar el deep sleep manual si el usuario lo pide explícitamente, si ésa es la UX deseada;
+- test: WS397 + VBUS presente + >10 min sin input => no deep sleep / CDC sigue vivo; al retirar VBUS,
+  el timeout vuelve a operar normalmente.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
