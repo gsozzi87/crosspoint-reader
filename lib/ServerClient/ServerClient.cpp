@@ -414,7 +414,16 @@ bool ServerClient::enqueue(const std::string& path, const std::string& json, con
   // portón está en `flushQueue()`, pero si `clearQueue()` no pudo escribir la
   // tarjeta —y una tarjeta que no escribe es un caso real acá— las entradas
   // viejas siguen en el archivo. Con el sello, igual no salen.
-  if (!account_.empty()) item["acct"] = account_;
+  //
+  // SE ESCRIBE SIEMPRE, también vacío (REV-055). La cuenta vacía es una
+  // identidad CONOCIDA y válida —es el servidor de un solo usuario—, no una
+  // identidad ausente. Escribiendo el sello sólo cuando había algo, una entrada
+  // NUEVA creada en ese modo salía idéntica a una de un firmware anterior, y
+  // `queueacct` la rechazaba si en esa sesión se había detectado un cambio de
+  // cuenta: el aparato perdía una nota, una tarea o un recordatorio que el
+  // usuario acababa de crear. La ausencia del campo tiene que significar UNA
+  // sola cosa: la escribió un firmware anterior a REV-017.
+  item["acct"] = account_;
   item["path"] = path;
   item["body"] = json;
   const bool ok = PersistableStoreBase::writeDocToFile(QUEUE_PATH, doc);

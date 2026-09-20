@@ -43,6 +43,14 @@ struct Session {
 //     de la misma llamada `flushQueue()` ya tenía la lista LEÍDA EN MEMORIA, así
 //     que vaciar el archivo no le sacaba nada de encima. Una entrada vieja
 //     podía salir UNA vez contra la cuenta nueva.
+//
+// EL SELLO VACÍO ES UN SELLO (REV-055). `""` es la cuenta del servidor de un
+// solo usuario: una identidad conocida, no una ausente. `enqueue()` escribe el
+// campo SIEMPRE, así que "no tiene campo `acct`" significa una sola cosa —lo
+// escribió un firmware anterior a REV-017— y una entrada nueva del modo de un
+// solo usuario sale por la regla 1, aunque en la sesión haya habido un cambio.
+// Con la versión anterior esa entrada era indistinguible de una vieja y se
+// perdía: el usuario creaba una nota sin red y no llegaba nunca.
 inline bool allowed(const Entry& e, const Session& s) {
   if (e.sealed) return e.account == s.account;
   return !s.changedThisSession;

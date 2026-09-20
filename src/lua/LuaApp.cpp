@@ -1,6 +1,7 @@
 #include "LuaApp.h"
 
 #include <ArduinoJson.h>
+#include <DrawScope.h>
 #include <GfxRenderer.h>
 #include <HalClock.h>
 #include <HalStorage.h>
@@ -135,6 +136,7 @@ int cpClear(lua_State*) {
 }
 
 int cpText(lua_State* L) {
+  const gfxscope::Op scope("cp.text");  // REV-056
   const int x = clampCoord(luaL_checkinteger(L, 1), g_renderer ? g_renderer->getScreenWidth() : 800);
   const int y = clampCoord(luaL_checkinteger(L, 2), g_renderer ? g_renderer->getScreenHeight() : 800);
   const char* text = boundedText(L, 3);
@@ -147,6 +149,7 @@ int cpText(lua_State* L) {
 }
 
 int cpTextWidth(lua_State* L) {
+  const gfxscope::Op scope("cp.textw");  // REV-056
   const char* text = boundedText(L, 1);
   const int font = fontFor(luaL_optinteger(L, 2, 12));
   lua_pushinteger(L, g_renderer ? g_renderer->getTextWidth(font, text) : 0);
@@ -160,6 +163,7 @@ int cpTextHeight(lua_State* L) {
 }
 
 int cpRect(lua_State* L) {
+  const gfxscope::Op scope("cp.rect");  // REV-056
   const int screenW = g_renderer ? g_renderer->getScreenWidth() : 800;
   const int screenH = g_renderer ? g_renderer->getScreenHeight() : 800;
   const int x = clampCoord(luaL_checkinteger(L, 1), screenW);
@@ -177,6 +181,7 @@ int cpRect(lua_State* L) {
 }
 
 int cpLine(lua_State* L) {
+  const gfxscope::Op scope("cp.line");  // REV-056
   if (!g_renderer) return 0;
   const int screenW = g_renderer->getScreenWidth();
   const int screenH = g_renderer->getScreenHeight();
@@ -193,6 +198,7 @@ int cpLine(lua_State* L) {
 // cada píxel a un cuadrado. Existe para las apps con dibujitos (la mascota):
 // 64 × 64 son 512 bytes, que caben de sobra en un string de Lua.
 int cpImage(lua_State* L) {
+  const gfxscope::Op scope("cp.image");  // REV-056
   if (!g_renderer) return 0;
   const int screenW = g_renderer->getScreenWidth();
   const int screenH = g_renderer->getScreenHeight();
@@ -238,6 +244,7 @@ int cpImage(lua_State* L) {
 // franjas SÓLO en los márgenes. Se expone para que una app con una lista se vea
 // como el resto del aparato en vez de inventar su propio negro macizo.
 int cpSelection(lua_State* L) {
+  const gfxscope::Op scope("cp.selection");  // REV-056
   if (!g_renderer) return 0;
   const int screenW = g_renderer->getScreenWidth();
   const int screenH = g_renderer->getScreenHeight();
