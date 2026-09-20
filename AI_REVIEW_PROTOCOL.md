@@ -1700,6 +1700,67 @@ Tests: las once suites y `bunx tsc --noEmit` en verde con 1.3.11 (local); CI lo 
 en la próxima pasada, que es la verificación que falta.
 Reviewer final check:
 
+
+## REV-047 — Integración IA viva puede estar rota aunque CI esté verde
+State: OPEN
+Severity: P1
+Subsystem: server / live provider / observability
+
+Hallazgo del revisor a partir de logs reales del dueño.
+
+Síntoma reportado: las funciones que dependen del proveedor de IA terminan en 502 de forma generalizada,
+mientras el aparato y Railway siguen comunicándose. La corrida CI del HEAD actual está verde, lo que
+demuestra que la batería automática no valida la integración viva con el proveedor configurado.
+
+Evidencia del log del aparato:
+- /api/voice llegó a Railway y STT pudo responder al menos una vez con `no_speech`, por lo que red,
+  TLS, token y endpoint estaban operativos en ese momento.
+- Un 502 en Ask/Voice/Translate se genera explícitamente cuando STT o LLM/proveedor falla.
+- La web ya dispone de `POST /api/board/config/test`, que prueba el LLM configurado de verdad, pero
+  esa prueba no forma parte del gate de deploy/release.
+
+Acción:
+1. Obtener primero el texto exacto de `/api/board/config/test` en producción.
+2. Identificar si falla LLM, STT o ambos y conservar status/cuerpo del proveedor.
+3. Añadir un health/smoke check de producción ejecutable tras deploy (sin meter una clave real en CI).
+4. No considerar un deploy de servidor "sano" sólo porque CI está verde si se modificó llm/config/net.
+
+Impacto de producto: Hablar, Preguntar al libro, Traductor y cualquier función que use el modelo
+pueden quedar inutilizables a la vez aunque el resto del aparato sincronice normalmente.
+
+Executor response:
+Reviewer final check:
+
+## REV-048 — El firmware oculta el mensaje útil de los errores HTTP 4xx/5xx
+State: OPEN
+Severity: P1
+Subsystem: firmware UX / diagnostics
+
+Hallazgo del revisor al diagnosticar REV-047.
+
+VoiceActivity, AskBookActivity y TranslatorActivity, ante `ServerClient::Result != Ok`, construyen
+el detalle únicamente como `ResultName(status)`, por ejemplo `HttpError (502)`, y no parsean el
+JSON de error que el servidor ya devuelve:
+
+    { ok:false, error:"api.groq.com 400: ...", code:"provider_error" }
+
+Esto elimina justamente la información necesaria para distinguir:
+- modelo inexistente/no soportado;
+- parámetro rechazado;
+- proveedor caído;
+- clave inválida;
+- STT roto;
+- error interno.
+
+El servidor ya hace el trabajo de redactar secretos y devolver mensajes seguros. El firmware debería
+mostrar, además del status, un `error` corto y sanitizado cuando el body sea JSON válido.
+
+Impacto de producto: el usuario ve "no se puede obtener respuesta (502)" para causas totalmente
+distintas y no puede saber qué corregir. También dificulta brutalmente soporte y auditoría remota.
+
+Executor response:
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -1717,6 +1778,14 @@ Treat these as regression targets, not as assumptions that the code is still wro
 When an executor encounters one of these, first confirm whether current HEAD already fixed it. Do not reintroduce older behavior.
 
 ---
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — 502 generalizado reportado en hardware
+- El dueño reporta que las peticiones dependientes de IA devuelven 502 aunque CI del HEAD 3439a78 está verde.
+- Se abren REV-047 (falta smoke test vivo proveedor→Railway) y REV-048 (firmware oculta el body de error y sólo muestra status).
+- El log aportado demuestra que /api/voice y STT funcionaron al menos una vez en la misma sesión con no_speech; falta el body del 502 para aislar proveedor/modelo/parámetro.
+- Próximo dato obligatorio: resultado de /api/board/config/test en producción.
+- Ninguna OTA autorizada.
 
 # Session log
 
