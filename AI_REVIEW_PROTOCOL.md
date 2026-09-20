@@ -2731,6 +2731,51 @@ Executor response:
 Reviewer final check:
 
 
+## REV-062 — La red de seguridad de reposo corta música legítima después de ~30 min
+State: OPEN
+Severity: P1
+Subsystem: firmware / power policy / music / auto-sleep
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+El loop mantiene dos relojes:
+- `lastActivityTime`, que sí se reinicia mientras `MUSIC.isSounding()`;
+- `lastUserInputTime`, que sólo cambia cuando una persona toca el aparato.
+
+La red de seguridad de light sleep considera `MUSIC.isSounding()` una razón para que el reposo esté
+bloqueado (`restBlocked=true`), pero después fuerza `enterDeepSleep(true)` si:
+- el reposo sigue bloqueado;
+- no hay cable;
+- nadie tocó el aparato durante 30 min;
+- y ese bloqueo lleva 30 min.
+
+Como `IdleSleep::REST_AFTER_MS` son 30 s, una reproducción continua sin interacción entra en esa
+ventana y aproximadamente a los 30 min 30 s termina en deep sleep aunque la música siga sonando.
+
+Esto contradice la política explícita unas líneas antes: `MUSIC.isSounding()` reinicia
+`lastActivityTime` precisamente para impedir que una reproducción activa dispare auto-sleep.
+
+Impacto visible:
+- una pista larga, audiobook o playlist puede cortarse sola mientras el usuario escucha sin tocar el
+  dispositivo;
+- el aparato pasa a suspensión aunque no estaba abandonado: estaba reproduciendo audio activamente;
+- desde afuera parece un apagado/reinicio espontáneo de la reproducción.
+
+No marco grabación como caso principal porque las tomas actuales de VoiceRecorder son acotadas; el
+caso reproducible por código es música continua.
+
+Fix recomendado:
+- la red de seguridad debe distinguir un bloqueo sospechoso de una actividad legítima de larga duración;
+- no forzar deep sleep mientras `MUSIC.isSounding()`;
+- si se quiere un fusible contra música trabada, usar progreso real de reproducción / falta de avance,
+  no simplemente tiempo desde el último botón;
+- test de política: >31 min sin input con música avanzando NO duerme; Activity bloqueada sin progreso
+  sí conserva el escape de seguridad.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
