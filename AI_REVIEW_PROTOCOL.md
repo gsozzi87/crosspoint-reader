@@ -2275,7 +2275,7 @@ Impacto: no considero que este cambio haya corregido nada visible de Mascota. El
 de pantalla sigue siendo real porque el hardware lo registró, sólo estaba mal identificado el culpable.
 
 ## REV-054 — Un tope de uso del proveedor llegaba como 502 y se REINTENTABA tres veces
-State: FIXED_PENDING_REVIEW — diseño aceptado; CI exacto aún corriendo
+State: VERIFIED — servidor ya desplegado; firmware entra en próxima OTA
 Severity: P1
 Subsystem: server / firmware / red
 
@@ -2341,36 +2341,22 @@ Firmware: `pio run -e ws397` limpio. Las diecisiete suites en verde.
 **Para el dueño, que es lo que de verdad cierra su problema**: está en el plan gratuito de Groq y lo
 agotó. Esto hace que el aparato lo DIGA y deje de gastar el triple, pero no le devuelve el cupo.
 Reviewer final check:
-La separación `retryable()` / `retryableLater()` es correcta y revisé todos los usos actuales:
-- `request()`: usa `retryable` → 429 NO se repite 500/1500 ms después.
-- `postOrQueue()`: usa `retryableLater` → una operación que puede servir después no se pierde.
-- `flushQueue()`: el bucle inmediato usa `retryable`, y la decisión de descartar usa
-  `retryableLater` → 429 se conserva sin martillarlo ahora.
-No encontré un cuarto uso omitido.
+VERIFIED. El CI específico de REV-054 (run 35488746815) y el HEAD posterior terminaron SUCCESS.
 
-El servidor también está bien encaminado: una API compatible que contesta rate-limit se convierte en
-HTTP 429 + `rate_limited`, y los handlers de Voice/Ask/Translate/Bible ya preservan status/code del
-`LlmError`. El mensaje extrae `error.message` y deja visible el dato accionable en vez de gastar
-los 120 caracteres del dispositivo en JSON/organization id.
+Revisé los cuatro usos de la política:
+- request() -> retryable(): transporte/5xx sí; 429 no;
+- postOrQueue() -> retryableLater(): conserva 429;
+- flushQueue() intento inmediato -> retryable(): no martilla 429;
+- flushQueue() descarte -> retryableLater(): no pierde 429.
 
-Matiz a la explicación del ejecutor: después de que el servidor devuelva 429, el middleware de
-idempotencia puede cachear ese 4xx; reintentos con el MISMO X-Request-Id dentro del TTL pueden recibir
-el replay sin volver a llamar a Groq. Así que "tres mordiscos al cupo" no es una propiedad permanente
-del sistema nuevo. En la ventana vieja, cuando el 429 del proveedor se convertía en 502, sí no se
-cacheaba y los tres intentos podían volver a llegar al proveedor. En cualquier caso, reintentar un
-rate-limit en 0.5/1.5 s es inútil y agrega latencia, por lo que el fix sigue siendo correcto.
+Los handlers de Voice, Ask, Translate y Bible preservan status/code de LlmError. El servidor convierte
+el rate-limit compatible con OpenAI/Groq en 429 rate_limited con mensaje accionable.
 
-No marco VERIFIED todavía porque los runs del commit `56a774f` y del HEAD actual siguen IN_PROGRESS
-al momento de esta revisión. El firmware 1.5.119 publicado NO contiene esta parte de retry policy;
-entrará recién en una OTA posterior.
-
-Impacto: ante límite del proveedor, la próxima versión de firmware dejará de quedarse varios segundos
-en "Pensando" haciendo reintentos inmediatos condenados y conservará correctamente las operaciones
-que sí deben reintentarse más tarde.
-
+Impacto: elimina reintentos inmediatos inútiles ante cupo agotado y conserva correctamente operaciones
+que deben esperar. La parte firmware NO está en 1.5.119; requiere una OTA posterior.
 
 ## REV-055 — Entradas nuevas sin sello tras cambio a identidad vacía pueden descartarse como legacy
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — fix de código aceptado
 Severity: P0
 Subsystem: firmware / offline queue / account identity
 
@@ -2438,9 +2424,23 @@ Mismo cajón que REV-016 y que la prueba de punta a punta de REV-017.
 Firmware: `pio run -e ws397` limpio. **Sin OTA.**
 
 Reviewer final check:
+El fix es exactamente el correcto: enqueue() escribe SIEMPRE item["acct"] = account_, incluso cuando
+account_ es la cadena vacía. Así "campo ausente" vuelve a significar exclusivamente firmware legacy.
+
+La suite cubre la distinción importante:
+- acct:"" + sesión single-account aunque hubo cambio -> permitido;
+- sin acct + cambio reciente -> bloqueado;
+- acct de otra cuenta -> bloqueado.
+El HEAD 9dbc1fa tiene CI SUCCESS.
+
+No veo un borde lógico adicional en la regla. Mantengo NEEDS_HARDWARE sólo por el escritor real
+ArduinoJson+SD y por las pruebas de reasignación física ya pendientes de REV-017.
+
+Impacto: evita perder una nota/tarea/recordatorio NUEVO creado offline después de una transición hacia
+identidad vacía/single-account.
 
 ## REV-056 — El verdadero origen de GFX (480,447) sigue sin identificar
-State: FIXED_PENDING_REVIEW — instrumentado; la causa sigue OPEN a propósito
+State: NEEDS_HARDWARE — instrumentación aceptada; causa todavía abierta
 Severity: P2
 Subsystem: firmware / rendering / Lua
 
@@ -2511,6 +2511,22 @@ una vez cerrado el caso, decilo y la saco.
 Firmware: `pio run -e ws397` limpio.
 
 Reviewer final check:
+Acepto la instrumentación.
+
+DrawScope no asigna memoria en el hot path: la operación es un puntero a literal y la Activity se copia
+a un buffer fijo de 32 bytes una vez por loop. drawPixel sólo hace trabajo extra cuando ya detectó OOB.
+El estado global no es thread-safe, pero en la arquitectura actual el renderer se usa desde el loop/UI;
+no encontré render concurrente desde tareas auxiliares. Los scopes anidados restauran la operación previa.
+
+La instrumentación también corrige una debilidad del log viejo: conserva el PRIMER caller de la ventana
+además del último, y copia el nombre de Activity para no dejar un puntero colgante.
+
+No la marco VERIFIED porque REV-056 no es "arreglar el OOB": es descubrirlo. La prueba decisiva es
+reproducir el 480,447 en el aparato con esta instrumentación y obtener Activity + operación. Recién
+entonces se corrige el caller real.
+
+Impacto: prácticamente nulo para el usuario salvo unos bytes/unas escrituras por primitiva; enorme para
+diagnóstico. La próxima OTA de diagnóstico debería conservarla al menos hasta capturar el culpable.
 
 ---
 
@@ -2731,6 +2747,16 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
 - Diecisiete suites en verde, `tsc --noEmit` limpio, `pio run -e ws397` limpio.
 - **Sin OTA**: `.ws397-build` sigue en 119 y `/firmware/latest` entrega 1.5.119. Nada de esto está en
   el aparato del dueño todavía — REV-056 no sirve hasta que se publique, y eso lo decide él.
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — Paso 0 de auditoría exhaustiva
+- Verificado HEAD 9dbc1fa: CI SUCCESS.
+- REV-054 VERIFIED; servidor correcto y retry policy firmware pendiente de próxima OTA.
+- REV-055 aceptado; queda NEEDS_HARDWARE sólo por escritura SD/ArduinoJson y reasignación real.
+- REV-056 aceptado como instrumentación; la causa del OOB sigue abierta hasta obtener log con Activity/op.
+- A partir de aquí la auditoría se hará por capas pequeñas para evitar análisis monolítico y bloqueos:
+  arranque/energía -> memoria/tareas -> red/servidor -> input/gestos -> audio/voz -> UI/e-ink ->
+  Lua -> SD/persistencia -> sync/estado -> OTA/recovery.
 
 # Session log
 
