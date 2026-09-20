@@ -1414,6 +1414,15 @@ Use short entries. Do not paste huge tool transcripts.
     cambia entre versiones de Bun: pasaba acá y fallaba en el runner. Se reemplazó por la premisa
     que sí es nuestra y sí es determinista: que `http.request` llama al lookup con `options.all`.
     El test positivo (el callback nuevo conecta) no se tocó.
+    **Y el reemplazo falló también, por otro motivo**: las dos pruebas usaban el MISMO nombre de
+    host, y Bun cachea la resolución por host, así que la segunda no volvía a llamar al lookup y
+    medía el caché en vez del contrato (`Received: "no se llamó al lookup"`). Cada prueba tiene
+    ahora su propio nombre. Que haya hecho falta una segunda vuelta es parte del registro: la
+    primera corrección estaba bien de intención y mal de ejecución.
+- **Anotado para el revisor, no tocado**: `ws397-tests` y `server` instalan Bun con
+  `bun-version: latest`. Acá corre 1.3.11 y en el runner 1.4.2, y las dos fallas de net_lookup
+  salieron justamente de esa diferencia. Es el mismo tipo de problema que REV-022 (entradas de build
+  que se mueven solas). Fijar la versión es una decisión del dueño: puede destapar otras cosas.
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
   el rojo, que es exactamente cómo CI se murió 65 commits.
