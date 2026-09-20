@@ -2911,6 +2911,47 @@ Executor response:
 Reviewer final check:
 
 
+## REV-066 — El hard-off físico de 10 s puede quedar sin armar y el firmware no lo detecta
+State: OPEN
+Severity: P1
+Subsystem: firmware / PMIC / hard-off / recovery
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`PowerKey::begin()` configura el escape físico de PWR mantenido escribiendo:
+- REG_IRQ_OFF_ON_LEVEL (0x27): PressOff = 10 s;
+- REG_COMMON_CONFIG (0x10): PWRON puede apagar el PMIC;
+- REG_PWROFF_EN (0x22): habilita el apagado por PWRON y selecciona off, no restart.
+
+Pero los tres `writeReg()` ignoran su retorno. Después se releen 0x27/0x10/0x22 y se imprimen en
+el log, pero esos valores NO se comparan contra lo esperado, no se reintentan y no existe una bandera
+que diga "hard-off no confirmado".
+
+Por tanto basta un fallo I2C transitorio durante ese bloque para que el arranque continúe con
+`POWER_KEY.available_=true` y el resto del firmware asuma que mantener PWR 10 s siempre corta
+alimentación, aunque el PMIC haya conservado otra configuración.
+
+Esto es especialmente grave junto con REV-065: si el loop queda bloqueado y no hay watchdog de
+loopTask, el hard-off del PMIC es la última vía de recuperación. Si tampoco quedó armado, el usuario
+puede quedarse sin ninguna salida por botones y necesitar desconectar batería/alimentación.
+
+Impacto visible:
+- PWR largo puede no recuperar un aparato realmente colgado;
+- el log puede contener los registros incorrectos, pero no hay reacción automática;
+- el fallo puede ser intermitente y desaparecer tras otro arranque, haciéndolo difícil de reproducir.
+
+Fix recomendado:
+- tratar la configuración del hard-off como una operación crítica: read-modify-write + readback validado;
+- 2-3 reintentos cortos y acotados;
+- si no queda confirmado, registrar un flag persistente/RTC y mostrar diagnóstico en el siguiente boot;
+- NO marcar el PMIC/key como plenamente operativo sin distinguir "tecla funciona" de "escape hardware confirmado";
+- test/fault injection: hacer fallar cada write de 0x27/0x10/0x22 y comprobar que el firmware detecta
+  el hard-off no armado.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
