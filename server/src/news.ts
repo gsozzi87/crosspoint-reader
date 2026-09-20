@@ -54,8 +54,29 @@ import { isMedicalFeed, MEDICAL_SUMMARY_VERSION, readMedicalFeed } from "./medic
 // PER_FEED es el número que se ve: con 12, cada diario aporta hasta doce
 // titulares, que es lo que se ve en la página del diario. PACK_ITEMS es sólo el
 // techo de todo junto (tres diarios de doce entran holgados).
-const PACK_ITEMS = Number(process.env.NEWS_PACK_ITEMS ?? 40);
-const PER_FEED = Number(process.env.NEWS_PER_FEED ?? 12);
+// Un tope de configuración que no es un número no es un tope.
+//
+// `Number("abc")` es NaN y toda comparación contra NaN es false, así que un
+// `NEWS_PACK_ITEMS` mal tipeado en Railway no rompía nada a la vista: apagaba
+// el cupo por medio, el tope de bajadas y el de masticado a la vez, en
+// silencio. Un negativo o un cero hacen lo contrario (paquete vacío) y un
+// `1e9` deja la pasada sin freno de descargas. `medical.ts` ya lo hacía bien;
+// acá no.
+export function envInt(name: string, def: number, min: number, max: number): number {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === "") return def;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) {
+    console.error(`${name}="${raw}" no es un número: se usa ${def}`);
+    return def;
+  }
+  const v = Math.max(min, Math.min(max, Math.trunc(n)));
+  if (v !== Math.trunc(n)) console.error(`${name}=${raw} fuera de [${min}, ${max}]: se usa ${v}`);
+  return v;
+}
+
+const PACK_ITEMS = envInt("NEWS_PACK_ITEMS", 40, 1, 500);
+const PER_FEED = envInt("NEWS_PER_FEED", 12, 1, 100);
 // Cuántos titulares se MIRAN por medio. El triple de PER_FEED a propósito: una
 // nota de la que no se pudo sacar cuerpo no gasta un lugar del cupo, así que
 // hace falta de dónde reponer (ver el bucle de abajo). Mirar más adentro del
@@ -72,15 +93,15 @@ const FAIL_MAX = 500;
 // El costo de la pasada, y el único freno que importa: cada nota que no estaba
 // antes se baja del diario y eso son hasta ARTICLE_BUDGET_MS. Lo ya conocido es
 // gratis, así que el paquete crece hasta el cupo en dos o tres pasadas.
-const NEW_PER_FEED = Number(process.env.NEWS_NEW_PER_FEED ?? 12);
-const NEW_PER_RUN = Number(process.env.NEWS_NEW_PER_RUN ?? 30);
-const DIGEST_PER_RUN = Number(process.env.NEWS_DIGEST_PER_RUN ?? 10);
+const NEW_PER_FEED = envInt("NEWS_NEW_PER_FEED", 12, 0, 100);
+const NEW_PER_RUN = envInt("NEWS_NEW_PER_RUN", 30, 0, 300);
+const DIGEST_PER_RUN = envInt("NEWS_DIGEST_PER_RUN", 10, 0, 100);
 // Presupuesto de modelo de los PAPERS, aparte del de los diarios: una noticia
 // sin masticar se lee igual, un paper sin traducir llega en inglés. Está topeado
 // por arriba de todos modos, porque PubMed aporta como mucho NEWS_MEDICAL_ITEMS
 // (10, tope 12) por pasada y lo ya traducido no se vuelve a traducir.
-const MEDICAL_DIGEST_PER_RUN = Number(process.env.NEWS_MEDICAL_DIGEST ?? 12);
-const REFRESH_MS = Number(process.env.NEWS_REFRESH_MS ?? 60 * 60 * 1000);
+const MEDICAL_DIGEST_PER_RUN = envInt("NEWS_MEDICAL_DIGEST", 12, 0, 100);
+const REFRESH_MS = envInt("NEWS_REFRESH_MS", 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000);
 const ARTICLE_BUDGET_MS = 12000;
 // Un cuerpo de más de esto no entra cómodo en el aparato ni aporta nada: son
 // unos 12 minutos de lectura.

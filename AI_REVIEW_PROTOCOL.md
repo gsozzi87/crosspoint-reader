@@ -140,7 +140,7 @@ No OTA should be considered ready until:
 The following queue captures the independent review performed against branch ws397 around firmware 1.5.118-ws397. Line numbers may move; always inspect current HEAD.
 
 ## REV-001 — CI on ws397 is red
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P0 release gate
 Subsystem: CI / release
 
@@ -159,11 +159,40 @@ Minimum validation:
 - server tsc --noEmit
 - confirm firmware version in source equals firmware actually served by the deployment.
 
-Executor response:
+Executor response: CONFIRMED — y la causa no es ningún test: **el workflow no parsea**.
+
+Evidencia (HEAD 2a47b1c):
+- Los ocho runs más recientes de ci.yml en ws397 terminan en `failure`, incluido el de un commit
+  que sólo toca documentación (`docs: add AI review and execution protocol`). Un commit de docs que
+  falla ya dice que no es una regresión de código.
+- `GET /actions/runs/35474683436/jobs` devuelve `total_count: 0` con `conclusion: failure` y
+  `created_at == run_started_at == updated_at` (mismo segundo): el run murió antes de crear un solo job.
+- `python3 -c "yaml.safe_load(open('.github/workflows/ci.yml'))"` ->
+  `mapping values are not allowed here, line 245, column 21`.
+- Línea 245: `      - name: Libros: lo que dice el bot`. Un escalar YAML sin comillas no puede llevar
+  `": "`; el parser lo lee como clave. Es el único `name:` del repo con dos puntos.
+- Introducido en `c9f2f3d` ("ws397: Libros — app de Lua que le pide libros a un bot de Telegram",
+  2026-09-18). **Desde entonces hay 65 commits en ws397 y CI no corrió ni una vez.** Todo lo que los
+  mensajes de commit de ese tramo dicen haber probado, lo probó el ejecutor a mano, nunca CI.
+
+Fix:
+- Comillas en esa línea. `yaml.safe_load` pasa y los siete jobs aparecen
+  (clang-format, cppcheck, build, unit-tests, ws397-tests, server, test-status).
+- De paso, `ws397-tests` corría 6 de las 11 suites de escritorio que existen. Se agregaron las cinco
+  que faltaban (xtc_geometry, idempotency, device_log, net_lookup, epub), porque ahora CI va a correr
+  de verdad y esas suites existían sin que las mirara nadie.
+
+Tests: las once suites corren en verde localmente (`lua_sandbox, battery_drain, news_pack,
+register_admin, ssrf, libros, xtc_geometry, idempotency, device_log, net_lookup, epub`), `pio run -e
+ws397` SUCCESS (RAM 28,6 %, Flash 87,6 %), `bunx tsc --noEmit` limpio.
+
+OJO para el revisor: que el YAML ahora parsee NO quiere decir que CI vaya a dar verde. Es la primera
+corrida real en 65 commits; clang-format y cppcheck pueden tener deuda acumulada. Eso se ve recién
+cuando esto llegue a ws397 y hay que mirarlo antes de considerar el release gate abierto.
 Reviewer final check:
 
 ## REV-002 — BatteryLog parses bool through int*
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P0
 Subsystem: battery / memory safety
 
@@ -175,7 +204,40 @@ Parse into correctly typed temporaries and then assign to Sample.
 
 Tests should include charging=0, charging=1, modern timestamps and post-2038 timestamps.
 
-Executor response:
+Executor response: CONFIRMED el problema, **REFUTADO el mecanismo** que describe la teoría.
+
+Lo que la teoría dice y no es cierto: "may overwrite adjacent bytes". En este target no puede pasar.
+Medido con el compilador del aparato (`xtensa-esp32s3-elf-g++`, static_assert):
+`long`=4, `time_t`=8, `sizeof(Sample)`=24, `offsetof(charging)`=16. `charging` es el ÚLTIMO miembro y
+lo sigue el relleno de la estructura, así que el `%d` de 4 bytes cae en 16..19, dentro del objeto.
+No hay corrupción de memoria vecina.
+
+Lo que SÍ es cierto, y es peor que teórico (reproductor de escritorio con el mismo `sscanf`):
+
+    "1735689600,80,4000,2"    -> charging(bool)=2   byte=0x02
+    "1735689600,80,4000,256"  -> charging(bool)=0   byte=0x00
+
+1. Un `bool` que contiene 2 es una representación inválida: `r.charging ? 1 : 0` imprimió **2**, que
+   para un bool es imposible. Todo `if (r.charging)` posterior es UB y el compilador puede plegarlo.
+2. `charging=256` (byte bajo 0) se lee como **false**: una muestra CARGANDO entra a la ventana de
+   descarga. Eso es exactamente lo único que `analyze()` no puede permitir — su contrato entero es
+   "sin carga en el medio" — y el resultado es un número de autonomía inventado, que es el defecto
+   que `test_drain.cpp` existe para prevenir.
+3. El `%ld` sobre `time_t`: `long` son 4 bytes y `time_t` 8, así que llenaba MEDIO campo. Andaba de
+   casualidad (NSDMI `epoch = 0` + little-endian) y no soporta fechas ≥ 2^31.
+4. `readAll()` no tenía NINGUNA prueba: `test_drain.cpp` construye `Sample` a mano y nunca tocó el parseo.
+
+Severidad: la teoría dice P0; el ejecutor propone **P2**. Sin corrupción de memoria posible, lo que
+queda es un número de batería equivocado con un archivo dañado. El arreglo es trivial igual.
+
+Fix: `batterylog::parseLine()` como función pura en `src/util/BatteryLog.h` (mismo patrón que
+`analyze()`, para poder probarla sin placa): temporarios con el tipo que `sscanf` espera (`long long`,
+`int`) y recién después se copian al `Sample`; `charging` es "distinto de cero". Los dos `snprintf` de
+escritura pasan a `%lld` para no truncar después de 2038. `readAll()` llama a `parseLine()`.
+
+Tests: 17 casos nuevos en `./test/battery_drain/run.sh` (25 -> 42 comprobaciones): charging 0/1/2/256/-1,
+campo ausente, fecha de 2100 sin truncar, línea vacía/basura/a medias/epoch 0/negativo/puntero nulo, y
+el caso que cierra el círculo — una muestra cargando bien parseada corta la ventana. TODO BIEN.
 Reviewer final check:
 
 ## REV-003 — Unbounded file-size-driven allocations from SD
@@ -228,7 +290,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-005 — PubMed/medical feed resilience
-State: OPEN
+State: FIXED_PENDING_REVIEW (parcial: dos puntos sin investigar, ver abajo)
 Severity: P1
 Subsystem: server news / medical
 
@@ -250,7 +312,39 @@ Verify:
 - “Prepare now” cannot be spammed into uncontrolled AI rebuilds;
 - web-visible pack and device pack agree.
 
-Executor response:
+Executor response: mixto. Se re-leyó el HEAD actual como pide la teoría.
+
+REFUTADO (ya estaba bien):
+- "PubMed is truly optional": sí. Desde `e6d7e17` es un feed más con la URL centinela `pubmed:`
+  (`isMedicalFeed`); el interruptor es la lista de fuentes, no una variable de entorno. Verificado por
+  curl: alta, rechazo del duplicado (`esa fuente ya está cargada`), `/api/board/state.medical.added` y borrado.
+- "medical feeds are not duplicated": `POST /api/board/feed` deduplica la centinela.
+- "PubMed failure cannot kill the whole refresh" y "failure handling cannot itself throw an unhandled
+  rejection": ése ERA el defecto (`fetchPinned` escuchaba con `request.once("error")` y un segundo
+  `error` sin oyente volteaba el proceso), y se arregló en `2e79156`. Verificado con el reproductor real:
+  el refresco loguea `news feed: pubmed: Error…` y la pasada termina sola con el servidor vivo.
+- "'Prepare now' cannot be spammed": ya hay guardia. `running: Map<accountId, Promise>` en news.ts:558;
+  un segundo `refreshPack` de la misma cuenta devuelve la promesa en curso y no arranca otro rebuild.
+  El Map se limpia en `.finally()`, así que tampoco crece (toca también REV-036).
+
+CONFIRMADO:
+- "NEWS_* environment limits reject NaN, negatives and absurd values": **no lo hacían**. `medical.ts`
+  sí (`clampItems()` valida finito y recorta 1..MAX), pero `news.ts` tenía siete
+  `Number(process.env.X ?? def)` crudos. Medido: `""`->0, `"abc"`->NaN, `"-5"`->-5, `"1e9"`->1e9.
+  Con NaN toda comparación da false, así que una variable mal tipeada en Railway apagaba **en
+  silencio y a la vez** el cupo por medio, el tope de bajadas y el de masticado; con 0 o negativo el
+  paquete queda vacío; con 1e9 la pasada se queda sin freno de descargas.
+  Severidad honesta: P2/P3 — es mala configuración del operador, no algo que alcance un usuario.
+
+Fix: `envInt(name, def, min, max)` en news.ts (valida finito, trunca, recorta al rango y lo dice en el
+log) aplicado a los siete topes.
+
+Tests: caso nuevo en `./test/news_pack/run.sh` (pack.test.ts, 24 pruebas) con vacío, espacios, `abc`,
+`NaN`, `Infinity`, negativo, cero, `1e9` y decimal.
+
+Pendiente de esta teoría, NO investigado en esta tanda: "RCT/guideline/meta-analysis/top-journal
+prioritization behaves as intended" (hay cobertura parcial en medical.test.ts) y "web-visible pack and
+device pack agree".
 Reviewer final check:
 
 ## REV-006 — Dictionary word navigation semantics
@@ -325,7 +419,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-009 — Potential XTC page-buffer OOB for odd dimensions
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P0/P1
 Subsystem: XTC reader
 
@@ -342,7 +436,41 @@ Normal device dimensions may hide this, but malformed or unusual XTC dimensions 
 
 Validate dimensions and fuzz odd widths/heights.
 
-Executor response:
+Executor response: CONFIRMED. La aritmética de la teoría es correcta y se verificó exacto.
+
+Evidencia (HEAD 2a47b1c):
+- `src/activities/reader/XtcReaderActivity.cpp` reservaba `((w*h+7)/8)*2` y accedía column-major con
+  `colBytes = (h+7)/8`, `byteOffset = colIndex*colBytes + y/8`, con `plane2 = pageBuffer + planeSize`.
+- Byte más alto tocado = `planeSize + (w-1)*colBytes + (h-1)/8`. Calculado:
+
+      800x480 -> malloc 96000, último byte 95999   ok  (480 % 8 == 0: por eso no se veía)
+      800x479 -> malloc 95800, último byte 95899   OOB +100
+      800x477 -> malloc 95400, último byte 95699   OOB +300
+      600x300 -> malloc 45000, último byte 45299   OOB +300
+      100x4   -> malloc   100, último byte   149   OOB +50
+
+- Las dimensiones salen SIN validar del archivo: `XtcParser::validatePageTable()` copia
+  `entry.width/height` del primer registro de la tabla de páginas a `m_defaultWidth/Height` y no
+  comprueba nada. O sea que un `.xtc` corrupto o hecho a mano las controla.
+- El formato y el render no coinciden: el parser declara el plano como `ceil(w*h/8)` (XtcParser.cpp:446)
+  y el render lo indexa con columnas alineadas a byte. Sólo dan lo mismo con `h % 8 == 0`.
+
+Por qué NO se cambió el indexado: con `h % 8 == 0` las dos fórmulas coinciden EXACTAMENTE, así que
+ningún archivo que hoy se dibuja bien permite distinguir cuál de las dos es el formato de verdad. XTC
+es formato de upstream (X4) y no hay un XTH con altura impar para decidirlo. Reinterpretar los bits a
+ciegas rompería todos los archivos que hoy andan.
+
+Fix (el más chico y seguro): validar y negarse, en vez de adivinar el formato o leer fuera.
+`xtc::planeBytes()`, `xtc::planeBytesIndexed()` y `xtc::canRender2Bit()` en `lib/Xtc/Xtc/XtcTypes.h`
+(puras, comparan los dos tamaños); `renderPage()` rechaza la página con `STR_PAGE_LOAD_ERROR` y una
+línea de log si no se puede indexar. No hay OOB, no hay basura dibujada en silencio, y lo que hoy se
+ve bien se sigue viendo igual.
+
+Tests: `./test/xtc_geometry/run.sh` nuevo. Incluye el barrido exhaustivo (w 1..96, h 1..520) que
+comprueba el invariante de verdad: la guardia acepta exactamente lo que no se sale del buffer.
+**Ese barrido corrigió al propio ejecutor**: la regla NO es "alto múltiplo de 8" — con anchos de 1 o 2
+píxeles los dos redondeos coinciden y la página es segura igual. Por eso la guardia compara los dos
+tamaños y no mira el resto.
 Reviewer final check:
 
 ## REV-010 — EPUB incremental build loops may still monopolize main loop
@@ -491,7 +619,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-016 — POST retry idempotency
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P0
 Subsystem: network / server
 
@@ -511,11 +639,49 @@ Build a fault-injection test where the server commits and then deliberately drop
 
 If necessary, introduce a persisted request/idempotency key and server-side deduplication.
 
-Executor response:
+Executor response: CONFIRMED, y demostrado en los dos sentidos contra un servidor real.
+
+Evidencia (HEAD 2a47b1c):
+- El aparato YA hace su parte: `ServerClient::request()` genera UN `X-Request-Id` por petición y lo
+  mantiene en los tres intentos (ServerClient.cpp:214, con el comentario que lo dice).
+- El servidor NO hace la suya: `grep -rn "x-request-id" server/src/` devuelve **una sola línea**,
+  `api.ts:115`, que sólo lo devuelve en `/api/ping`. El comentario de al lado lo admitía:
+  *"X-Request-Id viene en cada pedido del aparato (estable entre reintentos); por ahora solo lo
+  devolvemos"*. No había deduplicación en ningún lado.
+- Camino de reintento real: `retryable(status)` es true para -1 y 5xx. El -1 que llega AL CUMPLIRSE el
+  tope no se reintenta (1.5.105), pero el que llega ANTES sí — y ése es justamente el socket que se
+  cae con la respuesta ya emitida (el keepalive lo corta a los ~14 s desde 1.5.103).
+- Reproducido contra un servidor local, DOS POST `/api/notes` idénticos sin `X-Request-Id`
+  (o sea: el comportamiento de antes) -> `{"ok":true,"id":3}` y `{"ok":true,"id":4}`: **dos notas**.
+  El handler no es idempotente por sí mismo.
+
+Alcance real (más chico que "todo", porque parte ya estaba cubierto): `/api/hub/done` es idempotente
+por el `at` de la ocurrencia (F01), `store.addListItem` no repite por texto (1.5.70) y un borrado
+repetido deja el mismo estado. Los huecos son los que CREAN: `/api/notes`, `/api/hub/reminder`,
+`/api/calendar/event`, `/api/calendar/dictate` y `/api/voice` (que además vuelve a pagar STT + modelo + TTS).
+
+Fix: `server/src/idempotency.ts` (`ReplayCache` pura + `cacheable()`) y un middleware en `api.ts`.
+Regla: **cualquier POST bajo /api que traiga X-Request-Id**, no una lista de rutas a mano (una lista
+hay que acordarse de actualizarla y se congela). La web no manda ese header, así que no la toca.
+Clave `(cuenta, ruta, request id)` — la cuenta adentro a propósito, dos aparatos pueden generar el
+mismo id. Un 5xx NO se guarda: el reintento existe para pasar por encima de un fallo temporal, y
+guardarlo convertiría una caída de un segundo en diez minutos de la misma caída. Topes: TTL 10 min,
+256 entradas, 512 KB por respuesta y 8 MB en total con desalojo del más viejo (el contenedor de Railway
+comparte 512 MB con Piper; el tope que manda es el de bytes, no el de entradas).
+
+Verificación de punta a punta, mismo servidor:
+- dos POST `/api/notes` con el MISMO `X-Request-Id` -> las dos veces `{"ok":true,"id":1}`, **una** nota,
+  y el log del servidor dice `replay /api/notes (reintento-abc): se devuelve la respuesta guardada, no
+  se aplica de nuevo`;
+- con un id DISTINTO -> `{"ok":true,"id":2}`, nota nueva de verdad.
+
+Tests: `./test/idempotency/run.sh` (7 pruebas): la clave separa cuenta/ruta/id, se devuelve lo guardado,
+vencimiento, tope de entradas Y de bytes, respuesta demasiado grande que no se guarda, 5xx que no se
+cachea y 4xx que sí, y el mismo id en otra cuenta que no devuelve la respuesta ajena.
 Reviewer final check:
 
 ## REV-017 — Offline queue + account reassignment
-State: OPEN
+State: FIXED_PENDING_REVIEW (parcial: la política global de flush queda para el revisor)
 Severity: P0
 Subsystem: multi-account sync
 
@@ -532,7 +698,49 @@ Consider refusing to flush until account identity is known.
 
 Add a regression test.
 
-Executor response:
+Executor response: CONFIRMED, y **la teoría se queda corta**: el agujero es más grande y la guardia
+F11 estaba anulada por su propia implementación.
+
+Lo que dice la teoría (cierto): `HubSyncActivity::checkAccount()` tenía tres `return` mudos — fallo de
+transporte, JSON ilegible y `account` vacío — y `runSync()` llamaba a `flushQueue()` igual. Con la cola
+cargada en la cuenta A, el aparato mudado a B desde `/board` (el token no cambia) y un 502 en
+`/api/pair/status`, la cola vieja se reproduce contra B. Los ids del store se numeran desde 1 en CADA
+cuenta, así que tilda o borra lo que le tocó el mismo número. Eso es contaminación entre cuentas.
+
+Lo que la teoría NO vio, y es peor:
+1. **La pregunta de identidad vaciaba la cola antes de contestar.** `checkAccount()` pregunta con
+   `SERVER_CLIENT.get("/api/pair/status")`, y `ServerClient::request()` llama a `flushOnConnect()`
+   como primera cosa (ServerClient.cpp:200), ANTES de mandar nada. O sea que en el camino normal la
+   cola ya se había subido cuando se llegaba a comparar la cuenta. La guardia de F11 era, en la
+   práctica, código muerto.
+2. **Hay tres caminos que vacían la cola y sólo uno miraba la cuenta**: `HubSyncActivity::runSync()`
+   (el que la miraba), `ServerClient::flushOnConnect()` (se dispara en la PRIMERA petición de cada
+   sesión de red: Hablar, Noticias, la Biblia, el Traductor, Vincular…) y `devicesync::ifDue`
+   (Sync.cpp:62, la sincronización oportunista). `ServerTestActivity` es el cuarto, pero ahí el usuario
+   lo pide a propósito.
+
+Fix (esta tanda, lo chico y seguro):
+- `checkAccount()` devuelve `bool` ("¿se pudo AVERIGUAR de quién es?") y cada camino de fallo lo dice en
+  el log; `runSync()` no vacía la cola si es false. La cola se queda para la próxima sincronización,
+  igual que cuando no hay red: perder una vuelta no cuesta nada, aplicarla contra la cuenta equivocada
+  borra lo de otro.
+- `ServerClient::setFlushHold(bool)` + guardia en `flushOnConnect()` y en `flushQueue()`.
+  `checkAccount()` lo pone antes de preguntar y lo saca después, así la pregunta no dispara la subida
+  que está por autorizar. Esto es lo que hace que la guardia F11 exista de verdad.
+
+NO arreglado a propósito, y va al revisor y al dueño: cerrar `flushOnConnect()` y `devicesync::ifDue`
+pide una política de "la cola no sale hasta que esta sesión confirmó la cuenta". Si el default fuera
+"retenida", un aparato que nunca abre el hub (o un servidor de una sola cuenta) se quedaría con la cola
+sin subir para siempre. Eso no es pérdida de datos pero sí un cambio de comportamiento para TODOS los
+aparatos, y no me parece que lo decida el ejecutor solo. Propuesta concreta para revisar:
+identidad por sesión de red en `ServerClient` (`Unknown`/`Confirmed`), `flushOnConnect()` y `flushQueue()`
+retenidos mientras sea `Unknown`, y `devicesync::ifDue` confirmando igual que el hub.
+
+Tests: no hay prueba automática de este camino — es firmware con red y multiusuario, y no hay arnés.
+Lo que se verificó es que compila (`pio run -e ws397` SUCCESS) y el contrato de `/api/pair/status`
+leído del servidor: `{paired, account, single}` con `account: null` en modo de una sola cuenta (por eso
+"vacío" se trata como identidad CONOCIDA y sigue vaciando: ahí hay una sola cuenta y la cola es de ésa).
+Queda como NEEDS_HARDWARE la comprobación de punta a punta.
 Reviewer final check:
 
 ## REV-018 — Timezone isolation and DST
@@ -880,7 +1088,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-034 — WS397 release transaction
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P0 release gate
 Subsystem: release
 
@@ -893,7 +1101,36 @@ version increment -> successful build -> tests -> upload -> verify /firmware/lat
 
 Avoid repository claiming version N while Railway still serves N-1 without an explicit warning.
 
-Executor response:
+Executor response: parcialmente REFUTADO, un hueco real CONFIRMADO.
+
+Estado actual medido: `.ws397-build` = 118, `include/ws397_version.h` = `WS397_BUILD 118`, y
+`GET https://paper-esp32.up.railway.app/firmware/latest` -> `"tag_name":"1.5.118"`. **Los tres
+coinciden hoy**, así que el síntoma concreto que teme la teoría no está presente.
+
+Lo que `release.sh` ya hacía bien (REFUTADO):
+- bumpea el número ANTES de compilar, así que el binario lleva la versión que se anuncia;
+- `set -euo pipefail` + `pio run` -> un build fallido aborta y no sube nada;
+- `.ws397-build` se escribe sólo DESPUÉS de un build exitoso;
+- `curl -fsS` -> un PUT con error HTTP aborta el script.
+
+El hueco real (CONFIRMADO): **nada comprobaba qué quedó servido después del PUT.** Un 200 del PUT no
+es lo mismo que `/firmware/latest` entregando la versión nueva, y el único síntoma de la diferencia es
+que el aparato no ve la actualización (la comparación es major.minor.patch estricta) — que es
+exactamente el modo de fallo silencioso que describe la teoría.
+
+Fix: `release.sh` ahora relee `/firmware/latest` después de subir, extrae `tag_name` y falla con
+`exit 1` si no coincide con lo que acaba de publicar, diciendo que el release NO está publicado.
+Probado el extractor contra el endpoint real en modo lectura: devuelve `1.5.118`, que coincide con
+`.ws397-build`. **No se publicó ninguna OTA en esta sesión.**
+
+Lo que NO se tocó, y va al dueño: la teoría pide también correr los tests dentro del release. Eso
+cambia la ergonomía del release (hoy son ~2 minutos) y es decisión suya, no del ejecutor. Con REV-001
+arreglado, CI vuelve a correr esas mismas suites en cada push a ws397, que cubre casi lo mismo antes
+de llegar al release.
+
+Anotado aparte: nada ata el `.bin` servido a un commit del repositorio (no se guarda sha ni commit),
+así que "el binario servido corresponde al fuente de 1.5.118" no se puede verificar, sólo creer.
+Si el revisor lo considera parte de REV-034, es un item nuevo y más grande.
 Reviewer final check:
 
 ## REV-035 — Server persistence race audit
@@ -1083,3 +1320,25 @@ Use short entries. Do not paste huge tool transcripts.
   (P1, but it is the code that moved last and the reviewer asked explicitly to re-read HEAD).
 - Not claimed in this batch, left OPEN for other agents: everything else.
 - No OTA will be published in this session.
+
+### 2026-09-20 — Executor (Claude) — tanda 1 cerrada, para revisión
+- Base: ws397 `2a47b1c`. Ningún otro agente tocó el protocolo mientras tanto (se re-fetcheó antes de escribir).
+- **CONFIRMED + arreglado**: REV-001 (el workflow de CI no parsea — 65 commits sin CI), REV-002
+  (parseo del diario de batería), REV-009 (OOB de hasta 300 bytes en páginas XTH), REV-016
+  (el servidor no deduplicaba los reintentos), REV-017 (la cola se subía sin saber de qué cuenta
+  es el aparato, y la guardia se anulaba sola).
+- **REFUTADO en parte**: REV-002 (no puede corromper memoria vecina: `charging` es el último
+  miembro y lo sigue el relleno — severidad P2, no P0), REV-005 (PubMed ya es opcional, no se
+  duplica, no voltea el refresco y "Preparar ahora" ya tiene guardia; lo único cierto era la
+  validación de las variables de entorno), REV-034 (`release.sh` ya abortaba con build o PUT
+  fallido; lo que faltaba era verificar qué quedó servido).
+- **Se corrigió a sí mismo**: el barrido exhaustivo de REV-009 mostró que la regla no es
+  "alto múltiplo de 8" (con ancho 1 o 2 no hay OOB). La guardia compara tamaños, no restos.
+- Verificado: `pio run -e ws397` SUCCESS (RAM 28,6 %, Flash 87,6 %), `bunx tsc --noEmit` limpio,
+  `node --check` de la web, y las once suites de escritorio en verde.
+- **Ninguna OTA publicada.** `.ws397-build` sigue en 118 y `/firmware/latest` entrega 1.5.118.
+- Para el revisor, además de los findings: (a) REV-001 destraba CI pero la primera corrida real en
+  65 commits puede sacar deuda de clang-format/cppcheck, y eso hay que mirarlo antes de dar por
+  abierto el release gate; (b) REV-017 deja abierta la política de flush de `flushOnConnect()` y
+  `devicesync::ifDue`, que cambia el comportamiento de todos los aparatos y no la decide el ejecutor.
+- Sin reclamar, siguen OPEN: REV-003, 004, 006, 007, 008, 010-015, 018-033, 035-041.

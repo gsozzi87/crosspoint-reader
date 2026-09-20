@@ -131,6 +131,57 @@ int main() {
   check(!batterylog::analyze({s(0, 100), s(30L * 24 * H, 60)}).valid,
         "un mes de ventana no es una descarga: es el aparato apagado");
 
+  // --- REV-002: el parseo de una línea del archivo -------------------------
+  //
+  // Hasta este arreglo la línea se parseaba con `sscanf("%ld,%d,%d,%d", ...)`
+  // casteando `&Sample::epoch` (time_t, 8 bytes en este target) a `long*`
+  // (4 bytes) y `&Sample::charging` (bool) a `int*`. Lo del bool no es
+  // teórico: un valor que no sea 0 ni 1 deja el bool en un estado inválido, y
+  // un múltiplo de 256 se leía como `false`, o sea una muestra CARGANDO
+  // colándose adentro de la ventana de descarga.
+  {
+    Sample x;
+    check(batterylog::parseLine("1735689600,80,4000,1", x), "se parsea una línea normal");
+    check(x.epoch == 1735689600 && x.pct == 80 && x.mv == 4000 && x.charging, "...con sus cuatro campos");
+    check(batterylog::parseLine("1735689600,80,4000,0", x) && !x.charging, "charging=0 es false");
+    // Sin el cuarto campo (formato viejo) no se inventa carga.
+    check(batterylog::parseLine("1735689600,80,4000", x) && !x.charging, "sin el cuarto campo, no está cargando");
+  }
+  {
+    // El byte bajo de 256 es 0: con el cast a int* esto se leía como "no está
+    // cargando" y la muestra entraba en la ventana.
+    Sample x;
+    check(batterylog::parseLine("1735689600,80,4000,256", x) && x.charging, "charging=256 sigue siendo cargando");
+    check(batterylog::parseLine("1735689600,80,4000,2", x) && x.charging, "charging=2 sigue siendo cargando");
+    check(batterylog::parseLine("1735689600,80,4000,-1", x) && x.charging, "charging=-1 sigue siendo cargando");
+  }
+  {
+    // Post-2038: no entra en un `long` de 32 bits, que es el que había.
+    Sample x;
+    check(batterylog::parseLine("4102444800,80,4000,0", x), "se parsea una fecha de 2100");
+    check(x.epoch == static_cast<time_t>(4102444800LL), "...sin truncarse a 32 bits");
+  }
+  {
+    Sample x;
+    check(!batterylog::parseLine("", x), "una línea vacía no es una muestra");
+    check(!batterylog::parseLine("basura", x), "una línea de basura tampoco");
+    check(!batterylog::parseLine("1735689600,80", x), "ni una línea a medias");
+    check(!batterylog::parseLine("0,80,4000,0", x), "ni epoch 0");
+    check(!batterylog::parseLine("-5,80,4000,0", x), "ni epoch negativo");
+    check(!batterylog::parseLine(nullptr, x), "ni un puntero nulo");
+  }
+  {
+    // Y una muestra CARGANDO parseada de verdad corta la ventana, que es para
+    // lo que sirve todo esto.
+    Sample a, b, c;
+    batterylog::parseLine("1735689600,100,4200,256", a);  // cargando, con el valor "raro"
+    batterylog::parseLine("1735725600,95,4100,0", b);     // +10 h
+    batterylog::parseLine("1735761600,85,4000,0", c);     // +20 h
+    const Drain d = batterylog::analyze({a, b, c});
+    check(d.valid, "con la carga bien parseada igual se mide");
+    check(near(d.hours, 10.0f), "...pero la ventana arranca DESPUÉS de la carga");
+  }
+
   printf("\n%s (%d fallas)\n", failures == 0 ? "TODO BIEN" : "HAY FALLAS", failures);
   return failures == 0 ? 0 : 1;
 }

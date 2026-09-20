@@ -12,6 +12,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 
@@ -117,6 +118,31 @@ enum class XtcError {
   MEMORY_ERROR,
   DECOMPRESSION_ERROR,
 };
+
+// Bytes per 2-bit plane as the file format stores them, and as the page
+// renderer indexes them. They only agree when height is a multiple of 8.
+//
+// The XTH page body is two bit planes of ((width * height + 7) / 8) bytes each,
+// which is what XtcParser reads and what XtcReaderActivity allocates. The
+// renderer, though, walks the planes column-major with a BYTE-ALIGNED column
+// stride of ((height + 7) / 8), so the highest byte it touches is
+// (width - 1) * stride + (height - 1) / 8. With height % 8 != 0 that is past
+// the end of the allocation: 800x477 reads 300 bytes beyond the buffer.
+// 800x480 — the panel's own size — hides it because 480 % 8 == 0.
+//
+// Page dimensions come straight from the file's page table with no validation,
+// so a corrupt or hand-made .xtc controls them.
+inline size_t planeBytes(uint16_t width, uint16_t height) { return (static_cast<size_t>(width) * height + 7) / 8; }
+
+inline size_t planeBytesIndexed(uint16_t width, uint16_t height) {
+  return static_cast<size_t>(width) * ((static_cast<size_t>(height) + 7) / 8);
+}
+
+// Can the 2-bit renderer index this page without reading past its buffer?
+inline bool canRender2Bit(uint16_t width, uint16_t height) {
+  if (width == 0 || height == 0) return false;
+  return planeBytesIndexed(width, height) <= planeBytes(width, height);
+}
 
 // Convert error code to string
 inline const char* errorToString(XtcError err) {

@@ -29,12 +29,7 @@ std::vector<Row> readAll() {
   while (p && *p) {
     const char* eol = strchr(p, '\n');
     Row r;
-    // epoch,pct,mv,charging
-    if (sscanf(p, "%ld,%d,%d,%d", reinterpret_cast<long*>(&r.epoch), &r.pct, &r.mv,
-               reinterpret_cast<int*>(&r.charging)) >= 3 &&
-        r.epoch > 0) {
-      out.push_back(r);
-    }
+    if (parseLine(p, r)) out.push_back(r);
     if (!eol) break;
     p = eol + 1;
   }
@@ -50,7 +45,7 @@ void rotate(std::vector<Row>& rows) {
   String out;
   char line[64];
   for (const Row& r : rows) {
-    snprintf(line, sizeof(line), "%ld,%d,%d,%d\n", static_cast<long>(r.epoch), r.pct, r.mv, r.charging ? 1 : 0);
+    snprintf(line, sizeof(line), "%lld,%d,%d,%d\n", static_cast<long long>(r.epoch), r.pct, r.mv, r.charging ? 1 : 0);
     out += line;
   }
   Storage.writeFile(PATH, out);
@@ -70,7 +65,8 @@ void append(const Row& r) {
   String out;
   char line[64];
   for (const Row& row : rows) {
-    snprintf(line, sizeof(line), "%ld,%d,%d,%d\n", static_cast<long>(row.epoch), row.pct, row.mv, row.charging ? 1 : 0);
+    snprintf(line, sizeof(line), "%lld,%d,%d,%d\n", static_cast<long long>(row.epoch), row.pct, row.mv,
+             row.charging ? 1 : 0);
     out += line;
   }
   Storage.writeFile(PATH, out);
@@ -105,7 +101,8 @@ void reportAfterSleep() {
   const Row& last = rows.back();
   if (!batterylog::credibleEpoch(last.epoch) || last.charging) return;
   const double secs = static_cast<double>(now - last.epoch);
-  if (secs < 20 * 60 || secs > MAX_WINDOW_S) return;  // menos de 20 min no mide nada; más de dos semanas es la fecha rota
+  if (secs < 20 * 60 || secs > MAX_WINDOW_S)
+    return;  // menos de 20 min no mide nada; más de dos semanas es la fecha rota
   static const BatteryMonitor battery;
   uint16_t pct = 0;
   if (!battery.readPercentageChecked(pct)) return;
@@ -117,10 +114,13 @@ void reportAfterSleep() {
   // Arriba de esto hay algo encendido que no debería, y el log lo dice solo.
   const bool tooMuch = perHour >= 0.3;
   if (tooMuch) {
-    LOG_ERR(TAG, "dormido %.1f h: %d -> %u %% (%.2f %%/h, %d -> %d mV) — DEMASIADO para un sueño profundo: algo quedó encendido",
-            hours, last.pct, (unsigned)pct, perHour, last.mv, mv);
+    LOG_ERR(
+        TAG,
+        "dormido %.1f h: %d -> %u %% (%.2f %%/h, %d -> %d mV) — DEMASIADO para un sueño profundo: algo quedó encendido",
+        hours, last.pct, (unsigned)pct, perHour, last.mv, mv);
   } else {
-    LOG_INF(TAG, "dormido %.1f h: %d -> %u %% (%.2f %%/h, %d -> %d mV)", hours, last.pct, (unsigned)pct, perHour, last.mv, mv);
+    LOG_INF(TAG, "dormido %.1f h: %d -> %u %% (%.2f %%/h, %d -> %d mV)", hours, last.pct, (unsigned)pct, perHour,
+            last.mv, mv);
   }
 }
 

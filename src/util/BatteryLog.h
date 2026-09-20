@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <vector>
 
@@ -77,6 +78,35 @@ inline bool credibleEpoch(const time_t t) { return t >= EPOCH_2024; }
 // fecha rota). Nadie mide la autonomía sobre dos semanas, y si aparece una
 // ventana así es que algo anda mal con las fechas, no que la batería dure eso.
 constexpr double MAX_WINDOW_S = 14 * 24 * 3600;
+
+// Una línea del diario -> Sample, sin nada del aparato adentro (se prueba de
+// escritorio en test/battery_drain/). Formato: `epoch,pct,mv,charging`.
+//
+// Los temporarios tienen el tipo que `sscanf` espera y recién después se copian
+// al Sample. Escribir `%d` a través de un `int*` que apunta a un `bool`, o `%ld`
+// a través de un `long*` que apunta a un `time_t`, es violar el aliasing y en
+// este target además no coinciden los tamaños: `long` son 4 bytes y `time_t`
+// son 8, así que el `%ld` llenaba MEDIO campo (andaba de casualidad, porque
+// `epoch` arranca en 0 y el procesador es little-endian). Y el `%d` sobre el
+// bool dejaba adentro un byte que no es 0 ni 1: un `charging` que vale 2 es un
+// bool inválido, y uno que viene 256 se lee como `false` — o sea una muestra
+// CARGANDO que se cuela adentro de la ventana de descarga, que es justo lo
+// único que `analyze()` no puede permitir.
+inline bool parseLine(const char* line, Sample& out) {
+  if (line == nullptr) return false;
+  long long epoch = 0;
+  int pct = 0, mv = 0, charging = 0;
+  const int got = sscanf(line, "%lld,%d,%d,%d", &epoch, &pct, &mv, &charging);
+  if (got < 3) return false;
+  if (epoch <= 0) return false;
+  out.epoch = static_cast<time_t>(epoch);
+  out.pct = pct;
+  out.mv = mv;
+  // Cualquier cosa distinta de 0 es "cargando": así un 2 o un 256 de un archivo
+  // dañado no se convierten en un `false` silencioso.
+  out.charging = (got >= 4) && (charging != 0);
+  return true;
+}
 
 // La cuenta, sin nada del aparato adentro: se prueba de escritorio en
 // test/battery_drain/. Toma la ventana MÁS LARGA que termine en la muestra más

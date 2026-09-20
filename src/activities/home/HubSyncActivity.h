@@ -99,7 +99,8 @@ class HubSyncActivity final : public Activity {
   void onWifiSelectionComplete(bool connected);
   void runSync();
   // De que cuenta es el aparato ahora: si cambio, se tira la cola y la cache.
-  void checkAccount();
+  // true si se pudo averiguar de que cuenta es el aparato (ver el .cpp).
+  bool checkAccount();
   static void markAttempt(bool ok);
   // GET /api/tts for the next reminders ("Reminders: <title>") and the timer
   // phrase, saved as /.crosspoint/tts/*.bin so the alerts speak without WiFi.

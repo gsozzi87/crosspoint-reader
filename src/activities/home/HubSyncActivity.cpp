@@ -448,15 +448,34 @@ void HubSyncActivity::cacheSpokenNotices() {
 // /api/pair/status devuelve { ok, paired, account } y no necesita que el
 // aparato este vinculado: sirve igual con el modo de una sola cuenta (ahi
 // contesta single=true y account nulo, y no se toca nada).
-void HubSyncActivity::checkAccount() {
+//
+// Devuelve si se pudo AVERIGUAR de quien es el aparato. No es lo mismo que "no
+// cambio de cuenta": un 502 o un cuerpo cortado tambien dejaban la comparacion
+// sin hacer, y antes eso seguia derecho a vaciar la cola. Los ids del store se
+// numeran desde 1 EN CADA CUENTA, asi que reproducir la cola de la cuenta
+// vieja contra la nueva tilda o borra lo que le haya tocado el mismo numero.
+bool HubSyncActivity::checkAccount() {
   ServerClient::Response resp;
-  if (SERVER_CLIENT.get("/api/pair/status", resp) != ServerClient::Result::Ok) return;
+  // La pregunta no puede disparar la subida que está por autorizar.
+  SERVER_CLIENT.setFlushHold(true);
+  const ServerClient::Result r = SERVER_CLIENT.get("/api/pair/status", resp);
+  SERVER_CLIENT.setFlushHold(false);
+  if (r != ServerClient::Result::Ok) {
+    LOG_ERR(TAG, "no se pudo saber de que cuenta es el aparato (status %d): la cola espera", resp.status);
+    return false;
+  }
   JsonDocument doc;
-  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) return;
+  if (deserializeJson(doc, resp.body) != DeserializationError::Ok) {
+    LOG_ERR(TAG, "/api/pair/status contesto algo que no es JSON: la cola espera");
+    return false;
+  }
   const char* acc = doc["account"] | "";
-  if (!acc || !*acc) return;  // sin cuentas (single) o sin vincular: nada que comparar
+  // Sin cuentas (`single`) o sin vincular no hay con que comparar, pero la
+  // identidad ESTA contestada: en el servidor de una sola cuenta la cola es de
+  // esa cuenta y tiene que salir.
+  if (!acc || !*acc) return true;
   const std::string now(acc);
-  if (HUB_STORE.account == now) return;
+  if (HUB_STORE.account == now) return true;
   if (!HUB_STORE.account.empty()) {
     LOG_INF(TAG, "el aparato cambio de cuenta: se descarta lo de la anterior");
     SERVER_CLIENT.clearQueue();
@@ -464,6 +483,7 @@ void HubSyncActivity::checkAccount() {
   }
   HUB_STORE.account = now;
   HUB_STORE.saveToFile();
+  return true;
 }
 
 void HubSyncActivity::runSync() {
@@ -485,10 +505,14 @@ void HubSyncActivity::runSync() {
   // store se numeran desde 1 en cada cuenta: reproducir la cola vieja contra la
   // cuenta nueva tilda o borra lo que le haya tocado el mismo numero. Es un
   // pedido chico (200 bytes) cada seis horas.
-  checkAccount();
+  const bool accountKnown = checkAccount();
 
   flushed = 0;
-  if (SERVER_CLIENT.queueSize() > 0) {
+  // Sin saber de que cuenta es el aparato NO se sube nada: la cola se queda
+  // para la proxima sincronizacion, que es exactamente lo que hace cuando no
+  // hay red. Perder una vuelta no cuesta nada; aplicarla contra la cuenta
+  // equivocada borra lo de otro.
+  if (accountKnown && SERVER_CLIENT.queueSize() > 0) {
     WiFi.setSleep(false);
     flushed = SERVER_CLIENT.flushQueue();
     WiFi.setSleep(true);
