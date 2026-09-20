@@ -140,7 +140,7 @@ No OTA should be considered ready until:
 The following queue captures the independent review performed against branch ws397 around firmware 1.5.118-ws397. Line numbers may move; always inspect current HEAD.
 
 ## REV-001 — CI on ws397 is red
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P0 release gate
 Subsystem: CI / release
 
@@ -190,10 +190,20 @@ OJO para el revisor: que el YAML ahora parsee NO quiere decir que CI vaya a dar 
 corrida real en 65 commits; clang-format y cppcheck pueden tener deuda acumulada. Eso se ve recién
 cuando esto llegue a ws397 y hay que mirarlo antes de considerar el release gate abierto.
 Reviewer final check:
+VERIFIED por el revisor contra HEAD 727e620.
+- El diagnóstico del ejecutor era correcto: el YAML roto impedía crear jobs; no era un fallo del firmware.
+- Corrida 35478957781: doce jobs en verde, incluidos Build ws397, Build default, cppcheck,
+  clang-format, unit-tests, Server typecheck y las once suites de escritorio.
+- La corrida posterior del HEAD actual (35479537753) también terminó en success.
+- Se acepta además ampliar ws397-tests con las suites que ya existían y no corrían.
+
+Impacto de producto: esto no cambia una pantalla del aparato por sí solo. El fallo era que durante
+65 commits no había red de seguridad automática: una regresión podía entrar aunque GitHub mostrara
+simplemente un run muerto. Al arreglarlo se destaparon REV-042/043 inmediatamente.
 
 ## REV-002 — BatteryLog parses bool through int*
-State: FIXED_PENDING_REVIEW
-Severity: P0
+State: VERIFIED
+Severity: P2
 Subsystem: battery / memory safety
 
 Inspect src/util/BatteryLog.cpp readAll().
@@ -239,6 +249,19 @@ Tests: 17 casos nuevos en `./test/battery_drain/run.sh` (25 -> 42 comprobaciones
 campo ausente, fecha de 2100 sin truncar, línea vacía/basura/a medias/epoch 0/negativo/puntero nulo, y
 el caso que cierra el círculo — una muestra cargando bien parseada corta la ventana. TODO BIEN.
 Reviewer final check:
+VERIFIED. Se acepta la refutación parcial del ejecutor.
+- En el layout real del S3, escribir cuatro bytes sobre `charging` no alcanzaba memoria vecina porque
+  el bool es el último miembro y hay padding; mi mecanismo inicial de "pisar el objeto siguiente" fue
+  demasiado fuerte.
+- Seguía siendo UB real: representación inválida de bool, `256` convertido efectivamente en false y
+  `time_t` de 64 bits leído mediante `long*` de 32 bits.
+- `parseLine()` ahora usa temporarios compatibles con sscanf, normaliza charging y la escritura usa
+  `%lld`. La suite battery_drain cubre 0/1/2/256/-1, entradas rotas y año 2100, y CI está verde.
+
+Impacto de producto: en uso normal, el CSV generado por el propio aparato escribe 0/1, por lo que era
+probable que el usuario no viera nada. Con un archivo dañado, editado o una fecha fuera de 32 bits,
+Ajustes → Memoria podía calcular una descarga/autonomía falsa —por ejemplo incluir como descarga un
+tramo en el que el aparato estaba cargando—. No era un crash P0 en este hardware.
 
 ## REV-003 — Unbounded file-size-driven allocations from SD
 State: OPEN
@@ -290,7 +313,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-005 — PubMed/medical feed resilience
-State: FIXED_PENDING_REVIEW (parcial: dos puntos sin investigar, ver abajo)
+State: VERIFIED
 Severity: P1
 Subsystem: server news / medical
 
@@ -346,6 +369,23 @@ Pendiente de esta teoría, NO investigado en esta tanda: "RCT/guideline/meta-ana
 prioritization behaves as intended" (hay cobertura parcial en medical.test.ts) y "web-visible pack and
 device pack agree".
 Reviewer final check:
+VERIFIED para los puntos originales.
+- PubMed sólo se consulta si el feed `pubmed:` está en la lista y la web evita duplicarlo.
+- La caída de PubMed queda contenida por feed; el error doble de socket ya fue corregido antes de esta
+  tanda y el servidor no debe caer con la fuente.
+- Los siete NEWS_* pasan ahora por `envInt()` con default y límites.
+- La priorización clínica tiene prueba explícita: un NEJM RCT se ordena por encima de un RCT menor y
+  una guía conserva su prioridad; el mecanismo de score coincide con el diseño declarado.
+- La web y el aparato leen el MISMO objeto persistido: `/api/news/preview` y `/api/news/pack`
+  llaman a `loadPack(account)`; difiere sólo qué campos exponen.
+- `running` evita reconstrucciones simultáneas por cuenta.
+
+Impacto de producto: una variable NEWS_* mal escrita en Railway podía dejar Noticias vacías, impedir
+el masticado o quitar el freno de descargas sin una explicación visible. Eso queda acotado. PubMed
+puede agregarse/quitarse como una fuente normal y los papers llegan traducidos con lenguaje técnico.
+
+Queda un detalle cosmético separado en REV-045: la web todavía llama "resumidas" a todas las entradas
+`chewed`, aunque en Medicina ese estado significa "traducida técnicamente", no resumida.
 
 ## REV-006 — Dictionary word navigation semantics
 State: OPEN
@@ -419,7 +459,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-009 — Potential XTC page-buffer OOB for odd dimensions
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P0/P1
 Subsystem: XTC reader
 
@@ -472,6 +512,18 @@ comprueba el invariante de verdad: la guardia acepta exactamente lo que no se sa
 píxeles los dos redondeos coinciden y la página es segura igual. Por eso la guardia compara los dos
 tamaños y no mira el resto.
 Reviewer final check:
+VERIFIED.
+- La guardia corre ANTES de reservar/leer la página 2-bit y compara el tamaño que declara el formato
+  con el tamaño que realmente puede indexar el renderer.
+- No intenta adivinar una variante del formato; rechaza sólo geometrías cuya indexación saldría del
+  buffer. Es la decisión conservadora correcta.
+- `test/xtc_geometry` barre combinaciones y compara la guardia contra el byte máximo que tocaría el
+  renderer; CI lo ejecuta y está verde.
+
+Impacto de producto: con los XTC normales de 800x480 probablemente nunca se notaba. Un XTC corrupto o
+creado con una altura problemática podía leer cientos de bytes fuera del buffer: página basura,
+crash/reset o comportamiento impredecible. Ahora esa página muestra error de carga en vez de arriesgar
+memoria.
 
 ## REV-010 — EPUB incremental build loops may still monopolize main loop
 State: OPEN
@@ -619,7 +671,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-016 — POST retry idempotency
-State: FIXED_PENDING_REVIEW
+State: OPEN — arreglo parcial aceptado; falta continuidad al pasar a la cola offline
 Severity: P0
 Subsystem: network / server
 
@@ -679,9 +731,39 @@ Tests: `./test/idempotency/run.sh` (7 pruebas): la clave separa cuenta/ruta/id, 
 vencimiento, tope de entradas Y de bytes, respuesta demasiado grande que no se guarda, 5xx que no se
 cachea y 4xx que sí, y el mismo id en otra cuenta que no devuelve la respuesta ajena.
 Reviewer final check:
+NO VERIFICADO como cierre completo. La parte servidor está bien, pero encontré un hueco que conserva
+el escenario de duplicación en una transición concreta.
+
+Lo aceptado:
+- `ReplayCache` separa cuenta/ruta/id, tiene TTL/topes y no guarda 5xx.
+- El middleware devuelve una respuesta ya aplicada cuando un REINTENTO EN LÍNEA llega con el mismo
+  `X-Request-Id`.
+- `ServerClient::request()` sí conserva un id entre sus intentos.
+
+Hueco actual:
+- `postOrQueue()` primero llama a `postJson()`; ese request genera un id interno.
+- Si el servidor ALCANZÓ a aplicar la operación pero todas las respuestas posteriores se pierden y
+  `postOrQueue()` decide encolarla, llama a `enqueue(path,json)`.
+- `enqueue()` genera OTRO `newRequestId()`. Cuando la cola salga más tarde, el servidor ve un id
+  nuevo y legítimamente aplica la operación una segunda vez.
+- Por tanto, la ventana "commit remoto + pérdida total de respuesta + paso a cola" aún puede duplicar
+  nota/recordatorio/evento.
+- La suite `test/idempotency` prueba la caché pura; el comentario habla de un escenario de servidor
+  real, pero ese fault-injection no está automatizado en la suite.
+
+Arreglo que debe evaluar el ejecutor: el id lógico de una operación tiene que nacer una sola vez y
+acompañar tanto los intentos online como la entrada offline. `postOrQueue` debería poder encolar EL
+MISMO request id que acaba de usar, y hace falta una prueba automática que simule "se aplicó, se perdió
+la respuesta, se encoló y luego se vació".
+
+Impacto de producto: en una caída muy precisa de red, algo que el usuario hizo una vez todavía puede
+aparecer dos veces. En /api/voice además puede repetirse una acción clasificada por la IA.
+
+Hallazgo adicional separado en REV-044: un replay correcto puede volver a sumar uso/cuota porque el
+middleware de medición envuelve al de idempotencia.
 
 ## REV-017 — Offline queue + account reassignment
-State: FIXED_PENDING_REVIEW (parcial: la política global de flush queda para el revisor)
+State: OPEN — el arreglo protege HubSync, pero no todos los caminos de vaciado
 Severity: P0
 Subsystem: multi-account sync
 
@@ -742,6 +824,28 @@ leído del servidor: `{paired, account, single}` con `account: null` en modo de 
 "vacío" se trata como identidad CONOCIDA y sigue vaciando: ahí hay una sola cuenta y la cola es de ésa).
 Queda como NEEDS_HARDWARE la comprobación de punta a punta.
 Reviewer final check:
+NO VERIFICADO. El ejecutor encontró correctamente que la guardia de HubSync era ineficaz y el
+`setFlushHold(true)` hace que ESA consulta de identidad ya no vacíe la cola antes de comparar.
+También es correcta la decisión de retener la cola si /api/pair/status no pudo contestar.
+
+Pero el P0 original sigue abierto en otros caminos:
+- `ServerClient::request()` llama automáticamente a `flushOnConnect()` en la primera petición de
+  una sesión cuando `holdFlush_` es false.
+- `devicesync::ifDue()` llama directamente a `SERVER_CLIENT.flushQueue()` sin confirmar cuenta.
+- Por tanto, después de mover un aparato de cuenta A a B, si antes de entrar a HubSync se abre Hablar,
+  Noticias, Traductor, Biblia u otra función que haga la primera petición, la cola de A puede salir
+  contra B. La sincronización oportunista puede hacer lo mismo.
+- Los ids del store son locales a cada cuenta, así que no es sólo duplicación: una operación vieja
+  puede marcar/borrar/modificar el objeto de B que casualmente tenga el mismo id.
+
+Se necesita una política global, no sólo una guarda local: por ejemplo identidad de sesión
+`Unknown/Confirmed` dentro de ServerClient, con toda salida de la cola retenida hasta confirmar la
+cuenta; o ligar cada entrada de cola a la identidad de cuenta que la creó. El modo single-account debe
+seguir funcionando sin quedarse retenido para siempre.
+
+Impacto de producto: sólo afecta instalaciones multiusuario/reasignación de aparato, pero ahí puede
+modificar datos de la cuenta equivocada. Se mantiene P0 y requiere prueba de punta a punta antes de
+cerrarlo.
 
 ## REV-018 — Timezone isolation and DST
 State: OPEN
@@ -1088,7 +1192,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-034 — WS397 release transaction
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P0 release gate
 Subsystem: release
 
@@ -1132,6 +1236,19 @@ Anotado aparte: nada ata el `.bin` servido a un commit del repositorio (no se gu
 así que "el binario servido corresponde al fuente de 1.5.118" no se puede verificar, sólo creer.
 Si el revisor lo considera parte de REV-034, es un item nuevo y más grande.
 Reviewer final check:
+VERIFIED para el modo de fallo planteado.
+- `release.sh` ya abortaba ante build o PUT fallido; el ejecutor tenía razón al refutar esa parte.
+- Ahora, después del PUT, relee `/firmware/latest`, extrae `tag_name` y falla si no coincide con la
+  versión recién subida.
+- La rama tiene CI verde y la versión fuente sigue en 1.5.118. No se publicó OTA durante esta tanda.
+
+Impacto de producto: antes el script podía decir "Listo" aunque el servidor siguiera ofreciendo la
+versión anterior; el aparato entonces no encontraba la actualización y parecía que OTA "no hacía
+nada". Ahora el release falla de forma visible si eso ocurre.
+
+Hardening pendiente, sin reabrir este hallazgo: el servidor no conserva SHA de commit/binario y el
+script no corre toda la batería de tests dentro del propio release. CI verde cubre el gate actual,
+pero la trazabilidad binario↔commit sigue siendo mejorable.
 
 ## REV-035 — Server persistence race audit
 State: OPEN
@@ -1284,7 +1401,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-042 — cppcheck: falso positivo por colisión de nombres (levantado por el ejecutor)
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P3
 Subsystem: CI / análisis estático
 
@@ -1313,9 +1430,18 @@ a quien lee. Renombrar uno sería mejor — pero toca archivos de REV-006/REV-00
 puede haber otro agente ahí. Queda a criterio del revisor cambiar la supresión por un rename.
 
 Reviewer final check:
+VERIFIED.
+- Los dos `WordBox` son tipos privados distintos; el de DictionaryWordSelectActivity inicializa los
+  seis campos que realmente posee.
+- La supresión está acotada a la línea y documenta por qué existe.
+- cppcheck está verde en CI actual.
+
+Impacto de producto: ninguno en ejecución. Era un falso positivo que hacía fallar la puerta de CI.
+Renombrar uno de los structs podría mejorar mantenibilidad, pero no hace falta tocar el lector para
+resolver este P3.
 
 ## REV-043 — El build `default` (ESP32-C3) está roto desde 1.5.106 (levantado por el ejecutor)
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: build / upstream
 
@@ -1341,6 +1467,79 @@ esp32s3, así que `pio run -e default` muere antes de compilar
 `#include` fuera de un `#if`) y lo confirma CI en la corrida siguiente. Si CI sigue roja ahí,
 reabrir.
 
+Reviewer final check:
+VERIFIED.
+- Mover `CodecSleep.h` fuera de la guarda de EXT1 resuelve el símbolo en C3 sin ejecutar lógica
+  WS397 en esa placa.
+- La evidencia decisiva es CI actual: `Build default` termina en success además de `Build ws397`.
+
+Impacto de producto: el WS397 del usuario nunca sufría este defecto. Lo que estaba roto era la
+compilación del firmware upstream ESP32-C3; ahora vuelve a poder construirse y CI vuelve a vigilarlo.
+
+
+## REV-044 — Un replay de /api/voice puede volver a consumir cuota
+State: OPEN
+Severity: P2
+Subsystem: server usage / idempotency
+
+Hallazgo del revisor al revisar REV-016.
+
+El middleware de cuota/medición está registrado ANTES que el middleware de idempotencia. La medición
+hace `await next()` y, al volver, suma uso si la respuesta final es <400. En un reintento que el
+middleware de idempotencia resuelve desde ReplayCache, no vuelve a correr STT/modelo/TTS, pero la capa
+exterior ve igualmente un 2xx y puede ejecutar `addUsage()` otra vez.
+
+Reproducir con un X-Request-Id repetido sobre una ruta METERED y comprobar el contador antes/después.
+Si se confirma, el replay debe llevar una marca de contexto (p. ej. `c.set("idempotentReplay", true)`)
+para que usage no vuelva a cobrarlo, o el orden/contrato de middleware debe cambiar sin romper cuotas.
+
+Impacto posible: no duplica la acción, pero un usuario con límites mensuales puede agotar su cuota más
+rápido sólo porque la red obligó a reintentar.
+
+Executor response:
+Reviewer final check:
+
+## REV-045 — La web llama “resumidas” a traducciones médicas
+State: OPEN
+Severity: P3
+Subsystem: board web / News
+
+Hallazgo del revisor al revisar REV-005.
+
+En el HEAD actual, la tarjeta "Paquete del lector" arma:
+`newsPack.chewed + " resumidas"`.
+Para diarios, `chewed` sí puede significar resumido. Para Medicina, desde MEDICAL_SUMMARY_VERSION=4,
+`chewed=true` significa traducción técnica completa, explícitamente NO un resumen.
+
+El paquete y el aparato están correctos; es sólo semántica de la web. Cambiar por una palabra neutral
+("procesadas") o mostrar contadores separados si se quiere precisión.
+
+Impacto de producto: el médico puede creer que el abstract fue condensado cuando en realidad se
+tradujo conservando el contenido técnico.
+
+Executor response:
+Reviewer final check:
+
+## REV-046 — CI usa una versión móvil de Bun
+State: OPEN
+Severity: P2
+Subsystem: CI / reproducibilidad
+
+Hallazgo compartido por el ejecutor y confirmado por el revisor.
+
+Los jobs de servidor/ws397-tests instalan Bun con `bun-version: latest`. En esta misma tanda el
+ejecutor observó 1.3.11 local y 1.4.2 en runner; dos iteraciones del test de net_lookup fallaron por
+diferencias de runtime/cache entre versiones.
+
+El test final ya es más robusto y CI está verde, pero la herramienta sigue siendo una entrada móvil.
+Fijar una versión conocida de Bun (y actualizarla deliberadamente) haría reproducible el pipeline.
+Esto debe coordinarse con package/lockfile y Railway para no probar con un runtime distinto del que se
+despliega.
+
+Impacto de producto: no se nota directamente en el aparato. Puede hacer que una actualización futura
+de Bun vuelva rojo CI o, peor, cambie comportamiento de red entre lo probado y lo desplegado.
+
+Executor response:
 Reviewer final check:
 
 ---
@@ -1436,6 +1635,18 @@ Use short entries. Do not paste huge tool transcripts.
 - Estado para el revisor: REV-001, 002, 005, 009, 016, 017, 034, 042, 043 en FIXED_PENDING_REVIEW.
   Nada VERIFIED todavía: eso lo decide el revisor.
 - **Ninguna OTA publicada.** `.ws397-build` = 118 y `/firmware/latest` sigue entregando 1.5.118.
+
+### 2026-09-20 — Reviewer (ChatGPT) — revisión de tanda 1
+- HEAD revisado: 727e62009f79; CI del HEAD y del commit de código anterior en verde.
+- VERIFIED: REV-001, REV-002 (severidad corregida a P2), REV-005, REV-009, REV-034, REV-042, REV-043.
+- NO cerrado: REV-016. ReplayCache arregla reintentos en línea, pero postOrQueue pierde el request id
+  cuando la operación pasa a la cola offline y todavía puede duplicarse tras un commit remoto ambiguo.
+- NO cerrado, P0: REV-017. HubSync ya protege su chequeo, pero flushOnConnect y devicesync::ifDue aún
+  pueden vaciar cola antes de confirmar cuenta.
+- Nuevos: REV-044 (replay probablemente vuelve a sumar uso/cuota), REV-045 (web dice "resumidas" para
+  papers traducidos) y REV-046 (Bun latest hace CI no reproducible).
+- Ninguna OTA autorizada/publicada por el revisor.
+
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
   el rojo, que es exactamente cómo CI se murió 65 commits.
