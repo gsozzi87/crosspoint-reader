@@ -2776,6 +2776,44 @@ Executor response:
 Reviewer final check:
 
 
+## REV-063 — El rescate del panel consume su único intento aunque el power-cycle haya fallado
+State: OPEN
+Severity: P2
+Subsystem: firmware / display recovery / PMIC / restart
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+Cuando el SSD1677 acumula timeouts, tanto `checkPanelAfterInit()` como `checkPanelHealth()` hacen:
+1. ponen `panelRescueMagic = PANEL_RESCUE_MAGIC`;
+2. llaman `POWER_KEY.railsCycle(500)`;
+3. aunque `railsCycle()` devuelva false, reinician con `ESP.restart()`.
+
+En el siguiente arranque, si el panel sigue mudo, `panelRescueMagic` ya está puesto y el firmware
+concluye "ya se le dio un ciclo de corriente", por lo que NO vuelve a intentarlo.
+
+Eso es falso cuando el primer `railsCycle()` falló antes de cortar los rieles. `railsCycle()`
+devuelve false, por ejemplo, si:
+- `POWER_KEY.begin()` no dejó disponible el PMIC por un fallo I2C transitorio;
+- falla la lectura de 0x90;
+- falla la escritura que apaga ALDO1-3;
+- o falla la escritura/readback al restaurarlos.
+
+Impacto visible:
+- un panel realmente trabado + un fallo I2C transitorio durante el rescate puede dejar el dispositivo
+  reiniciando una vez pero SIN haber hecho el único power-cycle que podía destrabar el controlador;
+- después de ese reinicio el firmware renuncia al rescate y cada refresh cae en timeout;
+- para el usuario queda como aparato extremadamente lento/congelado hasta PWR largo o corte físico.
+
+Fix recomendado:
+- marcar `panelRescueMagic` como "rescate realizado" sólo después de que `railsCycle()` confirme éxito;
+- si el ciclo falla, distinguir "rescate intentado pero no ejecutado" de "rescate ejecutado y panel sigue mudo";
+- permitir un número pequeño y acotado de reintentos del PMIC, nunca un loop infinito;
+- test: railsCycle=false no debe quemar el one-shot; railsCycle=true sí debe impedir un bucle de rescates.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
