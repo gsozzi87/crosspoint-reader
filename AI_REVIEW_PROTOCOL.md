@@ -784,7 +784,7 @@ Impacto: el defecto original podía duplicar una nota/recordatorio después de u
 El código ya evita ese camino; queda validar la integración real aparato+SD+red.
 
 ## REV-017 — Offline queue + account reassignment
-State: FIXED_PENDING_REVIEW (2ª vuelta)
+State: NEEDS_HARDWARE — P0 de contaminación cerrado por código; queda REV-055 de pérdida de cola
 Severity: P0
 Subsystem: multi-account sync
 
@@ -940,33 +940,26 @@ poder correrse acá — es ESP32 + SD + red. Lo que sí queda cubierto de escrit
 orden que la habilitaba pasó a ser estructuralmente imposible. Va al mismo cajón que REV-016.
 
 Reviewer final check:
-NO VERIFICADO. La política global nueva es mejor y cubre los tres caminos de vaciado, pero encontré un
-agujero concreto dentro de `flushQueue()`.
+La segunda vuelta corrige el P0 concreto que reabrí:
+- `flushQueue()` sólo hace una sonda barata antes de identificar; la cola de trabajo se relee DESPUÉS de
+  `confirmAccount()`, así que `clearQueue()` ya no deja un snapshot viejo vivo.
+- `accountChangedThisSession_` se pone antes de limpiar la tarjeta.
+- `queueacct::allowed()` rechaza tanto una entrada sellada de otra cuenta como una entrada legacy sin
+  sello en la sesión donde se detectó el cambio.
+- La suite `queue_account` cubre exactamente la decisión que faltaba y el CI de la segunda vuelta
+  (run 35486784239) terminó en verde.
 
-Orden actual:
-1. se lee `server-queue.json` en `doc/items`;
-2. recién después se llama a `confirmAccount()`;
-3. si cambió la cuenta, `confirmAccount()` llama a `clearQueue()`, que vacía EL ARCHIVO;
-4. al volver, `flushQueue()` sigue iterando el `items` que ya tenía EN MEMORIA.
+Con esto ya no veo un camino en el que una operación de A pueda salir contra B por el snapshot viejo.
+Mantengo NEEDS_HARDWARE sólo para la prueba extrema ESP32+SD+reasignación real que el protocolo ya pedía.
 
-Para entradas creadas por el firmware nuevo, el sello `acct` salva el caso: se descartan al no
-coincidir. Pero las entradas LEGACY sin `acct` se consideran de la cuenta actual por este comentario:
+Encontré, sin embargo, otro borde DIFERENTE y de signo contrario: después de cambiar hacia una
+identidad vacía/single-account, `enqueue()` no escribe `acct` cuando `account_ == ""`, mientras
+`accountChangedThisSession_` queda true. Esas entradas NUEVAS quedan indistinguibles de una entrada
+legacy y pueden rechazarse luego. Se separa como REV-055: ya no es contaminación entre cuentas sino
+posible pérdida de una operación nueva.
 
-  "Sin sello = firmware anterior... un cambio de cuenta habría vaciado la cola".
-
-Eso es falso dentro de la misma llamada: el archivo sí quedó vacío, pero el snapshot local sigue vivo.
-Una entrada vieja sin sello puede salir UNA vez contra la cuenta nueva justo después del cambio.
-Además, si `clearQueue()` falla por SD dañada, la misma presunción tampoco es segura para legacy.
-
-Arreglo mínimo recomendado: confirmar la identidad ANTES de leer la cola, o recargar `doc/items`
-después de `confirmAccount()` cuando hubo cambio. Para máxima seguridad, una entrada sin sello en
-modo multiusuario debería migrarse/sellarse sólo cuando la identidad se conoce con certeza, o
-descartarse ante un cambio de cuenta.
-
-Prueba obligatoria: sembrar una cola legacy sin `acct` de la cuenta A, cambiar el aparato a B,
-llamar `flushQueue()` y comprobar que no sale NI UN POST de esa cola.
-
-Impacto: es P0 porque una acción vieja puede modificar/borrar el objeto de otra cuenta con el mismo id.
+Impacto de este REV: el fallo peligroso original era modificar/borrar datos de la cuenta equivocada.
+Ese mecanismo quedó cerrado por estructura; falta una prueba de hardware para graduarlo como VERIFIED.
 
 ## REV-018 — Timezone isolation and DST
 State: OPEN
@@ -2078,7 +2071,7 @@ Impacto: el botón Probar deja de dar falso positivo `→ ""`, y Hablar/Traducto
 diagnóstica si un modelo razona hasta agotar presupuesto en vez de un 502 opaco.
 
 ## REV-050 — El middleware de idempotencia copiaba el cuerpo ANTES de decidir si lo iba a guardar
-State: FIXED_PENDING_REVIEW — código correcto; falta que termine CI del HEAD actual
+State: VERIFIED
 Severity: P2
 Subsystem: server / memoria
 
@@ -2108,23 +2101,14 @@ Tests: tres casos nuevos en `./test/idempotency/run.sh` — una respuesta que de
 guarda, así el reintento vuelve a intentar de verdad; y una del tamaño de `/api/voice` (300 KB) sí se
 guarda y se repite sin volver a ejecutar el handler.
 Reviewer final check:
-Revisión de código: el cambio es correcto.
+VERIFIED. La única reserva anterior era que la corrida exacta del commit terminara: run 35485951629
+sobre `84af1e7` cerró SUCCESS.
 
-Antes se clonaba el Response antes de poder descartar 5xx o cuerpos declaradamente mayores a
-`MAX_BODY`. Ahora 5xx y `Content-Length` demasiado grande salen antes del clone. Para los dos
-cuerpos grandes conocidos, Voice y Translate, el servidor declara Content-Length, así que la
-optimización sí actúa donde importa. El test además comprueba que la respuesta original llega entera.
+El orden nuevo evita clonar 5xx y respuestas con Content-Length declarado por encima del tope antes
+de hacer `arrayBuffer()`. Voice y Translate declaran Content-Length, que son precisamente los cuerpos
+grandes del camino normal. Los tests prueban además que el Response original llega intacto.
 
-No lo marco VERIFIED todavía sólo porque la corrida CI del HEAD `84af1e7` sigue en progreso al
-momento de esta revisión.
-
-Executor: esa corrida **cerró en verde** (run 35485951629, HEAD `84af1e7`, doce jobs). Queda a la
-espera del visto del revisor, nada más. El commit anterior, que contiene REV-047/048/049, ya tuvo CI verde tras el
-arreglo de clang-format.
-
-Impacto: reduce picos de memoria del servidor durante errores/respuestas grandes; no cambia el
-comportamiento visible normal.
-
+Impacto: menos pico de RAM en Railway en errores y respuestas grandes; no cambia la UX normal.
 
 ## REV-051 — Los deploys de Railway pueden dejar el aparato sin backend
 State: OPEN
@@ -2162,7 +2146,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-052 — La radio fantasma: `FriendlyWifi` daba por conectada una radio apagada
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — hardening razonable; no era el incidente 502
 Severity: P0
 Subsystem: firmware / red
 
@@ -2221,9 +2205,26 @@ NEEDS_HARDWARE: la confirmación es del dueño con 1.5.119 puesta. Sin desktop t
 `WiFi` de Arduino.
 Firmware: `pio run -e ws397` limpio.
 Reviewer final check:
+No acepto como demostrada la causa exacta, pero sí acepto el cambio como defensa razonable.
+
+Revisé la implementación EXACTA del core que usa este proyecto (Arduino-ESP32 3.3.7): al evento
+STA_CONNECTED pone el estado en WL_IDLE_STATUS y sólo con GOT_IP pasa a WL_CONNECTED; al STA_STOP lo
+cambia a WL_STOPPED. Por tanto, durante una conexión normal `WL_CONNECTED` ya significa que llegó IP.
+El hueco posible es únicamente la carrera asincrónica alrededor de `WIFI_OFF`: entre pedir el apagado
+y procesar STA_STOP puede observarse estado viejo. Comprobar además `localIP()!=0` es una defensa
+sensata y no empeora una conexión normal.
+
+Pero no tengo evidencia de hardware de que en ESTA placa `status()` quede viejo el tiempo suficiente
+para causar un POST fallido, ni de que `localIP()` se limpie antes que status. Y el propio log de
+1.5.119 demostró que NO fue la causa del incidente que estábamos persiguiendo: la petición llegó al
+servidor y obtuvo un 429 real.
+
+Impacto: podría evitar una carrera rara al reabrir una pantalla inmediatamente después de apagar WiFi.
+No debe presentarse como "el arreglo del 502". Para VERIFIED falta ver la línea nueva de reconexión en
+un caso real o reproducir la secuencia WIFI_OFF→begin en hardware.
 
 ## REV-053 — `cp.image` escribía una columna fuera del vidrio con escala > 1
-State: FIXED_PENDING_REVIEW
+State: REFUTED como causa del GFX OOB — clip redundante/harmless
 Severity: P2
 Subsystem: firmware / Lua
 
@@ -2250,9 +2251,31 @@ chrome que dibuja `LuaAppsActivity` alrededor de la app, o alguna otra pantalla 
 (`GfxRenderer` acumula y reporta una vez por segundo, así que la línea no identifica al culpable).
 Se vuelve a mirar con el log de 1.5.119.
 Reviewer final check:
+REFUTADO el mecanismo que vincula `cp.image` con las líneas
+`[GFX] ... ultimo 480,447`.
+
+Comparé el código ANTERIOR al fix (`a2727ec`): `cp.image` sí pedía
+`fillRect(px, py, scale, scale)` cerca del borde, PERO `GfxRenderer::fillRectImpl()` YA recortaba
+el rectángulo en coordenadas lógicas con:
+
+  lx0=max(0,x), ly0=max(0,y), lx1=min(screenW,x+width), ly1=min(screenH,y+height)
+
+antes de tocar framebuffer. Es decir, ese fillRect nunca llegaba a `drawPixel(480,...)`.
+Para escala 1, `cp.image` llama drawPixel directamente pero ya rompe el bucle cuando
+`px>=screenW` o `py>=screenH`.
+
+El clip añadido dentro de `cp.image` es correcto pero redundante; puede quedarse como defensa local,
+pero NO arregla el error que vimos en el log. El propio harness del ejecutor, que no encontró una
+llamada OOB de Mascota, es coherente con esta refutación.
+
+Por tanto el `480,447` sigue sin dueño. Se abre REV-056 para instrumentar el origen en lugar de
+seguir adivinando.
+
+Impacto: no considero que este cambio haya corregido nada visible de Mascota. El bug de dibujo fuera
+de pantalla sigue siendo real porque el hardware lo registró, sólo estaba mal identificado el culpable.
 
 ## REV-054 — Un tope de uso del proveedor llegaba como 502 y se REINTENTABA tres veces
-State: FIXED_PENDING_REVIEW
+State: FIXED_PENDING_REVIEW — diseño aceptado; CI exacto aún corriendo
 Severity: P1
 Subsystem: server / firmware / red
 
@@ -2317,6 +2340,103 @@ Firmware: `pio run -e ws397` limpio. Las diecisiete suites en verde.
 
 **Para el dueño, que es lo que de verdad cierra su problema**: está en el plan gratuito de Groq y lo
 agotó. Esto hace que el aparato lo DIGA y deje de gastar el triple, pero no le devuelve el cupo.
+Reviewer final check:
+La separación `retryable()` / `retryableLater()` es correcta y revisé todos los usos actuales:
+- `request()`: usa `retryable` → 429 NO se repite 500/1500 ms después.
+- `postOrQueue()`: usa `retryableLater` → una operación que puede servir después no se pierde.
+- `flushQueue()`: el bucle inmediato usa `retryable`, y la decisión de descartar usa
+  `retryableLater` → 429 se conserva sin martillarlo ahora.
+No encontré un cuarto uso omitido.
+
+El servidor también está bien encaminado: una API compatible que contesta rate-limit se convierte en
+HTTP 429 + `rate_limited`, y los handlers de Voice/Ask/Translate/Bible ya preservan status/code del
+`LlmError`. El mensaje extrae `error.message` y deja visible el dato accionable en vez de gastar
+los 120 caracteres del dispositivo en JSON/organization id.
+
+Matiz a la explicación del ejecutor: después de que el servidor devuelva 429, el middleware de
+idempotencia puede cachear ese 4xx; reintentos con el MISMO X-Request-Id dentro del TTL pueden recibir
+el replay sin volver a llamar a Groq. Así que "tres mordiscos al cupo" no es una propiedad permanente
+del sistema nuevo. En la ventana vieja, cuando el 429 del proveedor se convertía en 502, sí no se
+cacheaba y los tres intentos podían volver a llegar al proveedor. En cualquier caso, reintentar un
+rate-limit en 0.5/1.5 s es inútil y agrega latencia, por lo que el fix sigue siendo correcto.
+
+No marco VERIFIED todavía porque los runs del commit `56a774f` y del HEAD actual siguen IN_PROGRESS
+al momento de esta revisión. El firmware 1.5.119 publicado NO contiene esta parte de retry policy;
+entrará recién en una OTA posterior.
+
+Impacto: ante límite del proveedor, la próxima versión de firmware dejará de quedarse varios segundos
+en "Pensando" haciendo reintentos inmediatos condenados y conservará correctamente las operaciones
+que sí deben reintentarse más tarde.
+
+
+## REV-055 — Entradas nuevas sin sello tras cambio a identidad vacía pueden descartarse como legacy
+State: OPEN
+Severity: P0
+Subsystem: firmware / offline queue / account identity
+
+Hallazgo del Reviewer al revisar la segunda vuelta de REV-017.
+
+`enqueue()` sólo escribe el sello si:
+
+    if (!account_.empty()) item["acct"] = account_;
+
+Pero la cuenta vacía también es una identidad CONOCIDA y válida en el modo single-account. A la vez,
+`accountChangedThisSession_` se pone true cuando se detecta un cambio y no se vuelve a false durante
+esa sesión/arranque.
+
+Escenario:
+1. el aparato venía de una cuenta identificada;
+2. confirma una identidad vacía (por ejemplo un servidor single-account) y marca
+   `accountChangedThisSession_=true`;
+3. el usuario crea una NUEVA operación offline;
+4. como `account_==""`, la entrada se guarda SIN campo `acct`;
+5. `queueacct::allowed()` la interpreta como entrada legacy y la rechaza porque hubo cambio esta sesión.
+
+Eso ya no contamina otra cuenta, pero puede PERDER una acción nueva del usuario.
+
+Arreglo recomendado: toda entrada creada por firmware nuevo debe ser sellada SIEMPRE, incluso con
+`acct:""`. La ausencia del campo `acct` debe significar exclusivamente "firmware legacy". Así se
+puede distinguir una entrada nueva válida del modo single-account de una vieja de identidad desconocida.
+
+Tests:
+- nueva `acct:""` + sesión single-account debe salir aun si hubo un cambio previo;
+- entrada realmente legacy sin campo + cambio reciente debe seguir bloqueada;
+- sellada con otra cuenta debe seguir bloqueada.
+
+Impacto: una nota/tarea/recordatorio creado offline después de una transición de identidad podría
+desaparecer al intentar sincronizar. Por definición del protocolo, pérdida de datos = P0.
+
+Executor response:
+Reviewer final check:
+
+## REV-056 — El verdadero origen de GFX (480,447) sigue sin identificar
+State: OPEN
+Severity: P2
+Subsystem: firmware / rendering / Lua
+
+El hardware registró repetidamente:
+
+    [GFX] 80 pixeles fuera de pantalla (ultimo 480,447)
+    [GFX] 160 pixeles fuera de pantalla (ultimo 480,447)
+
+REV-053 atribuyó el problema a `cp.image`, pero esa hipótesis queda refutada porque
+`fillRectImpl()` ya recortaba antes del cambio y el camino scale=1 también limita px/py.
+
+No seguir corrigiendo primitivas a ojo. El próximo paso es instrumentar TEMPORALMENTE el origen:
+- añadir un scope/tag de dibujo alrededor de `LuaApp::onDraw` y/o primitivas cp;
+- o registrar un identificador de operación/caller cuando `drawPixel` acumula el primer OOB de cada
+  segundo;
+- reproducir Mascota hasta obtener `480,447`;
+- después quitar o abaratar la instrumentación.
+
+Candidatos a revisar incluyen caminos que llaman `drawPixel` directamente (texto, líneas, iconos,
+arcos/rounded rect, chrome de Activity), no sólo fillRect.
+
+Impacto: el renderer descarta el píxel y por eso no hay corrupción de framebuffer, pero algún elemento
+está pidiendo dibujar fuera del viewport de forma repetida. Puede verse recortado/deformado y ensucia
+el diagnóstico. El origen real sigue abierto.
+
+Executor response:
 Reviewer final check:
 
 ---
@@ -2505,6 +2625,22 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
 **7. Higiene.** Diecisiete suites en verde, `bunx tsc --noEmit` limpio, `node --check app.js` limpio,
 `pio run -e ws397` limpio. Suites nuevas de esta tanda en CI: `queue_account`, `provider_error`,
 `retry_policy` (más `server_error_text`, `provider_log` y `llm_budget` de la anterior).
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — revisión de 1.5.119 / REV-052/053/054
+- 1.5.119 confirmada en fuente (.ws397-build y WS397_BUILD = 119) y el release commit tiene CI verde.
+- REV-017: la segunda vuelta sí cierra el snapshot cross-account; pasa a NEEDS_HARDWARE. Se abre
+  REV-055 P0 por un borde distinto: nuevas entradas con account vacío se guardan sin `acct` y pueden
+  confundirse con legacy después de un cambio de identidad.
+- REV-050 VERIFIED: run 35485951629 cerró SUCCESS.
+- REV-052 queda NEEDS_HARDWARE: la guarda IP+status es hardening razonable, pero no se probó la carrera
+  exacta y ya sabemos que no causó el incidente 502.
+- REV-053 REFUTED como causa del OOB: fillRectImpl ya recortaba antes. Se abre REV-056 para hallar el
+  verdadero caller de (480,447).
+- REV-054: separación retry-now/retry-later aceptada y todos los callsites revisados; queda
+  FIXED_PENDING_REVIEW hasta que termine su CI. 1.5.119 NO lleva este cambio de firmware.
+- REV-051 sigue OPEN: disponibilidad de Railway durante deploy es independiente del 429 real de Groq.
+- Ninguna OTA publicada por el Reviewer.
 
 # Session log
 
