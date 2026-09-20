@@ -925,6 +925,17 @@ function iaView() {
   html += '<div class="btnrow"><button>Guardar</button><button type="button" class="ghost" data-act="ai-test">Probar</button></div>' +
     (aiTest ? '<pre class="muted" style="white-space:pre-wrap;font-size:13px">' + esc(aiTest) + "</pre>" : "") + "</form>";
 
+  // REV-047: un 502 en el aparato deja de ser un numero. Si el proveedor esta
+  // fallando, el motivo que el aparato descarta se lee aca.
+  const fails = S.providerFailures || [];
+  if (fails.length) {
+    html += '<div class="card" style="margin-top:12px"><h2>Ultimos fallos del proveedor</h2>' +
+      '<p class="hint">Lo que contesto el proveedor cuando una funcion de IA fallo. Si hay varios seguidos y recientes, el 502 del aparato es esto y no la red. Se vacia solo al redesplegar.</p>' +
+      fails.map((f) => '<div class="row"><div class="grow"><div>' + esc(f.message) + '</div>' +
+        '<small class="muted">' + esc(f.kind === "stt" ? "transcripcion" : "modelo") + " · " + esc(f.where) + " · " + esc(new Date(f.at).toLocaleString()) + "</small></div></div>").join("") +
+      "</div>";
+  }
+
   html += '<div class="card" style="margin-top:12px"><h2><span class="grow">Cuánto sale cada consulta</span>' + (costs ? "" : '<button class="ghost small" data-act="costs-load">Ver</button>') + "</h2>";
   if (costs === "loading") html += '<p class="loading">Cargando…</p>';
   else if (costs) {

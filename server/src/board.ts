@@ -36,6 +36,7 @@ import { config, saveConfig, publicConfig, APPS_MODELS, MODEL_PRICES, STT_PRICES
 import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSearchKind } from "./llm";
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
+import { providerFailures } from "./providerLog";
 import { probeFeed, checkFeed } from "./rss";
 import { isMedicalFeed, MEDICAL_FEED_NAME, MEDICAL_URL, readMedicalFeed } from "./medical";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
@@ -322,8 +323,16 @@ boardApi.post("/config/test", async (c) => {
   const out: { llm?: string; stt?: string; search?: string } = {};
   const t0 = Date.now();
   try {
-    const answer = await chatText({ system: "Responde exactamente: ok", user: "dime ok", maxTokens: 10 });
-    out.llm = `${await providerLabel()} → "${answer.trim().slice(0, 40)}" (${Date.now() - t0} ms)`;
+    // REV-049: el presupuesto de la prueba era 10 tokens. Un modelo de
+    // razonamiento se los come PENSANDO y devuelve el texto vacío, así que la
+    // prueba informaba `→ "" (131 ms)` como si fuera un éxito — que es
+    // exactamente lo que estaba pasando en producción con gpt-oss-120b. Ahora
+    // se pide un presupuesto realista (`planBudget` le suma el lugar del
+    // razonamiento) y una respuesta vacía es un ERROR, no un éxito raro.
+    const answer = await chatText({ system: "Responde exactamente: ok", user: "dime ok", maxTokens: 64 });
+    out.llm = answer.trim()
+      ? `${await providerLabel()} → "${answer.trim().slice(0, 40)}" (${Date.now() - t0} ms)`
+      : `ERROR: ${await providerLabel()} contestó sin texto (${Date.now() - t0} ms). Probá otro modelo en IA.`;
   } catch (err) {
     out.llm = `ERROR: ${String(err instanceof Error ? err.message : err).slice(0, 200)}`;
   }
@@ -444,6 +453,11 @@ boardApi.get("/state", async (c) => {
       wake: meta.wake,                   // por qué arrancó la última vez
     },
     usage: { ...usage, limits: LIMITS, quotasOn },
+    // REV-047: los últimos fallos del proveedor de IA, para que un 502
+    // generalizado se pueda diagnosticar desde acá y no desde los logs de
+    // Railway ni adivinando con el aparato en la mano. En memoria: un
+    // redespliegue los vacía, que es lo correcto — interesa si falla AHORA.
+    providerFailures: providerFailures().slice(0, 8),
     multi: multiUser,
   });
 });

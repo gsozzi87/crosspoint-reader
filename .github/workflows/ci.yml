@@ -259,6 +259,15 @@ jobs:
       - name: Log del aparato
         run: ./test/device_log/run.sh
 
+      - name: Mensaje de error del servidor
+        run: ./test/server_error_text/run.sh
+
+      - name: Fallos del proveedor de IA
+        run: ./test/provider_log/run.sh
+
+      - name: Presupuesto del modelo y respuesta vacía
+        run: ./test/llm_budget/run.sh
+
       - name: Resolución de nombres fijada
         run: ./test/net_lookup/run.sh
 

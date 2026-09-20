@@ -28,6 +28,7 @@ import { normalizeLang, type Lang } from "./lang";
 import { decodeAdpcm, TARGET_RATE } from "./tts";
 import { config } from "./config";
 import { checkUrl, limitBody, readBodyBytes, redactSecrets } from "./net";
+import { recordProviderFailure } from "./providerLog";
 
 // El servicio de transcripción se elige desde /board -> Ajustes (Groq es gratis
 // y el más rápido); las variables de entorno quedan como valor por defecto.
@@ -300,6 +301,8 @@ export async function transcribeWav(audio: ArrayBuffer, lang: SpeechLang = "es")
     // un 401 de algunos proveedores la escupe entera.
     const detail = redactSecrets(await res.text(), stt.key).slice(0, 300);
     console.error("transcribe:", res.status, detail);
+    // REV-047: queda anotado para que /board lo muestre sin el aparato.
+    recordProviderFailure("stt", stt.model, `stt ${res.status}: ${detail}`);
     throw new Error(`stt ${res.status}: ${detail.slice(0, 120)}`);
   }
   const data = (await res.json()) as { text?: string };

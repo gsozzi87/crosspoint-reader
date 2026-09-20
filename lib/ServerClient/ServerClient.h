@@ -120,6 +120,19 @@ class ServerClient {
   int flushQueue(size_t maxItems = 32);
 
   static const char* resultName(Result r);
+
+  // Lo que el servidor DIJO al fallar, no solo el numero.
+  //
+  // REV-048: `http error (502)` era el mismo cartel para un modelo que ya no
+  // existe, un parametro rechazado, el proveedor caido, la clave vencida y el
+  // STT roto. El servidor ya manda el motivo redactado en el JSON de error
+  // ({ok:false, error, code}) y el aparato lo tiraba, asi que ni la pantalla ni
+  // el log decian que corregir. `errorText` devuelve ese campo `error`
+  // (vacio si el cuerpo no es un error nuestro) y `describeFailure` arma el
+  // renglon completo que usan las pantallas y la linea de error de `request`.
+  static std::string errorText(const Response& resp);
+  static std::string describeFailure(Result r, const Response& resp);
+
   static bool networkUp();
 
  private:
