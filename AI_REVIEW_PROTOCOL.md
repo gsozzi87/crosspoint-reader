@@ -2730,6 +2730,103 @@ Arreglo esperado:
 Executor response:
 Reviewer final check:
 
+
+## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
+State: OPEN
+Severity: P1
+Subsystem: power / deep sleep / RTC failure
+
+Hallazgo CONFIRMADO por lectura de código.
+
+En setup(), si el aparato despierta por ESP_SLEEP_WAKEUP_TIMER pero `halClock.getEpochUtc()` falla
+tres veces, entra en el camino de reintento de 60 s. Ese camino hace:
+
+    halTiltSensor.deepSleep();
+    AudioManager::silenceAmp();
+    devlog::close();
+    Storage.prepareForDeepSleep();
+    powerManager.startDeepSleep(gpio);
+
+pero NO pasa por `sleepNow()`.
+
+Eso omite justamente el hardening que `sleepNow()` contiene para WS397:
+- `codecsleep::es8311Suspend()`;
+- `gpio_hold_en(ampEnable)`;
+- `POWER_KEY.railsOffForSleep()` sobre ALDO1-3.
+
+El problema es especialmente serio después de superar MAX_CLOCKLESS_RETRIES: ya no se arma otro timer
+y el aparato puede quedar en deep sleep indefinido hasta que el usuario lo toque, pero con los rieles
+que `PowerKey::begin()` restauró al arrancar todavía encendidos. El propio código documenta que antes
+de cortar ALDO1-3 esa condición consumía ~9 % de batería por noche / orden de 10 mA.
+
+Impacto visible:
+- tras un fallo real del RTC/I2C en un wake programado, el aparato puede parecer correctamente dormido
+  pero perder batería muy rápido;
+- si el usuario no lo toca por horas/días, puede encontrárselo descargado y atribuirlo a un "cuelgue";
+- los primeros 5 reintentos de un minuto también gastan más de lo necesario.
+
+Fix recomendado:
+- no duplicar una versión incompleta de la secuencia de sueño;
+- factorizar el apagado de consumidores/rieles en una función común segura para caminos que ya cerraron
+  SD y no tienen display inicializado;
+- o, como mínimo, ejecutar en este camino el mismo suspend del ES8311, hold del amp y railsOffForSleep
+  antes de powerManager.startDeepSleep();
+- añadir una prueba/harness de política que garantice que TODO deep-sleep WS397 posterior a
+  PowerKey::begin() pasa por la secuencia de corte de rieles, incluso clockless retry/give-up.
+
+Hardware:
+- simular/forzar fallo de RTC en un timer wake y medir corriente dormido;
+- repetir en el intento 1 y después del give-up.
+
+Executor response:
+Reviewer final check:
+
+## REV-058 — Fallback de apagado usa enterDeepSleep después de desmontar la SD
+State: OPEN
+Severity: P1
+Subsystem: power-off / SD lifecycle / deep sleep fallback
+
+Hallazgo CONFIRMADO por lectura de código.
+
+`powerOffNow()` guarda estado, pinta el fondo, cierra log y ejecuta:
+
+    Storage.prepareForDeepSleep();
+
+ANTES de llamar `POWER_KEY.powerOff()`.
+
+Si el PMIC no contesta, `powerOffNow()` retorna. Incluso si aceptó el comando, si dos segundos después
+el ESP sigue vivo, la función también retorna.
+
+El llamador `handlePowerHold()` entonces ejecuta:
+
+    powerOffNow();
+    enterDeepSleep();
+
+pero `enterDeepSleep()` supone que la SD sigue montada: vuelve a guardar APP_STATE, llama
+`activityManager.goToSleep()` (onExit de la Activity puede tocar SD), puede leer/escribir el frame
+de Quick Resume, pinta el wallpaper leyendo titulares, toma muestra de batería y finalmente vuelve a
+cerrar/desmontar storage.
+
+Por tanto el "fallback seguro" se ejecuta con una precondición falsa: filesystem ya desmontado.
+
+Impacto visible posible cuando el PMIC falla o tarda demasiado:
+- apagado que tarda y después parece congelarse;
+- archivos/estado que no se guardan;
+- error de SD en un camino que debería ser de emergencia;
+- Activity onExit o wallpaper intentando leer una tarjeta ya entregada a deep sleep;
+- en el peor caso, crash/reinicio justo cuando el usuario está tratando de apagar el aparato.
+
+Fix recomendado:
+- después de `powerOffNow()` retornar, NO volver a entrar por `enterDeepSleep()`;
+- usar un fallback mínimo que no toque SD ni Activities: poner panel/periféricos en deep sleep y llamar
+  a la secuencia hardware común (`sleepNow()` o una variante explícita post-unmount);
+- idealmente hacer que `powerOffNow()` devuelva un estado claro y documentar que, si vuelve, Storage
+  ya está cerrado;
+- testear PMIC I2C failure y "soft-off accepted but power does not fall within 2 s".
+
+Executor response:
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -2974,6 +3071,15 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
 - Pregunta de producto pendiente al dueño: en boot se consideran vencidos timer/recordatorio hasta 30 s ANTES
   (`nowEpoch + 30`). Confirmar si esa tolerancia es deseada o una alarma nunca debe adelantarse.
 - No se implementó ningún fix ni se publicó OTA desde el rol Reviewer.
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — Paso 1A: entrar en reposo y despertar
+- Auditoría deliberadamente acotada a deep sleep/light sleep/wake; no se revisaron memoria, red ni audio general.
+- REV-057 OPEN P1: el camino timer-wake + RTC mudo llama startDeepSleep directamente y omite codec suspend,
+  hold del amp y corte ALDO1-3. Tras give-up puede quedar horas con consumo alto aunque parezca dormido.
+- REV-058 OPEN P1: powerOffNow desmonta SD antes del soft-off; si el PMIC falla o tarda, el caller entra
+  a enterDeepSleep(), que vuelve a usar SD/Activities sobre storage ya preparado para dormir.
+- No se publicaron cambios funcionales ni OTA.
 
 # Session log
 
