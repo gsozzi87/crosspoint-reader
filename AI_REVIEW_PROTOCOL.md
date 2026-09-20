@@ -1772,6 +1772,55 @@ distintas y no puede saber qué corregir. También dificulta brutalmente soporte
 Executor response:
 Reviewer final check:
 
+
+## REV-049 — Groq GPT-OSS puede devolver content vacío por presupuesto de salida/reasoning
+State: OPEN
+Severity: P1
+Subsystem: server / LLM provider compatibility
+
+Hallazgo del revisor con evidencia directa del endpoint de producción `/api/board/config/test`:
+
+    Modelo: api.groq.com/openai/gpt-oss-120b → "" (131 ms)
+    Transcripción: whisper-large-v3-turbo ... (clave puesta)
+
+Esto descarta, para esa prueba, una clave Groq inválida o un modelo inexistente: la llamada llega al
+modelo y vuelve rápido con éxito HTTP, pero `message.content` queda vacío.
+
+El cliente actual en `server/src/llm.ts` tiene tres factores que encajan con el síntoma:
+
+1. `/config/test` llama `chatText(... maxTokens: 10)`. GPT-OSS es un modelo de razonamiento y Groq
+   documenta que los tokens de razonamiento forman parte de la generación; diez tokens pueden
+   consumirse antes de producir respuesta final.
+2. El request usa el campo `max_tokens`, que Groq mantiene por compatibilidad pero documenta como
+   DEPRECATED en favor de `max_completion_tokens`.
+3. Para GPT-OSS Groq recomienda controlar reasoning y permite `include_reasoning:false`; hoy el
+   cliente pide `reasoning_effort:"low"` pero no desactiva el bloque de reasoning ni reserva un
+   mínimo de salida distinto para JSON/voz.
+
+Consecuencia probable:
+- `config/test` informa éxito aunque la respuesta esté vacía.
+- `chatJson()` convierte una respuesta vacía en `LlmError("el modelo no devolvió JSON")` con 502.
+- Traductor devuelve 502 `empty translation` si `chatText()` queda vacío.
+- Ask puede terminar en respuesta vacía aun con HTTP 200 si el caller no lo valida.
+
+Trabajo para el Executor:
+- reproducir contra Groq real con el modelo configurado, primero con 10, 128, 512, 1024 y 2048
+  `max_completion_tokens`, registrando `finish_reason`, content length y usage/reasoning tokens;
+- para GPT-OSS, migrar a `max_completion_tokens` y evaluar `include_reasoning:false`;
+- fijar un mínimo seguro de completion para rutas JSON/voz sin inflar innecesariamente costo;
+- hacer que `/api/board/config/test` considere content vacío como ERROR, no como éxito;
+- hacer que `openAiRun` lance un error diagnóstico útil si el proveedor devuelve 2xx con content vacío,
+  incluyendo `finish_reason` y, sin secretos, métricas de uso relevantes;
+- añadir pruebas de regresión para respuesta 2xx vacía y truncación por límite;
+- no cambiar de modelo como parche: la integración debe soportar correctamente `openai/gpt-oss-120b`.
+
+Impacto de producto: Hablar, Traductor y otras funciones con LLM pueden mostrar 502 de forma generalizada
+aunque Groq esté sano y la clave sea correcta. El usuario sólo ve "no se puede obtener respuesta" porque
+REV-048 además oculta el body útil del servidor.
+
+Executor response:
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -1796,6 +1845,14 @@ When an executor encounters one of these, first confirm whether current HEAD alr
 - Se abren REV-047 (falta smoke test vivo proveedor→Railway) y REV-048 (firmware oculta el body de error y sólo muestra status).
 - El log aportado demuestra que /api/voice y STT funcionaron al menos una vez en la misma sesión con no_speech; falta el body del 502 para aislar proveedor/modelo/parámetro.
 - Próximo dato obligatorio: resultado de /api/board/config/test en producción.
+- Ninguna OTA autorizada.
+
+
+### 2026-09-20 — Reviewer (ChatGPT) — smoke test Groq devuelve content vacío
+- Producción reportó `api.groq.com/openai/gpt-oss-120b → "" (131 ms)`: llamada exitosa pero sin texto.
+- Se abre REV-049. Hipótesis principal: GPT-OSS consume el presupuesto minúsculo de salida en reasoning;
+  además el cliente usa `max_tokens` deprecated en vez de `max_completion_tokens`.
+- Próximo paso del Executor: reproducir con Groq real y capturar finish_reason/usage antes de cambiar lógica.
 - Ninguna OTA autorizada.
 
 # Session log
