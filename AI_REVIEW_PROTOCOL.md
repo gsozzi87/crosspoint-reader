@@ -2814,6 +2814,56 @@ Executor response:
 Reviewer final check:
 
 
+## REV-064 — Deep sleep desmonta la SD antes de detener la tarea de música
+State: OPEN
+Severity: P1
+Subsystem: firmware / deep sleep / audio task / SD lifecycle
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+En el camino normal de `enterDeepSleep()` el orden actual es:
+1. guarda estado y desmonta la Activity;
+2. pinta la pantalla de sueño;
+3. apaga WiFi;
+4. toma la muestra de batería;
+5. duerme IMU y panel;
+6. cierra devlog;
+7. `Storage.prepareForDeepSleep()` -> desmonta filesystem/SDMMC;
+8. recién después llama `sleepNow()`.
+
+Pero `sleepNow()` empieza con `MUSIC.stop()`.
+
+La música vive fuera de la Activity y puede seguir sonando al pedir suspensión manual. `MusicPlayer::stop()`
+detiene un `AudioManager` que reproduce en una tarea FreeRTOS propia (`audio_play`, prioridad 10, core 0)
+y después ejecuta `source_.close()`, que cierra el `HalFile` del MP3.
+
+La tarea de audio obtiene PCM mediante `source_.read()` -> `Mp3Source::readPcm()` -> `HalFile::read()`.
+HalFile serializa esas lecturas con el mismo mutex de HalStorage, por lo que `prepareForDeepSleep()`
+puede esperar a una lectura en curso. Sin embargo, al terminar el shutdown y soltar el mutex, la tarea
+de audio todavía NO recibió `stopRequested_`: puede adquirir otra vez el mutex y hacer una lectura
+contra una SD ya desmontada antes de que el loop llegue a `MUSIC.stop()`.
+
+Además `MUSIC.stop()` termina intentando `HalFile::close()` después del shutdown.
+
+Impacto visible:
+- suspender manualmente mientras suena música puede producir error de SD, fallo del stream, assert/reset
+  o comportamiento dependiente de carrera justo en la transición a sueño;
+- el bug es más probable bajo carga porque audio corre en otra tarea/core;
+- REV-062 agrava el caso: la red de seguridad puede entrar a deep sleep con música todavía activa.
+
+Fix recomendado:
+- detener/join de la tarea de música ANTES de desmontar Storage en cualquier camino que pueda tener
+  reproducción viva;
+- después del join, cerrar el HalFile y recién entonces `Storage.prepareForDeepSleep()`;
+- no dejar `MUSIC.stop()` como operación post-unmount dentro de `sleepNow()`;
+- factorizar una fase pre-unmount común para consumidores con handles de SD;
+- test/harness: con música activa, verificar orden stop/join -> file close -> storage shutdown y que
+  ninguna lectura de HalFile ocurra después del shutdown.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
