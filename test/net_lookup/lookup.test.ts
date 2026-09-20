@@ -63,6 +63,10 @@ describe("safeFetch con DNS fijado", () => {
   // tolerante es el runtime con la forma vieja, y cambia entre versiones de
   // Bun: pasaba en el sandbox y no en el runner de CI. Se comprueba la premisa,
   // que sí es determinista.)
+  // OJO con el nombre de host: tiene que ser distinto del de la prueba de
+  // arriba. Bun cachea la resolución POR HOST, así que repitiendo el nombre la
+  // segunda petición no vuelve a llamar al lookup y esto medía el caché en vez
+  // del contrato (en Bun 1.4.2 del runner fallaba por eso; en 1.3.11 no).
   test("http.request pide options.all: por eso el lookup devuelve un array", async () => {
     const { request: httpRequest } = await import("node:http");
     let vistoAll: unknown = "no se llamó al lookup";
@@ -71,7 +75,7 @@ describe("safeFetch con DNS fijado", () => {
       cb(null, [{ address: "127.0.0.1", family: 4 }]);
     };
     await new Promise<void>((resolve) => {
-      const req = httpRequest(new URL(`http://no-existe-este-host.test:${port}/`),
+      const req = httpRequest(new URL(`http://otro-host-que-no-existe.test:${port}/`),
                               { method: "GET", lookup: lookup as never }, (res) => {
         res.resume();
         res.once("end", () => resolve());
