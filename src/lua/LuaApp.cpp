@@ -186,7 +186,6 @@ int cpLine(lua_State* L) {
   return 0;
 }
 
-
 // cp.image(x, y, w, h, bits [, escala]): un bitmap de 1 bit empaquetado por
 // filas (MSB primero, 1 = tinta, cada fila redondeada a byte). Se pinta píxel a
 // píxel con drawPixel para que la orientación del panel se aplique sola
@@ -208,7 +207,8 @@ int cpImage(lua_State* L) {
   if (scale > 8) scale = 8;
   if (w < 1 || h < 1 || w > 256 || h > 256) return luaL_error(L, "cp.image: tamaño fuera de rango (1-256)");
   const size_t stride = static_cast<size_t>((w + 7) / 8);
-  if (len < stride * static_cast<size_t>(h)) return luaL_error(L, "cp.image: faltan bytes (%d de %d)", (int)len, (int)(stride * h));
+  if (len < stride * static_cast<size_t>(h))
+    return luaL_error(L, "cp.image: faltan bytes (%d de %d)", (int)len, (int)(stride * h));
   const auto* p = reinterpret_cast<const uint8_t*>(bits);
   for (int row = 0; row < h; row++) {
     const int py = y + row * scale;
@@ -221,7 +221,13 @@ int cpImage(lua_State* L) {
       if (scale == 1) {
         g_renderer->drawPixel(px, py, true);
       } else {
-        g_renderer->fillRect(px, py, scale, scale, true);
+        // El bloque de una escala > 1 mide `scale` y hay que RECORTARLO, no
+        // sólo mirar su esquina: con px = ancho-1 y escala 2 se escribía la
+        // columna `ancho` entera, que es lo que llenaba el log de
+        // "N pixeles fuera de pantalla (ultimo 480,…)" en cada cuadro.
+        const int bw = screenW - px < scale ? screenW - px : scale;
+        const int bh = screenH - py < scale ? screenH - py : scale;
+        g_renderer->fillRect(px, py, bw, bh, true);
       }
     }
   }
@@ -373,8 +379,7 @@ int cpLoad(lua_State* L) {
 // cola desde su loop() y contesta por on_heard / on_reply. Ver LuaApp.h.
 
 bool nameCharOk(const char c) {
-  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
-         c == '-';
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
 }
 
 // Un identificador que viaja al servidor (servicio, fileId): mismo alfabeto que
@@ -422,8 +427,12 @@ bool isSequence(lua_State* L, const int idx) {
 bool luaToJson(lua_State* L, int idx, JsonVariant dst, const int depth) {
   if (idx < 0) idx = lua_gettop(L) + idx + 1;
   switch (lua_type(L, idx)) {
-    case LUA_TNIL: dst.set(nullptr); return true;
-    case LUA_TBOOLEAN: dst.set(lua_toboolean(L, idx) != 0); return true;
+    case LUA_TNIL:
+      dst.set(nullptr);
+      return true;
+    case LUA_TBOOLEAN:
+      dst.set(lua_toboolean(L, idx) != 0);
+      return true;
     case LUA_TNUMBER:
       if (lua_isinteger(L, idx)) {
         dst.set(static_cast<long long>(lua_tointeger(L, idx)));
@@ -438,8 +447,10 @@ bool luaToJson(lua_State* L, int idx, JsonVariant dst, const int depth) {
       dst.set(std::string(str, len));
       return true;
     }
-    case LUA_TTABLE: break;
-    default: return false;  // funciones, userdata, hilos: no viajan
+    case LUA_TTABLE:
+      break;
+    default:
+      return false;  // funciones, userdata, hilos: no viajan
   }
   if (depth > LuaApp::ARGS_DEPTH) return false;
   if (!lua_checkstack(L, 4)) return false;
@@ -515,8 +526,8 @@ void jsonToLua(lua_State* L, JsonVariantConst v) {
 
 // cp.listen(seg [, pregunta]) -> true si quedó pedido
 int cpListen(lua_State* L) {
-  const int seconds =
-      static_cast<int>(std::max<lua_Integer>(1, std::min<lua_Integer>(luaL_optinteger(L, 1, 10), LuaApp::LISTEN_MAX_S)));
+  const int seconds = static_cast<int>(
+      std::max<lua_Integer>(1, std::min<lua_Integer>(luaL_optinteger(L, 1, 10), LuaApp::LISTEN_MAX_S)));
   std::string question;
   if (!lua_isnoneornil(L, 2)) question = boundedText(L, 2);
   if (queueFull()) {
@@ -662,8 +673,8 @@ int cpRead(lua_State* L) {
   if (len > LuaApp::READ_CAP) {
     // Entero no entra: la app tiene que pedir por rango. Se dice en el log en
     // vez de devolver la mitad como si fuera todo.
-    LOG_ERR(TAG, "%s: cp.read(%s): %u B no entran en %u KB; pedir con rango", g_appStem.c_str(), name,
-            (unsigned)len, (unsigned)(LuaApp::READ_CAP / 1024));
+    LOG_ERR(TAG, "%s: cp.read(%s): %u B no entran en %u KB; pedir con rango", g_appStem.c_str(), name, (unsigned)len,
+            (unsigned)(LuaApp::READ_CAP / 1024));
     f.close();
     lua_pushnil(L);
     return 1;
@@ -808,37 +819,14 @@ int cpSay(lua_State* L) {
 }
 
 const luaL_Reg CP_API[] = {
-    {"clear", cpClear},
-    {"text", cpText},
-    {"textw", cpTextWidth},
-    {"texth", cpTextHeight},
-    {"rect", cpRect},
-    {"line", cpLine},
-    {"image", cpImage},
-    {"selection", cpSelection},
-    {"width", cpWidth},
-    {"height", cpHeight},
-    {"motion", cpMotion},
-    {"ms", cpMs},
-    {"beep", cpBeep},
-    {"log", cpLog},
-    {"quit", cpQuit},
-    {"save", cpSave},
-    {"load", cpLoad},
-    {"time", cpTime},
-    {"listen", cpListen},
-    {"call", cpCall},
-    {"download", cpDownload},
-    {"busy", cpBusy},
-    {"files", cpFiles},
-    {"read", cpRead},
-    {"write", cpWrite},
-    {"remove", cpRemove},
-    {"size", cpSize},
-    {"view", cpView},
-    {"open_book", cpOpenBook},
-    {"say", cpSay},
-    {nullptr, nullptr},
+    {"clear", cpClear},        {"text", cpText},     {"textw", cpTextWidth}, {"texth", cpTextHeight},
+    {"rect", cpRect},          {"line", cpLine},     {"image", cpImage},     {"selection", cpSelection},
+    {"width", cpWidth},        {"height", cpHeight}, {"motion", cpMotion},   {"ms", cpMs},
+    {"beep", cpBeep},          {"log", cpLog},       {"quit", cpQuit},       {"save", cpSave},
+    {"load", cpLoad},          {"time", cpTime},     {"listen", cpListen},   {"call", cpCall},
+    {"download", cpDownload},  {"busy", cpBusy},     {"files", cpFiles},     {"read", cpRead},
+    {"write", cpWrite},        {"remove", cpRemove}, {"size", cpSize},       {"view", cpView},
+    {"open_book", cpOpenBook}, {"say", cpSay},       {nullptr, nullptr},
 };
 
 // --- Trabajo dentro del worker ------------------------------------------
@@ -1174,12 +1162,17 @@ bool LuaApp::cancelQueued() {
     Request r = std::move(g_requests.front());
     g_requests.pop_front();
     switch (r.kind) {
-      case Request::Kind::Listen: repaint |= onHeard(nullptr); break;
+      case Request::Kind::Listen:
+        repaint |= onHeard(nullptr);
+        break;
       case Request::Kind::Call:
       case Request::Kind::Download:
-      case Request::Kind::Say: repaint |= onReplyError(r.id, "cancelado"); break;
+      case Request::Kind::Say:
+        repaint |= onReplyError(r.id, "cancelado");
+        break;
       case Request::Kind::View:
-      case Request::Kind::OpenBook: break;  // no tienen respuesta
+      case Request::Kind::OpenBook:
+        break;  // no tienen respuesta
     }
     if (!ok()) break;
   }

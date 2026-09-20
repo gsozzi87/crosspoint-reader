@@ -250,9 +250,20 @@ cp.text = function(x, y, s, tam, negrita)
   if tam ~= nil then chkint("text", 4, tam) end
   fake.drawn[#fake.drawn + 1] = s
 end
+-- Anota todo dibujo que se pase del vidrio. La lista queda en
+-- `fake.fuera` para que la prueba la mire al terminar.
+function fuera_de_pantalla(que, x, y, w, h)
+  local W, H = cp.width(), cp.height()
+  if x >= 0 and y >= 0 and x + w <= W and y + h <= H then return end
+  fake.fuera = fake.fuera or {}
+  fake.fuera[#fake.fuera + 1] =
+    string.format("%s en (%d,%d) de %dx%d: se pasa de %dx%d", que, x, y, w, h, W, H)
+end
+
 cp.rect = function(x, y, w, h, lleno, grosor)
   chkint("rect", 1, x); chkint("rect", 2, y); chkint("rect", 3, w); chkint("rect", 4, h)
   if grosor ~= nil then chkint("rect", 6, grosor) end
+  fuera_de_pantalla("rect", x, y, w, h)
   return rawrect(x, y, w, h, lleno, grosor)
 end
 cp.line = function(x1, y1, x2, y2, grosor)
@@ -262,6 +273,7 @@ cp.line = function(x1, y1, x2, y2, grosor)
 end
 cp.selection = function(x, y, w, h)
   chkint("selection", 1, x); chkint("selection", 2, y); chkint("selection", 3, w); chkint("selection", 4, h)
+  fuera_de_pantalla("selection", x, y, w, h)
   return rawsel(x, y, w, h)
 end
 local rawtextw = cp.textw
@@ -273,6 +285,11 @@ cp.image = function(x, y, w, h, bits, escala)
   assert(#bits >= ((w + 7) // 8) * h, "cp.image: faltan bytes")
   fake.images = fake.images or {}
   fake.images[#fake.images + 1] = { x = x, y = y, w = w, h = h, bytes = #bits, escala = escala or 1 }
+  -- Que un dibujo se salga de la pantalla no se ve de escritorio y en el vidrio
+  -- llena el log del aparato con "N pixeles fuera de pantalla" en CADA cuadro.
+  -- El aparato ahora lo recorta, pero recortar es tapar el sintoma: la app
+  -- igual esta pidiendo pintar donde no hay pantalla, asi que se anota.
+  fuera_de_pantalla("image", x, y, w * (escala or 1), h * (escala or 1))
 end
 
 cp.busy = function() return #pending > 0 end
