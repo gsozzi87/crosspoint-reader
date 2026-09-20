@@ -271,6 +271,12 @@ jobs:
       - name: De qué cuenta es la cola offline
         run: ./test/queue_account/run.sh
 
+      - name: Error del proveedor y tope de uso
+        run: ./test/provider_error/run.sh
+
+      - name: Política de reintentos
+        run: ./test/retry_policy/run.sh
+
       - name: Resolución de nombres fijada
         run: ./test/net_lookup/run.sh
 

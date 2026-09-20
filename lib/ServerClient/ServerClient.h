@@ -10,9 +10,11 @@
 //  - base URL + device token from ServerCredentialStore, sent as
 //    "Authorization: Bearer <token>" on every request;
 //  - JSON in / JSON out over the firmware's TLS stack (SecureHttpClient);
-//  - retries with backoff on transport failures, 429 and 5xx (never on other
-//    4xx: those are the request's fault), with an X-Request-Id the server can
-//    use to de-duplicate a retried POST it already applied;
+//  - retries with backoff on transport failures and 5xx (never on other 4xx:
+//    those are the request's fault, and never on 429: un tope de uso no se
+//    destraba en un segundo y medio, y reintentarlo gasta más cupo), with an
+//    X-Request-Id the server can use to de-duplicate a retried POST it already
+//    applied;
 //  - an offline queue on the SD card for POSTs that must not be lost when the
 //    device has no network (reminders, sync). flushQueue() replays it in order
 //    whenever WiFi is up; entries the server rejects with a 4xx are dropped.
