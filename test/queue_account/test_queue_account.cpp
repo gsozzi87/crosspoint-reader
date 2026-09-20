@@ -67,6 +67,36 @@ int main() {
     }
   }
 
+  // ── REV-055: el sello VACÍO es un sello ──────────────────────────────────
+  //
+  // `""` es la cuenta del servidor de un solo usuario: una identidad conocida,
+  // no una ausente. `enqueue()` escribe el campo SIEMPRE, así que estas tres
+  // tienen que distinguirse — y antes las dos primeras eran la MISMA cosa
+  // adentro del archivo.
+  {
+    const queueacct::Session unoSoloTrasCambio{"", true};
+
+    // 1. Entrada NUEVA del modo de un solo usuario (sellada con ""), en una
+    //    sesión donde ADEMÁS se detectó un cambio de cuenta. Tiene que salir:
+    //    es del dueño de ahora y la acaba de crear. Ésta es la que se perdía.
+    chk("nueva con sello vacío, aunque hubo cambio", queueacct::allowed(sellada(""), unoSoloTrasCambio), true);
+
+    // 2. Entrada de verdad vieja (sin campo) con un cambio reciente: sigue
+    //    bloqueada. Si esto se aflojara, volveríamos a REV-017.
+    chk("vieja sin sello, con cambio", queueacct::allowed(vieja(), unoSoloTrasCambio), false);
+
+    // 3. Sellada con otra cuenta: bloqueada, como siempre.
+    chk("sellada con otra, en un solo usuario", queueacct::allowed(sellada("ana@x"), unoSoloTrasCambio), false);
+
+    // Y el motivo de las dos que no salen sigue siendo distinto.
+    const char* a = queueacct::refusal(vieja(), unoSoloTrasCambio);
+    const char* b = queueacct::refusal(sellada("ana@x"), unoSoloTrasCambio);
+    if (!a || !b || std::string(a) == std::string(b)) {
+      printf("FALLO: los motivos de REV-055 no distinguen\n");
+      ++fallos;
+    }
+  }
+
   if (fallos) {
     printf("%d fallo(s)\n", fallos);
     return 1;

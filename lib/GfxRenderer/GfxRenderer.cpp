@@ -11,7 +11,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 
+#include "DrawScope.h"
 #include "FontCacheManager.h"
 
 namespace {
@@ -559,6 +561,22 @@ static void renderCharImpl(const GfxRenderer& renderer, GfxRenderer::RenderMode 
 
 // IMPORTANT: This function is in critical rendering path and is called for every pixel. Please keep it as simple and
 // efficient as possible.
+
+namespace gfxscope {
+namespace {
+char g_activity[32] = "?";
+const char* g_op = "?";
+}  // namespace
+const char* activity() { return g_activity; }
+const char* op() { return g_op; }
+void setActivity(const char* tag) {
+  if (!tag || !*tag) tag = "?";
+  std::strncpy(g_activity, tag, sizeof(g_activity) - 1);
+  g_activity[sizeof(g_activity) - 1] = '\0';
+}
+void setOp(const char* tag) { g_op = tag ? tag : "?"; }
+}  // namespace gfxscope
+
 void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   int phyX = 0;
   int phyY = 0;
@@ -577,11 +595,31 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
   if (phyX < 0 || phyX >= panelWidth || phyY < 0 || phyY >= panelHeight) {
     static uint32_t clipped = 0;
     static uint32_t lastReport = 0;
+    // REV-056: se guarda QUIÉN dibujó el PRIMERO de la tanda, no el último. El
+    // último es el que justo cayó al final de la ventana de un segundo y puede
+    // ser de otra pantalla; el primero es el que abrió el problema.
+    // La pantalla se COPIA: `gfxscope::activity()` apunta a un buffer que se
+    // reescribe en cada pasada del loop, así que guardar el puntero haría que
+    // el "primero" dijera siempre la pantalla de AHORA. La operación sí es un
+    // literal y el puntero vale.
+    static char firstActivity[32] = "?";
+    static const char* firstOp = "?";
+    static int firstX = 0;
+    static int firstY = 0;
+    if (clipped == 0) {
+      std::strncpy(firstActivity, gfxscope::activity(), sizeof(firstActivity) - 1);
+      firstActivity[sizeof(firstActivity) - 1] = '\0';
+      firstOp = gfxscope::op();
+      firstX = x;
+      firstY = y;
+    }
     ++clipped;
     const uint32_t now = millis();
     if (now - lastReport >= 1000) {
       lastReport = now;
-      LOG_ERR("GFX", "%lu pixeles fuera de pantalla (ultimo %d,%d)", static_cast<unsigned long>(clipped), x, y);
+      LOG_ERR("GFX", "%lu pixeles fuera de pantalla (primero %d,%d en «%s / %s»; ultimo %d,%d en «%s / %s»)",
+              static_cast<unsigned long>(clipped), firstX, firstY, firstActivity, firstOp, x, y, gfxscope::activity(),
+              gfxscope::op());
       clipped = 0;
     }
     return;
@@ -642,6 +680,8 @@ int GfxRenderer::getTextWidth(const int fontId, const char* text, const EpdFontF
 
 void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* text, const bool black,
                                    const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
+  const gfxscope::Op scope("drawCenteredText");  // REV-056: quien dibuja fuera de pantalla
+
   // Un texto mas ancho que la pantalla dejaba x en negativo y drawPixel logueaba
   // "Outside range" UNA VEZ POR PIXEL: miles de lineas por cartel y el log del
   // aparato inservible. Se trunca contra el ancho real antes de centrar.
@@ -658,6 +698,8 @@ void GfxRenderer::drawCenteredText(const int fontId, const int y, const char* te
 
 void GfxRenderer::drawText(const int fontId, const int x, const int y, const char* text, const bool black,
                            const EpdFontFamily::Style style, const BidiUtils::BidiBaseDir baseDir) const {
+  const gfxscope::Op scope("drawText");  // REV-056: quien dibuja fuera de pantalla
+
   // cannot draw a NULL / empty string
   if (text == nullptr || *text == '\0') {
     return;
@@ -787,6 +829,8 @@ const char* resolveVisualText(const char* text, std::string& visualBuffer, const
 }  // namespace
 
 void GfxRenderer::drawLine(int x1, int y1, int x2, int y2, const bool state) const {
+  const gfxscope::Op scope("drawLine");  // REV-056: quien dibuja fuera de pantalla
+
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
   if (x1 == x2) {
     if (y2 < y1) {
@@ -829,12 +873,16 @@ void GfxRenderer::drawLine(int x1, int y1, int x2, int y2, const bool state) con
 }
 
 void GfxRenderer::drawLine(int x1, int y1, int x2, int y2, const int lineWidth, const bool state) const {
+  const gfxscope::Op scope("drawLine");  // REV-056: quien dibuja fuera de pantalla
+
   for (int i = 0; i < lineWidth; i++) {
     drawLine(x1, y1 + i, x2, y2 + i, state);
   }
 }
 
 void GfxRenderer::drawRect(const int x, const int y, const int width, const int height, const bool state) const {
+  const gfxscope::Op scope("drawRect");  // REV-056: quien dibuja fuera de pantalla
+
   drawLine(x, y, x + width - 1, y, state);
   drawLine(x + width - 1, y, x + width - 1, y + height - 1, state);
   drawLine(x + width - 1, y + height - 1, x, y + height - 1, state);
@@ -844,6 +892,8 @@ void GfxRenderer::drawRect(const int x, const int y, const int width, const int 
 // Border is inside the rectangle
 void GfxRenderer::drawRect(const int x, const int y, const int width, const int height, const int lineWidth,
                            const bool state) const {
+  const gfxscope::Op scope("drawRect");  // REV-056: quien dibuja fuera de pantalla
+
   // Keep the border inside [x, x+width) like the thin overload: the previous
   // right/bottom edges at x+width / y+height sat one pixel outside the rect,
   // so stroked boxes looked shifted against fills computed from the rect.
@@ -857,6 +907,8 @@ void GfxRenderer::drawRect(const int x, const int y, const int width, const int 
 
 void GfxRenderer::drawArc(const int maxRadius, const int cx, const int cy, const int xDir, const int yDir,
                           const int lineWidth, const bool state) const {
+  const gfxscope::Op scope("drawArc");  // REV-056: quien dibuja fuera de pantalla
+
   const int stroke = std::min(lineWidth, maxRadius);
   const int innerRadius = std::max(maxRadius - stroke, 0);
   const int outerRadius = maxRadius;
@@ -900,6 +952,8 @@ void GfxRenderer::drawArc(const int maxRadius, const int cx, const int cy, const
 // Border is inside the rectangle, rounded corners
 void GfxRenderer::drawRoundedRect(const int x, const int y, const int width, const int height, const int lineWidth,
                                   const int cornerRadius, bool state) const {
+  const gfxscope::Op scope("drawRoundedRect");  // REV-056: quien dibuja fuera de pantalla
+
   drawRoundedRect(x, y, width, height, lineWidth, cornerRadius, true, true, true, true, state);
 }
 
@@ -907,6 +961,8 @@ void GfxRenderer::drawRoundedRect(const int x, const int y, const int width, con
 void GfxRenderer::drawRoundedRect(const int x, const int y, const int width, const int height, const int lineWidth,
                                   const int cornerRadius, bool roundTopLeft, bool roundTopRight, bool roundBottomLeft,
                                   bool roundBottomRight, bool state) const {
+  const gfxscope::Op scope("drawRoundedRect");  // REV-056: quien dibuja fuera de pantalla
+
   if (lineWidth <= 0 || width <= 0 || height <= 0) {
     return;
   }
@@ -1216,6 +1272,8 @@ void GfxRenderer::maskRoundedRectOutsideCorners(const int x, const int y, const 
 
 template <Color color>
 void GfxRenderer::fillArc(const int maxRadius, const int cx, const int cy, const int xDir, const int yDir) const {
+  const gfxscope::Op scope("fillArc");  // REV-056: quien dibuja fuera de pantalla
+
   if (maxRadius <= 0) return;
 
   if constexpr (color == Color::Clear) {
@@ -1255,12 +1313,16 @@ void GfxRenderer::fillArc(const int maxRadius, const int cx, const int cy, const
 
 void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, const int height, const int cornerRadius,
                                   const Color color) const {
+  const gfxscope::Op scope("fillRoundedRect");  // REV-056: quien dibuja fuera de pantalla
+
   fillRoundedRect(x, y, width, height, cornerRadius, true, true, true, true, color);
 }
 
 void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, const int height, const int cornerRadius,
                                   bool roundTopLeft, bool roundTopRight, bool roundBottomLeft, bool roundBottomRight,
                                   const Color color) const {
+  const gfxscope::Op scope("fillRoundedRect");  // REV-056: quien dibuja fuera de pantalla
+
   if (width <= 0 || height <= 0) {
     return;
   }
@@ -1327,6 +1389,8 @@ void GfxRenderer::fillRoundedRect(const int x, const int y, const int width, con
 }
 
 void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, const int width, const int height) const {
+  const gfxscope::Op scope("drawImage");  // REV-056: quien dibuja fuera de pantalla
+
   int rotatedX = 0;
   int rotatedY = 0;
   rotateCoordinates(orientation, x, y, &rotatedX, &rotatedY, panelWidth, panelHeight);
@@ -1350,6 +1414,8 @@ void GfxRenderer::drawImage(const uint8_t bitmap[], const int x, const int y, co
 }
 
 void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, const int size) const {
+  const gfxscope::Op scope("drawIcon");  // REV-056: quien dibuja fuera de pantalla
+
   // Plot the icon pixel-by-pixel through drawPixel (which applies the orientation
   // transform) instead of the byte-aligned framebuffer blit. The blit snaps the
   // icon's position to 8px (one byte) along the rotated axis, which prevents it
@@ -1371,6 +1437,8 @@ void GfxRenderer::drawIcon(const uint8_t bitmap[], const int x, const int y, con
 
 void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, const int maxWidth, const int maxHeight,
                              const float cropX, const float cropY) const {
+  const gfxscope::Op scope("drawBitmap");  // REV-056: quien dibuja fuera de pantalla
+
   if (fontCacheManager_ && fontCacheManager_->isScanning()) return;
   // For 1-bit bitmaps, use optimized 1-bit rendering path (no crop support for 1-bit)
   if (bitmap.is1Bit() && cropX == 0.0f && cropY == 0.0f) {
@@ -1485,6 +1553,8 @@ void GfxRenderer::drawBitmap(const Bitmap& bitmap, const int x, const int y, con
 
 void GfxRenderer::drawBitmap1Bit(const Bitmap& bitmap, const int x, const int y, const int maxWidth,
                                  const int maxHeight) const {
+  const gfxscope::Op scope("drawBitmap1Bit");  // REV-056: quien dibuja fuera de pantalla
+
   float scale = 1.0f;
   bool isScaled = false;
   if (maxWidth > 0 && bitmap.getWidth() > maxWidth) {

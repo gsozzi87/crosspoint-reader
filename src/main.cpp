@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <BoardConfig.h>
+#include <DrawScope.h>
 #include <Epub.h>
 #include <FontCacheManager.h>
 #include <FontDecompressor.h>
@@ -1610,6 +1611,11 @@ void loop() {
   // loop ya volvió a correr: la cancelación cumplió y no puede quedar puesta
   // para matar lo próximo que se pida.
   netpump::beginPass();
+
+  // REV-056: qué pantalla está en frente, para que la línea de "pixeles fuera
+  // de pantalla" diga QUIÉN dibujó en vez de sólo dónde. Es una copia de hasta
+  // 31 bytes por pasada del loop; el camino del píxel no paga nada.
+  gfxscope::setActivity(activityManager.currentActivityName());
 
   if (BoardConfig::isWS397()) {
     // OK is plain Confirm here (DigitalButtons): the shared confirm/power

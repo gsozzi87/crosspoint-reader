@@ -2370,7 +2370,7 @@ que sí deben reintentarse más tarde.
 
 
 ## REV-055 — Entradas nuevas sin sello tras cambio a identidad vacía pueden descartarse como legacy
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P0
 Subsystem: firmware / offline queue / account identity
 
@@ -2406,11 +2406,41 @@ Tests:
 Impacto: una nota/tarea/recordatorio creado offline después de una transición de identidad podría
 desaparecer al intentar sincronizar. Por definición del protocolo, pérdida de datos = P0.
 
-Executor response:
+Executor response: CONFIRMED. State: FIXED_PENDING_REVIEW.
+
+Verificado contra el árbol, línea 417 de `ServerClient.cpp`: `if (!account_.empty()) item["acct"] =
+account_;`. El escenario del revisor se sostiene entero y el razonamiento es el correcto: **la cuenta
+vacía es una identidad CONOCIDA —es el servidor de un solo usuario—, no una identidad ausente.**
+Escribiendo el sello sólo cuando había algo, una entrada NUEVA de ese modo salía byte a byte igual a
+una de un firmware anterior a REV-017, y `queueacct` la rechazaba si en esa sesión se había detectado
+un cambio. Se perdía una acción que el usuario acababa de crear.
+
+Fix, exactamente el recomendado: `item["acct"] = account_;` **siempre**, también vacío. La ausencia
+del campo pasa a significar UNA sola cosa: la escribió un firmware anterior. La regla de lectura
+(`queueacct::allowed`) no cambió ni hizo falta cambiarla — una entrada sellada con `""` en una sesión
+con cuenta `""` ya salía por la regla 1; lo que faltaba era que el escritor la sellara.
+
+Documentado en `QueueAccount.h` junto a la regla que lo lee, para que no se separen.
+
+Tests: los tres que pediste, en `./test/queue_account/run.sh`:
+- `acct:""` nueva + sesión de un solo usuario **con `changedThisSession=true`** → SALE (es la que se
+  perdía);
+- entrada realmente legacy (sin campo) + cambio reciente → sigue BLOQUEADA (si esto se aflojara,
+  volveríamos a REV-017);
+- sellada con otra cuenta → sigue BLOQUEADA;
+- y que los dos motivos del log sigan siendo distintos.
+Verificado que atrapan la regresión: haciendo que un sello vacío no cuente como sello, falla el
+primero.
+
+NEEDS_HARDWARE / límite honesto: el lado ESCRITOR (`enqueue`, que usa ArduinoJson y la SD) no es
+probable de escritorio; lo que queda cubierto es la DECISIÓN, que es donde el defecto se manifestaba.
+Mismo cajón que REV-016 y que la prueba de punta a punta de REV-017.
+Firmware: `pio run -e ws397` limpio. **Sin OTA.**
+
 Reviewer final check:
 
 ## REV-056 — El verdadero origen de GFX (480,447) sigue sin identificar
-State: OPEN
+State: FIXED_PENDING_REVIEW — instrumentado; la causa sigue OPEN a propósito
 Severity: P2
 Subsystem: firmware / rendering / Lua
 
@@ -2436,7 +2466,50 @@ Impacto: el renderer descarta el píxel y por eso no hay corrupción de framebuf
 está pidiendo dibujar fuera del viewport de forma repetida. Puede verse recortado/deformado y ensucia
 el diagnóstico. El origen real sigue abierto.
 
-Executor response:
+Executor response: ACEPTADA la refutación de REV-053, y **no hago otro arreglo por inferencia**.
+State: FIXED_PENDING_REVIEW (la instrumentación; la causa sigue abierta a propósito).
+
+Tenés razón en las dos cosas: `fillRectImpl()` ya recortaba antes de mi cambio y el camino `scale=1`
+también limita `px`/`py`, así que REV-053 no puede ser la causa. Es la cuarta hipótesis mía que cae
+en esta sesión, y la única que además ya había pasado por un "arreglo": exactamente lo que esta línea
+del protocolo existe para frenar.
+
+Lo que hice es lo que pediste, instrumentación y nada más:
+
+- **`lib/GfxRenderer/DrawScope.h`** (nuevo): dos etiquetas, la PANTALLA y la OPERACIÓN de turno.
+  Punteros, sin asignación de memoria. Cuesta dos escrituras por operación de dibujo — **no por
+  píxel**.
+- **La línea del log ahora nombra al culpable**, y nombra al PRIMERO de la tanda, no al último (el
+  último es el que cayó justo al final de la ventana de un segundo y puede ser de otra pantalla):
+
+      [GFX] 80 pixeles fuera de pantalla (primero 480,447 en «LuaApps / cp.image»;
+            ultimo 480,447 en «LuaApps / drawText»)
+
+- **Quién pone las etiquetas**: `main.cpp` pone la pantalla una vez por pasada del loop
+  (`activityManager.currentActivityName()`), y hay un `gfxscope::Op` en las seis primitivas `cp` de
+  Lua y en las **dieciséis** definiciones de las primitivas públicas del renderer que nombraste como
+  candidatas — `drawText`, `drawCenteredText`, `drawLine`, `drawRect`, `drawArc`, `drawRoundedRect`,
+  `fillArc`, `fillRoundedRect`, `drawImage`, `drawIcon`, `drawBitmap`, `drawBitmap1Bit`. Si el
+  culpable es el chrome de una Activity y no Lua, la línea lo va a decir igual.
+- **Dos trampas de la propia instrumentación, cerradas** (una instrumentación que miente es peor que
+  ninguna):
+  1. el nombre de la Activity sale del `c_str()` de un objeto vivo, y la línea se imprime después —
+     guardarlo como puntero sería un uso después de liberar **en un camino que existe sólo para
+     diagnosticar**. Se copia a un buffer fijo;
+  2. el `firstActivity` guardado apuntaba al buffer que `main.cpp` reescribe en cada pasada, así que
+     el "primero" habría dicho siempre la pantalla de AHORA. También se copia. Lo encontré releyendo
+     el diff, no compilando.
+
+**La causa sigue abierta y así la dejo.** El próximo dato es un log del aparato con esta versión
+puesta reproduciendo la Mascota hasta que salga `480,447`. Recién ahí se toca algo.
+
+Sobre abaratar o sacar la instrumentación después: mi opinión es **dejarla**. Es una escritura de
+puntero por primitiva, no por píxel; el binario no se movió de 87,7 % de flash; y la línea sin
+culpable ya nos costó una hipótesis equivocada y un arreglo publicado al pepe. Si preferís que salga
+una vez cerrado el caso, decilo y la saco.
+
+Firmware: `pio run -e ws397` limpio.
+
 Reviewer final check:
 
 ---
@@ -2641,6 +2714,23 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
   FIXED_PENDING_REVIEW hasta que termine su CI. 1.5.119 NO lleva este cambio de firmware.
 - REV-051 sigue OPEN: disponibilidad de Railway durante deploy es independiente del 429 real de Groq.
 - Ninguna OTA publicada por el Reviewer.
+
+### 2026-09-20 — Executor (Claude) — REV-055 (P0) y REV-056, sobre ws397 83df40f
+- **REV-055 CONFIRMED y arreglado.** Tu escenario se sostiene entero: `enqueue()` sellaba sólo si la
+  cuenta no estaba vacía, así que una entrada NUEVA del modo de un solo usuario era indistinguible de
+  una legacy y se perdía tras un cambio de identidad. Ahora se sella SIEMPRE, también vacío; la
+  ausencia del campo significa sólo "firmware anterior". Los tres tests que pediste, más el de los
+  motivos distintos, en `./test/queue_account/run.sh`.
+- **REV-056: acepto la refutación de REV-053 y no toqué ninguna primitiva más.** Instrumenté, como
+  pediste: `DrawScope.h`, la pantalla puesta desde `main.cpp` por pasada, y `gfxscope::Op` en las
+  seis primitivas `cp` y en las dieciséis del renderer que nombraste. La línea del log ahora dice
+  quién dibujó el PRIMER píxel afuera. Cerré dos trampas de la propia instrumentación (un puntero a
+  `c_str()` que podía colgar, y un `firstActivity` que habría dicho siempre la pantalla actual).
+  **La causa queda abierta**: el próximo dato es un log del aparato reproduciendo la Mascota.
+- REV-054 queda esperando la CI final, como pediste.
+- Diecisiete suites en verde, `tsc --noEmit` limpio, `pio run -e ws397` limpio.
+- **Sin OTA**: `.ws397-build` sigue en 119 y `/firmware/latest` entrega 1.5.119. Nada de esto está en
+  el aparato del dueño todavía — REV-056 no sirve hasta que se publique, y eso lo decide él.
 
 # Session log
 
