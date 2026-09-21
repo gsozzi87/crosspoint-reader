@@ -2700,7 +2700,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
-State: OPEN
+State: FIXED_PENDING_REVIEW (2ª vuelta)
 Severity: P1
 Subsystem: freeink-sdk / deep sleep / recovery
 
@@ -2782,8 +2782,33 @@ propia tanda para no mezclar un cambio de la placa con uno de upstream.
 Firmware: `pio run -e ws397` limpio. **Sin OTA.**
 Reviewer final check:
 
+Executor response (2ª vuelta): tenés razón en todo, **y me debo una corrección grande**.
+
+En la primera vuelta escribí que "la ws397 no pasa por ahí". **Es falso.**
+`HalPowerManager::startDeepSleep()` termina en `freeink::PowerManager::deepSleepUntilPowerButton()`
+— lo verifiqué siguiendo la cadena entera esta vez. O sea que las dos mitades del SDK que marcaste
+(el retorno ignorado y el `while` sin tope) están en el camino de esta placa, y yo las dejé abiertas
+por una lectura apurada.
+
+Arreglado en el submódulo (`freeink-sdk` b78c9ab, exportado como
+`docs/ws397/0027-*.patch`, empujado a la rama `ws397` del SDK; `verificar-reconstruible.sh` en verde
+con 27 parches):
+- `deepSleepUntilPowerButton()` mira el retorno de `armPowerButtonWakeup()` y, si no se pudo armar,
+  arma un timer de cinco minutos antes de dormir. Un timer no necesita GPIO y no se puede rechazar
+  por razones de pin, así que es la única fuente que siempre queda. Pisa un timer que el llamador
+  hubiera armado para una alarma, y eso es el mal menor: una alarma tarde le gana a un aparato que
+  no despierta nunca.
+- `waitForPowerButtonRelease()` tiene tope de ocho segundos. Un pin trabado en el nivel de apretado
+  colgaba el apagado entero ahí, sin llegar a dormir ni volver a la UI.
+
+Y la tercera que marcaste, del lado nuestro: el timer de rescate de `ensureSomeWakeSource()` se
+armaba sin mirar su propio `esp_err_t`. Ahora se mira, y **si tampoco se puede armar el timer no se
+duerme: se reinicia**. Dormir es el paso que no se deshace; un reinicio sí se deshace solo — el
+despertar del sueño profundo es un reset igual, así que volver por ahí no es peor, y al menos vuelve.
+Reviewer final check:
+
 ## REV-061 — Fallar al cortar los rails para dormir es silencioso para la política de energía
-State: OPEN
+State: FIXED_PENDING_REVIEW (2ª vuelta)
 Severity: P2
 Subsystem: firmware / PMIC / battery
 
@@ -2825,7 +2850,14 @@ en RTC y el próximo boot lo informa. Pero no implementa los 2-3 retries del rea
 Un NACK transitorio al final del sueño todavía puede dejar ALDO1-3 encendidos toda la noche; ahora
 sabremos que pasó, pero no se evita.
 
+Executor response (2ª vuelta): CONFIRMED. Tenías razón en que diagnosticar no es evitar: la marca en
+RTC RAM cuenta que pasó, pero el corte seguía siendo de un intento.
 
+Fix: `railsOffForSleep()` reintenta **tres veces**, y reintenta la lectura Y la escritura — si no se
+puede leer 0x90 no se sabe qué escribir, así que el read es tan crítico como el write. Cuesta
+milisegundos en el último paso antes de dormir y ataca la causa; la marca en RTC RAM se queda como
+está, para el caso en que los tres intentos fallen.
+Reviewer final check:
 
 ## REV-062 — La red de seguridad de reposo corta música legítima después de ~30 min
 State: VERIFIED
@@ -3294,7 +3326,7 @@ Reviewer final check:
 
 
 ## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
-State: OPEN
+State: FIXED_PENDING_REVIEW (2ª vuelta)
 Severity: P1
 Subsystem: firmware / wake / PMIC / rail restore
 
@@ -3369,6 +3401,20 @@ Fix:
 
 El `delay(20)` de los LDO se mantiene en los dos casos: si la escritura salió pero la relectura
 falló, mejor esperar igual que arrancar el panel sobre un riel a medio subir.
+Reviewer final check:
+
+Executor response (2ª vuelta): CONFIRMED el caso que faltaba, que era justo el que el hallazgo
+pedía y yo había arreglado a medias.
+
+- `readReg(REG_LDO_ONOFF0)` era de UN intento: ahora son tres. Tenías razón en que el read es tan
+  crítico como el write — sin saber qué hay en 0x90 no se sabe qué escribir, y si no se lee se
+  saltaba la restauración entera.
+- Y el arranque ya no sigue degradado en silencio. `railsConfirmed_` (con getter) queda en false si
+  no se pudo leer 0x90 o si el reencendido no se pudo confirmar, y el `setup()` entra en un
+  **recovery explícito**: ciclo de corriente a los rieles y reinicio, UNA sola vez por encendido
+  (marca en RTC RAM, mismo patrón que el rescate del panel). Si al volver sigue sin confirmarse, se
+  arranca igual y el log lo dice: un bucle de reinicios es peor que una pantalla muerta con
+  diagnóstico.
 Reviewer final check:
 
 ## REV-071 — En WS397 el deep sleep no ejecuta onExit() de la Activity actual
@@ -3486,7 +3532,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: OPEN
+State: FIXED_PENDING_REVIEW (2ª vuelta)
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3541,6 +3587,16 @@ oportunidad, y esa segunda oportunidad quedaba bloqueada justo en el caso para e
 Fix: se mira el retorno; la bandera se pone DESPUÉS y sólo si salió bien; y el caso "no hay nada que
 sonar" (`due == 0`) sí latchea, porque ahí no hay nada que reintentar. El fallo deja su línea con el
 código de error.
+Reviewer final check:
+
+Executor response (2ª vuelta): CONFIRMED lo que quedaba. El primer fallo ya permitía el segundo
+intento, pero si el segundo también fallaba el aparato se dormía como si nada y el vencimiento se
+perdía.
+
+Fix: se cuenta el intento (`reminderRetries`). En el SEGUNDO fallo, antes de resignar el
+vencimiento, se prueba con un plazo **corto** de 60 s: volver en un minuto y recalcular llega tarde,
+pero le gana por lejos a no sonar nunca. Sólo se hace a partir del segundo intento, para no gastarlo
+en la primera vuelta — que es la que el reintento en silencio de `sleepNow()` todavía puede salvar.
 Reviewer final check:
 
 ## REV-074 — El light sleep ignora si falló su timer y puede no volver para deep sleep ni alarmas
@@ -4528,6 +4584,23 @@ Reviewer final check:
   el caso normal robusto y DETECTAN el fallo, pero no lo EVITAN ni reintentan. Van en la próxima
   tanda, y esta vez con la CI mirada antes de cada merge.
 - REV-067 quedó fuera de la 1.5.120 (entró después). Correcto lo que anotó el Reviewer.
+
+### 2026-09-21 — Executor (Claude) — los cuatro reabiertos, y una corrección que me debo
+- **CORRECCIÓN**: en la primera vuelta de REV-060 escribí que "la ws397 no pasa por" el camino del
+  SDK. Es FALSO — `HalPowerManager::startDeepSleep()` termina en `deepSleepUntilPowerButton()`.
+  Seguí la cadena entera esta vez. El Reviewer tenía razón y yo dejé abierta media falla por una
+  lectura apurada.
+- REV-060: arreglado en el submódulo (`freeink-sdk` b78c9ab, `docs/ws397/0027-*.patch`, empujado a
+  la rama ws397 del SDK, `verificar-reconstruible.sh` en verde con 27 parches) + el timer de rescate
+  ahora se verifica, y si NI el timer se puede armar, **no se duerme: se reinicia**.
+- REV-073: en el segundo fallo se cae a un plazo corto de 60 s en vez de resignar el vencimiento.
+- REV-070: el read de 0x90 se reintenta, y `railsConfirmed_` dispara un recovery explícito (ciclo de
+  corriente + reinicio, una vez por encendido) en vez de un arranque degradado en silencio.
+- REV-061: `railsOffForSleep()` reintenta tres veces, read y write.
+- El patrón común de los cuatro, que el Reviewer nombró y yo no había visto: mis arreglos hacían el
+  caso normal robusto y DETECTABAN el fallo, pero no lo EVITABAN ni reintentaban. Detectar no es
+  evitar.
+- `pio run -e ws397` limpio, `ascii_identifiers` en verde. **Sin OTA**: 1.5.120 sigue publicada.
 
 # Session log
 
