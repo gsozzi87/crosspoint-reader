@@ -3257,6 +3257,126 @@ Executor response:
 Reviewer final check:
 
 
+## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
+State: OPEN
+Severity: P1
+Subsystem: firmware / deep sleep / reminders / timer wake
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`armReminderWake()` hace actualmente:
+1. obtiene la hora;
+2. pone `reminderWakeArmed = true`;
+3. calcula el próximo vencimiento;
+4. llama `esp_sleep_enable_timer_wakeup(...)`;
+5. ignora el `esp_err_t` devuelto.
+
+`enterDeepSleep()` llama primero a `armReminderWake()` con logging y más tarde `sleepNow()`
+la vuelve a llamar en modo quiet como segunda oportunidad. Pero esa segunda llamada empieza con:
+
+    if (reminderWakeArmed) return;
+
+Por tanto, si el primer `esp_sleep_enable_timer_wakeup()` falla, el bool ya quedó latcheado en true
+y se bloquea el único retry que el diseño pretendía tener.
+
+Impacto visible:
+- timer/recordatorio pendiente puede no despertar el dispositivo;
+- queda mudo hasta que una persona pulse OK u otra fuente despierte el ESP;
+- el log puede haber dicho "Reminder wake in N s" aunque el IDF haya rechazado el armado;
+- el error es especialmente difícil de reproducir porque depende de una falla puntual durante la
+  transición a deep sleep.
+
+Fix recomendado:
+- `reminderWakeArmed` debe significar "confirmado por IDF", no "lo intenté";
+- sólo ponerlo true si `esp_sleep_enable_timer_wakeup() == ESP_OK`;
+- loguear el código de error y dejar la bandera false para que `sleepNow()` pueda reintentar;
+- si ambos intentos fallan, no entrar silenciosamente a un sueño sin la alarma crítica o dejar un
+  diagnóstico/recovery explícito;
+- test/fault injection: primer arm falla y segundo funciona => la alarma sigue despertando.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-074 — El light sleep ignora si falló su timer y puede no volver para deep sleep ni alarmas
+State: OPEN
+Severity: P1
+Subsystem: firmware / light sleep / wake timer / power policy
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`IdleSleep::armWakeSources(budgetMs)` valida los GPIO de wake y
+`esp_sleep_enable_gpio_wakeup()`, pero para el timer hace:
+
+    if (budgetMs > 0)
+        esp_sleep_enable_timer_wakeup((uint64_t)budgetMs * 1000ULL);
+    return true;
+
+El retorno de `esp_sleep_enable_timer_wakeup()` se ignora.
+
+Ese `budgetMs` no es opcional en la política actual: `main.cpp` lo limita a lo que falte para:
+- la próxima alarma/timer;
+- y, siempre que auto-sleep esté activo, lo que falte para el deep sleep de 10 min.
+
+Después `IdleSleep::tick()` entra en `esp_light_sleep_start()`. Si el timer no quedó realmente
+armado pero los wake GPIO sí, ese light sleep puede durar hasta que alguien pulse una tecla.
+
+Consecuencias:
+- no vuelve al loop en el deadline del próximo recordatorio/timer;
+- tampoco vuelve para ejecutar el auto deep-sleep al cumplirse los 10 min;
+- puede quedarse mucho más tiempo en light sleep (más consumo que deep sleep) hasta interacción humana;
+- `armWakeSources()` devuelve true y no activa su camino de rollback/deshabilitación, porque cree que
+  todo quedó correctamente armado.
+
+Fix recomendado:
+- comprobar `esp_sleep_enable_timer_wakeup()`;
+- si falla y `budgetMs > 0`, tratar `armWakeSources()` como fallido y ejecutar el rollback existente;
+- no entrar a light sleep sin la fuente que impone el deadline;
+- test: timer-arm failure => NO se entra al sleep ilimitado; alarma y deadline de deep sleep no se pierden.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-075 — Si falla el I2C al desactivar el cargador de la CR2032, el firmware afirma que lo apagó y continúa
+State: OPEN
+Severity: P1
+Subsystem: firmware / PMIC / backup battery / hardware safety
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+El propio código documenta que la pila de respaldo del WS397 es una CR2032 PRIMARIA y que
+`REG_MODULE_EN bit2` NO debe quedar habilitado porque implicaría cargar una celda no recargable.
+
+En `PowerKey::begin()`:
+1. lee `REG_MODULE_EN`;
+2. si detecta `MODULE_EN_BTN_BAT` encendido, llama `writeReg()` para limpiarlo;
+3. IGNORA el bool devuelto por `writeReg()`;
+4. inmediatamente registra:
+   "el PMIC estaba CARGANDO la pila de respaldo (...): es una CR2032, se apaga".
+
+No hay readback, retry ni estado de fallo.
+
+Así, una transacción I2C fallida en ese punto deja exactamente el estado que el código intenta evitar:
+el cargador puede seguir habilitado sobre una CR2032 primaria mientras el firmware continúa y el log
+afirma falsamente que ya fue apagado.
+
+Impacto:
+- degradación acelerada de la CR2032 y pérdida de RTC al agotarse;
+- calentamiento/hinchado/fuga son riesgos inherentes a intentar recargar una celda primaria;
+- el diagnóstico queda invertido: el log asegura "se apaga" aunque el write haya fallado.
+
+Fix recomendado:
+- tratar este bit como configuración de seguridad: write + readback obligatorio;
+- 2-3 retries cortos/acotados;
+- loguear "apagado confirmado" sólo tras readback con bit2=0;
+- si no se puede confirmar, mostrar/retener un fault explícito y reintentar en forma segura durante el boot;
+- test/fault injection: write fallido nunca debe producir el mensaje de éxito ni considerarse resuelto.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
