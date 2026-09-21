@@ -424,12 +424,28 @@ static void armReminderWake(const bool quiet = false) {
     if (!quiet) LOG_ERR("MAIN", "no clock: nothing armed, the timer will not ring asleep");
     return;
   }
-  reminderWakeArmed = true;
   const time_t due = nextWakeInstant(now);
-  if (due == 0) return;
+  if (due == 0) {
+    // No hay nada que sonar: no hay nada que reintentar tampoco, así que se
+    // latchea y listo.
+    reminderWakeArmed = true;
+    return;
+  }
   uint64_t seconds = due > now ? static_cast<uint64_t>(due - now) : 0;
   if (seconds < 5) seconds = 5;
-  esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
+  // REV-073: el retorno se mira, y la bandera se pone DESPUÉS y sólo si salió
+  // bien. Antes se latcheaba arriba de todo: si esta llamada fallaba, el
+  // `if (reminderWakeArmed) return;` del principio se comía el único reintento
+  // que el diseño tenía previsto — `enterDeepSleep()` llama a esto con log y
+  // `sleepNow()` lo repite en silencio como segunda oportunidad, y esa segunda
+  // oportunidad quedaba bloqueada justo en el caso para el que existe.
+  const esp_err_t err = esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
+  if (err != ESP_OK) {
+    LOG_ERR("MAIN", "no se pudo armar el despertador del recordatorio (%llu s, err %d): se reintenta",
+            (unsigned long long)seconds, (int)err);
+    return;
+  }
+  reminderWakeArmed = true;
   wakeTimerArmed = true;
   if (!quiet) LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
 }

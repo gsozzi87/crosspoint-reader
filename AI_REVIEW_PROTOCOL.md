@@ -3302,7 +3302,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3341,9 +3341,20 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED. Verificado en `armReminderWake()` (`src/main.cpp`): `reminderWakeArmed`
+se ponía en true ANTES de calcular el vencimiento y antes de armar, y el `esp_err_t` de
+`esp_sleep_enable_timer_wakeup()` se ignoraba. Con eso, un fallo al armar dejaba la bandera latcheada
+y el `if (reminderWakeArmed) return;` del principio se comía el único reintento que el diseño tenía
+previsto — `enterDeepSleep()` llama con log y `sleepNow()` repite en silencio como segunda
+oportunidad, y esa segunda oportunidad quedaba bloqueada justo en el caso para el que existe.
+
+Fix: se mira el retorno; la bandera se pone DESPUÉS y sólo si salió bien; y el caso "no hay nada que
+sonar" (`due == 0`) sí latchea, porque ahí no hay nada que reintentar. El fallo deja su línea con el
+código de error.
+Reviewer final check:
 
 ## REV-074 — El light sleep ignora si falló su timer y puede no volver para deep sleep ni alarmas
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / light sleep / wake timer / power policy
 
@@ -3381,6 +3392,20 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED. Verificado en `IdleSleep::armWakeSources()`: el
+`esp_sleep_enable_timer_wakeup()` del presupuesto se llamaba sin mirar el retorno y la función
+devolvía true igual.
+
+Fix: si falla, se anota y se devuelve **false**. El contrato de fallo ya existía y es el correcto —
+`tick()` desarma todo (`disarmWakeSources()`), apaga el reposo y lo dice—, así que esto se limita a
+usarlo. Y desarmar en la salida de fallo no es un detalle: armar sin dormir es la receta del watchdog
+de interrupciones de 1.5.97/99.
+
+Consecuencia del defecto, que es lo que lo hace P1: ese presupuesto no es decorativo. `main.cpp` lo
+recorta a lo que falte para la próxima alarma Y para el deep sleep de los diez minutos. Sin timer, el
+reposo no vuelve para ninguna de las dos: el aparato se queda en light sleep hasta que alguien
+apriete un botón y no baja nunca al sueño profundo.
+Reviewer final check:
 
 ## REV-075 — Si falla el I2C al desactivar el cargador de la CR2032, el firmware afirma que lo apagó y continúa
 State: OPEN
@@ -3506,7 +3531,7 @@ Reviewer final check:
 
 
 ## REV-078 — El wake GPIO del RTC se asume válido aunque gpio_wakeup_enable() pueda fallar
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / light sleep / RTC INT / reminder wake
 
@@ -3549,6 +3574,19 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED, y es el de peor consecuencia de los tres. Verificado: el
+`gpio_wakeup_enable(rtcIntPin_, GPIO_INTR_LOW_LEVEL)` se llamaba sin mirar el retorno.
+
+Por qué importa más que los otros: con `rtcIntUsable_` en true, `msUntilNextAlarm()` deja dormir **sin
+timer del ESP** cuando la alarma está a más de una hora. O sea toda la noche colgada de que ese pin
+despierte. Si el armado falló y nadie lo miró, no queda NINGUNA fuente: la alarma no suena y el
+aparato no vuelve hasta que alguien lo toque. Es el modo de fallo de REV-060 una capa más adentro.
+
+Fix: se mira el retorno y, si falla, además de devolver false **se baja `rtcIntUsable_`**. Eso es lo
+que evita el bucle: sin bajarla, `msUntilNextAlarm()` seguiría devolviendo "dormí sin timer" para
+siempre y cada intento fallaría igual. Bajándola, la política cae sola al timer de una hora — la
+alarma llega tarde en vez de no llegar, que es la degradación correcta.
+Reviewer final check:
 
 ## REV-079 — La configuración de IRQ del PWR se da por hecha aunque sus writes puedan fallar
 State: OPEN
@@ -4124,6 +4162,22 @@ diagnóstico— se arregla con un cable o con una sincronización. Así que el o
 Empezado por REV-060, que es el peor de todos: el aparato se duerme sin ninguna fuente de despertar.
 Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo + patch + push).
 - Sin OTA: `.ws397-build` sigue en 119.
+
+### 2026-09-21 — Executor (Claude) — cerrada la cadena de armado de wake (REV-060/073/074/078)
+- Los cuatro CONFIRMADOS contra el árbol y arreglados. Son la misma familia: un `esp_err_t` que nadie
+  mira, y el firmware sigue al paso irreversible como si hubiera salido bien.
+- REV-078 es el de peor consecuencia: con el INT del RTC dado por usable se duerme **sin timer** para
+  una alarma lejana, o sea toda la noche colgada de ese pin. Además de devolver false, ahora se baja
+  `rtcIntUsable_` para que la política caiga al timer de una hora en vez de reintentar lo mismo
+  eternamente.
+- REV-074 usa el contrato de fallo que ya existía (`tick()` desarma, apaga el reposo y lo dice).
+  Desarmar en la salida de fallo no es un detalle: armar sin dormir es el watchdog de 1.5.97/99.
+- REV-073 devuelve el reintento que el diseño tenía y la bandera se comía.
+- Ninguno es probable de escritorio (IDF + GPIO + I2C): NEEDS_HARDWARE para la confirmación, como el
+  resto de esta tanda. Lo que sí queda es que **todos dejan línea en el log**, que es lo que faltaba
+  para poder verlos sin cable.
+- `pio run -e ws397` limpio. Sin OTA: `.ws397-build` sigue en 119.
+- Sigue: REV-066 y REV-070 (misma familia, lado PMIC), después la tanda de la tarjeta (REV-064/057).
 
 # Session log
 
