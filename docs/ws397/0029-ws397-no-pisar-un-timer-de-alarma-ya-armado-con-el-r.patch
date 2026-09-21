@@ -1,0 +1,72 @@
+From 6abc5537d01fa6a6dfec77d49aeae91182ca05ad Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 21 Sep 2026 20:33:08 +0000
+Subject: [PATCH] ws397: no pisar un timer de alarma ya armado con el rescate
+ de 5 min (REV-087)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Hay UNA sola fuente de timer, asi que el fallback de deepSleepUntilPowerButton()
+REEMPLAZA el plazo que el llamador ya habia programado. Si el recordatorio
+vencia en 60 s y solo fallaba el wake por GPIO, la alarma pasaba a sonar a los
+5 minutos — en el camino que existe justamente para que el aparato sea mas
+resistente.
+
+Ahora el llamador puede decir que ya tiene un timer confirmado, y en ese caso
+no se toca nada: ese timer ES la fuente de despertar.
+---
+ libs/hardware/PowerManager/include/PowerManager.h |  6 +++++-
+ libs/hardware/PowerManager/src/PowerManager.cpp   | 12 +++++++++++-
+ 2 files changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/libs/hardware/PowerManager/include/PowerManager.h b/libs/hardware/PowerManager/include/PowerManager.h
+index e44ce3e..36d6199 100644
+--- a/libs/hardware/PowerManager/include/PowerManager.h
++++ b/libs/hardware/PowerManager/include/PowerManager.h
+@@ -62,7 +62,11 @@ class PowerManager {
+   [[noreturn]] static void deepSleep();
+ 
+   // Convenience: wait for release, arm the power-button wakeup, then deep sleep.
+-  [[noreturn]] static void deepSleepUntilPowerButton();
++  // `timerAlreadyArmed`: the caller has ALREADY enabled a timer wakeup it needs
++  // (an alarm deadline). Without it this function would reprogram the same
++  // timer with its own 5-minute rescue value when the button cannot be armed,
++  // silently replacing a deadline the caller had confirmed.
++  [[noreturn]] static void deepSleepUntilPowerButton(bool timerAlreadyArmed = false);
+ };
+ 
+ }  // namespace freeink
+diff --git a/libs/hardware/PowerManager/src/PowerManager.cpp b/libs/hardware/PowerManager/src/PowerManager.cpp
+index 9c60e4c..b1608b9 100644
+--- a/libs/hardware/PowerManager/src/PowerManager.cpp
++++ b/libs/hardware/PowerManager/src/PowerManager.cpp
+@@ -149,7 +149,7 @@ void PowerManager::deepSleep() {
+   }  // esp_deep_sleep_start() does not return; satisfy [[noreturn]]
+ }
+ 
+-void PowerManager::deepSleepUntilPowerButton() {
++void PowerManager::deepSleepUntilPowerButton(const bool timerAlreadyArmed) {
+   waitForPowerButtonRelease();
+   // NEVER sleep without a wake source. The return of armPowerButtonWakeup() used
+   // to be dropped on the floor: when the IDF refused the mask (a bad profile, a
+@@ -163,6 +163,16 @@ void PowerManager::deepSleepUntilPowerButton() {
+   // for its own reasons (an alarm), and that is the lesser evil: a late alarm
+   // beats a device that never wakes.
+   if (!armPowerButtonWakeup()) {
++    // There is only ONE timer wake source, so arming the rescue timer here
++    // REPLACES whatever deadline the caller already programmed. When the caller
++    // says it has a confirmed timer, that timer is the wake source and this
++    // function must not touch it: overwriting an alarm due in 60 s with a
++    // 5-minute rescue makes the alarm late, on the very path that exists to
++    // make the device more resilient.
++    if (timerAlreadyArmed) {
++      log_e("no button wake armed, but the caller already has a confirmed timer: leaving it alone");
++      deepSleep();
++    }
+     log_e("no button wake armed: falling back to a %u s timer so the device comes back",
+           static_cast<unsigned>(WAKE_FALLBACK_MS / 1000));
+     // And this return is CHECKED too. Saying "a timer always remains" while
+-- 
+2.43.0
+
