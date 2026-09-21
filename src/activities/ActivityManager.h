@@ -94,6 +94,10 @@ class ActivityManager {
   // dormir para que el segundo tape al primero. El reemplazo de Activity (y con
   // él el onExit de la que estaba) pasa igual.
   void goToSleep(bool fromTimeout = false, bool render = true);
+  // REV-071: corre el onExit() de la pantalla de turno y de la pila, sin crear
+  // ninguna pantalla nueva ni pintar. Para el camino de sueño profundo de la
+  // ws397, donde goToSleep(render=false) dejaba el teardown sin ejecutar.
+  void tearDownForSleep();
   void goToBoot();
   void goToFullScreenMessage(std::string message, EpdFontFamily::Style style = EpdFontFamily::REGULAR);
   void goToCrashReport();

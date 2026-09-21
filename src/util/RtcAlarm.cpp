@@ -70,15 +70,38 @@ void RtcAlarm::begin() {
   LOG_INF(TAG, "alarma del RTC lista (Control_2 = 0x%02X)", c2);
 }
 
+// REV-077: apagar AIE es lo PRIMERO y lo que de verdad desarma. Los cinco
+// registros de comparación pueden quedar como estén: con AIE en cero el chip no
+// tira la línea, y además se los pone en ALARM_OFF igual. El orden importa
+// porque `armAt()` reprograma campo por campo, y mientras eso pasa una alarma
+// vieja con AIE puesto puede coincidir con una hora a medio escribir.
+bool RtcAlarm::disableInterrupt() {
+  uint8_t c2 = 0;
+  if (!readReg(REG_CONTROL_2, c2)) return false;
+  // AIE fuera y AF limpia; TF en uno para no pisarla.
+  return writeReg(REG_CONTROL_2, static_cast<uint8_t>((c2 & ~(C2_AIE | C2_AF)) | C2_TF));
+}
+
 void RtcAlarm::disarm() {
   if (!available_) return;
-  for (uint8_t i = 0; i < 5; ++i) writeReg(static_cast<uint8_t>(REG_SECOND_ALARM + i), ALARM_OFF);
-  uint8_t c2 = 0;
-  if (readReg(REG_CONTROL_2, c2)) {
-    // AIE fuera y AF limpia; TF en uno para no pisarla.
-    writeReg(REG_CONTROL_2, static_cast<uint8_t>((c2 & ~(C2_AIE | C2_AF)) | C2_TF));
+  // REV-077: primero AIE, después los campos. Al revés, entre el primer campo y
+  // el último hay una ventana con la alarma todavía habilitada.
+  bool ok = disableInterrupt();
+  for (uint8_t i = 0; i < 5; ++i) {
+    if (!writeReg(static_cast<uint8_t>(REG_SECOND_ALARM + i), ALARM_OFF)) ok = false;
   }
-  armedAt_ = 0;
+  // REV-077: `armedAt_ = 0` se ponía pasara lo que pasara, así que el software
+  // podía decir "no hay alarma" con el chip todavía armado — y de ahí un
+  // despertar a una hora que no le corresponde a nada, o un INT abajo que hace
+  // rechazar el reposo en bucle. Si no se pudo confirmar, el estado queda
+  // DESCONOCIDO: `armedAt_` se deja en -1, que no coincide con ningún epoch
+  // válido, así que el próximo `armAt()` no se saltea por el atajo de "ya está".
+  if (ok) {
+    armedAt_ = 0;
+  } else {
+    armedAt_ = -1;
+    LOG_ERR(TAG, "no se pudo desarmar la alarma del RTC: el chip puede seguir armado");
+  }
 }
 
 bool RtcAlarm::armAt(const time_t epochUtc, const time_t nowUtc) {
@@ -95,6 +118,18 @@ bool RtcAlarm::armAt(const time_t epochUtc, const time_t nowUtc) {
   struct tm t = {};
   gmtime_r(&epochUtc, &t);  // el RTC guarda UTC (ver HalClock::setFromEpochUtc)
 
+  // REV-077: AIE FUERA ANTES DE TOCAR LOS CAMPOS. Los cinco se escriben en
+  // cadena, así que entre el segundo nuevo y el día nuevo el chip tiene una
+  // hora que no es ni la vieja ni la nueva — y con la alarma anterior todavía
+  // habilitada, esa mezcla puede coincidir y disparar. Mientras dura la
+  // reprogramación el estado es DESCONOCIDO y así queda anotado: si algo falla
+  // a mitad, `armedAt_` no puede seguir diciendo el objetivo viejo.
+  if (!disableInterrupt()) {
+    LOG_ERR(TAG, "no se pudo apagar AIE antes de reprogramar: no se toca la alarma");
+    return false;
+  }
+  armedAt_ = -1;
+
   // Segundo, minuto, hora y día se comparan; el día de la semana no (si no, la
   // alarma pediría que coincidan las dos cosas y no sonaría casi nunca).
   const bool ok = writeReg(REG_SECOND_ALARM, toBcd(static_cast<uint8_t>(t.tm_sec))) &&
@@ -103,13 +138,22 @@ bool RtcAlarm::armAt(const time_t epochUtc, const time_t nowUtc) {
                   writeReg(REG_SECOND_ALARM + 3, toBcd(static_cast<uint8_t>(t.tm_mday))) &&
                   writeReg(REG_SECOND_ALARM + 4, ALARM_OFF);
   if (!ok) {
-    LOG_ERR(TAG, "no se pudo escribir la alarma");
+    // A medio escribir y con AIE ya fuera: el chip no puede disparar, pero los
+    // campos son una mezcla. Se deja explícitamente desarmado.
+    LOG_ERR(TAG, "no se pudo escribir la alarma: se desarma para no dejar una hora a medias");
+    disarm();
     return false;
   }
   uint8_t c2 = 0;
-  if (!readReg(REG_CONTROL_2, c2)) return false;
+  if (!readReg(REG_CONTROL_2, c2)) {
+    disarm();
+    return false;
+  }
   // AIE adentro, AF limpia (arranca de cero), TF conservada.
-  if (!writeReg(REG_CONTROL_2, static_cast<uint8_t>((c2 & ~C2_AF) | C2_AIE | C2_TF))) return false;
+  if (!writeReg(REG_CONTROL_2, static_cast<uint8_t>((c2 & ~C2_AF) | C2_AIE | C2_TF))) {
+    disarm();
+    return false;
+  }
   armedAt_ = epochUtc;
   LOG_INF(TAG, "alarma armada para %04d-%02d-%02d %02d:%02d:%02d UTC", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
           t.tm_hour, t.tm_min, t.tm_sec);

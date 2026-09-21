@@ -308,17 +308,64 @@ void PowerKey::begin() {
   // Se comprueba y se apaga en cada arranque, y se dice en el log si estaba
   // encendido: ese renglón es la diferencia entre "cambiá la pila" y "cambiá
   // la pila Y ya sabemos quién te la secó".
-  if (readReg(REG_MODULE_EN, v) && (v & MODULE_EN_BTN_BAT) != 0) {
-    writeReg(REG_MODULE_EN, static_cast<uint8_t>(v & static_cast<uint8_t>(~MODULE_EN_BTN_BAT)));
-    LOG_ERR(TAG, "el PMIC estaba CARGANDO la pila de respaldo (0x18=%02X): es una CR2032, se apaga", v);
+  //
+  // REV-075: y se COMPRUEBA, porque acá el log estaba afirmando algo que podía
+  // no haber pasado. Era `writeReg()` con el retorno tirado seguido de "se
+  // apaga": un NACK dejaba el cargador encendido sobre la celda primaria y el
+  // diagnóstico dado vuelta — el renglón que tenía que decir "ya sabemos quién
+  // te secó la pila" pasaba a decir que el problema estaba resuelto. La lectura
+  // también se reintenta: sin poder leer 0x18 no se sabe nada, y eso no es lo
+  // mismo que saber que está apagado.
+  bool leyoModulo = false;
+  for (int intento = 1; intento <= 3 && !leyoModulo; ++intento) {
+    leyoModulo = readReg(REG_MODULE_EN, v);
+    if (!leyoModulo) delay(2);
+  }
+  if (!leyoModulo) {
+    LOG_ERR(TAG,
+            "!!! OJO: no se pudo leer 0x18 en 3 intentos: NO se sabe si el PMIC esta cargando la pila "
+            "de respaldo (una CR2032 primaria). Si el aparato vuelve sin hora, empezar por ahi");
+  } else if ((v & MODULE_EN_BTN_BAT) != 0) {
+    if (writeVerified(REG_MODULE_EN, static_cast<uint8_t>(v & static_cast<uint8_t>(~MODULE_EN_BTN_BAT)),
+                      MODULE_EN_BTN_BAT, "apagar el cargador de la pila de respaldo")) {
+      LOG_ERR(TAG, "el PMIC estaba CARGANDO la pila de respaldo (0x18=%02X): es una CR2032, se apago", v);
+    } else {
+      LOG_ERR(TAG,
+              "!!! OJO: el PMIC esta CARGANDO la pila de respaldo (0x18=%02X) y NO se pudo apagar. Es una "
+              "CR2032 primaria: cargarla la calienta, la hincha y la seca. Hay que mirarlo",
+              v);
+    }
   }
 
   // Only the key may pull the IRQ line: anything else left enabled by OTP
   // (battery, charger, VBUS) would hold it LOW forever and turn the cheap
   // level check into an I2C read on every loop.
-  writeReg(REG_INTEN1, 0x00);
-  writeReg(REG_INTEN3, 0x00);
-  writeReg(REG_INTEN2, INTEN2_KEY_BITS);
+  //
+  // REV-079: los tres se comprueban. Eran `writeReg()` con el retorno tirado y
+  // una relectura que sólo se imprimía. Los dos fallos posibles son distintos y
+  // los dos importan: si falla INTEN2, la tecla no levanta la IRQ y el PWR
+  // software parece muerto; si falla apagar INTEN1/INTEN3, una fuente ajena
+  // (batería, cargador, VBUS) deja la línea abajo para siempre y la comprobación
+  // barata del nivel se convierte en una lectura I2C por pasada del loop.
+  const bool inten1Ok = writeVerified(REG_INTEN1, 0x00, 0xFF, "apagar las IRQ de bateria");
+  const bool inten3Ok = writeVerified(REG_INTEN3, 0x00, 0xFF, "apagar las IRQ de VBUS");
+  const bool inten2Ok = writeVerified(REG_INTEN2, INTEN2_KEY_BITS, INTEN2_KEY_BITS, "habilitar las IRQ de la tecla");
+  if (!inten2Ok) {
+    LOG_ERR(TAG,
+            "!!! OJO: el PMIC no acepto habilitar las interrupciones de la tecla: PWR puede no reaccionar. "
+            "Se pasa a consultar INTSTS2 por sondeo, que no depende de la IRQ");
+  }
+  if (!inten1Ok || !inten3Ok) {
+    LOG_ERR(TAG,
+            "!!! OJO: quedaron habilitadas IRQ que no son de la tecla (INTEN1 %s, INTEN3 %s): la linea puede "
+            "quedarse abajo y hay que sondear",
+            inten1Ok ? "ok" : "FALLO", inten3Ok ? "ok" : "FALLO");
+  }
+  // El estado de la tecla se LATCHEA en INTSTS2 lo habilite o no INTEN2 (INTEN
+  // enmascara el pin de interrupción, no el registro de estado), así que el modo
+  // degradado sigue viendo los eventos: cuesta una lectura I2C cada POLL_FALLBACK_MS
+  // en vez de cero, y es la diferencia entre un PWR lento y un PWR muerto.
+  const bool irqConfiable = inten1Ok && inten2Ok && inten3Ok;
 
   // The PMIC does not reset with the ESP: whatever the key did while we were
   // asleep or booting (a press held through power-on, a press while asleep)
@@ -328,7 +375,7 @@ void PowerKey::begin() {
     delay(2);
     flushAllStatus(nullptr);
   }
-  pinLatchTrusted_ = digitalRead(irqPin_) == HIGH;
+  pinLatchTrusted_ = irqConfiable && digitalRead(irqPin_) == HIGH;
   if (!pinLatchTrusted_) {
     LOG_ERR(TAG, "IRQ line still LOW after clearing status: polling INTSTS2 every %lu ms instead", POLL_FALLBACK_MS);
   }
@@ -367,12 +414,23 @@ void PowerKey::begin() {
   available_ = true;
 }
 
-bool PowerKey::vbusPresent() const {
-  if (!available_) return false;
+PowerKey::Vbus PowerKey::vbusState() const {
+  // REV-080: "no hay cable" y "no se pudo preguntar" eran el MISMO valor, y de
+  // esa confusión salía una decisión irreversible: con la batería llena
+  // `gpio.isUsbConnected()` es false (mira la carga, no el cable), así que un
+  // solo NACK al leer STATUS1 dejaba los dos términos en false, el aparato
+  // autorizaba el reposo y el CDC USB desaparecía con el cable puesto. Desde
+  // afuera eso se ve como "se colgó" o "se reinició".
+  if (!available_) return Vbus::Absent;  // sin PMIC no hay nada que dudar: manda el otro término
   uint8_t st = 0;
-  if (!readReg(REG_STATUS1, st)) return false;
-  return (st & 0x20) != 0;
+  for (int intento = 1; intento <= 3; ++intento) {
+    if (readReg(REG_STATUS1, st)) return (st & 0x20) != 0 ? Vbus::Present : Vbus::Absent;
+    delay(2);
+  }
+  return Vbus::Unknown;
 }
+
+bool PowerKey::vbusPresent() const { return vbusState() == Vbus::Present; }
 
 bool PowerKey::powerOff() const {
   if (!available_) return false;
@@ -555,7 +613,32 @@ void PowerKey::pump() {
     lastFailMs_ = 0;
     const uint8_t key = s2 & KEY_BITS;
     if (key) {
-      writeReg(REG_INTSTS2, key);
+      // REV-072: EL CLEAR SE COMPRUEBA ANTES DE DECODIFICAR.
+      //
+      // Era `writeReg()` con el retorno tirado. Si la lectura anda y la
+      // escritura no, el bit queda latcheado y la vuelta siguiente —de este
+      // mismo lazo de tres rondas, o de la pasada siguiente— vuelve a leer EL
+      // MISMO evento. Y `decode()` trata un press con `pressed_` ya puesto como
+      // un press nuevo: `pressStartMs_` se reinicia, así que PWR mantenido no
+      // llega nunca a la barrita ni a los 3 s por más que el dedo no se mueva.
+      // Un evento que no se pudo consumir no es un evento nuevo.
+      bool limpio = false;
+      for (int intento = 1; intento <= 3 && !limpio; ++intento) {
+        limpio = writeReg(REG_INTSTS2, key);
+        if (!limpio) delay(1);
+      }
+      if (!limpio) {
+        // No se pudo consumir: NO se decodifica (sería el mismo evento otra vez)
+        // y se sale del lazo. El bus vuelve a estar disponible en I2C_RETRY_MS y
+        // el evento sigue latcheado, así que no se pierde: se atiende tarde.
+        lastFailMs_ = now;
+        if (++clearFails_ == 1 || clearFails_ % 32 == 0) {
+          LOG_ERR(TAG, "no se pudo limpiar INTSTS2 (%02X): el evento queda para la proxima (van %lu)", key,
+                  static_cast<unsigned long>(clearFails_));
+        }
+        return;
+      }
+      clearFails_ = 0;
       decode(key, now, round == 0 ? edgeAt : 0);
     }
     if (!pinLatchTrusted_) break;  // polling mode: one read per poll
