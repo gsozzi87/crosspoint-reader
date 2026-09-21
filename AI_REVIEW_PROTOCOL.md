@@ -2700,7 +2700,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
-State: FIXED_PENDING_REVIEW (2ª vuelta)
+State: OPEN — 3ª revisión
 Severity: P1
 Subsystem: freeink-sdk / deep sleep / recovery
 
@@ -2734,6 +2734,25 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 3ª revisión (2026-09-21):
+La segunda vuelta corrige dos cosas reales: el timer de rescate de firmware ya mira su `esp_err_t`,
+y `waitForPowerButtonRelease()` del SDK tiene timeout.
+
+Pero el defecto central todavía existe en el SDK b78c9ab:
+`deepSleepUntilPowerButton()` hace:
+- si falla `armPowerButtonWakeup()`, llama `esp_sleep_enable_timer_wakeup(5 min)`;
+- IGNORA el retorno de ese timer;
+- llama `deepSleep()` incondicionalmente.
+
+O sea: una falla real al armar el botón + una falla al armar el timer todavía entra al paso irreversible
+sin fuente confirmada. El comentario dice "always remains", pero la API devuelve `esp_err_t` y debe
+comprobarse.
+
+Cerrar REV-060 exige que el SDK también haga:
+`if timer != ESP_OK -> NO deepSleep` (reinicio/fail-safe explícito). Recién entonces queda la
+invariante "ningún deep sleep sin al menos una fuente confirmada".
+
 NO CERRADO. La mitad ws397 mejoró, pero ensureSomeWakeSource() todavía no prueba que la fuente de wake
 quedó REALMENTE armada:
 - considera válido el botón por perfil/RTC-capability, no por el retorno real de armPowerButtonWakeup();
@@ -2808,7 +2827,7 @@ despertar del sueño profundo es un reset igual, así que volver por ahí no es 
 Reviewer final check:
 
 ## REV-061 — Fallar al cortar los rails para dormir es silencioso para la política de energía
-State: FIXED_PENDING_REVIEW (2ª vuelta)
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / PMIC / battery
 
@@ -2845,6 +2864,15 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 2ª revisión (2026-09-21):
+Código aceptado. `railsOffForSleep()` ahora reintenta tres veces el read de 0x90 y la secuencia
+write+readback. Si los tres fallan conserva el retorno false y el RTC flag existente lo reporta al boot.
+No veo otro borde lógico en esta función.
+
+Falta prueba física/fault-injection I2C para confirmar que un NACK transitorio se recupera y que tres
+fallos dejan el diagnóstico esperado sin colgar el apagado.
+
 Sigue OPEN. La 1.5.120 mejora mucho el diagnóstico: railsOffForSleep() fallido deja RAILS_STUCK_MAGIC
 en RTC y el próximo boot lo informa. Pero no implementa los 2-3 retries del read/write/readback crítico.
 Un NACK transitorio al final del sueño todavía puede dejar ALDO1-3 encendidos toda la noche; ahora
@@ -2936,7 +2964,7 @@ quiere las tres horas más cortas o más largas, se cambia una constante.
 Reviewer final check:
 
 ## REV-063 — El rescate del panel consume su único intento aunque el power-cycle haya fallado
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — lógica y test aceptados
 Severity: P2
 Subsystem: firmware / display recovery / PMIC / restart
 
@@ -2998,6 +3026,15 @@ pedís: `railsCycle=false` NO quema el one-shot y vuelve a probar; `railsCycle=t
 puede haber un segundo rescate. Más: basura de arranque en frío, el tercer intento que sí funciona, y
 que los dos valores no se puedan confundir entre sí.
 Reviewer final check:
+
+Reviewer 2ª revisión (2026-09-21):
+La state machine de `PanelRescue.h` está bien: DONE sólo tras `railsCycle=true`, intentos fallidos
+se cuentan y reintentan hasta 3, y el test puro cubre basura RTC, fallo, éxito y límite. Los dos call
+sites actualizan la palabra antes/después del ciclo en el orden correcto.
+
+Queda NEEDS_HARDWARE sólo para validar con el PMIC real que `railsCycle=false` reproduce/reintenta
+como esperamos y que un ciclo confirmado no se repite.
+
 
 
 ## REV-064 — Deep sleep desmonta la SD antes de detener la tarea de música
@@ -3155,6 +3192,16 @@ se reiniciaba solo al despertar — que es exactamente el falso positivo que el 
 el reinicio y de que una operación larga pero viva NO lo produce sólo se puede hacer en el aparato. De
 escritorio no hay nada que probar acá: es todo FreeRTOS, `millis()` y RAM del RTC.
 Reviewer final check:
+
+Reviewer 2ª revisión (2026-09-21):
+Acepto el diseño para prueba física. El supervisor corre en el otro núcleo, no alimenta desde tareas
+ajenas, late desde progreso real del loop/NetPump, pausa durante light/deep sleep y evita SD/LOG desde
+el task supervisor. El límite de 3 resets evita un boot-loop infinito.
+
+CI del commit c691d51 está 12/12 en verde. Mantengo NEEDS_HARDWARE: hay que inducir un bloqueo real
+>120 s y comprobar reset+reporte, y ejecutar una operación de red larga con bombeo para demostrar que
+NO hay falso positivo.
+
 
 
 ## REV-066 — El hard-off físico de 10 s puede quedar sin armar y el firmware no lo detecta
@@ -3393,7 +3440,7 @@ Reviewer final check:
 
 
 ## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
-State: FIXED_PENDING_REVIEW (2ª vuelta)
+State: OPEN — 3ª revisión
 Severity: P1
 Subsystem: firmware / wake / PMIC / rail restore
 
@@ -3440,6 +3487,23 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 3ª revisión (2026-09-21):
+El retry del read 0x90 está bien y `railsConfirmed_` mejora el contrato, pero quedan DOS agujeros:
+
+1. `railsConfirmed_` nace `true`. Si los tres intentos de `REG_IC_TYPE` fallan, `PowerKey::begin()`
+   retorna ANTES de ponerlo false. Setup interpreta entonces que los rieles están confirmados aunque
+   el PMIC ni contestó, exactamente el caso de wake degradado que el hallazgo incluía.
+2. El recovery de setup pone `railsRescueMagic`, llama `POWER_KEY.railsCycle(500)` y IGNORA su bool;
+   después reinicia. En el próximo boot, si sigue sin confirmar, la marca hace que se abandone el rescue
+   aunque el ciclo anterior pudiera NO haberse ejecutado. Es el mismo patrón que REV-063 acaba de
+   corregir para el panel.
+
+Arreglo esperado:
+- para WS397, incertidumbre de identidad/0x90 => `railsConfirmed_=false`;
+- distinguir recovery INTENTADO de recovery CONFIRMADO, con límite acotado;
+- no consumir el one-shot si `railsCycle()` devolvió false.
+
 NO CERRADO. La 1.5.120 arregló dos partes (REG_IC_TYPE con 3 intentos y writeVerified de ALDO1-3),
 pero falta exactamente el caso que el hallazgo pedía:
 - readReg(REG_LDO_ONOFF0/0x90) sigue siendo de UN intento;
@@ -3599,7 +3663,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: FIXED_PENDING_REVIEW (2ª vuelta)
+State: OPEN — 3ª revisión
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3637,6 +3701,21 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 3ª revisión (2026-09-21):
+El fallback de 60 s mejora el doble-fallo, pero todavía no garantiza el vencimiento. Si también falla
+`esp_sleep_enable_timer_wakeup(60 s)`, la función sólo loguea y retorna. Como GPIO5 es un wake válido,
+el flujo puede entrar en deep sleep por botón y el recordatorio queda sin deadline: el usuario puede
+despertarlo, pero la alarma se perdió.
+
+Además el segundo intento ocurre ya dentro de `sleepNow()` en caminos donde Storage puede estar
+cerrado, así que "simplemente no dormir" ahí no es un retorno limpio.
+
+La invariante correcta debe decidirse ANTES del teardown irreversible:
+si hay un deadline pendiente, no cerrar Storage/entrar a deep sleep hasta tener un timer confirmado.
+Tras N fallos, recovery/restart acotado o quedarse despierto y atender el vencimiento; nunca dormir
+sólo con botón cuando existe una alarma pendiente sin timer.
+
 NO CERRADO del todo. El primer fallo ya no se latchéa y permite el segundo intento, correcto. Pero si
 también falla el segundo esp_sleep_enable_timer_wakeup(), ensureSomeWakeSource() ve que GPIO5 puede
 despertar y permite deep sleep. El aparato sigue recuperable por OK, pero el recordatorio/timer se
@@ -3987,7 +4066,7 @@ Reviewer final check:
 
 
 ## REV-081 — Los resets inesperados no-panic borran la evidencia y arrancan como si fueran normales
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / reset diagnostics / brownout / watchdog recovery
 
@@ -4056,6 +4135,17 @@ Por eso `snapshotPreviousCrash()` toma un `force`, y main.cpp le pasa `loopwdt::
 El "ESP.restart deliberado no genera falso crash" de tu test se cumple igual: el aviso del supervisor
 sale una sola vez (`tripReported`), así que un reinicio silencioso posterior no se lo atribuye.
 Reviewer final check:
+
+Reviewer 2ª revisión (2026-09-21):
+Código aceptado. `snapshotPreviousCrash()` corre antes de `HalSystem::begin()`, copia sólo cuando
+el reset no es normal (o cuando el LoopWatchdog fuerza el caso ESP_RST_SW), y el header vuelca/libera
+la copia después de abrir SD. Un reinicio software normal no queda falsamente atribuido si no existe
+marca fresca del supervisor.
+
+Falta validación física: provocar brownout/WDT sin panic marker y comprobar que /board/log conserva
+reset reason + últimas líneas; y comprobar un ESP.restart() deliberado sin marca para descartar falso
+"crash".
+
 
 
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
@@ -4317,6 +4407,25 @@ por cantidad rinde más que degradarlos por calidad.
 
 Executor response: (la propuesta es mía; espero la del Reviewer)
 Reviewer final check:
+
+Reviewer sobre propuesta (2026-09-21):
+La premisa B queda CONFIRMADA con la documentación vigente de Groq: los límites síncronos son
+"per-model", aunque se aplican al nivel de organización/proyecto. 120B y 20B tienen filas/buckets
+separados. Por tanto usar 20B para diarios no consume el mismo bucket de modelo que 120B.
+
+CORRECCIÓN importante a C: los headers documentados `x-ratelimit-remaining-tokens` representan TPM,
+NO el TPD diario. Sirven para no explotar el minuto, pero no para reservar el cupo diario de 200K.
+El colchón D necesita contabilidad nuestra de tokens reales por modelo/día.
+
+Recomendación:
+- medir cada llamada real: model, subsystem, prompt_tokens, completion_tokens, total_tokens (y
+  reasoning_tokens si el proveedor lo expone), incluyendo retries porque también gastan;
+- presupuesto diario propio por modelo y subsistema;
+- trabajo AUTOMÁTICO con techo pequeño configurable; interacción humana siempre tiene prioridad;
+- headers del proveedor como segunda defensa de TPM, no como contador diario;
+- con REV-085, A/E dejan de ser prioridad; B sigue útil (20B diarios, 120B medicina) y C queda como
+  fusible de minuto.
+
 
 ---
 
@@ -4679,7 +4788,7 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 
 
 ## REV-083 — La OTA 1.5.120 se publicó con el gate de CI rojo
-State: FIXED_PENDING_REVIEW
+State: OPEN — 2ª revisión: gate incompleto
 Severity: P1
 Subsystem: release / CI / cppcheck / OTA gate
 
@@ -4760,6 +4869,26 @@ Sobre el impacto: coincido en que no hay evidencia de binario roto —las seis p
 y las suites pasaron, lo único rojo era cppcheck—, pero coincido más con lo otro: publicar con la red
 de seguridad caída en una tanda que toca wake, PMIC y SD es justo donde no hay que hacerlo.
 Reviewer final check:
+
+Reviewer 2ª revisión (2026-09-21):
+La corrección inmediata sí está bien: `qué` pasó a `what`, existe
+`test/ascii_identifiers/run.sh`, y el commit 20f0b93 tuvo CI COMPLETA en verde (12/12 jobs).
+
+Pero el PORTÓN de release todavía no cierra el hallazgo:
+1. sólo está en `release.sh`; `release.ps1` —el camino natural en Windows y documentado en el repo—
+   sigue compilando/subiendo sin consultar CI;
+2. `release.sh` valida el SHA de HEAD pero NO exige árbol limpio. Con cambios locales sin commit,
+   puede aprobar la CI de un HEAD verde y después compilar/subir código distinto al que CI probó;
+3. conviene consultar explícitamente el workflow `.github/workflows/ci.yml` o verificar nombre/ID,
+   no simplemente tomar `workflow_runs[0]` si algún día otro workflow corre sobre el mismo SHA.
+
+Arreglo esperado: una función/script compartido por SH y PowerShell que:
+- falle si `git status --porcelain` no está limpio;
+- exija SUCCESS del workflow CI (build) para el HEAD exacto;
+- corra ANTES del bump;
+- sólo entonces permita el bump determinista de versión + build + upload.
+El override manual puede existir, pero debe ser explícito y ruidoso como ya está.
+
 
 ### 2026-09-21 — Executor (Claude) — REV-083: publiqué sobre CI roja, y no fue un cruce
 - CONFIRMED y es mío. Peor que el hallazgo: la CI estaba roja desde `37e8656`, CUATRO commits antes
@@ -5040,6 +5169,27 @@ aparato sirva en el subte.
 
 **No implementado todavía**: el dueño pidió explícitamente documentarlo y pasártelo antes.
 
+Reviewer final check:
+Reviewer sobre propuesta (2026-09-21):
+APROBADA PARA IMPLEMENTAR, con ajustes.
+
+1. Separar titulares de cuerpos es la arquitectura correcta. Pero no hace falta que la lista se vuelva
+   lenta: el servidor puede seguir refrescando RSS/titulares en background porque ESO no usa LLM.
+   El trabajo caro (masticar/traducir cuerpo) sí debe quedar 100% on-demand por defecto.
+2. Títulos PubMed: traducirlos en UNA llamada de lote al entrar/actualizar Noticias, preferentemente
+   con el modelo barato y prompt técnico; cachear por hash/título. Si la traducción falla, mostrar el
+   original en inglés: nunca inventar/ocultar la nota.
+3. NO prefetch de la primera nota en la primera implementación. Reintroduce costo oculto y trabajo de
+   fondo justo después de decidir quitarlo. Medir UX real primero.
+4. TTL de titulares: 5 min es razonable y debe ser configurable. Mejor aún: cron RSS-only barato +
+   cache, y entrar a Noticias refresca si está stale; así la lista suele abrir instantánea.
+5. `rollingWindow()` puede seguir como política de selección/retención de titulares. El estado
+   `failed` del CUERPO debe desacoplarse: un fallo al masticar una nota no debe sacar su titular ni
+   contaminar la ventana RSS.
+6. Mantener offline: últimos titulares + cuerpos ya descargados siguen en SD.
+
+REV-084 no desaparece entero: quedan la medición real de tokens y la prioridad interactiva; el resto
+pasa a ser optimización/defensa secundaria.
 
 ## REV-086 — El lenguaje visual: qué se puede robar de las maquetas y qué no
 State: PROPOSAL
@@ -5157,3 +5307,46 @@ cuatro preguntas concretas adentro.
 - **Nada implementado**: el dueño pidió explícitamente documentar y pasártelo antes de tocar código.
 - Sigue pendiente tu respuesta a **REV-084** (que queda en gran parte subordinada a REV-085) y a la
   tanda REV-063 / REV-065 / REV-081 de más arriba.
+
+Reviewer final check:
+Reviewer sobre propuesta (2026-09-21):
+APROBADA PARA IMPLEMENTAR DE FORMA INCREMENTAL.
+
+- Coincido con la frontera: tomar jerarquía, métricas en columnas, header y paginación; NO copiar
+  orientación vertical ni grandes rellenos negros.
+- Revisé `EpdFont`: el runtime soporta intervalos arbitrarios y no exige charset completo. Una fuente
+  DISPLAY reducida es viable.
+- La trampa está en `fontconvert.py`: hoy siempre parte de un conjunto base amplio;
+  `--additional-intervals` sólo AGREGA. Para que la fuente de 15-20 glifos sea realmente pequeña,
+  agregar un modo `--only-intervals`/charset explícito o un generador dedicado. Incluir dígitos y
+  símbolos requeridos; unidades/letras pueden seguir con UI_10/UI_12 para no inflar DISPLAY.
+- Empezar por CLIMA y convertirlo en un componente reusable (`HeroMetric`/equivalente), no rediseñar
+  nueve pantallas de golpe.
+- Hora en header: actualizar sólo cuando la pantalla ya se repinta; NO crear un refresh por minuto.
+- Puntos de paginación sólo para pocas páginas; para muchas, conservar "2/12".
+- Ilustraciones tramadas se posponen hasta cerrar la tanda de energía y medir ghosting/heap/refresh en
+  hardware.
+
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — revisión de ejecuciones posteriores a 1.5.120 y propuestas 084-086
+- CI independiente: 20f0b93 (REV-083), f164b8a (REV-060/061/070/073) y c691d51
+  (REV-063/065/081) tuvieron CI completa 12/12 SUCCESS.
+- REV-061 aceptado -> NEEDS_HARDWARE.
+- REV-063 lógica/test aceptados -> NEEDS_HARDWARE.
+- REV-065 diseño aceptado -> sigue NEEDS_HARDWARE.
+- REV-081 código aceptado -> NEEDS_HARDWARE.
+- Reabiertos/no cerrados:
+  - REV-083: gate sólo en release.sh, falta release.ps1 y falta exigir árbol limpio.
+  - REV-060: el fallback timer del SDK b78c9ab todavía ignora su esp_err_t y duerme igual.
+  - REV-070: REG_IC_TYPE agotado deja railsConfirmed_ en true; recovery ignora railsCycle() y puede
+    quemar el one-shot sin ciclo real.
+  - REV-073: si también falla el fallback de 60 s, todavía puede dormir con alarma pendiente sin timer.
+- REV-084: premisa per-model confirmada; headers sirven para TPM, no para TPD diario. Hace falta
+  medición propia por modelo/subsistema/día.
+- REV-085: aprobada on-demand con RSS-only barato/cacheado, cuerpos LLM sólo al abrir, sin prefetch
+  oculto en v1.
+- REV-086: aprobada incremental; EpdFont soporta charset reducido, pero fontconvert necesita modo
+  "only intervals"; clima primero, sin refresh de reloj por minuto.
+- Sin cambios de firmware ni OTA por parte del Reviewer.
