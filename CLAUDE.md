@@ -2396,6 +2396,77 @@ que queda es que el dueño lo cuente.
   vuelca debajo del grito. Cubre también el reinicio que pide el supervisor del loop, que para
   `esp_reset_reason()` es un reinicio normal y es justo cuando más sirve.
 
+## Noticias a demanda: el costo pasa a ser de lo que se LEE (después de 1.5.120)
+
+Hecho, como lo pidió el dueño: *"cuando entremos a noticias, que se actualice, sino que muestre solo
+los titulares que nos aportan las RSSs"*. El defecto de fondo era que **el costo del masticado era
+proporcional a lo que los diarios PUBLICAN y no a lo que él LEE**: `startRefresher()` corría cada hora
+y podía gastar 22 llamadas al modelo por pasada (10 digests + 12 traducciones de papers), o sea 528
+por día y el cupo entero del proveedor en unas cuatro horas con el aparato en un cajón. De ahí venían
+los 429 de Groq.
+
+**Las dos velocidades, que antes iban pegadas.** El titular es gratis (parsear el RSS) y se sigue
+repasando solo, así que la lista abre al instante y sin red. El cuerpo —entrar al diario, limpiar el
+texto y masticarlo o traducirlo— es todo el costo, y se paga cuando alguien ABRE la nota
+(`ensureBody()` en `server/src/news.ts`). El cron viejo queda detrás de `NEWS_PREFETCH=1`, apagado de
+fábrica.
+
+- **`PackItem.pending`**: titular anunciado sin cuerpo. Viaja al aparato como un `sha` vacío, y el
+  aparato lo lee como "esta nota no la tengo". `newspack::sync()` **saltea** los que no tienen sha —
+  bajarlos sería una llamada al modelo por nota anunciada, se lea o no— y `NewsActivity` llama a
+  `newspack::fetchOne()` al abrir. El camino viejo (`/api/rss/article`, sin modelo) queda de respaldo.
+- **Un titular sin cuerpo ES una nota.** Antes, la nota de la que no se podía sacar texto se
+  descartaba entera; con los cuerpos a demanda esa regla habría dejado el paquete vacío. El descarte
+  se mudó a `ensureBody()`, y **un fallo del cuerpo ya no saca el titular** ni deja un hueco en la
+  ventana del medio. `carryUnavailable()` también conserva los pendientes: si no, una caída de los
+  diarios vaciaba la lista.
+- **Los títulos de los papers, en UNA llamada de lote.** La traducción del título salía de la misma
+  llamada que el cuerpo, así que a demanda quedaba en inglés hasta abrir la nota — la mitad de un
+  arreglo, que es peor que ninguno. Un título son unas cuarenta palabras: los doce de una tanda en una
+  llamada son calderilla. Si el modelo no respeta el formato numerado, **el título se queda como
+  estaba y la nota no se pierde**; y el parser deja el hueco VACÍO en vez de correrle el título al
+  paper siguiente, que sería peor que dejarlo en inglés.
+- Lo que empeora y hay que saberlo: abrir una nota cuesta ahora 5-20 s de modelo. Lo que ya está en la
+  tarjeta se sigue leyendo sin red, que no cambió.
+- Se prueba sin red: **`./test/news_pack/run.sh`** suma `ondemand.test.ts` (el repaso no gasta nada,
+  abrir paga una vez, la segunda es gratis, un fallo del cuerpo no saca el titular) y
+  `titles.test.ts`.
+
+**Y la medición que faltaba** (`server/src/tokens.ts`): `usage.ts` cuenta LLAMADAS, y los topes del
+proveedor son de TOKENS y **por modelo** — una pregunta de Hablar son ~600 tokens y la traducción de un
+paper ~3000, así que contarlas iguales es no contar. Ahora cada llamada anota modelo, subsistema
+("hablar", "noticias", "papers", "traductor", "biblia", "libros", "apps") y tokens de entrada, salida y
+razonamiento, por día. Se ve en `/board` → Ajustes → Avanzado → IA, y contesta la única pregunta que
+importa con un 429 en la mano: en qué se fue el cupo.
+
+## El número héroe, y la cara de display que lo hace posible (después de 1.5.120)
+
+Primera pantalla de la ola visual: **el clima**. De las maquetas que mandó el dueño se roba el dato
+dominante y las medidas en columnas con etiqueta; NO se roba la orientación vertical (el panel es
+800x480 **apaisado**: una columna de teléfono deja media pantalla vacía) ni el relleno negro, que el
+principio 3 de `docs/ws397/DISENO.md` prohíbe porque deja fantasma — ya se pagó en 1.5.48.
+
+**La trampa estaba en el generador, no en el runtime.** `EpdFont` soporta intervalos arbitrarios, pero
+`fontconvert.py --additional-intervals` **SUMA** sobre el juego base (Latin-1, Latin Extended,
+vietnamita, puntuación), así que una cara de 32 px salía con todo eso. Medido con las dos
+generaciones: **157 KB con el juego completo, 2,8 KB con `--only-intervals`**, que es la opción nueva.
+El flash va en 87,9 %.
+
+- `ubuntu_display_32_bold`: dígitos y seis símbolos (espacio, `%`, `+ - . /`, `:`, `°`). Registrada
+  **sólo en la ws397**. **NO reemplaza a `SevenSegment`**: los dígitos dibujados están bien donde son
+  un CRONÓMETRO (el temporizador, el reproductor) y mal donde son un DATO — se leen como calculadora.
+- `src/components/HeroMetric.h`: `drawHero()` (número grande + unidad a la altura de la base, no como
+  exponente + pie) y `drawStats()` (columnas iguales, etiqueta SMALL arriba, valor UI_12 negrita
+  abajo, regla de 1 px en el hueco entre columnas y no sobre el borde).
+- En `WeatherActivity` el ícono se fue a la DERECHA: el número arranca en el margen, que es donde el
+  ojo empieza a leer, y el apaisado da ancho de sobra.
+- **Los ids de las otras doce fuentes no se movieron** (verificado con diff contra el `fontIds.h`
+  anterior): lo que se persiste es el número, así que mover uno le cambiaría la tipografía a quien ya
+  eligió en el lector.
+
+Queda para la próxima vuelta, por decisión de ir pantalla por pantalla: la hora en el cabezal (y
+**sin** crear un refresco por minuto), los puntos de paginación y las ilustraciones tramadas.
+
 ## Dos decisiones del dueño en espera del revisor (después de 1.5.120)
 
 **Noticias a demanda** (`AI_REVIEW_PROTOCOL.md` → REV-085). Textual: *"no sería mejor que las pidamos a
