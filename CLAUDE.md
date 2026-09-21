@@ -2396,6 +2396,37 @@ que queda es que el dueño lo cuente.
   vuelca debajo del grito. Cubre también el reinicio que pide el supervisor del loop, que para
   `esp_reset_reason()` es un reinicio normal y es justo cuando más sirve.
 
+## Dos decisiones del dueño en espera del revisor (después de 1.5.120)
+
+**Noticias a demanda** (`AI_REVIEW_PROTOCOL.md` → REV-085). Textual: *"no sería mejor que las pidamos a
+demanda? de alguna manera cuando entremos a noticias, que se actualice, sino que muestre solo los
+titulares que nos aportan las RSSs"*. El defecto que arregla, dicho en una línea: **hoy el costo del
+masticado es proporcional a lo que los diarios PUBLICAN, no a lo que el dueño LEE.** `startRefresher()`
+corre cada hora y puede gastar hasta 22 llamadas al modelo por pasada (10 digests + 12 traducciones de
+papers), o sea 528 por día y el cupo del proveedor entero en unas cuatro horas con el aparato en un
+cajón. La forma: separar las dos velocidades que hoy van pegadas — el **titular** es gratis (parsear el
+RSS) y el **cuerpo** es todo el costo—, así que entrar a Noticias baja titulares sin modelo y abrir una
+nota mastica ESA nota. El cron queda detrás de `NEWS_PREFETCH=1`, apagado de fábrica.
+Lo que empeora y está escrito antes de hacerlo: entrar deja de ser instantáneo, abrir una nota cuesta
+una llamada al modelo (hace falta pantalla de progreso, hoy no existe), **el título de un paper de
+PubMed queda en inglés hasta abrirlo** —la traducción del título sale de la misma llamada que el
+cuerpo— y sin red no hay titulares nuevos. Lo que ya está en la tarjeta se sigue leyendo sin red, eso
+no cambia.
+
+**El lenguaje visual** (REV-086). De unas maquetas que mandó el dueño salen dos listas. Se puede robar:
+el **número héroe** (nuestra escala topa en UI_14 de 14 px y lo único grande que hay es `SevenSegment`,
+que son dígitos dibujados y se leen como calculadora — está bien para el temporizador y mal para el
+clima y la batería, que son datos y no cronómetros), la **fila de estadísticas en columnas**, la
+ilustración tramada de encabezado, la cabecera con la hora a la derecha y la paginación por puntos.
+NO se puede portar: la **orientación** (las maquetas son columnas verticales y el panel es 800×480
+apaisado: hay que rehacer cada layout, no escalarlo), el **negro macizo** de los botones y las barras
+—el principio 3 de `docs/ws397/DISENO.md` lo prohíbe porque deja fantasma en el parcial siguiente, y es
+exactamente lo que hubo que sacar en 1.5.48— y el **presupuesto de refresco**.
+Y el número que decide la cara grande: el binario usa **5.754.475 de 6.553.600 bytes (87,8 %)**, quedan
+799 KB, y UI_14 + la negrita de SMALL costaron 122 KB entre las dos a 14 y 8 px. Así que la cara de
+display va **recortada a los quince glifos que hacen falta** (0-9, °, :, %, -, /), no como una UI_32
+completa con los acentos de los seis idiomas.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

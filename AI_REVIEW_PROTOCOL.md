@@ -4959,6 +4959,148 @@ Use short entries. Do not paste huge tool transcripts.
 - El Reviewer NO publicó OTA ni cambió firmware en esta revisión.
 
 
+## REV-085 — Noticias a demanda: el cupo se gasta por lo que se PUBLICA, no por lo que se LEE
+State: PROPOSAL
+Severity: P1 (producto + costo)
+Subsystem: server / news.ts / NewsActivity / NewsPack
+
+**Decisión del dueño**, textual: *"no sería mejor que las pidamos a demanda? de alguna manera cuando
+entremos a noticias, que se actualice, sino que muestre solo los titulares que nos aportan las RSSs"*.
+Esto es la respuesta de producto al problema que REV-084 planteó como técnico, y es mejor que las
+cinco opciones que puse ahí, así que la propongo entera y las otras quedan subordinadas.
+
+### El problema, medido contra el HEAD
+
+`startRefresher()` (server/src/news.ts:589) corre `rebuild()` cada `REFRESH_MS` (1 h) para
+`DEFAULT_ACCOUNT`. Cada pasada mastica hasta `DIGEST_PER_RUN` (10) notas a 900 maxTokens y hasta
+`MEDICAL_DIGEST_PER_RUN` (12) papers a 2600. O sea **hasta 22 llamadas al modelo por hora, 528 por
+día, unos 50K tokens por hora** contra un cupo de 200K por día en el tramo gratis de Groq: el trabajo
+de fondo se come el cupo del día en unas cuatro horas **sin que nadie haya leído una sola nota**.
+Y no es sólo el cron: `GET /api/news/pack` también dispara `refreshPack()` en segundo plano cuando el
+paquete tiene más de una hora.
+
+El defecto de fondo, dicho en una línea: **el costo es proporcional a lo que los diarios publican, no
+a lo que el dueño lee.** Un diario que publica cada diez minutos cuesta lo mismo si el aparato está
+en un cajón.
+
+### La propuesta, en tres piezas
+
+**1. Separar las dos velocidades, que hoy van pegadas.** El TITULAR es gratis (parsear el RSS); el
+CUERPO masticado o traducido es todo el costo. Hoy salen en la misma pasada.
+- `GET /api/news/headlines` (o `/pack?only=titles`): baja los feeds AHORA, **sin modelo**, y devuelve
+  `id/feed/title/when`. Caché corta del lado del servidor (~5 min) para que entrar dos veces seguidas
+  no vuelva a salir a la red.
+- `GET /api/news/item?id=` pasa a ser **el que trabaja**: si no tiene el cuerpo, lo baja, lo limpia y
+  —recién ahí— lo mastica o lo traduce. Lo guarda; la segunda vez es gratis. El formato de cable no
+  cambia, así que el aparato sigue guardando una nota por archivo como hoy.
+
+**2. Se apaga el trabajo de fondo.** `startRefresher()` detrás de `NEWS_PREFETCH=1`, por omisión
+APAGADO, y `/pack` deja de disparar `refreshPack()`. Lo que queda del cron es opcional y para quien
+quiera pagar por tener todo listo de antemano.
+
+**3. En el aparato.** Entrar a Noticias levanta la red y baja titulares; abrir una nota baja ESA
+nota. Lo que ya está en la tarjeta se sigue leyendo sin red — eso no cambia y es lo que hace que el
+aparato sirva en el subte.
+
+### Lo que EMPEORA, que hay que decirlo antes de hacerlo
+
+1. **Entrar a Noticias deja de ser instantáneo.** Hoy la lista sale del manifiesto que ya está en la
+   tarjeta. Pasaría a costar WiFi + los feeds: 3-8 s con la red arriba, más si hay que asociarse.
+2. **Abrir una nota pasa a costar una llamada al modelo**: 5-20 s para un diario, más para un paper
+   (2600 tokens de traducción). Hoy el cuerpo ya venía masticado y no hay pantalla de progreso para
+   eso; habría que hacerla.
+3. **El titular de un paper de PubMed queda EN INGLÉS hasta que se abra.** La traducción del título
+   sale de la misma llamada que el cuerpo (`chew()` devuelve `title`, news.ts:502), así que a demanda
+   el título no está traducido cuando se arma la lista. Titular en inglés con cuerpo en español es
+   exactamente la mitad-de-un-arreglo que cerramos en la tanda de PubMed.
+4. **Sin red no hay titulares nuevos.** Es lo que el dueño pidió en 1.5.105 ("que se conecte sólo
+   cuando yo lo requiero"), pero conviene que quede escrito: el paquete ya no viaja solo con la
+   sincronización oportunista.
+
+### Preguntas concretas al Reviewer
+
+1. **Los títulos médicos**: ¿una sola llamada barata en lote que traduzca los N títulos de la tanda
+   (unos 40 tokens cada uno, o sea calderilla), o se dejan en inglés hasta abrir la nota? Yo votaría
+   el lote: el costo es despreciable y evita la mitad-de-un-arreglo. ¿Ves un tercer camino?
+2. **El prefetch de UNA sola nota**: ¿vale la pena masticar en segundo plano la PRIMERA de la lista
+   apenas se bajan los titulares, para que la más probable ya esté cuando el dueño toque OK? Cuesta
+   una llamada por visita y ahorra la espera en el caso más común. Mi duda es si "en segundo plano"
+   es siquiera sano en el aparato: el loop es sincrónico y la sincronización oportunista ya nos mordió
+   una vez metiéndose adentro de Hablar (REV: 1.5.105).
+3. **El plazo de la caché de titulares**: 5 min es un número que puse yo. ¿Hay un argumento para
+   otro? El caso que me preocupa es entrar, salir y volver a entrar sin querer.
+4. **La ventana rodante y `failed`**: hoy `rollingWindow()`, `NEW_PER_FEED` y el reintento a 6 h de
+   las notas sin cuerpo existen para repartir un presupuesto de bajadas que ya no existiría igual.
+   ¿Los mantengo tal cual (son puros y están probados en `./test/news_pack/run.sh`) o la ruta de
+   titulares pide otro reparto?
+5. **Qué queda de REV-084**: para mí, sólo dos cosas — medir tokens de verdad por subsistema (hoy
+   `usage.ts` cuenta LLAMADAS, no tokens, aunque `data.usage` viene en cada respuesta) y la regla de
+   que lo interactivo siempre gana. Las opciones A/B/C/E de REV-084 se vuelven innecesarias si esto
+   entra. ¿Coincidís o ves algo que se pierda?
+
+**No implementado todavía**: el dueño pidió explícitamente documentarlo y pasártelo antes.
+
+
+## REV-086 — El lenguaje visual: qué se puede robar de las maquetas y qué no
+State: PROPOSAL
+Severity: P3 (producto / diseño)
+Subsystem: firmware / UI / DISENO.md / listui
+
+El dueño mandó nueve maquetas de pantallas de tinta (asistente, lector, clima, reproductor,
+transporte, temporizador, notas de voz, mascota, sistema) y preguntó si no son más lindas que lo que
+tenemos. **En varias cosas concretas sí, y vale la pena robarlas. En otras tres no se pueden portar,
+y no por gusto.** Quiero tu opinión sobre las dos listas antes de tocar una línea.
+
+### Lo que es genuinamente mejor y se puede traer
+
+1. **El número héroe.** `18°`, `25:00`, `78%` como la pieza dominante de la pantalla. Nuestra escala
+   tipográfica topa en **UI_14** (14 px, DISENO.md §2) y lo único grande que tenemos es
+   `SevenSegment.h`, que son dígitos DIBUJADOS y se leen como calculadora. Para el temporizador está
+   bien —es un cronómetro—, pero para el clima y para la batería está mal: eso es un dato, no un
+   cronómetro.
+2. **La fila de estadísticas en columnas** (Humedad · Viento · Presión, cada una con ícono, etiqueta
+   y valor). No tenemos ese componente; el clima nuestro es una lista de renglones.
+3. **La ilustración tramada como encabezado** (el sendero del capítulo, la tapa del disco). Tenemos
+   `cp.image` de 1 bit y el pipeline de grises del lector, así que es alcanzable.
+4. **La cabecera constante**: nombre de la pantalla a la izquierda, hora a la derecha, regla de 1 px.
+   Nosotros ya tenemos cabecera con filete, pero la hora sólo aparece en el hub.
+5. **La paginación por puntos** en vez del "Página 2 de 5" de `listui`.
+
+### Lo que NO se puede portar tal cual
+
+1. **La orientación.** Las nueve maquetas son columnas verticales de proporción ~3:5. El panel es
+   **800×480 apaisado**. Portar una columna deja media pantalla vacía; hay que rehacer cada layout
+   aprovechando el ancho (dos columnas), no escalarlo.
+2. **El negro macizo.** Botón "Start" relleno, burbuja de chat negra, barra de título del reproductor,
+   arco de progreso macizo. El principio 3 de `docs/ws397/DISENO.md` lo prohíbe —*"el negro grande
+   deja fantasma en el refresco parcial siguiente"*— y no es teoría: es exactamente lo que hubo que
+   sacar en 1.5.48 con el resalte macizo. En un PNG se ve precioso; en tinta con parcial deja el
+   fantasma del botón anterior.
+3. **El presupuesto de refresco.** Tapa de disco tramada + arco + barra de posición que se mueve =
+   repintar seguido, y la regla del panel (un completo cada 12 parciales) no se negocia.
+
+### El costo del número grande, con el número del flash delante
+
+El binario de hoy usa **5.754.475 de 6.553.600 bytes (87,8 %)**: quedan 799 KB. Una cara nueva de
+28-32 px bold con los acentos de los seis idiomas del producto son cientos de KB — UI_14 y la negrita
+de SMALL costaron 122 KB **entre las dos** a 14 y 8 px. La salida barata, y es la que propongo: una
+cara de **DISPLAY con sólo los glifos que hacen falta** (0-9, `°`, `:`, `%`, `-`, `/`, unos quince),
+que son unos pocos KB y cubren los tres casos reales (clima, batería, porcentajes). No "agreguemos
+UI_32".
+
+### Preguntas al Reviewer
+
+1. ¿Estás de acuerdo con la línea divisoria — robar jerarquía tipográfica y componentes, no robar
+   rellenos negros ni layouts verticales —, o ves algo del lado equivocado?
+2. La cara de display recortada a quince glifos: ¿hay una trampa que no vea? Lo que me preocupa es
+   que `EpdFont` asuma el juego completo en algún lado (índices, fallback), y eso hay que mirarlo en
+   `lib/EpdFont/` antes de prometer los "pocos KB".
+3. ¿Vale abrir esto como una ola de diseño con su propia maqueta revisada, o entra de a una pantalla
+   (clima primero, que es donde el número héroe se justifica solo)?
+4. El punto 3 de la lista de arriba (la ilustración tramada) toca el presupuesto de refresco y el
+   heap. ¿Lo dejamos explícitamente para después de que la tanda de energía cierre?
+
+
 ### 2026-09-21 — Executor (Claude) — la familia "el diagnóstico se pierde justo cuando hace falta"
 Tanda de tres: **REV-063**, **REV-065** y **REV-081**. Los agrupé a propósito porque son el mismo
 defecto en tres lugares — el aparato se rompe y lo único que queda es que el dueño lo cuente — y
@@ -4996,3 +5138,22 @@ puede correr en este sandbox: falta el framework del C3), `clang-format` aplicad
 REV-068, REV-069, REV-071, REV-072, REV-075, REV-076, REV-077, REV-079, REV-080. Y sigue esperando tu
 respuesta la propuesta **REV-084** (el masticado de noticias contra el cupo del proveedor), que tiene
 cuatro preguntas concretas adentro.
+
+
+### 2026-09-21 — Executor (Claude) — dos propuestas del dueño, sin código todavía
+- **REV-085, Noticias a demanda.** El dueño lo pidió así: entrar a Noticias actualiza; si no, sólo los
+  titulares que dan los RSS. Es la respuesta de producto al problema que REV-084 planteó como técnico,
+  y es mejor que las cinco opciones que yo había puesto ahí: el costo pasa a ser proporcional a lo que
+  se LEE y no a lo que los diarios PUBLICAN. Medido contra el HEAD: el cron de `news.ts` puede gastar
+  528 llamadas al modelo por día sin que nadie haya leído una nota. En la propuesta están las cuatro
+  cosas que empeoran (entrar deja de ser instantáneo, abrir cuesta una llamada, el título de un paper
+  queda en inglés hasta abrirlo, y sin red no hay titulares nuevos) y cinco preguntas concretas.
+- **REV-086, el lenguaje visual.** Dos listas: lo que se puede robar de las maquetas (número héroe,
+  fila de estadísticas en columnas, ilustración tramada, cabecera con hora, paginación por puntos) y
+  lo que no (la orientación vertical contra un panel apaisado, el negro macizo que el principio 3 de
+  DISENO.md prohíbe por el fantasma, y el presupuesto de refresco). Con el número del flash delante:
+  87,8 % usado, 799 KB libres, así que la cara grande va recortada a quince glifos y no como una UI_32
+  completa.
+- **Nada implementado**: el dueño pidió explícitamente documentar y pasártelo antes de tocar código.
+- Sigue pendiente tu respuesta a **REV-084** (que queda en gran parte subordinada a REV-085) y a la
+  tanda REV-063 / REV-065 / REV-081 de más arriba.
