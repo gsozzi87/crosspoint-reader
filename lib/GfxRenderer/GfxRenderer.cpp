@@ -603,6 +603,7 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
     // el "primero" dijera siempre la pantalla de AHORA. La operación sí es un
     // literal y el puntero vale.
     static char firstActivity[32] = "?";
+    static char firstTask[16] = "?";
     static const char* firstOp = "?";
     static int firstX = 0;
     static int firstY = 0;
@@ -610,6 +611,18 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
       std::strncpy(firstActivity, gfxscope::activity(), sizeof(firstActivity) - 1);
       firstActivity[sizeof(firstActivity) - 1] = '\0';
       firstOp = gfxscope::op();
+      // QUÉ TAREA lo dibujó. Acá se dibuja desde DOS: la tarea de render
+      // (`ActivityManager` crea una propia, fijada a un núcleo) y el loop de
+      // Arduino (`drawPowerHoldBanner` pinta la barrita de PWR sin pasar por
+      // ninguna Activity). O sea que las etiquetas de `gfxscope` las escriben
+      // dos hilos y pueden cruzarse: no rompe nada —son punteros a literales y
+      // un buffer que siempre queda terminado—, pero un nombre mezclado en la
+      // línea sería una pista falsa. El nombre de la tarea no se cruza, sale
+      // del que está dibujando AHORA, y de paso dice por cuál de los dos
+      // caminos entró.
+      const char* tarea = pcTaskGetName(nullptr);
+      std::strncpy(firstTask, tarea ? tarea : "?", sizeof(firstTask) - 1);
+      firstTask[sizeof(firstTask) - 1] = '\0';
       firstX = x;
       firstY = y;
     }
@@ -617,9 +630,9 @@ void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
     const uint32_t now = millis();
     if (now - lastReport >= 1000) {
       lastReport = now;
-      LOG_ERR("GFX", "%lu pixeles fuera de pantalla (primero %d,%d en «%s / %s»; ultimo %d,%d en «%s / %s»)",
-              static_cast<unsigned long>(clipped), firstX, firstY, firstActivity, firstOp, x, y, gfxscope::activity(),
-              gfxscope::op());
+      LOG_ERR("GFX", "%lu pixeles fuera de pantalla (primero %d,%d en «%s / %s» [%s]; ultimo %d,%d en «%s / %s»)",
+              static_cast<unsigned long>(clipped), firstX, firstY, firstActivity, firstOp, firstTask, x, y,
+              gfxscope::activity(), gfxscope::op());
       clipped = 0;
     }
     return;

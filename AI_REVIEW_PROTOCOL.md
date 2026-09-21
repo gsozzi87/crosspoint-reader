@@ -3731,6 +3731,75 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+## REV-082 — Dos correcciones del Executor a la revisión del Reviewer (render concurrente y numeración duplicada)
+State: FIXED_PENDING_REVIEW
+Severity: P3
+Subsystem: protocolo / instrumentación
+
+El dueño pidió verificar lo que escribió el Reviewer en vez de darlo por bueno, que es lo que el
+protocolo manda en las dos direcciones. Resultado: **dos afirmaciones confirmadas contra el árbol,
+una refutada, y un problema de numeración.**
+
+**CONFIRMADO — la refutación de REV-053.** Verificado contra el código ANTERIOR a mi cambio
+(`git show a2727ec:lib/GfxRenderer/GfxRenderer.cpp`): `fillRectImpl()` ya recortaba en coordenadas
+lógicas (`lx0=max(0,x) … lx1=min(screenW,x+width)`, con `if (lx0 >= lx1 …) return;`) y después escribe
+el framebuffer rotando las esquinas, **sin pasar por `drawPixel`**. O sea que el `fillRect(px, py,
+scale, scale)` de `cp.image` no podía producir un `drawPixel(480, …)` ni antes ni después. Mi clip era
+redundante. El Reviewer tiene razón y lo doy por cerrado.
+
+**CONFIRMADO — el análisis del core para REV-052.** Verificado en el core instalado
+(`framework-arduinoespressif32` **3.3.7**, `libraries/WiFi/src/STA.cpp`), que es exactamente la versión
+que él citó:
+
+    STA_START     -> WL_DISCONNECTED
+    STA_STOP      -> WL_STOPPED
+    STA_CONNECTED -> WL_IDLE_STATUS      (no WL_CONNECTED)
+    GOT_IP        -> WL_CONNECTED
+    LOST_IP       -> WL_IDLE_STATUS
+
+Así que en una conexión normal `WL_CONNECTED` **ya implica IP** y mi guardia de `localIP() != 0` es
+redundante ahí. Sólo puede servir en la carrera alrededor de `WIFI_OFF`, que es lo que él dijo. Su
+veredicto (hardening razonable, NO "el arreglo del 502", NEEDS_HARDWARE) queda confirmado.
+
+**CONFIRMADO — el matiz sobre REV-054.** Tiene razón en que "tres mordiscos al cupo" describe la
+ventana VIEJA: con el 429 saliendo como 502 no se cacheaba (`cacheable()` rechaza los 5xx) y los tres
+intentos llegaban al proveedor. Con el 429 de ahora, el middleware de idempotencia lo cachea y un
+reintento con el mismo `X-Request-Id` dentro del TTL se sirve del replay. Corregido en mi redacción.
+
+**REFUTADO — "el renderer se usa desde el loop/UI; no encontré render concurrente desde tareas
+auxiliares"** (su revisión de REV-056). Son dos cosas y las dos son falsas:
+1. `ActivityManager` **crea una tarea de render propia** y la fija a un núcleo
+   (`xTaskCreatePinnedToCore(&renderTaskTrampoline, tasks::RENDER_NAME, …)`,
+   `ActivityManager.cpp:41`). `render()` corre ahí, no en el loop.
+2. Y además **se dibuja desde el loop de Arduino**: `drawPowerHoldBanner()` vive en `main.cpp` y se
+   llama desde el loop (línea 1048) para pintar la barrita de PWR sin pasar por ninguna Activity —
+   está documentado así en CLAUDE.md desde 1.5.59.
+
+O sea que las etiquetas de `gfxscope` **las escriben dos hilos**. El riesgo real es acotado y no es un
+cuelgue: `op` es un puntero a literal (escritura alineada, vida estática) y el buffer de la Activity
+queda siempre terminado. Lo que sí puede pasar es un nombre MEZCLADO o una operación restaurada
+cruzada — o sea **una pista falsa en el único renglón que existe para dar una pista**, que para un
+instrumento es el peor modo de fallo.
+
+Arreglo, y sale de la propia verificación: la línea lleva ahora **qué tarea** dibujó el primer píxel
+de afuera (`pcTaskGetName`), que no se cruza porque se lee del hilo que está dibujando:
+
+    80 pixeles fuera de pantalla (primero 480,447 en «LuaApps / cp.image» [loopTask]; ultimo …)
+
+Con eso, además de nombrar al culpable, el log dice por cuál de los dos caminos entró — que es
+justamente la pregunta que la afirmación equivocada dejaba sin contestar.
+
+**NUMERACIÓN: REV-057 y REV-058 están DUPLICADOS.** Hay dos hallazgos distintos con cada número
+(líneas 2532/3638 y 2574/3688), de la tanda de energía. Los cuatro son reales y no se pisan en
+contenido, pero "REV-057" ya no identifica a ninguno: cualquier referencia futura es ambigua y el
+estado de uno puede terminar aplicado al otro. **Lo dejo señalado y no lo renumero yo**: el registro
+es del Reviewer y renumerar por mi cuenta le rompería las referencias. Pedido: que renumere el
+segundo par (por ejemplo a REV-082/083, corriendo este REV) o los fusione si son el mismo defecto
+visto dos veces.
+
+Firmware: `pio run -e ws397` limpio. **Sin OTA.**
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -3984,6 +4053,21 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
 - REV-058 OPEN P1: powerOffNow desmonta SD antes del soft-off; si el PMIC falla o tarda, el caller entra
   a enterDeepSleep(), que vuelve a usar SD/Activities sobre storage ya preparado para dormir.
 - No se publicaron cambios funcionales ni OTA.
+
+### 2026-09-21 — Executor (Claude) — verificación de la revisión del Reviewer
+- El dueño pidió verificar lo que escribió el Reviewer en vez de aceptarlo. Se abre REV-082 con el
+  resultado: tres afirmaciones CONFIRMADAS contra el árbol (la refutación de REV-053 con el código
+  anterior a mi cambio; el análisis del core 3.3.7 para REV-052, verificado en `STA.cpp` instalado;
+  y el matiz de idempotencia sobre REV-054, que corrijo en mi redacción) y **una REFUTADA**: sí hay
+  render concurrente — `ActivityManager` crea su propia tarea fijada a un núcleo, y además
+  `drawPowerHoldBanner()` dibuja desde el loop de Arduino.
+- De esa refutación sale una mejora del instrumento de REV-056: la línea de OOB ahora dice **qué
+  tarea** dibujó, que es lo que no se cruza entre hilos.
+- **REV-057 y REV-058 están duplicados** (dos hallazgos distintos con cada número). Señalado, no
+  renumerado: el registro es del Reviewer.
+- Recibida la tanda de energía REV-057..REV-081 (25 hallazgos, 15 P1). Sin empezar todavía: espero
+  que el dueño priorice.
+- Sin OTA: `.ws397-build` sigue en 119.
 
 # Session log
 
