@@ -37,6 +37,7 @@ import { chatText, providerLabel, searchToolLabel, searchKindLabel, providerSear
 import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { providerFailures } from "./providerLog";
+import { tokenRows } from "./tokens";
 import { probeFeed, checkFeed } from "./rss";
 import { isMedicalFeed, MEDICAL_FEED_NAME, MEDICAL_URL, readMedicalFeed } from "./medical";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
@@ -329,7 +330,7 @@ boardApi.post("/config/test", async (c) => {
     // exactamente lo que estaba pasando en producción con gpt-oss-120b. Ahora
     // se pide un presupuesto realista (`planBudget` le suma el lugar del
     // razonamiento) y una respuesta vacía es un ERROR, no un éxito raro.
-    const answer = await chatText({ system: "Responde exactamente: ok", user: "dime ok", maxTokens: 64 });
+    const answer = await chatText({ system: "Responde exactamente: ok", user: "dime ok", maxTokens: 64, subsystem: "prueba" });
     out.llm = answer.trim()
       ? `${await providerLabel()} → "${answer.trim().slice(0, 40)}" (${Date.now() - t0} ms)`
       : `ERROR: ${await providerLabel()} contestó sin texto (${Date.now() - t0} ms). Probá otro modelo en IA.`;
@@ -458,6 +459,11 @@ boardApi.get("/state", async (c) => {
     // Railway ni adivinando con el aparato en la mano. En memoria: un
     // redespliegue los vacía, que es lo correcto — interesa si falla AHORA.
     providerFailures: providerFailures().slice(0, 8),
+    // REV-084: en qué se van los tokens, por día, modelo y subsistema. Los
+    // topes del proveedor son de TOKENS y son POR MODELO, así que contar
+    // llamadas no contesta "¿en qué se fue el cupo?". Se manda lo de los
+    // últimos días, que es lo que se mira.
+    tokens: (await tokenRows()).slice(0, 40),
     multi: multiUser,
   });
 });

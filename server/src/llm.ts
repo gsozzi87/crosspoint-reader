@@ -18,6 +18,7 @@ import { describeProviderError, isRateLimit, providerMessage } from "./providerE
 import { recordProviderFailure } from "./providerLog";
 import { searchWeb, asksForSearch, asksForReasoning, formatResults } from "./websearch";
 import type { Lang } from "./lang";
+import { recordTokens } from "./tokens";
 
 // `code` es para el aparato: "no_key" se muestra distinto que un fallo del
 // proveedor, aunque los dos lleguen como texto.
@@ -54,6 +55,11 @@ type Options = {
   // compatibles con OpenAI al principio del system, que es donde pega la caché
   // de prefijo del proveedor. Ver store.ts (memoryLines / rememberFact).
   memories?: string[];
+  // REV-084: QUIÉN está gastando. Sin esto la contabilidad de tokens dice
+  // cuánto se fue pero no en qué, que es justo lo que hay que saber cuando el
+  // proveedor devuelve 429. Es una etiqueta corta y estable ("hablar",
+  // "noticias", "papers", "traductor", "biblia", "libros", "apps").
+  subsystem?: string;
 };
 
 // El bloque de memoria como texto. Se arma igual para los dos caminos para que
@@ -195,6 +201,12 @@ async function anthropicRun(o: Options, schema: object | undefined, search: bool
       // común, así que se pasa tal cual.
       ...(schema ? ({ output_config: { format: { type: "json_schema", schema } } } as never) : {}),
     });
+    // REV-084: Anthropic los llama distinto pero son los mismos.
+    recordTokens(c.model, o.subsystem ?? "otro", {
+      prompt: res.usage?.input_tokens,
+      completion: res.usage?.output_tokens,
+      total: (res.usage?.input_tokens ?? 0) + (res.usage?.output_tokens ?? 0),
+    });
     if (res.stop_reason === "refusal") throw new LlmError("el modelo se negó a responder", 400, "refused");
     for (const block of res.content) {
       if (block.type === "text") text += block.text;
@@ -238,7 +250,12 @@ type OpenAiChoice = {
 };
 
 type OpenAiUsage = {
+  // REV-084: los tres que hacen falta para saber en qué se fue el cupo. Sólo se
+  // leía `completion_tokens` (y para un diagnóstico), así que el prompt —que en
+  // un paper con el abstract entero es la mayor parte— no se contaba en ningún lado.
+  prompt_tokens?: number;
   completion_tokens?: number;
+  total_tokens?: number;
   completion_tokens_details?: { reasoning_tokens?: number };
 };
 
@@ -316,6 +333,14 @@ async function openAiRun(o: Options, schema: object | undefined, builtIn: BuiltI
   } catch {
     throw new LlmError(`respuesta ilegible del proveedor: ${body.slice(0, 120)}`, 502, "bad_answer");
   }
+  // REV-084: lo que gastó ESTA llamada, antes de cualquier otra cosa — un 200
+  // con el texto vacío también se pagó, y los reintentos también.
+  recordTokens(c.model, o.subsystem ?? "otro", {
+    prompt: data.usage?.prompt_tokens,
+    completion: data.usage?.completion_tokens,
+    reasoning: data.usage?.completion_tokens_details?.reasoning_tokens,
+    total: data.usage?.total_tokens,
+  });
   const choice = data.choices?.[0];
   const msg = choice?.message;
   let text = msg?.content ?? "";

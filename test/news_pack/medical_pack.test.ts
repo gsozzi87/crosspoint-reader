@@ -80,7 +80,11 @@ test("al paper se le pide una traducción técnica, no un resumen para todos", a
       { id: 2, name: "Medicina · PubMed", url: "pubmed:" },
     ];
   });
-  await rebuild(1, "es");
+  // REV-085: con `true` se pide el comportamiento de NEWS_PREFETCH — bajar los
+  // cuerpos y masticarlos en la pasada. Lo que se prueba acá es el PROMPT y la
+  // traducción, que no cambiaron de contenido, sólo de disparador: en el modo
+  // normal esto mismo corre cuando el usuario abre la nota (`ensureBody`).
+  await rebuild(1, "es", true);
 
   expect(pedidos.length).toBe(2);                     // los dos papers; el diario no, que tiene cupo 0
   for (const p of pedidos) {

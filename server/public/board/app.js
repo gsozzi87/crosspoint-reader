@@ -936,6 +936,29 @@ function iaView() {
       "</div>";
   }
 
+  // REV-084: EN QUE SE VA EL CUPO. `usage` cuenta LLAMADAS, y los topes del
+  // proveedor son de TOKENS y por modelo: una pregunta de Hablar son ~600
+  // tokens y la traduccion de un paper ~3000, asi que contarlas iguales es no
+  // contar. Aca estan los tokens de verdad, por dia, modelo y subsistema.
+  const toks = S.tokens || [];
+  if (toks.length) {
+    const dias = [];
+    for (const r of toks) if (dias.indexOf(r.day) < 0) dias.push(r.day);
+    const miles = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "k" : String(n));
+    html += '<div class="card" style="margin-top:12px"><h2>En qué se van los tokens</h2>' +
+      '<p class="hint">Lo que de verdad corre contra el tope del proveedor, que es por tokens y por modelo. Si te devuelve 429, acá se ve quién se lo comió.</p>';
+    for (const d of dias.slice(0, 3)) {
+      const filas = toks.filter((r) => r.day === d).sort((a, b) => b.total - a.total);
+      const total = filas.reduce((n, r) => n + r.total, 0);
+      html += '<h3 class="muted" style="margin:10px 0 4px">' + esc(d) + " · " + miles(total) + " tokens</h3>" +
+        '<div class="scroll"><table class="t"><tr><th>Qué</th><th>Modelo</th><th class="num">Llamadas</th><th class="num">Entrada</th><th class="num">Salida</th><th class="num">Total</th></tr>' +
+        filas.map((r) => "<tr><td>" + esc(r.subsystem) + "</td><td><small class=\"muted\">" + esc(r.model) + "</small></td>" +
+          '<td class="num">' + r.calls + '</td><td class="num">' + miles(r.prompt) + '</td><td class="num">' + miles(r.completion) +
+          '</td><td class="num">' + miles(r.total) + "</td></tr>").join("") + "</table></div>";
+    }
+    html += "</div>";
+  }
+
   html += '<div class="card" style="margin-top:12px"><h2><span class="grow">Cuánto sale cada consulta</span>' + (costs ? "" : '<button class="ghost small" data-act="costs-load">Ver</button>') + "</h2>";
   if (costs === "loading") html += '<p class="loading">Cargando…</p>';
   else if (costs) {

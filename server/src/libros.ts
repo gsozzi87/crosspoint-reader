@@ -292,7 +292,7 @@ function sameQuery(a: string, b: string): boolean {
 /** La consulta corregida por el modelo, o null si no cambia o no se pudo. */
 export async function correctQuery(q: string, lang: Lang): Promise<string | null> {
   try {
-    const raw = await chatText({ system: CORRECT_PROMPT, user: q, maxTokens: 80, search: "off", lang });
+    const raw = await chatText({ system: CORRECT_PROMPT, user: q, maxTokens: 80, search: "off", lang, subsystem: "libros" });
     const out = raw.trim().split("\n")[0].trim().replace(/^["'«»“”‘’]+|["'«»“”‘’.]+$/g, "").trim();
     if (!out || out.length > 200 || out.length > q.length * 3 + 20) return null;
     if (sameQuery(out, q)) return null;

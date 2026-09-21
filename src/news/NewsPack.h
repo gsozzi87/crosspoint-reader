@@ -40,6 +40,19 @@ std::string body(const std::string& id);
 // Devuelve cuántas bajó, o -1 si no se pudo ni traer el manifiesto.
 int sync(int budget = 0);
 
+// REV-085: UNA nota, la que el usuario acaba de abrir. Necesita WiFi arriba y
+// es síncrona, como `sync()`.
+//
+// Del lado del servidor esto es lo que CUESTA: entra al diario, limpia el texto
+// y lo mastica o lo traduce. Por eso la sincronización ya no se baja los cuerpos
+// (el manifiesto los anuncia sin `sha` mientras no existen) y esto se llama
+// cuando alguien abre la nota: el gasto pasa a ser proporcional a lo que se LEE
+// y no a lo que los diarios publican.
+//
+// Devuelve el cuerpo, o "" si no se pudo. Lo que devuelve queda guardado en la
+// tarjeta, así que la segunda visita no necesita red.
+std::string fetchOne(const std::string& id);
+
 // Los titulares más nuevos, para el fondo de pantalla. Sin red.
 std::vector<std::string> headlines(int max);
 

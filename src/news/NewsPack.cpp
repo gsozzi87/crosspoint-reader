@@ -80,6 +80,28 @@ std::vector<std::string> newspack::headlines(const int max) {
   return out;
 }
 
+std::string newspack::fetchOne(const std::string& id) {
+  if (id.empty()) return "";
+  Storage.ensureDirectoryExists(DIR);
+  ServerClient::Response one;
+  if (SERVER_CLIENT.get("/api/news/item?id=" + id, one) != ServerClient::Result::Ok) {
+    LOG_ERR(TAG, "no se pudo traer la nota %s (%d)", id.c_str(), one.status);
+    return "";
+  }
+  JsonDocument doc;
+  if (deserializeJson(doc, one.body) != DeserializationError::Ok) {
+    LOG_ERR(TAG, "la nota %s llegó ilegible", id.c_str());
+    return "";
+  }
+  const std::string text = doc["text"] | "";
+  if (text.empty()) return "";
+  // Se guarda con el sha que dice el servidor, así la sincronización siguiente
+  // la reconoce como al día y no la vuelve a pedir.
+  const std::string sha = doc["sha"] | "";
+  writeAll(itemPath(id), sha + "\n\n" + text);
+  return text;
+}
+
 int newspack::sync(const int budget) {
   Storage.ensureDirectoryExists(DIR);
 
@@ -109,6 +131,14 @@ int newspack::sync(const int budget) {
     vigentes.push_back(id);
     const std::string sha = iv["sha"] | "";
     const std::string path = itemPath(id);
+    // REV-085: SIN sha, EL SERVIDOR TODAVÍA NO TIENE EL CUERPO.
+    //
+    // El repaso de cada hora ya no entra a los diarios ni gasta modelo: deja el
+    // titular anunciado y el cuerpo para cuando alguien ABRA la nota. Pedirlo
+    // acá haría justo lo que este cambio saca — una llamada al modelo por nota
+    // anunciada, se lea o no —, así que la sincronización se lleva sólo lo que
+    // ya está hecho. El titular igual se ve: sale del manifiesto.
+    if (sha.empty()) continue;
     // Ya está y es la misma versión: no se vuelve a bajar. Esto es lo que hace
     // que la segunda sincronización del día no gaste nada.
     if (Storage.exists(path.c_str()) && sha1line(readAll(path)) == sha) continue;

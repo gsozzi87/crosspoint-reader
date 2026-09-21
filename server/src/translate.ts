@@ -59,6 +59,7 @@ translate.post("/", limitBody(8 * 1024 * 1024), async (c) => {
     // Groq o DeepSeek, y fallaba con "bad ANTHROPIC_API_KEY" sin explicar nada.
     const translation = (
       await chatText({
+        subsystem: "traductor",
         system: [
           `Eres un traductor de conversación. Traduce del ${TRANSLATE_NAME[from]} al ${TRANSLATE_NAME[to]} lo que dice el usuario,`,
           "tal cual, con el mismo registro y sin agregar nada: ni comentarios, ni comillas, ni explicaciones.",

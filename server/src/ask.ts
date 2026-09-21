@@ -98,6 +98,7 @@ ask.post("/", async (c) => {
     // respuesta sobre una receta del libro tiene que tenerlo en cuenta.
     const memories = memoryLines(await load(accountOf(c)));
     const r = await chatSearch({
+      subsystem: "preguntar",
       system: general ? generalPrompt(lang) : systemPrompt(book, chapter, lang),
       memories,
       cached: general ? undefined : `<leido_hasta_aca>\n${text}\n</leido_hasta_aca>`,
