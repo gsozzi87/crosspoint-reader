@@ -568,6 +568,26 @@ constexpr unsigned long AFTER_LONG_BACK_MS = 500;
 // "siempre encendido" nadie más va a mandar a dormir. Ver la red de seguridad
 // en el loop.
 constexpr unsigned long REST_BLOCKED_GIVE_UP_MS = 30UL * 60UL * 1000UL;
+// REV-062: LA MÚSICA NO ES UN BLOQUEO SIN EXPLICAR, y por eso no le vale la
+// media hora de arriba.
+//
+// Esa red existe para el caso "algo dejó el reposo trabado y nadie va a
+// destrabarlo" — una Activity que pide `preventAutoSleep()` para siempre, un
+// WiFi que quedó arriba. La música es lo contrario: la puso una persona a
+// propósito y suena porque tiene que sonar. Con el plazo común, un disco
+// entero sin tocar el aparato se cortaba a los ~30 min 30 s, justo lo que la
+// política de unas líneas más arriba dice que NO tiene que pasar (la música
+// reinicia `lastActivityTime` para eso).
+//
+// Pero tampoco es infinito: "la música con repetir no se corta nunca" es un
+// problema que el dueño ya tenía anotado, y una lista en repetir olvidada se
+// come la noche. Tres horas es más que cualquier disco o lista razonable y
+// bastante menos que una batería. Es una decisión de producto, no técnica: si
+// el dueño la quiere más corta o más larga, se cambia acá.
+constexpr unsigned long MUSIC_GIVE_UP_MS = 3UL * 60UL * 60UL * 1000UL;
+// El motivo de la música, como literal con nombre: la red de seguridad lo
+// compara POR PUNTERO para saber si lo único que bloquea es eso.
+constexpr const char* RAZON_MUSICA = "está sonando la música";
 // Una alarma que venció hace más de esto es basura de una sesión vieja, no algo
 // que el usuario esté esperando: suena sola en cualquier pantalla y no hay forma
 // de entender por qué.
@@ -1561,15 +1581,26 @@ void setup() {
         esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
         wakeTimerArmed = true;  // que la red de REV-060 no lo pise con sus 300 s
       }
-      // Se apagan a mano los mismos consumidores que apaga sleepNow(): este
-      // camino NO pasa por ahí, y si el RTC sigue mudo el aparato se queda en
-      // un ciclo de arranque-dormir cada 60 s con el QMI8658 a 250 Hz.
-      halTiltSensor.deepSleep();
-      AudioManager::silenceAmp();
+      // REV-058: ESTE CAMINO YA PASA POR `sleepNow()`, y con eso deja de ser la
+      // excepción que CLAUDE.md venía documentando.
+      //
+      // Antes se apagaban A MANO el IMU y el amplificador y se llamaba directo a
+      // `startDeepSleep()`. Esa copia se quedó corta cuando `sleepNow()` creció:
+      // le faltaban la suspensión del ES8311, la retención del enable del
+      // amplificador y —lo que más pesa— `railsOffForSleep()`. O sea que este
+      // camino dormía con ALDO1-3 ENCENDIDOS: panel, códec y amplificador
+      // alimentados toda la espera. Y no es un caso raro de un minuto: con el
+      // RTC mudo son cinco arranques de 60 s, y después el aparato se queda
+      // dormido así hasta que alguien lo toque.
+      //
+      // `sleepNow()` es seguro acá: `MUSIC.stop()` está guardado por sus
+      // banderas (nada suena todavía en el `setup()`), `halTiltSensor` y
+      // `POWER_KEY` ya están inicializados, y `armReminderWake()` no pisa el
+      // timer de 60 s porque sin reloj devuelve temprano. Duplicar una lista de
+      // apagados es cómo se separó de la verdad la primera vez.
       devlog::close();
       Storage.prepareForDeepSleep();
-      ensureSomeWakeSource();  // REV-060: este camino NO pasa por sleepNow()
-      powerManager.startDeepSleep(gpio);
+      sleepNow();
     }
     if (isReminderWake && !dueReminder && !timerFired) {
       // Woke early or the reminder went away (ticked from the phone): straight back to sleep.
@@ -1942,7 +1973,7 @@ void loop() {
     else if (activityManager.skipLoopDelay())
       porQue = "la pantalla corre sin pausa";
     else if (MUSIC.isSounding())
-      porQue = "está sonando la música";
+      porQue = RAZON_MUSICA;
     else if (busyRecording())
       porQue = "el micrófono está abierto";
     else if (POWER_KEY.pressed())
@@ -1995,18 +2026,36 @@ void loop() {
     // cubrir. Los dos plazos miden lo mismo ahora: lo último que hizo una
     // persona.
     static unsigned long restBlockedSince = 0;
+    static const char* motivoDelBloqueo = nullptr;
     if (restBlocked && !cablePuesto && millis() - lastUserInputTime >= IdleSleep::REST_AFTER_MS) {
-      if (restBlockedSince == 0) restBlockedSince = millis();
-      if (millis() - restBlockedSince >= REST_BLOCKED_GIVE_UP_MS &&
-          millis() - lastUserInputTime >= REST_BLOCKED_GIVE_UP_MS) {
-        LOG_ERR("MAIN", "el reposo lleva %lu ms bloqueado y nadie toca el aparato hace %lu ms: se duerme igual",
-                millis() - restBlockedSince, millis() - lastUserInputTime);
+      // Si CAMBIÓ el motivo, el contador arranca de nuevo: cada causa tiene su
+      // propio plazo (REV-062) y mezclarlos daría lo peor de los dos — dos
+      // horas de música seguidas de otra cosa vencerían al instante, y media
+      // hora de otra cosa seguida de música se llevaría las tres horas.
+      if (restBlockedSince == 0 || porQue != motivoDelBloqueo) {
+        restBlockedSince = millis();
+        motivoDelBloqueo = porQue;
+      }
+      // REV-062: el plazo depende de QUÉ lo bloquea. Ver `MUSIC_GIVE_UP_MS`.
+      const bool soloLaMusica = porQue == RAZON_MUSICA;
+      const unsigned long plazo = soloLaMusica ? MUSIC_GIVE_UP_MS : REST_BLOCKED_GIVE_UP_MS;
+      if (millis() - restBlockedSince >= plazo && millis() - lastUserInputTime >= plazo) {
+        if (soloLaMusica) {
+          LOG_ERR("MAIN", "la música lleva %lu ms sonando sin que nadie toque el aparato: se duerme igual",
+                  millis() - restBlockedSince);
+        } else {
+          LOG_ERR("MAIN",
+                  "el reposo lleva %lu ms bloqueado por «%s» y nadie toca el aparato hace %lu ms: se "
+                  "duerme igual",
+                  millis() - restBlockedSince, porQue ? porQue : "?", millis() - lastUserInputTime);
+        }
         restBlockedSince = 0;
         enterDeepSleep(true);
         return;
       }
     } else {
       restBlockedSince = 0;
+      motivoDelBloqueo = nullptr;
     }
 
     // El reposo NO puede durar más que lo que falta para el deep sleep. Sin
