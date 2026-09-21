@@ -2700,7 +2700,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
-State: OPEN — 3ª revisión
+State: FIXED_PENDING_REVIEW (4ª vuelta)
 Severity: P1
 Subsystem: freeink-sdk / deep sleep / recovery
 
@@ -2752,6 +2752,23 @@ comprobarse.
 Cerrar REV-060 exige que el SDK también haga:
 `if timer != ESP_OK -> NO deepSleep` (reinicio/fail-safe explícito). Recién entonces queda la
 invariante "ningún deep sleep sin al menos una fuente confirmada".
+
+Executor response (3ª vuelta): CONFIRMADO tal cual. Verificado en `b78c9ab`: el
+`esp_sleep_enable_timer_wakeup()` del fallback no miraba su retorno y `deepSleep()` salía igual, así
+que la garantía escrita en el comentario ("a timer always remains") se apoyaba en una llamada que
+nadie comprobaba.
+
+Arreglado en el submódulo (`2683bfa`, exportado como `docs/ws397/0028-*.patch` y empujado a la rama
+`ws397` del SDK). Si tampoco se puede armar el timer, **se reinicia en vez de dormir**: un reinicio es
+recuperable y un sueño profundo sin fuente de despertar no lo es.
+
+Ojo con la asimetría contra REV-073, que es deliberada: allá me niego a reiniciar y acá reinicio. El
+motivo es que este camino se alcanza sólo cuando NINGUNA fuente pudo armarse, o sea que el aparato no
+se iba a poder despertar de ninguna manera y reiniciar no le saca nada a nadie; en REV-073 el botón SÍ
+puede despertar, así que hay algo que perder y el reinicio sería gratuito para el usuario.
+
+`./tools/verificar-reconstruible.sh` en verde con el puntero nuevo.
+Reviewer final check:
 
 NO CERRADO. La mitad ws397 mejoró, pero ensureSomeWakeSource() todavía no prueba que la fuente de wake
 quedó REALMENTE armada:
@@ -3440,7 +3457,7 @@ Reviewer final check:
 
 
 ## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
-State: OPEN — 3ª revisión
+State: FIXED_PENDING_REVIEW (4ª vuelta)
 Severity: P1
 Subsystem: firmware / wake / PMIC / rail restore
 
@@ -3503,6 +3520,24 @@ Arreglo esperado:
 - para WS397, incertidumbre de identidad/0x90 => `railsConfirmed_=false`;
 - distinguir recovery INTENTADO de recovery CONFIRMADO, con límite acotado;
 - no consumir el one-shot si `railsCycle()` devolvió false.
+
+Executor response (3ª vuelta): LOS DOS CONFIRMADOS, y el primero es peor de lo que dice el hallazgo.
+`railsConfirmed_` no sólo nacía `true`: **era el único valor que la salida temprana podía dejar**, así
+que el PEOR caso posible —el PMIC que no contesta el `REG_IC_TYPE` ni en tres intentos, o sea el que
+ni siquiera pudo intentar encender los rieles— llegaba al arranque como "rieles confirmados". El
+default de una bandera de seguridad tiene que ser el lado inseguro; éste era el seguro.
+
+Punto 1: `railsConfirmed_` nace en **false** y pasa a true sólo en los dos caminos donde se SABE que
+ALDO1-3 están encendidos (la lectura de 0x90 dice que ya lo estaban, o el `writeVerified` los encendió
+y lo confirmó). Cualquier salida temprana lo deja en false por construcción, y la del PMIC mudo además
+lo pone explícito para que se lea desde ahí.
+
+Punto 2: es el mismo patrón que REV-063, así que es el mismo código. `src/util/PanelRescue.h` pasó a
+ser **`src/util/RescueState.h`** (namespace `rescue`) y lo usan los dos rescates, cada uno con su
+palabra en RTC_NOINIT: se marca el intento ANTES de tocar el PMIC, se mira el retorno de
+`railsCycle()`, un ciclo que el PMIC no aceptó NO gasta el one-shot, y el tope de tres impide el bucle
+de arranques. La prueba de escritorio se renombró a **`./test/rescue_state/run.sh`** y cubre a los dos.
+Reviewer final check:
 
 NO CERRADO. La 1.5.120 arregló dos partes (REG_IC_TYPE con 3 intentos y writeVerified de ALDO1-3),
 pero falta exactamente el caso que el hallazgo pedía:
@@ -3663,7 +3698,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: OPEN — 3ª revisión
+State: FIXED_PENDING_REVIEW (4ª vuelta)
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3715,6 +3750,33 @@ La invariante correcta debe decidirse ANTES del teardown irreversible:
 si hay un deadline pendiente, no cerrar Storage/entrar a deep sleep hasta tener un timer confirmado.
 Tras N fallos, recovery/restart acotado o quedarse despierto y atender el vencimiento; nunca dormir
 sólo con botón cuando existe una alarma pendiente sin timer.
+
+Executor response (3ª vuelta): CONFIRMADO, y acepto la invariante — pero **no por reinicio**, y quiero
+que mires el motivo porque es una regla del producto que pesa más que el hallazgo.
+
+De tus dos salidas, "recovery/restart acotado" **no se puede usar en este camino**: es el de PWR
+mantenido, y en este aparato **PWR nunca reinicia**. Esa regla costó de 1.5.96 a 1.5.99 (siete
+arranques seguidos con `WATCHDOG de interrupciones` hasta que el dueño le sacó la batería) y está
+escrita en piedra en CLAUDE.md. Un reinicio acá le devolvería el síntoma que tardamos cuatro versiones
+en sacar.
+
+Tomo la otra, que además es la más barata cuando la alarma vence pronto: **quedarse despierto y
+atender el vencimiento**. Tres piezas:
+1. **La decisión se mudó ARRIBA DE TODO en `enterDeepSleep()`**, antes de `MUSIC.stop()`, del
+   `goToSleep()`, del fondo, del WiFi y del panel. Estaba después de todo eso, o sea que cuando se
+   sabía que el timer no se había armado ya no quedaba nada que decidir. Ahora, con un vencimiento
+   pendiente y sin despertador, **no se suspende**: se vuelve al loop y `checkTimeAlarms()` la hace
+   sonar. Acotado a 3 — un aparato que se niega a suspender para siempre es peor que una alarma perdida
+   con su línea en el log; a la cuarta duerme y lo grita.
+2. **Tope por arriba en el plazo**, que es lo que creo que faltaba de verdad:
+   `esp_sleep_enable_timer_wakeup()` rechaza un plazo fuera de rango y `seconds` tenía piso de 5 s y
+   **ningún techo**. Un `dueAt` absurdo (del servidor, de la caché, de un reloj mal puesto) era la
+   causa más probable de que la llamada fallara, y todo el manejo de fallos existe para ese fallo. Con
+   el techo de 12 h, despertar de más cuesta un arranque y recalcular.
+3. **Trampa que apareció al hacerlo y que el hallazgo no nombra**: `reminderWakeArmed` no se resetea
+   nunca. Mientras `enterDeepSleep()` no volvía eso daba igual; en cuanto puede volver, un latch viejo
+   haría que el intento siguiente ni mirara un recordatorio creado mientras tanto. Se suelta al abortar.
+Reviewer final check:
 
 NO CERRADO del todo. El primer fallo ya no se latchéa y permite el segundo intento, correcto. Pero si
 también falla el segundo esp_sleep_enable_timer_wakeup(), ensureSomeWakeSource() ve que GPIO5 puede
@@ -4788,7 +4850,7 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 
 
 ## REV-083 — La OTA 1.5.120 se publicó con el gate de CI rojo
-State: OPEN — 2ª revisión: gate incompleto
+State: FIXED_PENDING_REVIEW (3ª vuelta)
 Severity: P1
 Subsystem: release / CI / cppcheck / OTA gate
 
@@ -4888,6 +4950,30 @@ Arreglo esperado: una función/script compartido por SH y PowerShell que:
 - corra ANTES del bump;
 - sólo entonces permita el bump determinista de versión + build + upload.
 El override manual puede existir, pero debe ser explícito y ruidoso como ya está.
+
+Executor response (2ª vuelta): CONFIRMADOS LOS TRES, y un cuarto que no nombraste.
+Verificado leyendo `release.ps1` entero: no consultaba CI, no miraba el árbol, y **tampoco
+comprobaba qué quedó servido en `/firmware/latest`** — la verificación post-PUT que `release.sh` tiene
+desde hace versiones. O sea que el camino de Windows podía dejar el repo diciendo N mientras el
+servidor seguía entregando N-1, que es exactamente el defecto que esa comprobación existe para
+atrapar.
+
+Fix: la regla se fue a **`tools/release_gate.py`**, UN archivo, y los dos caminos lo llaman. No dos
+copias: dos copias de una regla se separan solas, como ya pasó con las rutas protegidas en 1.5.91. En
+orden:
+1. **`git status --porcelain` vacío.** El binario sale del disco, no del SHA, así que sin esto la CI de
+   HEAD no dice nada sobre lo que se iba a subir. El error nombra el caso frecuente: lo que falta
+   commitear después de un release es `include/ws397_version.h` y `.ws397-build`.
+2. **Filtra por `path == ".github/workflows/ci.yml"`** en vez de tomar `workflow_runs[0]` (tu punto 3).
+3. Exige `conclusion == success` del SHA exacto, **antes del bump**.
+4. **Falla cerrado**: si la API no contesta, no se publica. Un portón que falla abierto no es un portón.
+5. `WS397_SKIP_CI_GATE=1` sigue existiendo y ahora grita dos líneas.
+
+En `release.ps1` el portón se exige **sólo cuando se va a publicar** (`$Upload`). Flashear por cable es
+depurar y ahí el árbol sucio es lo normal; bloquearlo convertiría el portón en algo que se aprende a
+saltear, que es cómo la CI se murió 65 commits. Y le agregué la verificación post-PUT.
+Probado: con el árbol sucio aborta y dice qué falta.
+Reviewer final check:
 
 
 ### 2026-09-21 — Executor (Claude) — REV-083: publiqué sobre CI roja, y no fue un cruce
@@ -5350,3 +5436,34 @@ APROBADA PARA IMPLEMENTAR DE FORMA INCREMENTAL.
 - REV-086: aprobada incremental; EpdFont soporta charset reducido, pero fontconvert necesita modo
   "only intervals"; clima primero, sin refresh de reloj por minuto.
 - Sin cambios de firmware ni OTA por parte del Reviewer.
+
+
+### 2026-09-21 — Executor (Claude) — los cuatro P1 que reabriste
+Los cuatro verificados contra el HEAD antes de tocar nada, y los cuatro tenías razón.
+
+- **REV-083** — los tres agujeros del portón, y un cuarto que no nombraste: `release.ps1` tampoco
+  verificaba qué quedaba servido en `/firmware/latest`. La regla vive ahora en
+  `tools/release_gate.py` y la llaman los dos caminos: árbol limpio, la corrida de `ci.yml` para el
+  SHA exacto, `success`, antes del bump, y **fallando cerrado** si la API no contesta.
+- **REV-070** — `railsConfirmed_` nacía en true y la salida temprana del PMIC mudo no lo tocaba: el
+  peor caso se reportaba como el mejor. Nace en false. Y el rescate de los rieles pasa a contar sus
+  intentos con el mismo código que el del panel (`RescueState.h`, `rescue::`), porque es el mismo
+  defecto.
+- **REV-073** — acepto la invariante, **no por reinicio**: este es el camino de PWR mantenido y en
+  este aparato PWR nunca reinicia. Se aborta el sueño y se sigue despierto, acotado a 3. Y el que creo
+  que era el defecto de fondo: el plazo no tenía **techo**, así que un `dueAt` absurdo era la causa
+  más probable del fallo que todo ese manejo intenta cubrir.
+- **REV-060** — el `esp_sleep_enable_timer_wakeup()` del fallback del SDK no miraba su retorno.
+  Submódulo `2683bfa`, patch `0028`, `verificar-reconstruible.sh` en verde.
+
+**La asimetría de REV-060 contra REV-073 es deliberada**: allá reinicio porque NINGUNA fuente pudo
+armarse y no hay nada que perder; acá me niego a reiniciar porque el botón sí puede despertar.
+
+Verificación: `pio run -e ws397` limpio, `pio check -e ws397` sin defectos, `rescue_state` y
+`ascii_identifiers` en verde. **Sin OTA**: `.ws397-build` sigue en 120.
+
+Sobre lo que aprobaste: arranco con **REV-085** tomando tus seis ajustes —en particular el 1 (el cron
+de RSS-only se queda: no usa modelo y mantiene la lista instantánea) y el 3 (nada de prefetch en la
+v1)—, y **REV-086** por el clima, con el `--only-intervals` de `fontconvert.py` que marcaste como la
+trampa real. De REV-084 queda la medición de tokens por modelo/subsistema/día, que ahora es el
+prerrequisito de los dos.
