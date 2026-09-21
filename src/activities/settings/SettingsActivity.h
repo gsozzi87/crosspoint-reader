@@ -13,6 +13,9 @@ enum class SettingType { TOGGLE, ENUM, ACTION, VALUE, STRING };
 
 enum class SettingAction {
   None,
+  // REV-088: la ayuda de la pestaña Archivos — qué carpeta es para qué. Abre el
+  // visor de siempre; no hay nada que configurar.
+  CardFolders,
   RemapFrontButtons,
   CustomiseStatusBar,
   KOReaderSync,
@@ -64,6 +67,12 @@ struct SettingInfo {
   // dos valores que en realidad es un si/no (los gestos del IMU). Los TOGGLE
   // de verdad no necesitan la marca.
   bool switchStyle = false;
+  // REV-088: una fila que SÓLO informa (el espacio de la tarjeta). Es un STRING
+  // con getter y sin setter, y hace falta la marca porque los otros STRING que
+  // hay son la URL y el token del servidor: `settingValueText()` devuelve ""
+  // para todos ellos a propósito, y empezar a pintar el valor de golpe sacaría
+  // el token a la pantalla. Se pinta sólo lo que pide que se pinte.
+  bool readOnlyText = false;
 
   // Direct char[] string fields (for settings stored in CrossPointSettings)
   size_t stringOffset = 0;
@@ -115,6 +124,18 @@ struct SettingInfo {
     s.enumValues = std::move(values);
     s.key = key;
     s.category = category;
+    return s;
+  }
+
+  /// Fila de sólo lectura: etiqueta a la izquierda, lo que devuelva el getter a
+  /// la derecha. No tiene setter, así que OK encima no hace nada, y no lleva
+  /// `key`: nunca sale por `GET /api/settings`.
+  static SettingInfo Info(StrId nameId, std::function<std::string()> getter) {
+    SettingInfo s;
+    s.nameId = nameId;
+    s.type = SettingType::STRING;
+    s.stringGetter = std::move(getter);
+    s.readOnlyText = true;
     return s;
   }
 
@@ -205,6 +226,12 @@ class SettingsActivity final : public UiTabListActivity {
   std::vector<SettingInfo> readerSettings;
   std::vector<SettingInfo> controlsSettings;
   std::vector<SettingInfo> systemSettings;
+  // REV-088: la pestaña Archivos existe SÓLO en la ws397, así que el juego de
+  // pestañas es de la placa y no una constante. Antes había un `categoryCount`
+  // fijo en 4 y DOS `switch` con los mismos cuatro casos copiados; con una
+  // pestaña condicional eso se habría separado solo, que es exactamente cómo se
+  // separaron las rutas protegidas en 1.5.91. Ahora hay UNA tabla.
+  std::vector<SettingInfo> filesSettings;
   const std::vector<SettingInfo>* currentSettings = nullptr;
 
   bool preserveQuickResumeTimeoutOn = false;
@@ -222,14 +249,27 @@ class SettingsActivity final : public UiTabListActivity {
   std::vector<freeink::ui::ListItem> rowItems_;
   void rebuildRowItems();
 
-  static constexpr int categoryCount = 4;
-  static const StrId categoryNames[categoryCount];
+  // Las pestañas de ESTA placa, en orden, y la lista que abre cada una. Se
+  // arma una sola vez (`buildTabTable()` desde el constructor): depende del
+  // modelo, que no cambia en caliente. Los punteros apuntan a los vectores
+  // miembro, que no se mueven; `clear()`/`push_back()` sobre ellos no los
+  // invalida.
+  struct TabDef {
+    StrId name;
+    std::vector<SettingInfo> SettingsActivity::* list;
+  };
+  std::vector<TabDef> tabs_;
+  void buildTabTable();
+  void pointCurrentSettings();
 
   // --- UiTabListActivity contract ---
   int listCount() const override { return settingsCount; }
-  int tabCount() const override { return categoryCount; }
+  int tabCount() const override { return static_cast<int>(tabs_.size()); }
   int activeTab() const override { return selectedCategoryIndex; }
-  const char* tabLabel(int index) const override { return I18N.get(categoryNames[index]); }
+  const char* tabLabel(const int index) const override {
+    if (index < 0 || index >= tabCount()) return "";
+    return I18N.get(tabs_[index].name);
+  }
   void buildScreen(UiScreen& screen) override;
   void activateIndex(int index) override;
   void onTabAction(int index) override;

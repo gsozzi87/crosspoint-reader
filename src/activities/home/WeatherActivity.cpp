@@ -23,6 +23,7 @@
 #include "components/icons/weatherIcons.h"
 #include "components/themes/BaseTheme.h"
 #include "fontIds.h"
+#include "util/CardRead.h"
 #include "util/Shtc3.h"
 #include "voice/Lang.h"
 
@@ -157,13 +158,8 @@ bool WeatherActivity::parse(const std::string& json) {
 
 bool WeatherActivity::loadCache() {
   if (!Storage.exists(CACHE)) return false;
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, CACHE, f)) return false;
-  std::string raw;
-  raw.resize(f.size());
-  const int got = f.read(&raw[0], raw.size());
-  f.close();
-  return got > 0 && parse(raw);
+  const std::string raw = cardread::readCapped(TAG, CACHE, cardread::CAP_JSON_CACHE);  // REV-059
+  return !raw.empty() && parse(raw);
 }
 
 bool WeatherActivity::fetchForecast() {

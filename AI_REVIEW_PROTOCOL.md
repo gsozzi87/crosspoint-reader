@@ -2663,7 +2663,7 @@ exactamente cómo ésta se separó de la verdad la primera vez.
 Reviewer final check:
 
 ## REV-059 — Suspender/apagar puede OOM por un cache de Noticias corrupto o enorme
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / sleep screen / memory / SD
 
@@ -2698,6 +2698,33 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Executor response (2026-09-21) — confirmado y arreglado en los OCHO lugares, no en dos.
+
+Tenías razón en que el refactor a demanda no lo tocó. Y buscando los dos que nombraste apareció que el
+patrón estaba copiado **ocho veces**, idéntico y sin tope:
+`NewsPack::readAll`, `SleepScreen::readHeadlines`, `NewsActivity::loadCache`, `NewsActivity::readArticle`,
+`CalendarActivity::readCache`, `WeatherActivity::loadCache`, `AssetSyncActivity::readWholeFile` y **cuatro**
+en `BibleActivity` (books.json, un capítulo suelto, un libro entero y el paso de la búsqueda). Parchar sólo
+`SleepScreen` habría sido la mitad de un arreglo, que es peor que ninguno porque parece hecho.
+
+**`src/util/CardRead.h`** (`cardread`), con la decisión separada del I/O para poder probarla:
+- `judge(uint64_t size, size_t cap) -> Empty | Ok | TooBig`, `constexpr` y pura;
+- `readCapped(tag, path, cap)` abre, juzga, y si no entra **no reserva nada** y deja un `[ERR]` en el log —
+  que es lo único que distingue "no había caché" de "había algo imposible";
+- tres topes nombrados por lo que guardan: `CAP_JSON_CACHE` 256 KB, `CAP_ARTICLE` 128 KB, `CAP_BOOK` 1 MB.
+  Todos MUY por encima de lo real (el manifiesto de Noticias con 40 notas mide **8267 bytes**; Salmos, el
+  libro más grande, **207 KB**): no son una cuota, son el límite entre "grande" y "esto no puede ser cierto".
+- Todos los llamadores ya trataban el fallo igual (`return false` / lista vacía), así que oversize degrada
+  solo: la pantalla de sueño se pinta **sin titulares** y el aparato duerme.
+
+**Y un detalle que no estaba en el hallazgo y es la mitad del riesgo**: `HalFile::size()` devuelve `size_t`,
+que en el S3 son **32 bits**. Un archivo de 4 GiB + 100 se leía como 100 y habría pasado cualquier tope que
+le pusiéramos. `readCapped()` pide `fileSize64()`. Tiene su caso en la prueba.
+
+**`./test/card_read/run.sh`** (en CI como "Lectura acotada de la tarjeta"): 0, el tope, el tope + 1, 4 GiB,
+`UINT64_MAX`, el 4 GiB + 100 que truncaría, el manifiesto real, Salmos contra los dos topes, y tope 0. Tres
+`static_assert` más para que el orden de los topes no se pueda romper sin que el compilador chille.
 
 Reviewer pre-release check (2026-09-21):
 BLOQUEA 1.5.121 estable. Revalidado contra HEAD 7b6167a:
@@ -5373,7 +5400,7 @@ Reviewer final check:
 
 
 ## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
-State: APPROVED_BY_OWNER — implementar antes de 1.5.121
+State: FIXED_PENDING_REVIEW — implementado
 Severity: P2 (arquitectura / UX)
 Subsystem: settings / account / cloud / USB MSC / file transfer
 
@@ -5645,6 +5672,60 @@ de la pestaña y el pie de ayuda.
 Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
 
 Reviewer final check:
+
+Executor (2026-09-21) — implementado entero, los ocho puntos de la orden del dueño.
+
+**La pestaña Archivos** (`STR_CAT_FILES`, sólo ws397), entre Controles y Sistema: primero lo que se mira,
+después lo que se toca, y al final el cajón. Cuatro filas:
+1. **Modo memoria USB** (movido de Sistema);
+2. **Limpiar caché de lectura** (movido de Sistema; borra los `.pxc`, o sea almacenamiento);
+3. **Espacio en la tarjeta**, fila de sólo lectura ("3,2 GB libres de 8,0 GB");
+4. **Dónde va cada cosa**, que abre el visor de siempre con `/Books`, `/Music`, `/Apps`, `/fonts` y
+   `/dictionaries` y cómo se expulsa la unidad al terminar.
+En las demás placas no cambia nada: las dos filas movidas siguen en Sistema.
+
+**Lo que pediste vigilar en HomeActivity, y cómo quedó sin poder desincronizarse.** La condición vive en
+**un solo lugar** —`HomeActivity::showsFileTransfer()`, un `static bool` que devuelve `!isWS397()`— y la
+consultan las cuatro cosas que tenían que moverse juntas: `getMenuItemCount()`, `menuItemToIndex()`,
+`indexToMenuItem()` y la construcción de `menuItems`/`menuIcons` del render. OPDS y recientes no se
+desplazan: OPDS se sigue insertando en la posición 2 (después de Recientes) y el libro de continuar al
+principio, que es donde estaban. Un `FILE_TRANSFER` que llegue de otro lado (`goHome()` lo pone al volver de
+`CrossPointWebServer`) cae en el índice 0: no hay índice para una fila que no está.
+
+**Aclaración que hay que hacer antes de que alguien la descubra a la mala**: esa fila **no era otra puerta al
+USB**. Abría `NetworkModeSelectionActivity`, donde el USB es la primera opción pero también están la web por
+WiFi, Calibre y el punto de acceso. Esconderla en la ws397 deja esos tres caminos **sin puerta**, y
+`CrossPointWebServerActivity` sin llamador (su único acceso era ése). Lo doy por correcto —la subida de
+archivos por la web está descartada desde que existe el MSC, y está escrito en CLAUDE.md— pero no es
+"esconder un duplicado", y prefiero decirlo yo.
+
+**Las otras seis**: "local-first, nube opcional" formalizado en `CLAUDE.md` con su consecuencia comprobable
+(ninguna pantalla que no sea del asistente puede quedar bloqueada por falta de vinculación) y con el porqué
+de que lo de `/board` se quede en `/board` (es texto que se teclea). Pairing por código/token intacto: el
+aparato nunca ve correo ni contraseña. **No** se creó pestaña Cuenta; Vincular sigue en Sistema.
+
+**Dos cosas de estructura que hicieron falta y conviene que mires:**
+- `categoryCount` era un `static constexpr int = 4` y había **DOS `switch` idénticos** convirtiendo índice de
+  pestaña en lista. Con una pestaña que sólo existe en una placa, dos copias se separan solas — es la trampa
+  de las rutas protegidas de 1.5.91. Ahora hay **una tabla** (`tabs_`, armada en el constructor porque
+  `UiTabListActivity::onEnter()` pregunta `tabCount()` antes de `rebuildSettingsLists()`) y **un**
+  `pointCurrentSettings()`.
+- La fila de sólo lectura necesitó una marca nueva, `SettingInfo::readOnlyText` + `SettingInfo::Info(...)`.
+  **No alcanzaba con pintar todos los `SettingType::STRING`**: los otros dos que hay son la URL y el token del
+  servidor, y `settingValueText()` devuelve `""` para ellos a propósito desde 1.5.91. Pintar los STRING de
+  golpe habría sacado el token a la pantalla. Se pinta sólo lo que pide que se pinte, y la fila de espacio no
+  lleva `key`, así que nunca sale por `GET /api/settings`.
+- El espacio sale de `HalStorage::cardTotalBytes()`/`cardUsedBytes()` (nuevos, con el candado del
+  almacenamiento), no de `SDCard` directo. Se llaman **sólo** desde esta pantalla: `sdUsedBytes()` recorre la
+  FAT y el SDK la cachea 20 s por eso mismo.
+
+**Seis claves × siete idiomas** (`scripts/add_i18n.py`, `gen_i18n.py` regenerado). El yaml no admite saltos de
+línea, así que la ayuda quedó en un párrafo corrido en vez de una lista — se lee igual en el visor paginado.
+
+Verificación: `pio run -e ws397` limpio (flash **88,0 %**), `pio check` sin defectos, `ascii_identifiers`,
+`verificar-reconstruible.sh`, las 20 pruebas de escritorio, `bunx tsc --noEmit` y `node --check` de la web.
+**NEEDS_HARDWARE**: que la barra de cinco pestañas se vea bien en el vidrio y que el espacio de la tarjeta dé
+un número creíble.
 
 Owner decision + Reviewer handoff (2026-09-21):
 El dueño APRUEBA la variante A y el ajuste del Reviewer.
@@ -6280,3 +6361,25 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - Después de REV-059 + REV-088: Reviewer hará una última pasada PRE-RELEASE sobre todos los
   FIXED_PENDING_REVIEW P1/P2; con CI completa verde, entonces sí autorizar 1.5.121.
 - La 1.5.121 debe considerarse además build de validación física de los NEEDS_HARDWARE del Paso 1.
+
+
+### 2026-09-21 — Executor (Claude) — REV-059 y REV-088 hechos
+- **REV-059**: el patrón `resize(f.size())` sin tope estaba copiado **ocho** veces, no dos. Uno solo
+  (`src/util/CardRead.h`, `cardread::judge` + `readCapped`), tres topes nombrados y todos los llamadores
+  degradando a "sin caché". De paso: `HalFile::size()` es `size_t` (32 bits), así que 4 GiB + 100 pasaba
+  cualquier tope; se pide `fileSize64()`. Prueba nueva `./test/card_read/run.sh` (0, tope, tope+1, 4 GiB,
+  UINT64_MAX, el truncado y los números reales), en CI.
+- **REV-088**: pestaña **Archivos** con Modo memoria USB, Limpiar caché, espacio de la tarjeta y la ayuda de
+  carpetas; `STR_FILE_TRANSFER` escondido de la home clásica sólo en ws397 desde **un solo**
+  `showsFileTransfer()` que consultan el conteo, los dos mapeos y el render; "local-first, nube opcional" en
+  `CLAUDE.md`; sin pestaña Cuenta. Seis claves × siete idiomas.
+  **Lo que hay que saber y no estaba en el planteo**: esa fila no era otra puerta al USB — abría
+  `NetworkModeSelectionActivity` (USB **más** web por WiFi, Calibre y punto de acceso). En la ws397 esos tres
+  quedan sin puerta y `CrossPointWebServerActivity` sin llamador. Lo doy por correcto y decidido, pero no es
+  "esconder un duplicado".
+  Y dos de estructura: `categoryCount` fijo con DOS `switch` copiados pasó a una tabla y un
+  `pointCurrentSettings()`; la fila de sólo lectura necesitó marca propia, porque pintar todos los STRING
+  habría sacado el token del servidor a la pantalla.
+- `pio run -e ws397` limpio (flash 88,0 %), `pio check` sin defectos, 20 pruebas de escritorio, `tsc`,
+  `node --check`, `ascii_identifiers` y `verificar-reconstruible.sh` en verde.
+- **Sin OTA**: `.ws397-build` sigue en 120, esperando tu pasada PRE-RELEASE.

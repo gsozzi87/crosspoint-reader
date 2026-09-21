@@ -7,6 +7,8 @@
 
 #include <algorithm>
 
+#include "util/CardRead.h"
+
 namespace {
 constexpr const char* TAG = "NEWSPACK";
 constexpr const char* DIR = "/.crosspoint/news";
@@ -14,17 +16,10 @@ constexpr const char* MANIFEST = "/.crosspoint/news/pack.json";
 
 std::string itemPath(const std::string& id) { return std::string(DIR) + "/" + id + ".txt"; }
 
-std::string readAll(const std::string& path) {
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, path, f)) return "";
-  std::string out;
-  out.resize(f.size());
-  const int got = out.empty() ? 0 : f.read(&out[0], out.size());
-  f.close();
-  if (got <= 0) return "";
-  out.resize(static_cast<size_t>(got));
-  return out;
-}
+// REV-059: el manifiesto y el cuerpo de una nota se leen CON TOPE. Este camino
+// lo recorre la pantalla de sueño al suspender y al apagar, y una caché
+// corrupta no puede tener permiso para impedir que el aparato duerma.
+std::string readAll(const std::string& path) { return cardread::readCapped(TAG, path, cardread::CAP_JSON_CACHE); }
 
 bool writeAll(const std::string& path, const std::string& data) {
   HalFile f;

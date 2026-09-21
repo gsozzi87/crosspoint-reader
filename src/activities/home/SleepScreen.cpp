@@ -13,14 +13,15 @@
 #include <cstring>
 #include <ctime>
 
+#include "../../CrossPointSettings.h"
 #include "../../HubStore.h"
 #include "../../RecentBooksStore.h"
 #include "../../components/SevenSegment.h"
-#include "../../CrossPointSettings.h"
 #include "../../components/UITheme.h"
-#include "../../util/Shtc3.h"
 #include "../../news/NewsPack.h"
+#include "../../util/Shtc3.h"
 #include "../ListStyle.h"
+#include "util/CardRead.h"
 
 extern GfxRenderer renderer;
 extern HalClock halClock;
@@ -29,9 +30,9 @@ namespace {
 constexpr const char* TAG = "SLEEPSCR";
 constexpr const char* RSS_CACHE = "/.crosspoint/rss/feeds.json";
 
-constexpr int M = listui::SIDE;          // el único margen lateral, 24
-constexpr int FOOT_H = 84;               // banda de abajo: batería y cómo volver
-constexpr int SEG_H = 54;                // alto de los dígitos de la alarma
+constexpr int M = listui::SIDE;  // el único margen lateral, 24
+constexpr int FOOT_H = 84;       // banda de abajo: batería y cómo volver
+constexpr int SEG_H = 54;        // alto de los dígitos de la alarma
 constexpr int SEG_W = 30;
 constexpr int SEG_T = 6;
 constexpr int SEG_GAP = 10;
@@ -147,7 +148,8 @@ int nextAlarm(int y) {
   x += SEG_W + 24;
 
   if (!next->when.empty()) {
-    renderer.drawText(SMALL_FONT_ID, x, y + 6, renderer.truncatedText(SMALL_FONT_ID, next->when.c_str(), right() - x).c_str());
+    renderer.drawText(SMALL_FONT_ID, x, y + 6,
+                      renderer.truncatedText(SMALL_FONT_ID, next->when.c_str(), right() - x).c_str());
   }
   y += SEG_H + 8;
   renderer.drawText(UI_12_FONT_ID, M, y,
@@ -219,8 +221,8 @@ void foot(const sleepscreen::State state) {
   rule(y, 2);
   const auto& metrics = UITheme::getInstance().getMetrics();
   GUI.drawBatteryLeft(renderer, Rect{M, y + 18, metrics.batteryWidth, metrics.batteryHeight}, true);
-  const char* how = I18N.get(state == sleepscreen::State::Suspended ? StrId::STR_SLEEPSCR_WAKE_OK
-                                                                   : StrId::STR_SLEEPSCR_WAKE_PWR);
+  const char* how =
+      I18N.get(state == sleepscreen::State::Suspended ? StrId::STR_SLEEPSCR_WAKE_OK : StrId::STR_SLEEPSCR_WAKE_PWR);
   const int w = renderer.getTextWidth(SMALL_FONT_ID, how, EpdFontFamily::BOLD);
   renderer.drawText(SMALL_FONT_ID, right() - w, y + 24, how, true, EpdFontFamily::BOLD);
 }
@@ -234,13 +236,11 @@ std::vector<std::string> sleepscreen::readHeadlines(const int max) {
   if (!out.empty()) return out;
 
   if (!Storage.exists(RSS_CACHE)) return out;
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, RSS_CACHE, f)) return out;
-  std::string raw;
-  raw.resize(f.size());
-  const int got = raw.empty() ? 0 : f.read(reinterpret_cast<uint8_t*>(&raw[0]), raw.size());
-  f.close();
-  if (got <= 0) return out;
+  // REV-059: ESTE es el camino que importa. Corre al SUSPENDER y al APAGAR, y
+  // sin tope un `feeds.json` con un tamaño absurdo abortaba el firmware justo
+  // cuando el usuario pidió dormir. Sin titulares se duerme igual.
+  const std::string raw = cardread::readCapped(TAG, RSS_CACHE, cardread::CAP_JSON_CACHE);
+  if (raw.empty()) return out;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return out;
   // Uno por feed y después la segunda vuelta: así la pantalla no queda con

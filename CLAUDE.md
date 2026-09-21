@@ -96,6 +96,30 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
   desde el pin (reg01 0x3F), volumen 0xB2.
 - Sensores: SHTC3 en 0x70 (sin driver aún), QMI8658 en 0x6B.
 
+## REGLA FIJA: local primero, nube opcional (REV-088)
+
+El aparato tiene que **leer y configurarse sin cuenta y sin WiFi**. La cuenta es para los servicios que de
+verdad necesitan servidor, y nada más.
+
+Sin cuenta y sin red funcionan, y tienen que seguir funcionando: leer EPUB de la tarjeta, el diccionario local,
+la música, el temporizador/cronómetro/pomodoro, las apps de Lua que no llaman a `cp.call`, la Biblia si está
+bajada, las noticias ya bajadas, los recordatorios y alarmas de la caché, el modo memoria USB, **y la OTA**
+(`/firmware/latest` se pide SIN Bearer). El asistente —Hablar, Preguntarle al libro, el traductor, el paquete de
+noticias— sí necesita servidor por decisión de arquitectura ("todo lo pesado en el servidor"), y eso es *no tener
+asistente*, no *no poder usar el aparato*.
+
+Consecuencia comprobable: **ninguna pantalla que no sea del asistente puede quedar bloqueada por falta de
+vinculación**. `SetupActivity` deja saltar vincular y el lugar del clima con ABAJO, a propósito.
+
+Y la identidad NO se toca: el aparato se acuña su token y se vincula con un código de seis dígitos que se
+escribe del lado de la web. **Nunca se teclea un correo ni una contraseña en el aparato** — es la misma regla del
+teclado, y además el token es mejor: perderlo no pierde datos, porque los datos son de la CUENTA.
+
+Lo que sólo se administra desde `/board`, y por qué está bien que sea así: fuentes de noticias, claves de IA,
+Telegram, paquete de contenido, log y aparatos vinculados. **Todo eso es texto largo que se teclea** (una URL,
+una clave de API, un api hash) y no se puede dictar con sentido. La única excepción ya está resuelta sin menú:
+la memoria del asistente se da de alta **por voz** ("memoriza que…").
+
 ## Modo memoria USB (la tarjeta como disco)
 
 - `-DFREEINK_CAP_USB_MSC=1 -DARDUINO_USB_MODE=0 -DARDUINO_USB_CDC_ON_BOOT=1` en el env `ws397`. La variante prebuilt
@@ -104,10 +128,18 @@ botón del costado, y nada más ("me acomodé bien con la palanca y el botón de
 - `ARDUINO_USB_MODE=0` cambia el tipo de `Serial` de `HWCDC` a `USBCDC`; `lib/Logging/Logging.h` lo contempla ahora
   (una referencia del tipo equivocado no compila). El log por cable sigue saliendo por USB CDC, pero acá el log que
   importa es el que se sube al servidor y se lee en `/board/log`.
-- Se llega por **Ajustes → Sistema → Modo memoria USB** (`SettingAction::UsbDrive` → `UsbDriveActivity` del SDK) y
-  también por Transferir archivos, donde en las placas con MSC la memoria USB es la **primera** opción
-  (`menuModes[]` en `NetworkModeSelectionActivity`: el orden de la pantalla dejó de coincidir con el de
-  `NetworkMode`). Cuesta ~23 KB de RAM y ~60 KB de flash.
+- **Desde REV-088 hay UNA puerta y está en su pestaña: Ajustes → Archivos → Modo memoria USB.** La quinta
+  pestaña de Ajustes (`STR_CAT_FILES`, sólo ws397) tiene cuatro filas: Modo memoria USB, Limpiar caché de
+  lectura, el espacio de la tarjeta (sólo se lee acá: `sdUsedBytes()` recorre la FAT) y "Dónde va cada cosa",
+  que abre el visor con la lista de carpetas. El nombre está medido: con cinco pestañas el slot son 153 px y
+  `fui::tabBar` **no trunca**, así que "Almacenamiento" (141,8 px) se toca con el vecino y "Archivos" (74,8 px
+  en el peor de los seis idiomas) entra con holgura.
+  La fila **Transferir archivos de la home clásica se esconde en la ws397** (`HomeActivity::showsFileTransfer()`,
+  un solo lugar que consultan el conteo, los dos mapeos de índice y el render): esa home cuelga del mosaico
+  Leer, y una segunda puerta ahí se siente como una función del lector. **Ojo**: esa fila no abría sólo el USB —
+  abría `NetworkModeSelectionActivity`, con la web por WiFi, Calibre y el punto de acceso. En la ws397 esos tres
+  quedan sin puerta, que es lo decidido (la subida por la web está descartada desde que existe el MSC).
+  Cuesta ~23 KB de RAM y ~60 KB de flash.
 - Con esto se cargan libros y MP3 sin sacar la tarjeta. La subida de archivos por la web quedó **descartada**.
 
 ## Identidad del aparato y cuentas (multiusuario)

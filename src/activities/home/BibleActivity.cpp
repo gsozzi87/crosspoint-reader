@@ -24,6 +24,7 @@
 #include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/CardRead.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
@@ -85,13 +86,8 @@ void BibleActivity::fail(StrId why, std::string detail) {
 bool BibleActivity::loadBooksFromCache() {
   const std::string path = cacheDir() + "/books.json";
   if (!Storage.exists(path.c_str())) return false;
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, path, f)) return false;
-  std::string raw;
-  raw.resize(f.size());
-  const int got = f.read(&raw[0], raw.size());
-  f.close();
-  if (got <= 0) return false;
+  const std::string raw = cardread::readCapped(TAG, path, cardread::CAP_JSON_CACHE);  // REV-059
+  if (raw.empty()) return false;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
   books.clear();
@@ -121,12 +117,8 @@ bool BibleActivity::readChapter(const int book, const int chapter, std::string& 
   // Primero el libro entero si está bajado; si no, el capítulo suelto cacheado.
   if (bookDownloaded(book) && readChapterFromBook(book, chapter, text)) return true;
   const std::string path = cacheDir() + "/" + std::to_string(book) + "-" + std::to_string(chapter) + ".txt";
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, path, f)) return false;
-  text.resize(f.size());
-  const int got = f.read(&text[0], text.size());
-  f.close();
-  return got > 0;
+  text = cardread::readCapped(TAG, path, cardread::CAP_ARTICLE);  // REV-059
+  return !text.empty();
 }
 
 bool BibleActivity::fetchChapter(const int book, const int chapter, std::string& text) {
@@ -176,14 +168,9 @@ void BibleActivity::refreshCardCount() {
 // Saca un capítulo del archivo del libro. El libro más grande (Salmos) son
 // 207 KB: entra en PSRAM sin problema.
 bool BibleActivity::readChapterFromBook(const int book, const int chapter, std::string& text) const {
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, bookPath(book), f)) return false;
-  std::string whole;
-  whole.resize(f.size());
-  const int got = f.read(&whole[0], whole.size());
-  f.close();
-  if (got <= 0) return false;
-  whole.resize(got);
+  // REV-059: con tope. Salmos, el más grande, son 207 KB.
+  const std::string whole = cardread::readCapped(TAG, bookPath(book), cardread::CAP_BOOK);
+  if (whole.empty()) return false;
   const std::string marker = "#" + std::to_string(chapter) + "\n";
   size_t start = whole.compare(0, marker.size(), marker) == 0 ? 0 : whole.find("\n" + marker);
   if (start == std::string::npos) return false;
@@ -303,14 +290,11 @@ void BibleActivity::searchStep() {
     return;
   }
   const int book = searchIndex++;
-  HalFile f;
-  if (Storage.openFileForRead(TAG, bookPath(book), f)) {
-    std::string whole;
-    whole.resize(f.size());
-    const int got = f.read(&whole[0], whole.size());
-    f.close();
-    if (got > 0) {
-      whole.resize(got);
+  {
+    // REV-059: con tope, igual que `readChapterFromBook()`. El bloque queda a
+    // propósito: `whole` puede ser 200 KB y así se suelta antes de seguir.
+    const std::string whole = cardread::readCapped(TAG, bookPath(book), cardread::CAP_BOOK);
+    if (!whole.empty()) {
       int chapter = 0;
       size_t pos = 0;
       while (pos < whole.size() && hits.size() < 12) {
