@@ -3767,7 +3767,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: FIXED_PENDING_REVIEW (5ª vuelta)
+State: OPEN — usar RTC/light-sleep como fallback antes de degradar
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3805,6 +3805,39 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 5ª revisión (2026-09-21):
+La quinta vuelta mejora la política, pero la justificación "no hay otra fuente que preserve el
+deadline" NO es correcta para esta placa completa.
+
+Es cierto que GPIO45 no sirve como wake de DEEP sleep. Pero el firmware YA usa el PCF85063 por GPIO45
+como fuente de wake de LIGHT sleep:
+- `msUntilNextAlarm()` llama `RTC_ALARM.armAt(due, now)`;
+- comprueba `IDLE_SLEEP.rtcIntUsable()`;
+- para esperas largas puede devolver cap=0 y dormir toda la noche dependiendo sólo del INT del RTC;
+- `IdleSleep::armWakeSources()` arma GPIO45 con `gpio_wakeup_enable(...LOW_LEVEL)` y comprueba el
+  retorno.
+
+Por tanto existe una tercera salida mejor que "quedarse despierto" o "deep sleep y alarma tarde":
+si falla el timer de deep sleep, intentar el RTC externo y caer a light sleep despertable por GPIO45.
+
+Ojo: no basta con simplemente retornar al loop. El auto-deep-sleep se evalúa ANTES del light sleep y
+el timeout ya está vencido, así que volvería a llamar `enterDeepSleep()` inmediatamente. Hace falta
+un estado explícito, por ejemplo `alarmLightSleepFallback`, que mientras exista ese vencimiento:
+1. suprima el auto-deep-sleep;
+2. arme/confirme `RTC_ALARM` para ese dueAt;
+3. permita light sleep por RTC_INT sin depender del timer ESP que acaba de fallar;
+4. al despertar por RTC, limpie el modo y deje que `checkTimeAlarms()` haga sonar la alarma.
+
+También hay que cuidar el caso <=1 h: hoy `msUntilNextAlarm()` devuelve un budget del timer ESP aun
+si RTC_INT está armado. En modo fallback debe poder elegir RTC-only (cap=0 o camino dedicado) para no
+volver a depender del mismo timer que falló.
+
+Si RTC_INT tampoco puede armarse, recién ahí tiene sentido la degradación:
+- vencimiento cercano: quedarse despierto;
+- vencimiento lejano: política explícita de batería/reintento, con log.
+Así el caso normal de fallo del timer conserva hora exacta sin gastar horas despierto.
+
 
 Reviewer 4ª revisión (2026-09-21):
 La ejecución mejora mucho el orden: el timer se intenta ANTES de MUSIC/Activity/WiFi/panel/SD y, si no
@@ -5199,7 +5232,7 @@ Reviewer final check:
 
 
 ## REV-087 — El fallback de wake del SDK puede pisar un timer de alarma ya armado
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: freeink-sdk / deep sleep / timer wake / reminders
 
@@ -5243,6 +5276,106 @@ es exactamente "hay un timer confirmado", y es lo que `ensureSomeWakeSource()` m
 
 Submódulo `6abc553`, exportado como `docs/ws397/0029-*.patch`; `verificar-reconstruible.sh` en verde.
 Reviewer final check:
+
+Reviewer 2ª revisión (2026-09-21):
+Código aceptado. El dato viaja completo:
+`wakeTimerArmed` -> `HalPowerManager::startDeepSleep(..., timerAlreadyArmed)` ->
+`PowerManager::deepSleepUntilPowerButton(timerAlreadyArmed)`.
+Si el timer ya está confirmado y falla el GPIO de wake, el SDK NO vuelve a llamar
+`esp_sleep_enable_timer_wakeup()`, por lo que no pisa el deadline. Si no había timer, conserva el
+fallback de 5 min y comprueba su retorno.
+
+Queda NEEDS_HARDWARE porque el defecto vive en la combinación real de dos fuentes de wake:
+fault injection de GPIO wake fallido + timer de alarma ya armado debe conservar el deadline exacto.
+
+
+Executor response:
+Reviewer final check:
+
+
+## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
+State: PROPOSAL — rebotar con Executor antes de implementar
+Severity: P2 (arquitectura / UX)
+Subsystem: settings / account / cloud / USB MSC / file transfer
+
+Pedido del dueño: antes de implementar, discutir cuál debe ser la relación entre las dos formas
+actuales de "conectarse al aparatito":
+1. cuenta en la nube (correo/contraseña del lado web + dispositivo vinculado);
+2. transferencia directa de archivos por USB/SD.
+
+### Lo que el HEAD actual ya hace
+
+- El aparato NO necesita teclear correo/contraseña: `DevicePairActivity` muestra un código de seis
+  dígitos y la vinculación se completa desde el teléfono/web ya autenticado. El dispositivo guarda
+  un token propio.
+- `UsbDriveActivity` presta la SD al host por USB MSC y después reinicia al Home.
+- En HEAD, `UsbDrive` ya no vive en el menú del lector: está metido dentro de la categoría
+  **Sistema** de `SettingsActivity`.
+- Ajustes tiene hoy cuatro pestañas: Pantalla / Lector / Controles / Sistema. Por eso USB queda
+  mezclado con WiFi, OTA, idioma, vinculación de cuenta, gestos, memoria, etc.
+
+### Hipótesis de arquitectura para discutir
+
+La nube y USB NO deberían competir por el mismo trabajo:
+- **configuración básica del Paper**: local, desde Ajustes;
+- **cuenta/nube**: opcional para servicios que realmente necesitan servidor (IA, noticias procesadas,
+  sync, generación de contenido, respaldo remoto, etc.);
+- **archivos físicos**: USB/SD, completamente independiente de la cuenta;
+- **lector**: sólo funciones de lectura, nunca administración del dispositivo.
+
+La nube puede seguir teniendo un panel web potente para diagnóstico/config avanzada, pero no debería
+ser requisito para que el Paper pueda configurarse y leer contenido local.
+
+### Propuesta concreta del dueño
+
+Agregar una QUINTA pestaña dentro de Ajustes dedicada a archivos/transferencia, para que la función no
+quede perdida dentro de Sistema.
+
+Nombre a discutir:
+- **Archivos** (preferido si en el futuro agrupa más cosas);
+- **Transferencia** (más explícito si sólo contendrá USB);
+- **Almacenamiento** (si también mostrará SD/espacio/caché).
+
+Primer contenido posible:
+- Transferencia USB / "Usar como unidad USB";
+- estado de la SD / espacio libre, si ya existe una API barata y fiable;
+- ayuda corta: libros, música, diccionarios y apps Lua se copian por esta vía;
+- eventualmente acciones de caché/almacenamiento que hoy están en Sistema, sólo si semánticamente
+  pertenecen ahí. NO mover cosas por llenar la pestaña.
+
+### Preguntas al Executor antes de implementar
+
+1. Inventariar qué ajustes/capacidades del Paper hoy SÓLO se pueden administrar desde /board y decir
+   cuáles deberían existir también localmente.
+2. ¿Hay algún servicio cloud que realmente necesite que la cuenta sea obligatoria para el uso básico,
+   o podemos formalizar "local-first, cloud opcional"?
+3. ¿Conviene mantener "Vincular con mi cuenta" en Sistema/Cuenta o crear en el futuro una pestaña
+   **Cuenta** separada? No mezclar esa decisión con Archivos si no hace falta.
+4. Para la quinta pestaña: ¿`UiTabListActivity` escala bien a 5 tabs en 800×480 y con las traducciones
+   largas, o hace falta abreviar/usar icono?
+5. ¿Qué acciones actuales de Sistema pertenecen de verdad a Archivos? Candidato obvio: UsbDrive.
+   ClearCache quizá; OTA/WiFi/idioma NO.
+6. Confirmar que quitar cualquier entrada vieja de "Transferencia de archivos" del lector no rompe
+   accesibilidad desde ningún flujo.
+7. Evaluar seguridad: USB MSC debe seguir desmontando la SD del firmware mientras el host la tiene;
+   la cuenta cloud nunca debe exponer la contraseña al dispositivo si el pairing por token ya resuelve
+   identidad.
+8. Proponer 2-3 variantes de UX y recomendar una antes de tocar código.
+
+### Lugar en el plan de auditoría
+
+Este bloque se agrega como **Paso 11 — arquitectura de acceso/configuración y transferencia de
+archivos**, inmediatamente ANTES de la pasada final transversal.
+
+Subpasos previstos:
+- 11A. Inventario local vs web/cloud.
+- 11B. Definir qué es configuración del dispositivo y qué es servicio cloud.
+- 11C. Diseñar quinta pestaña de Ajustes (Archivos/Transferencia/Almacenamiento).
+- 11D. Mover USB MSC fuera de cualquier flujo de lector y validar regreso al Home.
+- 11E. Revisar vinculación de cuenta/token y posibilidad de uso local sin cuenta.
+- 11F. Regresión: EPUB/música/diccionarios/Lua por USB, sync cloud y OTA deben seguir independientes.
+
+La antigua "Pasada final transversal" pasa a ser **Paso 12**.
 
 Executor response:
 Reviewer final check:
@@ -5762,3 +5895,16 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   el mismo timer. Si querés la garantía igual para el caso lejano, decímelo y la hago.
 - `pio run -e ws397` limpio, `pio check -e ws397` sin defectos, `verificar-reconstruible.sh` en verde.
 - **Sin OTA**: `.ws397-build` sigue en 120.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — respuesta REV-087/073 + nuevo Paso 11
+- REV-087: código aceptado -> NEEDS_HARDWARE. timerAlreadyArmed viaja firmware -> HAL -> SDK y evita
+  reprogramar el timer confirmado.
+- REV-073 sigue OPEN: el Executor pasó por alto que GPIO45/PCF85063 YA despierta de light sleep.
+  Se propone RTC_INT + light-sleep como fallback exacto cuando falle el timer de deep sleep, con un
+  estado que suprima temporalmente el auto-deep-sleep para no reentrar en bucle.
+- Nuevo REV-088 PROPUESTA: separar responsabilidades local/cloud/USB y discutir una quinta pestaña
+  propia de Ajustes para Archivos/Transferencia/Almacenamiento.
+- Roadmap: REV-088 se convierte en Paso 11; la pasada final transversal pasa a Paso 12.
+- Sin implementación ni OTA por parte del Reviewer.
