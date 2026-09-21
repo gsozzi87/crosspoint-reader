@@ -2530,7 +2530,7 @@ diagnóstico. La próxima OTA de diagnóstico debería conservarla al menos hast
 
 
 ## REV-057 — El fallback de apagado vuelve a tocar la SD después de desmontarla
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: firmware / power-off / storage
 
@@ -2570,6 +2570,10 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+VERIFIED contra el código de 1.5.120 (commit 4eaec78). El fallback de powerOffNow() ya no vuelve a
+enterDeepSleep() después de Storage.prepareForDeepSleep(): cae a sleepNow(), que no toca filesystem ni
+repinta. Queda eliminado el uso post-unmount y también el cartel incorrecto de SUSPENDIDO sobre APAGADO.
+
 
 Executor response: CONFIRMED, y con una consecuencia de más que el hallazgo no nombra.
 
@@ -2591,7 +2595,7 @@ despertar. Y deja su línea: "el apagado no cortó: se suspende con la tarjeta y
 Reviewer final check:
 
 ## REV-058 — Timer-wake sin RTC vuelve a dormir con ALDO1-3 encendidos
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: firmware / deep sleep / battery
 
@@ -2636,6 +2640,10 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+VERIFIED contra 1.5.120. El camino de timer-wake sin RTC ya desmonta y entra por sleepNow(); con eso
+hereda suspensión del códec, retención del amp y railsOffForSleep(). Ya no queda la excepción que
+dormía con ALDO1-3 encendidos.
+
 
 Executor response: CONFIRMED. Ese camino apagaba A MANO el IMU y el amplificador y llamaba directo a
 `startDeepSleep()`, y esa copia se quedó corta cuando `sleepNow()` creció: le faltaban la suspensión
@@ -2692,7 +2700,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
-State: FIXED_PENDING_REVIEW (la mitad de la ws397; la del SDK sigue OPEN)
+State: OPEN
 Severity: P1
 Subsystem: freeink-sdk / deep sleep / recovery
 
@@ -2726,6 +2734,15 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+NO CERRADO. La mitad ws397 mejoró, pero ensureSomeWakeSource() todavía no prueba que la fuente de wake
+quedó REALMENTE armada:
+- considera válido el botón por perfil/RTC-capability, no por el retorno real de armPowerButtonWakeup();
+- el SDK freeink sigue ignorando el bool de armPowerButtonWakeup() y duerme igual;
+- el timer de rescate de 5 min llama esp_sleep_enable_timer_wakeup() sin comprobar ESP_OK y pone
+  wakeTimerArmed=true de todos modos.
+En un fallo raro del IDF aún existe deep sleep sin fuente confirmada. Cerrar REV-060 requiere que el
+paso irreversible dependa de un wake confirmado, no de que "debería funcionar".
+
 
 Executor response: CONFIRMED, y **también en el camino de la ws397**, que es peor de lo que decía el
 hallazgo.
@@ -2803,10 +2820,15 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+Sigue OPEN. La 1.5.120 mejora mucho el diagnóstico: railsOffForSleep() fallido deja RAILS_STUCK_MAGIC
+en RTC y el próximo boot lo informa. Pero no implementa los 2-3 retries del read/write/readback crítico.
+Un NACK transitorio al final del sueño todavía puede dejar ALDO1-3 encendidos toda la noche; ahora
+sabremos que pasó, pero no se evita.
+
 
 
 ## REV-062 — La red de seguridad de reposo corta música legítima después de ~30 min
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: firmware / power policy / music / auto-sleep
 
@@ -2848,6 +2870,11 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+VERIFIED como decisión de producto. El corte accidental a ~30 min quedó eliminado: la música tiene un
+fusible separado de 3 h y los demás blockers conservan 30 min; además el contador reinicia si cambia
+el motivo. Esto no detecta progreso real del audio, pero es una política explícita y coherente con el
+requisito de no dejar repeat infinito toda la noche.
+
 
 Executor response: CONFIRMED la contradicción, y la resuelvo separando los dos casos en vez de
 elegir uno.
@@ -2915,7 +2942,7 @@ Reviewer final check:
 
 
 ## REV-064 — Deep sleep desmonta la SD antes de detener la tarea de música
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: firmware / deep sleep / audio task / SD lifecycle
 
@@ -2962,6 +2989,11 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+VERIFIED contra 1.5.120. MUSIC.stop() se ejecuta al principio de enterDeepSleep(), antes de tocar
+Storage. Revisado también AudioManager::stop(): al levantar stopRequested_ la tarea deja el bucle de
+lectura antes de que el caller continúe al unmount. El MUSIC.stop() posterior de sleepNow() queda
+idempotente para los caminos de setup().
+
 
 Executor response: CONFIRMED. Verificado: `enterDeepSleep()` termina con
 `devlog::close(); Storage.prepareForDeepSleep(); sleepNow();` y `sleepNow()` **empieza** con
@@ -3027,7 +3059,7 @@ Reviewer final check:
 
 
 ## REV-066 — El hard-off físico de 10 s puede quedar sin armar y el firmware no lo detecta
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE
 Severity: P1
 Subsystem: firmware / PMIC / hard-off / recovery
 
@@ -3065,6 +3097,10 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+Código aceptado: writeVerified() hace write + readback + 3 intentos y hardOffArmed_ sólo queda true si
+las tres configuraciones críticas del PMIC quedaron confirmadas. Falta la prueba física del hard-off
+de 10 s / fault injection I2C; por eso no lo marco VERIFIED todavía.
+
 
 Executor response: CONFIRMED. Verificado en `PowerKey::begin()`: las tres escrituras del escape
 físico (0x27 PressOff, 0x10 PWRON puede apagar, 0x22 apagado y no reinicio) se hacían con el retorno
@@ -3258,7 +3294,7 @@ Reviewer final check:
 
 
 ## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
-State: FIXED_PENDING_REVIEW
+State: OPEN
 Severity: P1
 Subsystem: firmware / wake / PMIC / rail restore
 
@@ -3305,6 +3341,15 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+NO CERRADO. La 1.5.120 arregló dos partes (REG_IC_TYPE con 3 intentos y writeVerified de ALDO1-3),
+pero falta exactamente el caso que el hallazgo pedía:
+- readReg(REG_LDO_ONOFF0/0x90) sigue siendo de UN intento;
+- si esa lectura falla, se salta toda la restauración y el boot continúa;
+- si writeVerified falla tras 3 intentos, sólo se loguea y setup sigue inicializando display/audio
+  aunque los rieles críticos sigan apagados.
+Debe reintentarse también el read de 0x90 y, si no se confirma ALDO1-3 encendidos, entrar en recovery
+explícito en vez de boot degradado con pantalla/sonido muertos.
+
 
 Executor response: CONFIRMED, las dos mitades.
 
@@ -3441,7 +3486,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: FIXED_PENDING_REVIEW
+State: OPEN
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3479,6 +3524,12 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+NO CERRADO del todo. El primer fallo ya no se latchéa y permite el segundo intento, correcto. Pero si
+también falla el segundo esp_sleep_enable_timer_wakeup(), ensureSomeWakeSource() ve que GPIO5 puede
+despertar y permite deep sleep. El aparato sigue recuperable por OK, pero el recordatorio/timer se
+pierde: sigue vivo el impacto funcional original. Tras dos fallos de la alarma crítica no debe dormir
+como si nada; hace falta fallback/retry/recovery explícito para preservar el vencimiento.
+
 
 Executor response: CONFIRMED. Verificado en `armReminderWake()` (`src/main.cpp`): `reminderWakeArmed`
 se ponía en true ANTES de calcular el vencimiento y antes de armar, y el `esp_err_t` de
@@ -3493,7 +3544,7 @@ código de error.
 Reviewer final check:
 
 ## REV-074 — El light sleep ignora si falló su timer y puede no volver para deep sleep ni alarmas
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: firmware / light sleep / wake timer / power policy
 
@@ -3530,6 +3581,9 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+VERIFIED contra 1.5.120. armWakeSources() comprueba el retorno de esp_sleep_enable_timer_wakeup();
+si falla devuelve false y tick() usa el rollback existente en vez de entrar a light sleep sin deadline.
+
 
 Executor response: CONFIRMED. Verificado en `IdleSleep::armWakeSources()`: el
 `esp_sleep_enable_timer_wakeup()` del presupuesto se llamaba sin mirar el retorno y la función
@@ -3670,7 +3724,7 @@ Reviewer final check:
 
 
 ## REV-078 — El wake GPIO del RTC se asume válido aunque gpio_wakeup_enable() pueda fallar
-State: FIXED_PENDING_REVIEW
+State: VERIFIED
 Severity: P1
 Subsystem: firmware / light sleep / RTC INT / reminder wake
 
@@ -3712,6 +3766,9 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+VERIFIED contra 1.5.120. El gpio_wakeup_enable() de RTC_INT se comprueba; si falla se baja
+rtcIntUsable_ y la política cae al timer de respaldo de una hora en las vueltas siguientes.
+
 
 Executor response: CONFIRMED, y es el de peor consecuencia de los tres. Verificado: el
 `gpio_wakeup_enable(rtcIntPin_, GPIO_INTR_LOW_LEVEL)` se llamaba sin mirar el retorno.
@@ -4374,6 +4431,52 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
   autorización explícita e inequívoca del dueño en el mensaje. Un "dale" no alcanza.
 - `pio run -e ws397` limpio. **1.5.120 es lo publicado; REV-067 y lo que siga entran en la próxima.**
 
+
+## REV-083 — La OTA 1.5.120 se publicó con el gate de CI rojo
+State: OPEN
+Severity: P1
+Subsystem: release / CI / cppcheck / OTA gate
+
+Hallazgo CONFIRMADO por el Reviewer al revisar la publicación real de 1.5.120.
+
+Hechos verificados:
+- commit de release: 4eaec78;
+- Railway recibió `firmware 1.5.120 uploaded (5750992 bytes)` el 2026-09-21 17:11:59Z;
+- PUT /firmware respondió 200 y /firmware/latest respondió 200 inmediatamente después;
+- el workflow CI del MISMO SHA (run 35630476975) terminó FAILURE;
+- Build ws397, unit-tests, ws397 desktop tests, clang-format y los demás builds pasaron;
+- cppcheck falló y por arrastre Test Status falló.
+
+Causa exacta de cppcheck:
+    src/util/PowerKey.h / PowerKey.cpp:
+    bool writeVerified(..., const char* qué)
+
+cppcheck no soporta ese identificador UTF-8 y aborta con:
+    unhandled character(s) (character code=195)
+
+El identificador `qué` sigue presente en HEAD 159de41, por lo que el HEAD posterior también mantiene
+CI rojo.
+
+Hay DOS correcciones:
+1. inmediata: renombrar el parámetro a ASCII (`what`, `label`, `desc`, etc.) y recuperar CI verde;
+2. de proceso: el release gate no debe permitir publicar una OTA si el commit exacto no tiene CI SUCCESS.
+   El release ocurrió antes de que ese workflow terminara en rojo, así que el "release gate" no está
+   realmente imponiendo la precondición documentada.
+
+Impacto:
+- esta vez el binario ws397 compiló y los tests funcionales pasaron; no es evidencia de binario roto;
+- pero publicar con CI pendiente/rojo anula la red de seguridad precisamente en una tanda de energía
+  con cambios de wake/PMIC/SD;
+- una futura regresión real podría publicarse por el mismo hueco.
+
+Fix esperado:
+- dejar todos los identificadores del código analizado por cppcheck en ASCII;
+- hacer que la publicación compruebe el estado CI del SHA exacto que va a servir y aborte si no es SUCCESS;
+- no considerar "pio run local limpio" sustituto del gate completo.
+
+Executor response:
+Reviewer final check:
+
 # Session log
 
 Use short entries. Do not paste huge tool transcripts.
@@ -4506,3 +4609,24 @@ Use short entries. Do not paste huge tool transcripts.
 - Moraleja, y va al protocolo: **una prueba que afirma el comportamiento de una dependencia no es
   una prueba de regresión nuestra.** Se rompe sola cuando la dependencia cambia y enseña a ignorar
   el rojo, que es exactamente cómo CI se murió 65 commits.
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — revisión independiente de la OTA 1.5.120
+- Publicación confirmada de forma independiente en Railway: 1.5.120, 5,750,992 bytes; PUT /firmware 200
+  y GET /firmware/latest 200.
+- VERIFIED en código: REV-057, REV-058, REV-062, REV-064, REV-074, REV-078.
+- REV-066: código aceptado, queda NEEDS_HARDWARE para confirmar hard-off real/fault injection.
+- NO CERRADOS pese a la tanda del Executor:
+  - REV-060: no se confirma el wake real; SDK sigue ignorando armPowerButtonWakeup() y el timer de rescate
+    también ignora ESP_OK.
+  - REV-070: el read crítico de REG_LDO_ONOFF0 sigue de un intento y el boot continúa aun si ALDO1-3
+    no se pudieron confirmar encendidos.
+  - REV-073: doble fallo al armar el timer de recordatorio todavía permite dormir y perder el vencimiento.
+  - REV-061: ahora diagnostica rails-off fallido, pero aún no reintenta el corte.
+- REV-067 fue arreglado DESPUÉS del release 1.5.120; está en HEAD pero no en la OTA 120.
+- Nuevo REV-083: 1.5.120 se publicó con CI rojo. El build ws397 y tests pasaron, pero cppcheck falló por
+  el identificador UTF-8 `qué` en PowerKey::writeVerified(); el identificador sigue presente en HEAD.
+  Antes de otra OTA: recuperar CI verde y hacer que el release gate exija SUCCESS del SHA exacto.
+- Prioridad sugerida al Executor antes de 1.5.121: REV-083 -> REV-060 -> REV-070 -> REV-073 -> REV-061,
+  luego continuar con los OPEN restantes del Paso 1.
+- El Reviewer NO publicó OTA ni cambió firmware en esta revisión.
