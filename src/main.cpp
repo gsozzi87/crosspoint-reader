@@ -902,6 +902,18 @@ static void powerOffNow() {
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
+  // REV-064: LA MÚSICA SE CORTA ACÁ, no en `sleepNow()`.
+  //
+  // `sleepNow()` empieza con `MUSIC.stop()`, pero corre DESPUÉS de
+  // `Storage.prepareForDeepSleep()`, que desmonta el volumen. Y la música vive
+  // fuera de la Activity: al suspender a mano puede seguir sonando. Su tarea
+  // (`audio_play`, propia, en el otro núcleo) lee el MP3 de la tarjeta por
+  // `HalFile::read()`, así que entre el desmontaje y el `MUSIC.stop()` de
+  // `sleepNow()` hay una ventana en la que esa tarea puede tomar el mutex y
+  // leer contra un FsVolume ya terminado. Cortarla antes de tocar nada cierra
+  // la ventana entera; el `MUSIC.stop()` de `sleepNow()` se queda igual, es
+  // idempotente y cubre los caminos del `setup()` que no pasan por acá.
+  MUSIC.stop();
   APP_STATE.lastSleepFromReader = activityManager.isReaderActivity();
 
   const bool isQuickResumeSleep =
@@ -1084,8 +1096,28 @@ static bool handlePowerHold(const bool gateOpen) {
       LOG_INF("MAIN", "PWR mantenido %lu ms: se apaga", held);
       bannerStage = 0;
       powerOffNow();
-      // Si el PMIC no contestó, no queda colgado: se duerme, que es lo de antes.
-      enterDeepSleep();
+      // REV-057: si el PMIC no cortó, se cae a `sleepNow()` y NO a
+      // `enterDeepSleep()`.
+      //
+      // `powerOffNow()` ya desmontó el volumen (`Storage.prepareForDeepSleep()`)
+      // antes de pedir el corte, así que volver a entrar por `enterDeepSleep()`
+      // repetía trabajo de filesystem sobre un FsVolume ya terminado:
+      // `APP_STATE.saveToFile()`, el cuadro de Quick Resume, la lectura de los
+      // titulares para el fondo y la muestra de la batería. El contrato de
+      // HalStorage dice justo lo contrario — después de `prepareForDeepSleep()`
+      // no puede quedar ningún usuario del filesystem.
+      //
+      // Y de paso arregla algo que el hallazgo no nombra: `enterDeepSleep()`
+      // vuelve a pintar el fondo de SUSPENDIDO encima del de APAGADO que
+      // `powerOffNow()` acaba de dejar en el vidrio. El usuario mantuvo PWR
+      // para apagar; el cartel tiene que decir lo que él pidió.
+      //
+      // `sleepNow()` no toca el filesystem ni pinta: apaga el IMU, el códec y
+      // el amplificador, arma el despertador y corta los rieles. Todo lo demás
+      // ya lo hizo `powerOffNow()`.
+      deepSleepInProgress = true;
+      LOG_ERR("MAIN", "el apagado no cortó: se suspende con la tarjeta ya desmontada");
+      sleepNow();
       return true;
     }
     if (held >= POWER_HOLD_ACTION_MS) {
