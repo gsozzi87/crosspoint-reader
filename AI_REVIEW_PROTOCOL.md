@@ -2700,7 +2700,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
-State: FIXED_PENDING_REVIEW (4ª vuelta)
+State: NEEDS_HARDWARE — código del defecto original aceptado
 Severity: P1
 Subsystem: freeink-sdk / deep sleep / recovery
 
@@ -2734,6 +2734,17 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 4ª revisión (2026-09-21):
+El defecto ORIGINAL queda cerrado en código: SDK 2683bfa comprueba también el retorno del timer de
+rescate; si fallan botón Y timer, llama `esp_restart()` y NO entra a deep sleep. Ya existe la
+invariante que pedía REV-060: ningún sueño profundo sin fuente confirmada en ese camino.
+
+Queda NEEDS_HARDWARE para fault injection real del armado de wake. Se abre aparte REV-087 por un
+borde nuevo: si el caller ya tenía un timer de alarma válido y sólo falla el wake GPIO, el fallback
+de 5 min del SDK vuelve a llamar `esp_sleep_enable_timer_wakeup()` y puede reemplazar el deadline
+anterior.
+
 
 Reviewer 3ª revisión (2026-09-21):
 La segunda vuelta corrige dos cosas reales: el timer de rescate de firmware ya mira su `esp_err_t`,
@@ -3480,7 +3491,7 @@ Reviewer final check:
 
 
 ## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
-State: FIXED_PENDING_REVIEW (4ª vuelta)
+State: NEEDS_HARDWARE — lógica aceptada
 Severity: P1
 Subsystem: firmware / wake / PMIC / rail restore
 
@@ -3527,6 +3538,15 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 4ª revisión (2026-09-21):
+Código aceptado. `railsConfirmed_` ahora nace false y sólo pasa a true tras lectura 0x90 que confirma
+ALDO1-3 encendidos o write+readback verificado. El recovery usa la misma state machine `rescue::`
+que el panel: intento marcado antes, DONE sólo si `railsCycle()` devuelve true y tope de tres fallos.
+Con esto ya no se consume el rescate cuando el ciclo no ocurrió.
+
+Falta fault injection/hardware del PMIC real; por eso queda NEEDS_HARDWARE, no VERIFIED.
+
 
 Reviewer 3ª revisión (2026-09-21):
 El retry del read 0x90 está bien y `railsConfirmed_` mejora el contrato, pero quedan DOS agujeros:
@@ -3747,7 +3767,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: FIXED_PENDING_REVIEW (4ª vuelta)
+State: OPEN — política todavía permite perder la alarma
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3785,6 +3805,21 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 4ª revisión (2026-09-21):
+La ejecución mejora mucho el orden: el timer se intenta ANTES de MUSIC/Activity/WiFi/panel/SD y, si no
+se pudo armar, se aborta el sueño mientras todavía es reversible. También puso techo de 12 h al
+deadline y soltó los latches al abortar.
+
+Pero NO cierro el hallazgo porque después de `MAX_SLEEP_ABORTS=3` el código decide explícitamente
+"suspende igual y la alarma pendiente NO va a sonar". En la cuarta entrada todavía puede ocurrir:
+intento normal -> segundo intento desde sleepNow -> fallback 60 s; si todos fallan de forma persistente,
+se duerme sólo con OK y el vencimiento queda perdido.
+
+Eso es una degradación deliberada, no una garantía. Para cerrar REV-073, ante alarma pendiente sin
+timer confirmado el firmware debe permanecer despierto/reintentar de forma acotada en tiempo hasta
+atender el vencimiento, o existir otra fuente de wake confirmada que preserve ese deadline.
+
 
 Reviewer 3ª revisión (2026-09-21):
 El fallback de 60 s mejora el doble-fallo, pero todavía no garantiza el vencimiento. Si también falla
@@ -4953,7 +4988,7 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 
 
 ## REV-083 — La OTA 1.5.120 se publicó con el gate de CI rojo
-State: FIXED_PENDING_REVIEW (3ª vuelta)
+State: VERIFIED
 Severity: P1
 Subsystem: release / CI / cppcheck / OTA gate
 
@@ -5034,6 +5069,14 @@ Sobre el impacto: coincido en que no hay evidencia de binario roto —las seis p
 y las suites pasaron, lo único rojo era cppcheck—, pero coincido más con lo otro: publicar con la red
 de seguridad caída en una tanda que toca wake, PMIC y SD es justo donde no hay que hacerlo.
 Reviewer final check:
+
+Reviewer 3ª revisión (2026-09-21):
+VERIFIED. La regla quedó centralizada en `tools/release_gate.py` y la llaman tanto `release.sh`
+como `release.ps1` cuando hay upload. Comprueba árbol limpio, filtra específicamente
+`.github/workflows/ci.yml`, exige SUCCESS del HEAD exacto y falla cerrado si GitHub no responde.
+PowerShell además ganó la verificación post-PUT de `/firmware/latest`. Flasheo sólo por USB queda
+fuera del gate deliberadamente, que es correcto para desarrollo. El commit 3640be2 tuvo CI 12/12 verde.
+
 
 Reviewer 2ª revisión (2026-09-21):
 La corrección inmediata sí está bien: `qué` pasó a `what`, existe
@@ -5121,6 +5164,39 @@ Reviewer final check:
 - Va como PROPUESTA (REV-084) y no como fix: hay una decisión de diseño que quiero que el Reviewer
   rebote antes de escribir código, sobre todo la asimetría diarios/papers — degradar el modelo de la
   traducción médica es justo el defecto que arreglamos a propósito.
+
+
+## REV-087 — El fallback de wake del SDK puede pisar un timer de alarma ya armado
+State: OPEN
+Severity: P2
+Subsystem: freeink-sdk / deep sleep / timer wake / reminders
+
+Hallazgo nuevo de la revisión de la 4ª vuelta de REV-060.
+
+El firmware puede llegar a `deepSleepUntilPowerButton()` con un timer de recordatorio ya armado y
+confirmado por `armReminderWake()`. Si en ese momento falla únicamente
+`armPowerButtonWakeup()`, SDK 2683bfa hace incondicionalmente:
+
+    esp_sleep_enable_timer_wakeup(5 min)
+
+como fallback. Esa segunda llamada reconfigura la misma fuente de timer y puede reemplazar el plazo
+que el caller ya había programado.
+
+Impacto:
+- si la alarma estaba a menos de 5 min, puede sonar tarde hasta el próximo wake/recalculo;
+- si estaba más lejos, habrá un wake prematuro innecesario pero recuperable;
+- sólo ocurre en el path excepcional donde el GPIO de wake falla, pero es precisamente el path de
+  resiliencia que estamos endureciendo.
+
+Fix recomendado:
+- el SDK no debe asumir que "falló botón == no hay otra fuente";
+- permitir que el caller indique que ya existe un timer/wake alternativo confirmado, o mover la
+  responsabilidad de garantizar fuentes al caller y no reprogramar ciegamente el timer dentro del SDK;
+- test/fault injection: timer de alarma a 60 s + fallo de armPowerButtonWakeup() conserva el deadline
+  original, no lo cambia a 300 s.
+
+Executor response:
+Reviewer final check:
 
 # Session log
 
@@ -5608,3 +5684,17 @@ los puntos de paginación y las ilustraciones tramadas.
 Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` sin defectos, `tsc
 --noEmit` limpio, `node --check` de `app.js`, las veinte suites de escritorio en verde,
 `ascii_identifiers` sobre 537 archivos. **Sin OTA**: `.ws397-build` sigue en 120.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — cuarta vuelta de los P1 reabiertos
+- Commit 3640be2 revisado; CI completa 12/12 SUCCESS.
+- REV-083 VERIFIED: gate compartido SH/PowerShell, árbol limpio, workflow ci.yml exacto, fail-closed,
+  post-PUT también en PowerShell.
+- REV-060: defecto original aceptado -> NEEDS_HARDWARE. SDK 2683bfa ya no duerme si fallan botón+timer.
+- REV-070: lógica aceptada -> NEEDS_HARDWARE. railsConfirmed fail-safe + rescue state confirmado.
+- REV-073 sigue OPEN: después de 3 abortos el código acepta explícitamente dormir perdiendo la alarma
+  si todos los arms persisten fallando.
+- Nuevo REV-087 P2: el fallback de 5 min del SDK puede pisar un timer de alarma ya armado cuando falla
+  sólo el wake GPIO.
+- La tanda agregada eb9cc16 (energía + noticias + UI) también tuvo CI SUCCESS. Sin OTA: build sigue 120.
