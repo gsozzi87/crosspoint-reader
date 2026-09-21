@@ -3088,7 +3088,7 @@ no después.
 Reviewer final check:
 
 ## REV-067 — El auto deep-sleep ignora el cable USB aunque el light sleep lo protege
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / USB / auto-sleep / deep sleep
 
@@ -3135,6 +3135,29 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED. Verificado: el auto-sleep se evalúa en la línea 1956, y `cablePuesto`
+recién se calculaba en la 1980, adentro del bloque de light sleep. O sea que el criterio estaba
+escrito —y bien argumentado— una capa más abajo de donde hacía falta.
+
+Lo que lo vuelve seguro de reproducir en esta placa: `getSleepTimeoutMs()` está forzado a diez
+minutos en la ws397 y el cable **no reinicia `lastActivityTime`**. Enchufado y sin tocarlo, a los
+diez minutos se iba a dormir igual y del lado de la computadora el puerto se caía solo — que es
+exactamente el efecto que el reposo se cuida de evitar, por el otro camino.
+
+Fix: `cablePuesto` se calcula ARRIBA del auto-sleep y lo miran los dos. No cuesta I²C de más: ese
+valor ya se leía una vez por pasada en el bloque de abajo, que ahora lo reusa.
+
+Dos cosas que dejo dichas porque son decisiones y no detalles:
+- **El sueño MANUAL no se toca.** Mantener PWR sigue suspendiendo con el cable puesto: eso lo pidió
+  una persona, y el argumento del CDC sólo vale para lo que pasa solo.
+- **Con el cable puesto el aparato ya no baja a sueño profundo por tiempo.** Es la misma política que
+  el light sleep ya tenía, extendida; enchufado la batería no es el problema. Si el dueño prefiere
+  que a las N horas se duerma igual aunque esté enchufado, es una constante y se agrega.
+
+Queda en el log una vez por situación (`se cumplió el tiempo para dormir pero el cable está puesto`),
+y se rearma cuando el cable se va, así el renglón sirve para confirmarlo sin cable y no para llenar
+el archivo.
+Reviewer final check:
 
 ## REV-068 — El toque corto de OK puede despertar el WS397 y ser rechazado como ghost-wake
 State: OPEN
@@ -4339,6 +4362,17 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 - **Aviso al Reviewer y al dueño**: van ONCE arreglos acumulados desde 1.5.119, varios del tipo "el
   aparato no vuelve a encender" (REV-060/066/070/073/074/078). Ninguno está en el aparato. Cuanto más
   se acumula, más grande es el salto que nadie probó en hardware.
+
+### 2026-09-21 — Executor (Claude) — 1.5.120 PUBLICADA, y REV-067
+- **1.5.120 está publicada y verificada** (autorizada por el dueño: "publica la 120 ahora").
+  `/firmware/latest` entrega 1.5.120, `.ws397-build` = 120 commiteado, reconstruible en verde. Lleva
+  los doce arreglos de REV-054/055/056/057/058/060/061/062/064/066/070/073/074/078.
+- REV-067 CONFIRMED y arreglado: el criterio del cable estaba escrito una capa más abajo de donde
+  hacía falta. Ahora `cablePuesto` se calcula arriba del auto-sleep y lo miran los dos, sin I²C de
+  más. El sueño MANUAL no se toca — con el cable puesto, mantener PWR sigue suspendiendo.
+- Nota de proceso para el dueño y el Reviewer: el sandbox bloquea `release.sh` salvo con una
+  autorización explícita e inequívoca del dueño en el mensaje. Un "dale" no alcanza.
+- `pio run -e ws397` limpio. **1.5.120 es lo publicado; REV-067 y lo que siga entran en la próxima.**
 
 # Session log
 
