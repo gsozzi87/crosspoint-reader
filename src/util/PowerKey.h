@@ -74,6 +74,8 @@ class PowerKey {
   bool available() const { return available_; }
   // Si el escape físico de PWR 10 s quedó confirmado en este arranque (REV-066).
   bool hardOffArmed() const { return hardOffArmed_; }
+  // Si ALDO1-3 (panel, códec, amplificador) quedaron confirmados encendidos.
+  bool railsConfirmed() const { return railsConfirmed_; }
 
   // RIELES EN EL SUEÑO PROFUNDO (1.5.107). Según el esquemático, ALDO1-3 del
   // AXP2101 alimentan EPD_VCC_AXP (el panel, vía el P-MOSFET Q2), Audio_VCC
@@ -160,6 +162,11 @@ class PowerKey {
   // CONFIRMADA por relectura. Es la última salida cuando todo lo demás falló,
   // así que no alcanza con haber escrito los registros: hay que comprobarlo.
   bool hardOffArmed_ = false;
+  // REV-070: si en este arranque quedó CONFIRMADO que ALDO1-3 están encendidos.
+  // false = o no se pudo leer 0x90, o el reencendido no se pudo confirmar: en
+  // los dos casos el panel y el audio pueden estar sin alimentación y el
+  // arranque no puede seguir como si nada.
+  bool railsConfirmed_ = true;
   bool snapshotValid_ = false;
 };
 

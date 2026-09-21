@@ -201,8 +201,24 @@ void PowerKey::begin() {
   // nadie toque el panel o el audio. Si ya están prendidos (primer arranque
   // después de la OTA, o un reinicio sin sueño) no se escribe nada.
   railsRestored_ = 0;
+  // REV-070: esta lectura también se reintenta. Era de UN intento, y si fallaba
+  // se saltaba la restauración ENTERA y el arranque seguía — con el panel y el
+  // audio sin alimentación, porque `sleepNow()` los había cortado para dormir.
+  // El read es tan crítico como el write: sin saber qué hay en 0x90 no se sabe
+  // qué escribir.
   uint8_t ldo = 0;
-  if (readReg(REG_LDO_ONOFF0, ldo)) {
+  bool leyo = false;
+  for (int intento = 1; intento <= 3 && !leyo; ++intento) {
+    leyo = readReg(REG_LDO_ONOFF0, ldo);
+    if (!leyo) delay(2);
+  }
+  if (!leyo) {
+    LOG_ERR(TAG,
+            "!!! OJO: no se pudo leer el registro de los rieles (0x90) en 3 intentos: no se sabe si el "
+            "panel y el audio tienen alimentacion");
+    railsConfirmed_ = false;
+  }
+  if (leyo) {
     const uint8_t missing = static_cast<uint8_t>(~ldo & ALDO123_MASK);
     if (missing != 0) {
       // SOLO el bit de encendido: la tensión de cada ALDO queda como la dejó la
@@ -219,6 +235,7 @@ void PowerKey::begin() {
                         "el reencendido de los rieles ALDO1-3")) {
         railsRestored_ = missing;
       } else {
+        railsConfirmed_ = false;
         LOG_ERR(TAG,
                 "!!! OJO: los rieles del panel y el audio quedaron APAGADOS (faltan %02X): la pantalla "
                 "y el sonido no van a funcionar en este arranque",
@@ -360,15 +377,32 @@ bool PowerKey::powerOff() const {
 
 bool PowerKey::railsOffForSleep() const {
   if (!available_) return false;
-  uint8_t ldo = 0;
-  if (!readReg(REG_LDO_ONOFF0, ldo)) return false;
-  if ((ldo & ALDO123_MASK) == 0) return true;
-  const uint8_t after = static_cast<uint8_t>(ldo & ~ALDO123_MASK);
-  if (!writeReg(REG_LDO_ONOFF0, after)) return false;
-  uint8_t check = 0xEE;
-  readReg(REG_LDO_ONOFF0, check);
-  LOG_INF(TAG, "rieles ALDO1-3 cortados para dormir (90: %02X -> %02X)", ldo, check);
-  return check == after;
+  // REV-061: TRES INTENTOS, no uno. Detectar que el corte falló ya se hace (la
+  // marca en RTC RAM lo cuenta en el arranque siguiente), pero detectar no es
+  // evitar: un NACK suelto del bus compartido, en el último paso antes de
+  // dormir, dejaba el panel, el códec y el amplificador alimentados TODA la
+  // noche. Reintentar cuesta milisegundos y ataca la causa en vez del síntoma.
+  //
+  // Se reintenta la lectura Y la escritura: si no se puede leer 0x90 no se sabe
+  // qué escribir, así que el read es tan crítico como el write.
+  for (int intento = 1; intento <= 3; ++intento) {
+    uint8_t ldo = 0;
+    if (!readReg(REG_LDO_ONOFF0, ldo)) {
+      delay(2);
+      continue;
+    }
+    if ((ldo & ALDO123_MASK) == 0) return true;  // ya estaban abajo
+    const uint8_t after = static_cast<uint8_t>(ldo & ~ALDO123_MASK);
+    if (writeReg(REG_LDO_ONOFF0, after)) {
+      uint8_t check = 0xEE;
+      if (readReg(REG_LDO_ONOFF0, check) && check == after) {
+        LOG_INF(TAG, "rieles ALDO1-3 cortados para dormir (90: %02X -> %02X)", ldo, check);
+        return true;
+      }
+    }
+    delay(2);
+  }
+  return false;
 }
 
 bool PowerKey::railsCycle(uint16_t offMs) const {

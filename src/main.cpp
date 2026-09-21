@@ -242,6 +242,12 @@ RTC_NOINIT_ATTR uint32_t panelRescueMagic;
 // —el mismo drenaje que motivó cortar ALDO1-3— no dejaba una sola línea.
 static constexpr uint32_t RAILS_STUCK_MAGIC = 0x52414C53;  // "RALS"
 RTC_NOINIT_ATTR uint32_t railsStuckMagic;
+// REV-070: ya se intentó UNA vez el rescate de los rieles en este encendido.
+// Mismo patrón que el rescate del panel: un ciclo de corriente y un reinicio, y
+// si al volver sigue sin confirmarse no se insiste — se arranca degradado y el
+// log lo dice, que es mejor que un bucle de reinicios.
+static constexpr uint32_t RAILS_RESCUE_MAGIC = 0x524C5243;  // "RLRC"
+RTC_NOINIT_ATTR uint32_t railsRescueMagic;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
@@ -427,6 +433,11 @@ static bool reminderWakeArmed = false;  // enterDeepSleep() arms with the log; s
 // que es el caso normal. Esto distingue "ya lo intenté" de "hay una fuente de
 // despertar puesta", y es lo que decide si hace falta la red de seguridad.
 static bool wakeTimerArmed = false;
+// REV-073: cuántas veces se intentó armar el despertador del recordatorio en
+// este ciclo de sueño. El diseño ya preveía dos intentos (enterDeepSleep con
+// log, sleepNow en silencio); esto los cuenta para poder hacer algo distinto en
+// el segundo en vez de resignar el vencimiento.
+static int reminderRetries = 0;
 static void armReminderWake(const bool quiet = false) {
   if (reminderWakeArmed) return;
   time_t now = 0;
@@ -450,8 +461,29 @@ static void armReminderWake(const bool quiet = false) {
   // que el diseño tenía previsto — `enterDeepSleep()` llama a esto con log y
   // `sleepNow()` lo repite en silencio como segunda oportunidad, y esa segunda
   // oportunidad quedaba bloqueada justo en el caso para el que existe.
-  const esp_err_t err = esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
+  esp_err_t err = esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
   if (err != ESP_OK) {
+    // REV-073: el primer fallo deja reintentar (por eso no se latchea la
+    // bandera), pero si el SEGUNDO intento también falla el aparato se dormía
+    // "como si nada" y el vencimiento se perdía. Antes de resignarlo se prueba
+    // con un plazo CORTO: volver en un minuto y recalcular es tarde, pero es
+    // muchísimo mejor que no sonar nunca. Sólo se intenta cuando ya hubo un
+    // intento previo, para no gastarlo en la primera vuelta.
+    if (reminderRetries > 0) {
+      constexpr uint64_t REINTENTO_S = 60;
+      const esp_err_t err2 = esp_sleep_enable_timer_wakeup(REINTENTO_S * 1000000ULL);
+      if (err2 == ESP_OK) {
+        reminderWakeArmed = true;
+        wakeTimerArmed = true;
+        LOG_ERR("MAIN",
+                "no se pudo armar el despertador del recordatorio (%llu s, err %d) dos veces: se vuelve en "
+                "%llu s a recalcularlo en vez de perder el vencimiento",
+                (unsigned long long)seconds, (int)err, (unsigned long long)REINTENTO_S);
+        return;
+      }
+      err = err2;
+    }
+    ++reminderRetries;
     LOG_ERR("MAIN", "no se pudo armar el despertador del recordatorio (%llu s, err %d): se reintenta",
             (unsigned long long)seconds, (int)err);
     return;
@@ -496,12 +528,31 @@ static void ensureSomeWakeSource() {
 #endif
   if (elBotonPuedeDespertar || wakeTimerArmed) return;
   constexpr uint64_t RESCATE_S = 300;
-  esp_sleep_enable_timer_wakeup(RESCATE_S * 1000000ULL);
-  wakeTimerArmed = true;
+  // Y ESTE TAMBIÉN SE COMPRUEBA. La red de REV-060 se apoyaba en una llamada
+  // que no miraba su propio retorno: garantizar una fuente de despertar con algo
+  // sin verificar no garantiza nada.
+  const esp_err_t err = esp_sleep_enable_timer_wakeup(RESCATE_S * 1000000ULL);
+  if (err == ESP_OK) {
+    wakeTimerArmed = true;
+    LOG_ERR("MAIN",
+            "!!! OJO: ningun boton puede despertar al aparato. Se arma un temporizador de %llu s para que "
+            "vuelva solo; sin esto quedaria muerto hasta PWR 10 s o sacarle la bateria",
+            (unsigned long long)RESCATE_S);
+    return;
+  }
+  // NI EL TIMER. Acá ya no queda ninguna fuente, y dormir es el paso que no se
+  // puede deshacer: el aparato quedaría muerto hasta PWR 10 s o hasta sacarle la
+  // batería. Un reinicio SÍ se deshace solo — el despertar del sueño profundo es
+  // un reset igual, así que volver por acá no es peor que volver por allá, y al
+  // menos vuelve. Se pierde el estado que no se haya guardado, que a esta altura
+  // ya está en la tarjeta.
   LOG_ERR("MAIN",
-          "!!! OJO: ningun boton puede despertar al aparato. Se arma un temporizador de %llu s para que "
-          "vuelva solo; sin esto quedaria muerto hasta PWR 10 s o sacarle la bateria",
-          (unsigned long long)RESCATE_S);
+          "!!! OJO: no se pudo armar NINGUNA fuente de despertar (timer: %d). No se duerme: se reinicia, "
+          "que es lo unico de lo que el aparato vuelve solo",
+          (int)err);
+  devlog::close();
+  delay(50);  // que la ultima linea llegue a la tarjeta
+  esp_restart();
 }
 
 static void sleepNow() {
@@ -1469,6 +1520,32 @@ void setup() {
   // cerrado. Va junto al diario de batería a propósito: son la misma pregunta
   // —qué pasó mientras dormía— y si los rieles quedaron arriba, el número de
   // "dormido X %/h" de la línea de al lado se explica solo.
+  // REV-070: si NO quedó confirmado que el panel y el audio tienen alimentación,
+  // esto no puede seguir como un arranque normal: `sleepNow()` los cortó para
+  // dormir y sin ellos la pantalla y el sonido están muertos. Un ciclo de
+  // corriente a los rieles y un reinicio es el mismo remedio que ya usa el
+  // rescate del panel, y es lo único que puede destrabar un PMIC que no aceptó
+  // la escritura. UNA sola vez por encendido: si al volver sigue sin
+  // confirmarse, se arranca igual y el log lo dice — un bucle de reinicios es
+  // peor que una pantalla muerta con diagnóstico.
+  if (BoardConfig::isWS397() && !POWER_KEY.railsConfirmed()) {
+    if (railsRescueMagic == RAILS_RESCUE_MAGIC) {
+      railsRescueMagic = 0;
+      LOG_ERR("MAIN",
+              "!!! OJO: los rieles del panel y el audio siguen sin confirmarse despues del ciclo de "
+              "corriente. Se arranca igual; si la pantalla no va, es el PMIC o el bus I2C");
+    } else {
+      railsRescueMagic = RAILS_RESCUE_MAGIC;
+      LOG_ERR("MAIN", "los rieles del panel y el audio no se pudieron confirmar: ciclo de corriente y reinicio");
+      devlog::close();
+      delay(50);
+      POWER_KEY.railsCycle(500);
+      esp_restart();
+    }
+  } else if (BoardConfig::isWS397() && railsRescueMagic == RAILS_RESCUE_MAGIC) {
+    railsRescueMagic = 0;
+    LOG_INF("MAIN", "los rieles volvieron despues del ciclo de corriente");
+  }
   if (BoardConfig::isWS397() && railsStuckMagic == RAILS_STUCK_MAGIC) {
     LOG_ERR("MAIN",
             "!!! OJO: al dormir NO se pudieron cortar los rieles ALDO1-3: el panel, el codec y el "
