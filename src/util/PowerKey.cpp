@@ -124,7 +124,7 @@ bool PowerKey::writeReg(uint8_t reg, uint8_t val) const {
 // `mask` son los bits que nos importan: en 0x10 los bits 0/1 son de disparo
 // (apagado por software, reinicio) y no se pueden comparar en una relectura,
 // y en 0x27 los bits 7:6 son de otra cosa y se conservan.
-bool PowerKey::writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char* qué) const {
+bool PowerKey::writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char* what) const {
   for (int intento = 1; intento <= 3; ++intento) {
     if (writeReg(reg, val)) {
       uint8_t leido = 0;
@@ -132,7 +132,7 @@ bool PowerKey::writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char*
     }
     delay(2);
   }
-  LOG_ERR(TAG, "el PMIC no aceptó %s (reg 0x%02X = %02X): tres intentos y la relectura no coincide", qué, reg, val);
+  LOG_ERR(TAG, "el PMIC no aceptó %s (reg 0x%02X = %02X): tres intentos y la relectura no coincide", what, reg, val);
   return false;
 }
 

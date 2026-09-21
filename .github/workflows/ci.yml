@@ -271,6 +271,9 @@ jobs:
       - name: De qué cuenta es la cola offline
         run: ./test/queue_account/run.sh
 
+      - name: Identificadores en ASCII (cppcheck)
+        run: ./test/ascii_identifiers/run.sh
+
       - name: Error del proveedor y tope de uso
         run: ./test/provider_error/run.sh
 
