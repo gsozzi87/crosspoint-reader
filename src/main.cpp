@@ -1953,12 +1953,40 @@ void loop() {
   }
 #endif
 
+  // "Hay cable" es VBUS, no "está cargando". `isUsbConnected()` en esta placa
+  // pregunta si el PMIC está cargando, y con la batería llena eso da false con
+  // el cable puesto. Se pregunta lo uno O lo otro. Se calcula ACÁ ARRIBA porque
+  // ahora lo miran los dos: el auto-sleep (REV-067) y el reposo de más abajo.
+  const bool cablePuesto = BoardConfig::isWS397() && (POWER_KEY.vbusPresent() || gpio.isUsbConnected());
+
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
-    LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
-    enterDeepSleep(true);
-    // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
-    return;
+    // REV-067: EL CABLE TAMBIÉN FRENA EL SUEÑO PROFUNDO, no sólo el reposo.
+    //
+    // El bloque de light sleep de más abajo ya decidía esto y lo dejaba escrito:
+    // el USB CDC no sobrevive al sueño y, enchufado, ahorrar batería no
+    // justifica que el aparato DESAPAREZCA de la computadora. Pero ese criterio
+    // no protegía al deep sleep, que se evalúa antes — y en la ws397 el tiempo
+    // está forzado a diez minutos y el cable no reinicia `lastActivityTime`.
+    // O sea: enchufado y sin tocarlo, a los diez minutos se iba igual y del
+    // otro lado el puerto se caía solo. Es el mismo efecto que el reposo se
+    // cuida de evitar, por el otro camino.
+    //
+    // Esto NO toca el sueño manual: mantener PWR sigue suspendiendo con el
+    // cable puesto, porque eso lo pidió una persona.
+    static bool avisadoCable = false;
+    if (cablePuesto) {
+      if (!avisadoCable) {
+        avisadoCable = true;
+        LOG_INF("SLP", "se cumplió el tiempo para dormir pero el cable está puesto: no se duerme solo");
+      }
+    } else {
+      avisadoCable = false;  // si vuelve a pasar con el cable, se dice de nuevo
+      LOG_DBG("SLP", "Auto-sleep triggered after %lu ms of inactivity", sleepTimeoutMs);
+      enterDeepSleep(true);
+      // This should never be hit as `enterDeepSleep` calls esp_deep_sleep_start
+      return;
+    }
   }
 
   // ws397: la etapa del medio. Si no pasa nada pero todavía falta para el deep
@@ -1977,7 +2005,7 @@ void loop() {
     // del lado de la compu se veía como que se desconecta y se reconecta cada
     // tanto. Se pregunta lo uno O lo otro: si el registro de VBUS no contesta,
     // queda el criterio de antes.
-    const bool cablePuesto = POWER_KEY.vbusPresent() || gpio.isUsbConnected();
+    // (se calcula arriba del auto-sleep: lo miran los dos — REV-067)
     // Queda en el log para poder confirmarlo sin cable: si VBUS dice una cosa y
     // "está cargando" otra, es justamente el caso que rompía el reposo.
     static int lastCableState = -1;
