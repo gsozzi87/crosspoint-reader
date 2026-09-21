@@ -208,6 +208,19 @@ EpdFontFamily smallFontFamily(&smallFont, &smallBoldFont);
 EpdFont ui14BoldFont(&ubuntu_14_bold);
 EpdFontFamily ui14FontFamily(&ui14BoldFont);
 
+#ifdef FREEINK_DEVICE_WS397
+// REV-086: LA CARA DEL NÚMERO GRANDE. Sólo los dígitos y seis símbolos
+// (espacio, %, + - . / , :, °), porque es lo único que necesita un dato: 18°,
+// 78 %, 25:00. Con el juego completo de los seis idiomas la misma cara a 32 px
+// son 157 KB; con `--only-intervals` son 2,8 KB, y el flash va en 87,8 %.
+//
+// NO reemplaza a `SevenSegment`: los dígitos dibujados están bien donde son un
+// CRONÓMETRO (el temporizador, el reproductor) y mal donde son un dato, que es
+// lo que se lee como calculadora. Sólo negrita, como UI_14.
+EpdFont display32BoldFont(&ubuntu_display_32_bold);
+EpdFontFamily display32FontFamily(&display32BoldFont);
+#endif
+
 EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
@@ -1529,6 +1542,9 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(UI_14_FONT_ID, ui14FontFamily);
+#ifdef FREEINK_DEVICE_WS397
+  renderer.insertFont(DISPLAY_32_FONT_ID, display32FontFamily);
+#endif
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 
   // Discover and load SD card fonts

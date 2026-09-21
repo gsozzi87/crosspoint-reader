@@ -100,6 +100,12 @@ ruby -rdigest -e 'puts [
 ].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
 ))"
 
+echo "#define DISPLAY_32_FONT_ID ($(
+ruby -rdigest -e 'puts [
+  "./ubuntu_display_32_bold.h",
+].map{|f| Digest::SHA256.hexdigest(File.read(f)).to_i(16) }.sum % (2 ** 32) - (2 ** 31)'
+))"
+
 echo "#define SMALL_FONT_ID ($(
 ruby -rdigest -e 'puts [
   "./notosans_8_regular.h",
@@ -119,6 +125,7 @@ FONT_ID_NAMES=(
   UI_10_FONT_ID
   UI_12_FONT_ID
   UI_14_FONT_ID
+  DISPLAY_32_FONT_ID
   SMALL_FONT_ID
 )
 

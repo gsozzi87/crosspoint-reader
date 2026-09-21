@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "../../components/HeroMetric.h"
 #include "MappedInputManager.h"
 #include "Memory.h"
 #include "SilentRestart.h"
@@ -31,8 +32,7 @@ constexpr const char* CACHE = "/.crosspoint/forecast.json";
 constexpr unsigned long REFRESH_HOLD_MS = 1200;
 constexpr time_t CACHE_MAX_AGE_S = 3600;  // más viejo que esto: refrescar al entrar
 constexpr int SIDE = 22;
-constexpr int PARTIALS_BEFORE_CLEAN = 12;         // regla del panel: refresco limpio cada 10-15 parciales
-constexpr int BIG_FONT_ID = NOTOSANS_18_FONT_ID;  // la temperatura de ahora, bien grande
+constexpr int PARTIALS_BEFORE_CLEAN = 12;  // regla del panel: refresco limpio cada 10-15 parciales
 
 // Dibujo para cada código WMO de Open-Meteo (los mismos tramos que usa el
 // servidor en describeWeather()): 0 despejado, 1-2 algo nublado, 3 nublado,
@@ -289,26 +289,38 @@ void WeatherActivity::render(RenderLock&&) {
     const int smallH = renderer.getLineHeight(SMALL_FONT_ID);
     const int ui10H = renderer.getLineHeight(UI_10_FONT_ID);
     const int ui12H = renderer.getLineHeight(UI_12_FONT_ID);
-    const int bigH = renderer.getLineHeight(BIG_FONT_ID);
     char line[160];
     char temp[16];
 
-    // ---- Ahora: el dibujo grande a la izquierda, la temperatura al lado ----
+    // ---- Ahora: el número manda, el dibujo lo acompaña (REV-086) ----
+    //
+    // Antes la temperatura salía en NOTOSANS_18 y el detalle en un renglón de
+    // texto corrido separado por puntos medios. Lo que el dueño marcó de las
+    // maquetas es exactamente esto: el dato dominante y las medidas en columnas
+    // con su etiqueta, que es lo que hace que se lean de un vistazo.
     const freeink::Icon& nowIcon = iconForWmo(nowCode, true);
-    BaseTheme::drawIconBitmap(renderer, nowIcon, SIDE, y);
-    const int tx = SIDE + nowIcon.w + 20;
-    snprintf(temp, sizeof(temp), "%d°", nowTemp);
-    renderer.drawText(BIG_FONT_ID, tx, y, temp, true, EpdFontFamily::BOLD);
-    renderer.drawText(UI_10_FONT_ID, tx, y + bigH - 4,
-                      renderer.truncatedText(UI_10_FONT_ID, nowCond.c_str(), pageWidth - SIDE - tx).c_str(), true,
-                      EpdFontFamily::BOLD);
-    y += std::max<int>(nowIcon.h, bigH + ui10H - 4) + 14;
+    snprintf(temp, sizeof(temp), "%d", nowTemp);
+    const int heroW = pageWidth - SIDE - (SIDE + nowIcon.w + 20);
+    const int heroUsed = heroui::drawHero(renderer, SIDE, y, heroW, temp, "°C", nowCond.c_str());
+    // El dibujo a la DERECHA: el apaisado da ancho de sobra y así el número
+    // arranca en el margen, que es donde el ojo empieza a leer.
+    BaseTheme::drawIconBitmap(renderer, nowIcon, pageWidth - SIDE - nowIcon.w, y);
+    y += std::max<int>(nowIcon.h, heroUsed) + 16;
 
-    // El detalle en dos renglones chicos, a todo el ancho útil.
-    snprintf(line, sizeof(line), "%s %d°   ·   %s %d%%   ·   %s %d km/h", tr(STR_WEATHER_FEELS), feels,
-             tr(STR_WEATHER_HUM), hum, tr(STR_WEATHER_WIND), wind);
-    renderer.drawText(SMALL_FONT_ID, SIDE, y, renderer.truncatedText(SMALL_FONT_ID, line, w).c_str());
-    y += smallH + 4;
+    // Las tres medidas en columnas, con una regla de 1 px entre ellas.
+    {
+      char sFeels[16], sHum[16], sWind[16];
+      snprintf(sFeels, sizeof(sFeels), "%d°", feels);
+      snprintf(sHum, sizeof(sHum), "%d%%", hum);
+      snprintf(sWind, sizeof(sWind), "%d km/h", wind);
+      const heroui::Stat stats[3] = {
+          {tr(STR_WEATHER_FEELS), sFeels},
+          {tr(STR_WEATHER_HUM), sHum},
+          {tr(STR_WEATHER_WIND), sWind},
+      };
+      heroui::drawStats(renderer, SIDE, y, w, stats, 3);
+      y += heroui::statsHeight(renderer);
+    }
     if (!sunrise.empty()) {
       snprintf(line, sizeof(line), "%s %s   ·   %s %s", tr(STR_WEATHER_SUNRISE), sunrise.c_str(),
                tr(STR_WEATHER_SUNSET), sunset.c_str());

@@ -20,6 +20,14 @@ parser.add_argument("size", type=int, help="font size to use.")
 parser.add_argument("fontstack", action="store", nargs='+', help="list of font files, ordered by descending priority.")
 parser.add_argument("--2bit", dest="is2Bit", action="store_true", help="generate 2-bit greyscale bitmap instead of 1-bit black and white.")
 parser.add_argument("--additional-intervals", dest="additional_intervals", action="append", help="Additional code point intervals to export as min,max. This argument can be repeated.")
+# REV-086: una cara de DISPLAY (el numero grande del clima, de la bateria) no
+# necesita las letras: le alcanzan los digitos y media docena de simbolos. Con
+# --additional-intervals eso no se puede pedir, porque SUMA sobre el juego base
+# —Latin-1, Latin Extended, vietnamita, puntuacion— y una cara grande con todo
+# eso son cientos de KB de flash, que es justo lo que no hay (el binario va en
+# 87,8 %). Con --only-intervals el juego base NO se usa y la fuente lleva
+# exactamente lo que se le pida.
+parser.add_argument("--only-intervals", dest="only_intervals", action="store_true", help="Export ONLY the intervals given with --additional-intervals, ignoring the built-in Latin/Vietnamese/punctuation set. For display faces that need just digits and a few symbols.")
 parser.add_argument("--compress", dest="compress", action="store_true", help="Compress glyph bitmaps using DEFLATE with group-based compression.")
 parser.add_argument("--zopfli", dest="zopfli", action="store_true", help="Use Zopfli for the DEFLATE backend instead of zlib. Produces standard raw-DEFLATE streams (decoded unchanged by the on-device uzlib inflater), typically a few percent smaller than zlib -9, at the cost of much slower compression. Requires --compress and the 'zopfli' package.")
 parser.add_argument("--force-autohint", dest="force_autohint", action="store_true", help="Force FreeType auto-hinter instead of native font hinting. Improves stem width consistency for fonts with weak or no native TrueType hints.")
@@ -269,6 +277,10 @@ def load_glyph(code_point):
         face_index += 1
     return None
 
+if args.only_intervals:
+    if not add_ints:
+        raise SystemExit("--only-intervals needs at least one --additional-intervals")
+    intervals = []
 unmerged_intervals = sorted(intervals + add_ints)
 intervals = []
 unvalidated_intervals = []
