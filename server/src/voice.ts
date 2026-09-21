@@ -292,6 +292,7 @@ async function parseTimeReply(text: string, lang: Lang, baseDate = ""): Promise<
   }
   try {
     const out = await chatText({
+      subsystem: "hablar",
       system: "Devuelve solo la hora que dice el usuario en formato HH:MM de 24 horas, sin nada más. Si no se entiende, devuelve 09:00.",
       user: text,
       maxTokens: 40,
@@ -355,6 +356,7 @@ async function answerWithSearch(acc: number, question: string, lang: Lang): Prom
     const memories = memoryLines(await load(acc));
     const hoy = new Date().toLocaleDateString("es-MX", { timeZone: timeZone(), day: "2-digit", month: "long", year: "numeric" });
     const r = await chatSearch({
+      subsystem: "hablar-busqueda",
       memories,
       system: [
         `Hoy es ${hoy}.`,

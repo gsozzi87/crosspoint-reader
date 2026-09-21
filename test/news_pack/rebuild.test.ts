@@ -90,7 +90,17 @@ test("la ventana rueda: entra lo nuevo y sale lo más viejo", async () => {
   expect(despues.items.some((i) => i.id === viejo.id)).toBe(false);
   expect(despues.items.filter((i) => i.id.startsWith("1-"))[0].whenAt!).toBeGreaterThan(viejo.whenAt!);
   // Y no quedan cuerpos huérfanos en el volumen de lo que salió de la ventana.
-  expect(Object.keys(despues.bodies).sort()).toEqual(despues.items.map((i) => i.id).sort());
+  //
+  // REV-085: la invariante es SUBCONJUNTO, no igualdad. Desde que el cuerpo se
+  // busca al abrir la nota, un titular pendiente no tiene cuerpo — lo que no
+  // puede pasar nunca es lo contrario, un cuerpo sin su titular, que es basura
+  // que se queda en el volumen para siempre.
+  const ids = new Set(despues.items.map((i) => i.id));
+  for (const id of Object.keys(despues.bodies)) expect(ids.has(id)).toBe(true);
+  // Y en el modo normal (sin NEWS_PREFETCH) NINGUNA nota trae cuerpo todavía:
+  // el repaso no entra a los diarios ni gasta modelo.
+  expect(Object.keys(despues.bodies).length).toBe(0);
+  expect(despues.items.every((i) => i.pending === true)).toBe(true);
 });
 
 test("una caída de todos los diarios no vacía el paquete", async () => {

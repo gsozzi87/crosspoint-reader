@@ -276,6 +276,7 @@ bibleApi.post("/ask", async (c) => {
   if (!question) return c.json({ ok: false, error: "question is required" }, 400);
   try {
     const answer = await chatText({
+      subsystem: "biblia",
       system: askPrompt(book, chapter, lang),
       cached: text ? `<capitulo>\n${text}\n</capitulo>` : undefined,
       user: question,

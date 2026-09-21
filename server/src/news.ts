@@ -102,6 +102,13 @@ const DIGEST_PER_RUN = envInt("NEWS_DIGEST_PER_RUN", 10, 0, 100);
 // (10, tope 12) por pasada y lo ya traducido no se vuelve a traducir.
 const MEDICAL_DIGEST_PER_RUN = envInt("NEWS_MEDICAL_DIGEST", 12, 0, 100);
 const REFRESH_MS = envInt("NEWS_REFRESH_MS", 60 * 60 * 1000, 60_000, 24 * 60 * 60 * 1000);
+// REV-085: el repaso de cada hora, ¿baja los cuerpos y los mastica? Por omisión
+// NO: eso es lo que gastaba el cupo sin que nadie lo pidiera. Con
+// NEWS_PREFETCH=1 vuelve el comportamiento de antes.
+const PREFETCH = (process.env.NEWS_PREFETCH ?? "") === "1";
+// Cuánto se espera por el cuerpo de UNA nota cuando alguien la abre. Más largo
+// que el presupuesto del repaso: acá hay una persona esperando y es UNA sola.
+const OPEN_BUDGET_MS = envInt("NEWS_OPEN_BUDGET_MS", 20_000, 3_000, 60_000);
 const ARTICLE_BUDGET_MS = 12000;
 // Un cuerpo de más de esto no entra cómodo en el aparato ni aporta nada: son
 // unos 12 minutos de lectura.
@@ -129,6 +136,12 @@ export type PackItem = {
   // saber si la nota cambió. Sin esto, traducir el título haría que cada pasada
   // lo viera distinto del original y volviera a traducir todo cada hora.
   srcTitle?: string;
+  // REV-085: TITULAR SIN CUERPO. El repaso de cada hora sólo lee los RSS —que
+  // no cuestan modelo ni entrar en cada diario—, así que la nota entra con su
+  // titular y el cuerpo queda para cuando alguien la ABRA. No viaja al aparato
+  // como campo propio: el aparato ya se entera por el `sha`, que es vacío
+  // mientras no hay cuerpo.
+  pending?: boolean;
 };
 
 type Body = { id: string; title: string; feed: string; when: string; text: string };
@@ -145,7 +158,11 @@ export function carryUnavailable(
 ): PackItem[] {
   return previous.filter((item) => {
     const dash = item.id.indexOf("-");
-    if (dash <= 0 || !bodies[item.id]) return false;
+    // REV-085: un titular SIN cuerpo también es una nota y también se conserva.
+    // Antes hacía falta el cuerpo para sobrevivir a una caída del diario, y con
+    // los cuerpos a demanda eso vaciaba el paquete entero en cuanto un feed no
+    // contestaba.
+    if (dash <= 0 || (!bodies[item.id] && !item.pending)) return false;
     return unavailable.has(Number(item.id.slice(0, dash)));
   });
 }
@@ -241,6 +258,63 @@ export function splitTitledAnswer(out: string): { title: string; text: string } 
   return { title, text };
 }
 
+// REV-085: LOS TÍTULOS DE LOS PAPERS, EN UNA SOLA LLAMADA.
+//
+// La traducción del título salía de la MISMA llamada que el cuerpo, así que con
+// el cuerpo a demanda el titular quedaba en inglés hasta que alguien abriera la
+// nota — y un titular en inglés con el cuerpo en español es la mitad de un
+// arreglo, que es peor que ninguno porque parece hecho.
+//
+// Un título son unas cuarenta palabras: traducir los doce de una tanda en UNA
+// llamada es calderilla al lado de traducir un abstract, y deja la lista bien
+// desde el primer momento. El formato es "N. texto" por línea, que es lo único
+// que el modelo tiene que respetar; si no lo respeta, el título se queda en
+// inglés y no se pierde nada.
+export function parseNumberedList(out: string, esperados: number): string[] {
+  const res: string[] = new Array(esperados).fill("");
+  for (const linea of out.replace(/\r\n/g, "\n").split("\n")) {
+    const m = /^\s*(\d{1,3})\s*[.)\-]\s*(.+?)\s*$/.exec(linea.replace(/\*/g, ""));
+    if (!m) continue;
+    const n = Number(m[1]);
+    if (!Number.isInteger(n) || n < 1 || n > esperados) continue;
+    const texto = m[2]!.trim().replace(/^["“]|["”]$/g, "").trim();
+    if (texto) res[n - 1] = texto.slice(0, 500);
+  }
+  return res;
+}
+
+const TITLES_PROMPT: Record<Lang, string> = {
+  es: "Traduce al español cada título de artículo científico. Mantén el lenguaje técnico exacto: nombres de fármacos, siglas de ensayos y escalas, unidades y medidas no se tocan. No resumas ni agregues nada. Devuelve una línea por título con el mismo número, sin nada más.",
+  en: "Return each scientific article title in English, unchanged if it already is. Keep technical language exact. One line per title with the same number, nothing else.",
+  fr: "Traduis en français chaque titre d'article scientifique. Garde le langage technique exact : noms de médicaments, sigles d'essais et d'échelles, unités et mesures ne se touchent pas. Ne résume pas. Une ligne par titre avec le même numéro, rien d'autre.",
+  de: "Übersetze jeden Titel eines wissenschaftlichen Artikels ins Deutsche. Behalte die exakte Fachsprache bei: Wirkstoffnamen, Studien- und Skalenkürzel, Einheiten und Messwerte bleiben unverändert. Nicht zusammenfassen. Eine Zeile pro Titel mit derselben Nummer, sonst nichts.",
+  pt: "Traduz para português cada título de artigo científico. Mantém a linguagem técnica exata: nomes de fármacos, siglas de ensaios e escalas, unidades e medidas não se tocam. Não resumas. Uma linha por título com o mesmo número, nada mais.",
+  ru: "Переведи на русский каждый заголовок научной статьи. Сохрани точную техническую терминологию: названия препаратов, аббревиатуры исследований и шкал, единицы и показатели не меняются. Не сокращай. По одной строке на заголовок с тем же номером, больше ничего.",
+};
+
+async function translateMedicalTitles(accountId: number, titulos: string[], lang: Lang): Promise<string[]> {
+  if (titulos.length === 0) return [];
+  if (await overQuota(accountId)) return [];
+  const user = titulos.map((t, i) => `${i + 1}. ${t}`).join("\n");
+  try {
+    const out = await chatText({
+      system: TITLES_PROMPT[lang],
+      user,
+      // Un título traducido no pasa de unas 60 palabras; con margen para el
+      // razonamiento de los modelos que lo traen de fábrica.
+      maxTokens: Math.min(2000, 120 + titulos.length * 90),
+      search: "off",
+      lang,
+      subsystem: "papers-titulos",
+    });
+    return parseNumberedList(out, titulos.length);
+  } catch (err) {
+    // Que no se pueda traducir un título NUNCA saca la nota: se queda en inglés.
+    console.error("news titles:", String(err).slice(0, 160));
+    return [];
+  }
+}
+
 // Lo que el modelo le hace a una nota. Con un diario es masticar (reescribir
 // para pantalla chica); con un paper es traducir sin tocar el registro. Si el
 // modelo falla se devuelve el texto limpiado a mano: el paquete NUNCA queda sin
@@ -263,7 +337,7 @@ async function chew(
     const user = medical && title ? `${TITLE_TAG} ${title}\n\n${raw}` : raw;
     // Traducir entero necesita más lugar que resumir: el cuerpo llega hasta
     // MAX_BODY (6000) y el español y el ruso se estiran contra el inglés.
-    const out = await chatText({ system, user, maxTokens: medical ? 2600 : 900 });
+    const out = await chatText({ system, user, maxTokens: medical ? 2600 : 900, subsystem: medical ? "papers" : "noticias" });
     await addUsage(accountId, { llm: 1 });
     const parsed = medical ? splitTitledAnswer(out) : { title: "", text: out.trim() };
     if (parsed.text.length > 200) return { text: parsed.text, chewed: true, title: parsed.title };
@@ -357,8 +431,22 @@ export function rollingWindow(items: PackItem[], perFeed: number, total: number)
   return out;
 }
 
-// Arma el paquete de una cuenta. Devuelve cuántas notas quedaron.
-export async function rebuild(accountId: number, lang: Lang = "es"): Promise<number> {
+// REV-085: EL REPASO NO GASTA MODELO, Y ESE ES EL PUNTO.
+//
+// Hasta acá `rebuild()` hacía las tres cosas juntas —leer los RSS, entrar en
+// cada diario a buscar el texto, y pasarlo por el modelo—, corría solo cada
+// hora y podía gastar 22 llamadas por pasada: 528 por día, el cupo entero del
+// proveedor en cuatro horas, con el aparato en un cajón. El costo era
+// proporcional a lo que los diarios PUBLICAN y no a lo que el dueño LEE.
+//
+// Ahora son dos velocidades. El titular es gratis (parsear el RSS) y se sigue
+// repasando solo, así que la lista de Noticias abre al instante y sin red. El
+// cuerpo —bajar el artículo y masticarlo o traducirlo— cuesta, y se paga cuando
+// alguien ABRE la nota (ver `ensureBody()`).
+//
+// `conModelo` queda por si alguien quiere el comportamiento viejo (NEWS_PREFETCH=1):
+// es más caro pero deja todo listo de antemano.
+export async function rebuild(accountId: number, lang: Lang = "es", conModelo = PREFETCH): Promise<number> {
   const store = await loadStore(accountId);
   const feeds = store.feeds ?? [];
   // Sin fuentes cargadas no hay paquete. PubMed ya no es una excepción: es un
@@ -444,6 +532,15 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     // Para un paper, `antes.title` es la TRADUCCIÓN: lo que hay que comparar
     // con el feed es el título de origen.
     const tituloPrevio = antes?.srcTitle ?? antes?.title;
+    // REV-085: una nota que YA ESTÁ y sigue pendiente no se vuelve a armar. Sin
+    // esto, el título traducido del paper se perdía en la pasada siguiente
+    // (vuelve a salir el original del feed) y se pagaba la traducción de nuevo
+    // cada hora, que es justo el bucle que `srcTitle` existe para evitar.
+    if (antes && tituloPrevio === item.title && antes.pending && !conModelo) {
+      items.push(antes.whenAt ? antes : { ...antes, whenAt: item.whenAt });
+      suma(aceptadas, feedId);
+      continue;
+    }
     if (antes && tituloPrevio === item.title && previo.bodies[id] && (!medical || antes.medicalVersion === MEDICAL_SUMMARY_VERSION)) {
       // El `whenAt` completa los paquetes armados antes de la ventana rodante.
       items.push(antes.whenAt ? antes : { ...antes, whenAt: item.whenAt });
@@ -456,7 +553,10 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     // a gastar una bajada en ella hasta dentro de FAIL_RETRY_MS. Esto es lo que
     // hace que el cupo del medio se llene con las notas de más abajo en vez de
     // chocar cada hora contra las mismas cuatro rotas.
-    if (fallidas[id] && ahora - fallidas[id] < FAIL_RETRY_MS) continue;
+    // REV-085: esto sólo vale cuando la pasada BAJA cuerpos. `failed` quiere
+    // decir "no se pudo traer el CUERPO", y un fallo del cuerpo no puede sacar
+    // un titular que existe ni dejar un hueco en la ventana del medio.
+    if (conModelo && fallidas[id] && ahora - fallidas[id] < FAIL_RETRY_MS) continue;
 
     // Ir al diario es lo único que cuesta (hasta ARTICLE_BUDGET_MS cada nota),
     // así que el tope se mide en BAJADAS y no en notas: los topes por medio y
@@ -466,7 +566,7 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     if (item.link && ((bajadas.get(feedId) ?? 0) >= NEW_PER_FEED || bajadasTotal >= NEW_PER_RUN)) continue;
 
     let text = item.desc ?? "";
-    if (item.link) {
+    if (conModelo && item.link) {
       suma(bajadas, feedId);
       bajadasTotal++;
       try {
@@ -478,10 +578,18 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
         console.error("news article:", item.link.slice(0, 60), why);
       }
     }
-    // Sin cuerpo no entra (un titular suelto no es una nota), pero tampoco
-    // gasta un lugar del cupo: se sigue con el candidato siguiente del mismo
-    // medio.
-    if (text.length < 200) {
+    // REV-085: SIN CUERPO EL TITULAR ENTRA IGUAL, y eso es lo que cambia.
+    //
+    // Antes, una nota de la que no se había podido sacar texto se descartaba
+    // entera: en el modo normal de ahora NINGUNA tiene texto todavía, así que
+    // esa regla dejaría el paquete vacío. El titular es una nota; lo que le
+    // falta es el cuerpo, y ese se busca al abrirla.
+    //
+    // El descarte por "no se pudo sacar el texto" sigue existiendo pero se mudó
+    // a `ensureBody()`, que es donde de verdad se sabe. Y ya no saca el titular
+    // de la ventana: un fallo del CUERPO no puede borrar una nota que existe.
+    const pendiente = text.length < 200;
+    if (pendiente && conModelo) {
       suma(sinCuerpo, feedId);
       fallidas[id] = ahora;
       continue;
@@ -493,7 +601,8 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     // justo lo que no se quiere. Y el gasto está topeado solo: PubMed aporta
     // como mucho NEWS_MEDICAL_ITEMS por pasada, y lo ya traducido no se vuelve
     // a traducir.
-    const puedeMasticar = !sinCupo && (medical ? medicalChewed < MEDICAL_DIGEST_PER_RUN : chewedCount < DIGEST_PER_RUN);
+    const puedeMasticar =
+      conModelo && !pendiente && !sinCupo && (medical ? medicalChewed < MEDICAL_DIGEST_PER_RUN : chewedCount < DIGEST_PER_RUN);
     // El prefijo de la etiqueta ([NEJM · RCT]) no se manda al modelo y se
     // vuelve a poner acá: es una marca nuestra, no parte del título.
     const etiqueta = medical ? (/^\[[^\]]*\]\s*/.exec(item.title)?.[0] ?? "") : "";
@@ -504,20 +613,25 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
     if (chewed) { if (medical) medicalChewed++; else chewedCount++; }
     const titulo = traducido ? `${etiqueta}${traducido}`.slice(0, 500) : item.title;
     delete fallidas[id];
-    const body: Body = { id, title: titulo, feed, when: whenLabel(item.whenAt, tz), text: final };
-    bodies[id] = body;
+    // Con el cuerpo pendiente no hay nada que guardar todavía: ni body, ni sha,
+    // ni bytes. El aparato lo lee como "esta nota no la tengo" y la pide cuando
+    // el usuario la abre.
+    if (!pendiente) {
+      bodies[id] = { id, title: titulo, feed, when: whenLabel(item.whenAt, tz), text: final };
+    }
     items.push({
       id,
       feed,
       title: titulo,
       when: whenLabel(item.whenAt, tz),
-      sha: (await sha256Hex(final)).slice(0, 16),
-      bytes: final.length,
+      sha: pendiente ? "" : (await sha256Hex(final)).slice(0, 16),
+      bytes: pendiente ? 0 : final.length,
       chewed,
       link: item.sourceLink ?? item.link ?? "",
       whenAt: item.whenAt,
-      medicalVersion: medical ? MEDICAL_SUMMARY_VERSION : undefined,
+      medicalVersion: medical && !pendiente ? MEDICAL_SUMMARY_VERSION : undefined,
       srcTitle: medical ? item.title : undefined,
+      pending: pendiente || undefined,
     });
     suma(aceptadas, feedId);
   }
@@ -538,6 +652,22 @@ export async function rebuild(accountId: number, lang: Lang = "es"): Promise<num
   // La ventana rodante: hasta PER_FEED por medio y PACK_ITEMS en total, y lo
   // que se suelta es lo más VIEJO, no lo que quedó último en el arreglo.
   const ventana = rollingWindow(items, PER_FEED, PACK_ITEMS);
+
+  // REV-085: los títulos de los papers que entraron sin traducir, en UNA
+  // llamada, y DESPUÉS de la ventana para no pagar por los que se van a soltar.
+  // Un paper sin traducir llega en inglés, que es justo lo que no se quiere;
+  // el cuerpo puede esperar a que alguien lo abra, el titular no.
+  const porTraducir = ventana.filter((i) => i.srcTitle && i.title === i.srcTitle).slice(0, MEDICAL_DIGEST_PER_RUN);
+  if (porTraducir.length > 0) {
+    const traducidos = await translateMedicalTitles(accountId, porTraducir.map((i) => i.srcTitle!), lang);
+    for (let k = 0; k < porTraducir.length; k++) {
+      const t = traducidos[k];
+      if (!t) continue;  // sin traducción se queda el original: nunca se pierde la nota
+      const item = porTraducir[k]!;
+      const etiqueta = /^\[[^\]]*\]\s*/.exec(item.srcTitle!)?.[0] ?? "";
+      item.title = `${etiqueta}${t}`.slice(0, 500);
+    }
+  }
   const selectedIds = new Set(ventana.map((item) => item.id));
   for (const id of Object.keys(bodies)) {
     if (!selectedIds.has(id)) delete bodies[id];
@@ -673,11 +803,93 @@ news.post("/refresh", async (c) => {
   return c.json({ ok: true, building: true, items: pack.items.length }, 202);
 });
 
+// REV-085: EL CUERPO SE BUSCA CUANDO ALGUIEN ABRE LA NOTA.
+//
+// Acá es donde se gasta: se entra al diario, se limpia el texto y —sólo
+// entonces— se lo mastica o se lo traduce. Una vez hecho queda guardado, así
+// que la segunda visita es gratis y el aparato lo tiene en la tarjeta.
+//
+// Un fallo NO saca el titular del paquete: se anota en `failed` y se reintenta
+// más adelante. Una nota que existe no puede desaparecer porque su diario no
+// dejó sacar el texto.
+const abriendo = new Map<string, Promise<Body | null>>();
+
+async function fetchBody(accountId: number, id: string, lang: Lang): Promise<Body | null> {
+  const pack = await loadPack(accountId);
+  const item = pack.items.find((i) => i.id === id);
+  if (!item) return null;
+  if (pack.bodies[id] && !item.pending) return pack.bodies[id];
+
+  const medical = item.medicalVersion !== undefined || Boolean(item.srcTitle);
+  let text = "";
+  if (item.link) {
+    try {
+      const page = await download(item.link, "text/html,application/xhtml+xml,*/*;q=0.8", OPEN_BUDGET_MS);
+      text = extractArticle(page.body).text;
+    } catch (err) {
+      const why = err instanceof DownloadError ? err.reason : "down";
+      console.error("news open:", item.link.slice(0, 60), why);
+    }
+  }
+  if (text.length < 200) {
+    // El titular se queda donde está; lo que se anota es que el CUERPO no se
+    // pudo traer, para no volver a intentarlo en cada toque.
+    await mutateDoc(accountId, "news", shape, (p) => {
+      p.failed[id] = Date.now();
+    });
+    return null;
+  }
+
+  const sinCupo = await overQuota(accountId);
+  const etiqueta = medical ? (/^\[[^\]]*\]\s*/.exec(item.srcTitle ?? item.title)?.[0] ?? "") : "";
+  const plano = medical ? (item.srcTitle ?? item.title).slice(etiqueta.length) : "";
+  const { text: final, chewed, title: traducido } = sinCupo
+    ? { text: text.slice(0, MAX_BODY), chewed: false, title: "" }
+    : await chew(accountId, text, lang, medical, plano);
+  const titulo = traducido ? `${etiqueta}${traducido}`.slice(0, 500) : item.title;
+  const body: Body = { id, title: titulo, feed: item.feed, when: item.when, text: final };
+  const sha = (await sha256Hex(final)).slice(0, 16);
+  await mutateDoc(accountId, "news", shape, (p) => {
+    const it = p.items.find((i) => i.id === id);
+    if (it) {
+      it.pending = undefined;
+      it.title = titulo;
+      it.sha = sha;
+      it.bytes = final.length;
+      it.chewed = chewed;
+      if (medical && chewed) it.medicalVersion = MEDICAL_SUMMARY_VERSION;
+    }
+    p.bodies[id] = body;
+    delete p.failed[id];
+  });
+  return body;
+}
+
+/** Una sola búsqueda por nota a la vez: dos toques seguidos no pagan dos veces. */
+export function ensureBody(accountId: number, id: string, lang: Lang): Promise<Body | null> {
+  const clave = `${accountId}|${id}`;
+  const activo = abriendo.get(clave);
+  if (activo) return activo;
+  const job = fetchBody(accountId, id, lang).finally(() => abriendo.delete(clave));
+  abriendo.set(clave, job);
+  return job;
+}
+
 // Una nota, entera. El aparato baja las que le falten, de a una.
 news.get("/item", async (c) => {
   const id = (c.req.query("id") ?? "").toString();
-  const pack = await loadPack(accountOf(c));
-  const body = pack.bodies[id];
-  if (!body) return c.json({ ok: false, error: "not found" }, 404);
-  return c.json({ ok: true, ...body });
+  const acc = accountOf(c);
+  const lang = normalizeLang(c.req.query("lang"));
+  const pack = await loadPack(acc);
+  const item = pack.items.find((i) => i.id === id);
+  const listo = pack.bodies[id];
+  // El `sha` viaja con el cuerpo (REV-085): el aparato lo guarda al lado del
+  // texto y con eso la sincronización siguiente sabe que esa nota está al día.
+  // Sin él, una nota abierta a mano se volvía a pedir en cada pasada.
+  if (listo && !item?.pending) return c.json({ ok: true, ...listo, sha: item?.sha ?? "" });
+  if (!item) return c.json({ ok: false, error: "not found" }, 404);
+  const body = await ensureBody(acc, id, lang);
+  if (!body) return c.json({ ok: false, error: "no body" }, 502);
+  const fresco = await loadPack(acc);
+  return c.json({ ok: true, ...body, sha: fresco.items.find((i) => i.id === id)?.sha ?? "" });
 });

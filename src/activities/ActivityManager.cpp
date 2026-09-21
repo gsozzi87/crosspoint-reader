@@ -204,6 +204,31 @@ void ActivityManager::loop() {
   }
 }
 
+// REV-071: el teardown del ciclo de vida para el sueño profundo, sin crear
+// ninguna pantalla nueva.
+//
+// `goToSleep()` no sirve para esto en la ws397: deja el cambio PENDIENTE y el
+// `onExit()` de la pantalla saliente corre recién cuando `loop()` procesa ese
+// pendiente — y acá `loop()` no se llama nunca más, porque lo que sigue es
+// `esp_deep_sleep_start()`. Procesar el pendiente tampoco alcanzaría: el
+// `onEnter()` de `SleepActivity` PINTA la pantalla de sueño del SDK, que en
+// esta placa no se pinta a propósito desde 1.5.74 (la tapa entera el fondo
+// informativo, y pintar las dos cuesta dos refrescos completos).
+//
+// Así que esto hace exactamente lo que falta y nada más: correr el `onExit()`
+// de la pantalla de turno y de toda la pila, y tirar lo que hubiera quedado
+// pendiente — al despertar de un sueño profundo se arranca de cero igual.
+void ActivityManager::tearDownForSleep() {
+  RenderLock lock;
+  exitActivity(lock);
+  while (!stackActivities.empty()) {
+    stackActivities.back()->onExit();
+    stackActivities.pop_back();
+  }
+  pendingActivity.reset();
+  pendingAction = PendingAction::None;
+}
+
 void ActivityManager::exitActivity(const RenderLock& lock) {
   // Note: lock must be held by the caller
   if (currentActivity) {

@@ -79,6 +79,28 @@ for size in ${UI_FONT_SIZES[@]}; do
   done
 done
 
+# REV-086: LA CARA DE DISPLAY, sólo dígitos y seis símbolos.
+#
+# Es el número grande del clima y de la batería: 18°, 78 %, 25:00. La escala de
+# la interfaz topa en UI_14 (14 px) y lo único grande que había eran los dígitos
+# DIBUJADOS de SevenSegment, que se leen como calculadora — bien para un
+# cronómetro, mal para un dato.
+#
+# `--only-intervals` es lo que la hace viable: sin eso, `--additional-intervals`
+# SUMA sobre el juego base (Latin-1, Latin Extended, vietnamita, puntuación) y
+# la misma cara a 32 px sale **157 KB**. Con sólo lo que hace falta son
+# **2,8 KB**, medidos con las dos generaciones. El flash va en 87,8 %.
+python fontconvert.py ubuntu_display_32_bold 32 \
+  ../builtinFonts/source/Ubuntu/Ubuntu-Bold.ttf \
+  --only-intervals \
+  --additional-intervals 0x0020,0x0020 \
+  --additional-intervals 0x0025,0x0025 \
+  --additional-intervals 0x002B,0x002F \
+  --additional-intervals 0x0030,0x0039 \
+  --additional-intervals 0x003A,0x003A \
+  --additional-intervals 0x00B0,0x00B0 > ../builtinFonts/ubuntu_display_32_bold.h
+echo "Generated ../builtinFonts/ubuntu_display_32_bold.h"
+
 python fontconvert.py notosans_8_regular 8 \
   ../builtinFonts/source/NotoSans/NotoSans-Regular.ttf \
   ../builtinFonts/source/NotoSansHebrew/NotoSansHebrew-Regular.ttf \

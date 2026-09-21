@@ -318,7 +318,9 @@ void LuaAppsActivity::pumpRequests() {
 
 void LuaAppsActivity::startRequest() {
   switch (current.kind) {
-    case LuaApp::Request::Kind::Listen: beginListen(); return;
+    case LuaApp::Request::Kind::Listen:
+      beginListen();
+      return;
     case LuaApp::Request::Kind::Call:
     case LuaApp::Request::Kind::Download:
     case LuaApp::Request::Kind::Say:
@@ -330,8 +332,12 @@ void LuaAppsActivity::startRequest() {
       }
       ensureConnected();
       return;
-    case LuaApp::Request::Kind::View: openViewer(); return;
-    case LuaApp::Request::Kind::OpenBook: openBook(); return;
+    case LuaApp::Request::Kind::View:
+      openViewer();
+      return;
+    case LuaApp::Request::Kind::OpenBook:
+      openBook();
+      return;
   }
 }
 
@@ -349,11 +355,16 @@ void LuaAppsActivity::finishRequest(const bool repaint) {
 void LuaAppsActivity::cancelCurrent() {
   bool repaint = false;
   switch (current.kind) {
-    case LuaApp::Request::Kind::Listen: repaint = app->onHeard(nullptr); break;
+    case LuaApp::Request::Kind::Listen:
+      repaint = app->onHeard(nullptr);
+      break;
     case LuaApp::Request::Kind::Call:
     case LuaApp::Request::Kind::Download:
-    case LuaApp::Request::Kind::Say: repaint = app->onReplyError(current.id, "cancelado"); break;
-    default: break;
+    case LuaApp::Request::Kind::Say:
+      repaint = app->onReplyError(current.id, "cancelado");
+      break;
+    default:
+      break;
   }
   recorder.reset();
   if (app && app->ok()) repaint |= app->cancelQueued();
@@ -453,11 +464,21 @@ void LuaAppsActivity::pumpConnect() {
 
 void LuaAppsActivity::onConnected() {
   switch (current.kind) {
-    case LuaApp::Request::Kind::Listen: phase = Phase::Transcribing; break;
-    case LuaApp::Request::Kind::Call: phase = Phase::Calling; break;
-    case LuaApp::Request::Kind::Download: phase = Phase::Downloading; break;
-    case LuaApp::Request::Kind::Say: phase = Phase::Speaking; break;
-    default: finishRequest(false); return;
+    case LuaApp::Request::Kind::Listen:
+      phase = Phase::Transcribing;
+      break;
+    case LuaApp::Request::Kind::Call:
+      phase = Phase::Calling;
+      break;
+    case LuaApp::Request::Kind::Download:
+      phase = Phase::Downloading;
+      break;
+    case LuaApp::Request::Kind::Say:
+      phase = Phase::Speaking;
+      break;
+    default:
+      finishRequest(false);
+      return;
   }
   // La petición corre desde loop() para que la pantalla de espera se pinte antes.
   workPending = true;
@@ -468,13 +489,16 @@ void LuaAppsActivity::onConnectFailed() {
   LOG_ERR(TAG, "%s: sin WiFi para el pedido", app ? app->name().c_str() : "?");
   bool repaint = false;
   switch (current.kind) {
-    case LuaApp::Request::Kind::Listen: repaint = app->onHeard(nullptr); break;
+    case LuaApp::Request::Kind::Listen:
+      repaint = app->onHeard(nullptr);
+      break;
     case LuaApp::Request::Kind::Call:
     case LuaApp::Request::Kind::Download:
     case LuaApp::Request::Kind::Say:
       repaint = app->onReplyError(current.id, "sin conexión con el servidor (wifi)");
       break;
-    default: break;
+    default:
+      break;
   }
   recorder.reset();
   // Los que siguen pedirían el selector otra vez: se cancelan también.
@@ -515,8 +539,8 @@ void LuaAppsActivity::performCall() {
   if (r != ServerClient::Result::Ok) {
     char detail[64];
     snprintf(detail, sizeof(detail), "sin conexión con el servidor (%d)", resp.status);
-    LOG_ERR(TAG, "%s: %s falló: %s %d (%lu ms)", app->name().c_str(), current.a.c_str(),
-            ServerClient::resultName(r), resp.status, ms);
+    LOG_ERR(TAG, "%s: %s falló: %s %d (%lu ms)", app->name().c_str(), current.a.c_str(), ServerClient::resultName(r),
+            resp.status, ms);
     finishRequest(app->onReplyError(current.id, detail));
     return;
   }
@@ -534,8 +558,8 @@ void LuaAppsActivity::performDownload() {
   WiFi.setSleep(false);
   requestMade = true;
   const unsigned long t0 = millis();
-  const HttpDownloader::DownloadError err = HttpDownloader::downloadToFile(
-      url, dest, nullptr, nullptr, "", "", "Bearer " + SERVER_STORE.getToken());
+  const HttpDownloader::DownloadError err =
+      HttpDownloader::downloadToFile(url, dest, nullptr, nullptr, "", "", "Bearer " + SERVER_STORE.getToken());
   WiFi.setSleep(true);
   const unsigned long ms = millis() - t0;
   if (err != HttpDownloader::OK) {
@@ -650,10 +674,10 @@ void LuaAppsActivity::openBook() {
   shutdownRadio();
   APP_STATE.openEpubPath = path;
   APP_STATE.saveToFile();
-  if (requestMade) {
-    silentRestartToReader();
-    return;
-  }
+  // REV-069: `silentRestartToReader()` no vuelve si reinicia. Cuando el heap
+  // quedó sano no reinicia, y entonces hay que navegar como siempre — los otros
+  // dos llamadores ya tenían la navegación encolada, éste no.
+  if (requestMade) silentRestartToReader();
   activityManager.goToReader(path);
 }
 
@@ -789,13 +813,22 @@ void LuaAppsActivity::renderError() {
 void LuaAppsActivity::render(RenderLock&&) {
   if (state == RUNNING && app && app->ok()) {
     switch (phase) {
-      case Phase::Listening: renderListening(); break;
-      case Phase::Connecting: renderWaiting(""); break;
+      case Phase::Listening:
+        renderListening();
+        break;
+      case Phase::Connecting:
+        renderWaiting("");
+        break;
       case Phase::Transcribing:
       case Phase::Calling:
-      case Phase::Speaking: renderWaiting(tr(STR_LUA_WAIT_SERVER)); break;
-      case Phase::Downloading: renderWaiting(tr(STR_LUA_DOWNLOADING)); break;
-      case Phase::Viewing: return;  // el visor pinta
+      case Phase::Speaking:
+        renderWaiting(tr(STR_LUA_WAIT_SERVER));
+        break;
+      case Phase::Downloading:
+        renderWaiting(tr(STR_LUA_DOWNLOADING));
+        break;
+      case Phase::Viewing:
+        return;  // el visor pinta
       case Phase::Idle:
         // La pantalla se le da limpia a la app y el refresco lo decide el
         // firmware: una app no elige cuándo se refresca el panel.

@@ -24,6 +24,7 @@
 // el streaming largo son del SDK; un proveedor compatible con OpenAI no entra
 // acá a propósito (ver config.ts → APPS_MODELS).
 import Anthropic from "@anthropic-ai/sdk";
+import { recordTokens } from "./tokens";
 import { config } from "./config";
 import { addUsage } from "./usage";
 import { redactSecrets } from "./net";
@@ -95,6 +96,14 @@ export async function appsJson<T>(o: AppsJsonOptions): Promise<T> {
     throw translate(err, key);
   }
   if (o.accountId !== undefined) void addUsage(o.accountId, { apps: 1 });
+  // REV-084: las apps gastan con SU clave y su propio modelo, así que van a su
+  // propia fila de la contabilidad. Que estén fuera del tope de Hablar no
+  // quiere decir que no se midan.
+  recordTokens(model, "apps", {
+    prompt: res.usage?.input_tokens,
+    completion: res.usage?.output_tokens,
+    total: (res.usage?.input_tokens ?? 0) + (res.usage?.output_tokens ?? 0),
+  });
   if (res.stop_reason === "refusal") throw new AppsLlmError("el modelo se negó a responder", "refused");
   const raw = textOf(res).trim();
   const start = raw.indexOf("{");
@@ -141,6 +150,11 @@ export async function appsProse(o: AppsProseOptions): Promise<string> {
     throw translate(err, key);
   }
   if (o.accountId !== undefined) void addUsage(o.accountId, { apps: 1 });
+  recordTokens(model, "apps-prosa", {
+    prompt: message.usage?.input_tokens,
+    completion: message.usage?.output_tokens,
+    total: (message.usage?.input_tokens ?? 0) + (message.usage?.output_tokens ?? 0),
+  });
   if (message.stop_reason === "refusal") throw new AppsLlmError("el modelo se negó a escribir", "refused");
   // Cortado por max_tokens no es un error: el capítulo queda un poco más
   // corto y se dice en el log. Volver a pedirlo costaría lo mismo otra vez.

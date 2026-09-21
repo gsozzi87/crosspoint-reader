@@ -113,6 +113,11 @@ class PowerKey {
   // en reposo con el USB enchufado y el CDC se caía — del lado de la compu eso
   // se ve como que el aparato se desconecta y se reconecta cada tanto.
   // Devuelve false si el PMIC no contesta.
+  // REV-080: TRES estados, no dos. "No hay cable" y "no se pudo preguntar" son
+  // cosas distintas, y de confundirlas salía una decisión irreversible (ver
+  // vbusState() en el .cpp).
+  enum class Vbus : uint8_t { Absent, Present, Unknown };
+  Vbus vbusState() const;
   bool vbusPresent() const;
 
  private:
@@ -171,6 +176,8 @@ class PowerKey {
   // no contesta el REG_IC_TYPE ni en tres intentos— que no lo tocaba: el peor
   // caso posible, el PMIC mudo, se reportaba como "rieles confirmados". El
   // default de una bandera de seguridad tiene que ser el lado inseguro.
+  // REV-072: cuántas veces seguidas no se pudo limpiar INTSTS2.
+  mutable uint32_t clearFails_ = 0;
   bool railsConfirmed_ = false;
   bool snapshotValid_ = false;
 };

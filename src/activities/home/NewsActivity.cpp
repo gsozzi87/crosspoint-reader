@@ -454,6 +454,25 @@ void NewsActivity::loop() {
         requestUpdate();
       } else if (p == ARTICLE_FETCH) {
         std::string title, text;
+        // REV-085: PRIMERO EL PAQUETE, que es el camino masticado.
+        //
+        // El servidor ya no baja los cuerpos solo: deja el titular anunciado y
+        // arma el cuerpo cuando se lo piden. O sea que esta nota, que no está en
+        // la tarjeta, puede estar a una llamada de distancia — y esa llamada
+        // devuelve el texto REESCRITO para pantalla chica (o TRADUCIDO, si es un
+        // paper), que es lo que el camino viejo de `/api/rss/article` no hace.
+        // Ese camino queda abajo como respaldo para lo que no esté en el
+        // paquete.
+        const std::string packId =
+            std::to_string(feeds[feedIndex].id) + "-" + std::to_string(feeds[feedIndex].items[itemIndex].id);
+        const std::string delPaquete = newspack::fetchOne(packId);
+        if (!delPaquete.empty()) {
+          WiFi.setSleep(true);
+          rescueTitle.clear();
+          rescueText.clear();
+          showArticle(feeds[feedIndex].items[itemIndex].title, delPaquete);
+          break;
+        }
         const bool ok = fetchArticle(feeds[feedIndex].id, feeds[feedIndex].items[itemIndex].id, title, text);
         WiFi.setSleep(true);
         if (!ok) {

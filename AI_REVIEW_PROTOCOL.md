@@ -3359,7 +3359,7 @@ el archivo.
 Reviewer final check:
 
 ## REV-068 — El toque corto de OK puede despertar el WS397 y ser rechazado como ghost-wake
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / wake / input policy / UX
 
@@ -3403,12 +3403,22 @@ Fix recomendado:
 - test: taps de OK de distintas duraciones (p.ej. 30/80/150/300 ms) deben despertar de forma determinista;
   ruido/ghost sin pulsación real no debe dejar el aparato despierto.
 
+Executor response: CONFIRMED, y la frase que lo resume es tuya: se estaba usando la política de UN
+botón para validar el despertar de OTRO.
+
+Fix: la guardia de `verifyPowerButtonWakeup()` **no aplica en la ws397**. Acá el que despierta es OK
+(GPIO5, el único RTC GPIO de la placa) y un toque de OK es la forma normal de despertar: se suelta en
+50 ms y para cuando el setup pregunta ya no hay nada que ver. El anti-fantasma que queda alcanza: EXT1
+se arma SÓLO sobre el pin de despertar, así que llegar por `PowerButton` significa que ese pin bajó.
+Queda una línea en el log, para que un toque aceptado se distinga de uno verificado.
+Reviewer final check:
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-069 — Volver del KOReader Sync fuerza reboot incluso con WiFi cancelado y heap sano
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / silent restart / KOReader sync / UX
 
@@ -3451,6 +3461,19 @@ Fix recomendado:
   para reabrir el EPUB;
 - test: cancelar WiFi en KOReader Sync NO reinicia; sync con heap sano NO reinicia; heap fragmentado
   bajo el umbral sí conserva el silent reboot al reader.
+
+Executor response: CONFIRMED, y el caso reproducible es el que menos lo merece: cancelar el selector de
+WiFi no abre una sola sesión de TLS, así que no hay nada que desfragmentar.
+
+Fix: `silentRestartToReader()` llama a `finishWifiSessionIfHeapIsHealthy()`, igual que `silentRestart()`.
+
+Lo que verifiqué antes de hacerlo, porque era lo único que podía romperlo: **volver al lector sin
+reiniciar sólo es seguro si alguien navega.** Los dos primeros llamadores (KOReaderSync y AskBook) ya
+dejan la navegación encolada — `returnToReader()` hace `goToReader()` ANTES de que corra su
+`onExit()` —, así que con el reinicio salteado el lector se abre solo. El tercero, `LuaAppsActivity`,
+llamaba a esta función EN LUGAR de `goToReader()`, así que ahí sí habría quedado sin pantalla: ahora
+cae a su `goToReader()` de siempre cuando la función vuelve.
+Reviewer final check:
 
 Executor response:
 Reviewer final check:
@@ -3584,7 +3607,7 @@ pedía y yo había arreglado a medias.
 Reviewer final check:
 
 ## REV-071 — En WS397 el deep sleep no ejecuta onExit() de la Activity actual
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / deep sleep / Activity lifecycle / resource teardown
 
@@ -3642,12 +3665,28 @@ Fix recomendado:
 - test con Activities de red/audio/reader: PWR/deep sleep debe ejecutar teardown exactamente una vez
   antes de `Storage.prepareForDeepSleep()`.
 
+Executor response: CONFIRMED, incluida la cadena entera (`replaceActivity` deja el cambio pendiente y
+el `onExit()` corre recién en `loop()`, que en este camino no se llama nunca más).
+
+Fix: `ActivityManager::tearDownForSleep()`, que corre el `onExit()` de la pantalla de turno y de toda
+la pila sin crear ninguna pantalla nueva ni pintar. Procesar el pendiente NO servía: el `onEnter()` de
+`SleepActivity` PINTA la pantalla de sueño del SDK, que en esta placa no se pinta a propósito desde
+1.5.74 (la tapa entera el fondo informativo, y pintar las dos son dos refrescos completos).
+
+**Una desviación de tu fix, a propósito, y es la parte que no se ve leyendo el hallazgo.** Pedís
+ejecutarlo "antes de tocar WiFi/Storage/display". Va antes de WiFi y de Storage, pero DESPUÉS de
+pintar el fondo: `ReaderActivity::onExit()` devuelve el renderer a `Portrait`, así que correrlo antes
+dejaría el fondo de sueño pintado con la orientación equivocada — que es el segundo punto de tu propia
+lista de impactos. El efecto que importa se arregla igual, porque ese `onExit()` hace su propio
+`APP_STATE.saveToFile()` y ahí es donde `readerActivityLoadCount` vuelve a 0.
+Reviewer final check:
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-072 — Si falla el write-1-to-clear del PMIC, se redecodifica el mismo PWR y el hold puede no avanzar
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / PMIC PWR key / I2C resilience / input state machine
 
@@ -3692,6 +3731,16 @@ Fix recomendado:
 - si la IRQ queda LOW tras retries, pasar a un modo degradado explícito con log sin duplicar eventos;
 - fault injection: read de INTSTS2 OK + clear write fallando varias veces no debe reiniciar el hold ni
   emitir presses/releases duplicados.
+
+Executor response: CONFIRMED. El `writeReg(REG_INTSTS2, key)` no miraba su retorno y `decode()` corría
+igual, y el efecto que describís es exacto: `decode()` trata un press con `pressed_` ya puesto como un
+press NUEVO, así que `pressStartMs_` se reinicia y PWR mantenido no llega nunca ni a la barrita.
+
+Fix: **un evento que no se pudo consumir no es un evento nuevo.** El clear se reintenta hasta tres
+veces; si no se puede, NO se decodifica y se sale del lazo. El evento queda latcheado en el PMIC —o
+sea que no se pierde, se atiende tarde— y el bus se reintenta a los `I2C_RETRY_MS` de siempre. Se
+cuenta y se loguea la primera vez y cada 32.
+Reviewer final check:
 
 Executor response:
 Reviewer final check:
@@ -3865,7 +3914,7 @@ apriete un botón y no baja nunca al sueño profundo.
 Reviewer final check:
 
 ## REV-075 — Si falla el I2C al desactivar el cargador de la CR2032, el firmware afirma que lo apagó y continúa
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / PMIC / backup battery / hardware safety
 
@@ -3899,12 +3948,21 @@ Fix recomendado:
 - si no se puede confirmar, mostrar/retener un fault explícito y reintentar en forma segura durante el boot;
 - test/fault injection: write fallido nunca debe producir el mensaje de éxito ni considerarse resuelto.
 
+Executor response: CONFIRMED, y es el caso en que el log miente para el lado peor: decía "se apaga"
+sobre una escritura que podía no haber ocurrido, en el único bit que puede secar la pila del RTC.
+
+Fix: `writeVerified()` (write + readback + 3 intentos) y **tres** mensajes distintos, que es lo que
+faltaba — "estaba encendido y se apagó" (confirmado), "está encendido y NO se pudo apagar" (grito), y
+"no se pudo leer 0x18", que no es lo mismo que "está apagado" y hasta ahora se tragaba con un `&&`. La
+LECTURA también se reintenta: sin poder leer el registro no se sabe nada.
+Reviewer final check:
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-076 — El apagado software puede cortar con PWR todavía apretado tras vencer su espera
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / PMIC power-off / PWR hold / recovery
 
@@ -3941,12 +3999,22 @@ Fix recomendado:
 - log diferenciado "release confirmado" vs "timeout con PWR aún abajo";
 - test: hard-off hardware deshabilitado + PWR >11 s no produce reboot loop ni soft-off con tecla abajo.
 
+Executor response: CONFIRMED. El `while` salía por suelta o por vencimiento y la línea decía "PWR
+soltado" en los dos casos.
+
+Fix: se vuelve a preguntar `POWER_KEY.pressed()` y, con la tecla abajo, NO se manda el soft-off. Una
+cosa que el hallazgo no nombra y que hay que mirar: el llamador cae a `sleepNow()` dando por hecho que
+`powerOffNow()` ya desmontó el volumen (ese contrato es de REV-057), así que esta salida hace el
+`devlog::close()` y el `Storage.prepareForDeepSleep()` igual. Si no, el aparato se dormiría con el
+filesystem montado, que es el defecto que REV-064 acaba de cerrar por el otro lado.
+Reviewer final check:
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-077 — La alarma del PCF85063 se reprograma sin deshabilitar AIE ni rollback y puede quedar híbrida activa
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / RTC alarm / light sleep / reminder wake
 
@@ -3982,6 +4050,18 @@ Fix recomendado:
 - ante cualquier fallo, dejar hardware explícitamente desarmado o conservar un estado "unknown";
 - `disarm()` sólo debe poner `armedAt_=0` tras confirmar el estado físico;
 - fault injection en cada escritura del bloque de alarma.
+
+Executor response: CONFIRMED las dos mitades.
+
+Fix: `disableInterrupt()` (AIE fuera, AF limpia) es ahora lo PRIMERO de `disarm()` y lo primero de
+`armAt()`. Con AIE en cero el chip no puede disparar mientras los cinco campos se escriben en cadena,
+que es exactamente la ventana que describís.
+
+Y el estado que mentía: `armedAt_` ya no puede decir "no hay alarma" ni "está armada para tal hora"
+cuando el hardware no lo confirmó. Hay un tercer valor, **-1 = NO SE SABE**, que no coincide con ningún
+epoch válido, así que el atajo `if (armedAt_ == epochUtc) return true;` no se lo puede saltear y la
+llamada siguiente reprograma de verdad. Cualquier fallo a mitad termina en un `disarm()` explícito.
+Reviewer final check:
 
 Executor response:
 Reviewer final check:
@@ -4049,7 +4129,7 @@ alarma llega tarde en vez de no llegar, que es la degradación correcta.
 Reviewer final check:
 
 ## REV-079 — La configuración de IRQ del PWR se da por hecha aunque sus writes puedan fallar
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / PMIC / PWR key / interrupt configuration
 
@@ -4083,12 +4163,24 @@ Fix recomendado:
 - si fuentes extra no pueden apagarse, entrar en polling degradado explícito y no confiar en el latch del pin;
 - fault injection en cada INTEN write/readback.
 
+Executor response: CONFIRMED los dos fallos, y son distintos como decís.
+
+Fix: los tres `writeReg` pasan a `writeVerified`. Lo que NO hice es el tercer punto —"no declarar
+`available_=true` con INTEN2 sin los bits de tecla"— y quiero que lo mires: dejar el PMIC como no
+disponible apaga PWR **entero**, o sea que un fallo al habilitar la interrupción se convertiría en "el
+botón de encendido no existe". El modo degradado es estrictamente mejor: si INTEN2 no queda confirmada
+se fuerza `pinLatchTrusted_ = false` y se sondea `INTSTS2`, que el chip latchea lo habilite o no INTEN
+(INTEN enmascara el PIN, no el registro de estado). Cuesta una lectura I2C cada `POLL_FALLBACK_MS` y es
+la diferencia entre un PWR lento y un PWR muerto. **Si tenés evidencia de que en este PMIC el STATUS
+NO se latchea con INTEN en cero, decímelo y lo cambio**: toda la salida degradada se apoya en eso.
+Reviewer final check:
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-080 — Un fallo transitorio al leer VBUS se interpreta como “cable ausente” y puede tumbar USB
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / USB / light sleep / PMIC telemetry
 
@@ -4122,6 +4214,17 @@ Fix recomendado:
   último VBUS válido con una ventana/histeresis;
 - 2-3 retries cortos para la lectura crítica antes de permitir sleep;
 - test: batería 100 %, cable puesto, una lectura I2C de STATUS1 falla => CDC permanece vivo y no se duerme.
+
+Executor response: CONFIRMED. Los dos términos dan false por motivos distintos y el resultado es una
+decisión irreversible tomada sobre una duda.
+
+Fix: `PowerKey::Vbus { Absent, Present, Unknown }`, con tres intentos antes de declarar `Unknown`. La
+guardia del sueño trata `Unknown` como "hay cable": equivocarse para ese lado cuesta un poco de
+batería, y para el otro cuesta el puerto serie del que está depurando, que es lo que el dueño ve como
+"se colgó". `vbusPresent()` queda como envoltorio para quien sólo quiere el sí/no.
+Un detalle: sin PMIC disponible se devuelve `Absent` y no `Unknown`, para que en una placa sin AXP2101
+la duda no bloquee el reposo para siempre.
+Reviewer final check:
 
 Executor response:
 Reviewer final check:
@@ -4376,7 +4479,7 @@ Firmware: `pio run -e ws397` limpio. **Sin OTA.**
 Reviewer final check:
 
 ## REV-084 — PROPUESTA: el masticado de noticias se come el cupo del proveedor y deja mudo a Hablar
-State: PROPOSAL — pido opinión del Reviewer antes de implementar
+State: PARCIAL — medición hecha, el resto subordinado a REV-085 — pido opinión del Reviewer antes de implementar
 Severity: P1
 Subsystem: server / news / llm / cuotas
 
@@ -5175,7 +5278,7 @@ Use short entries. Do not paste huge tool transcripts.
 
 
 ## REV-085 — Noticias a demanda: el cupo se gasta por lo que se PUBLICA, no por lo que se LEE
-State: PROPOSAL
+State: FIXED_PENDING_REVIEW
 Severity: P1 (producto + costo)
 Subsystem: server / news.ts / NewsActivity / NewsPack
 
@@ -5278,7 +5381,7 @@ REV-084 no desaparece entero: quedan la medición real de tokens y la prioridad 
 pasa a ser optimización/defensa secundaria.
 
 ## REV-086 — El lenguaje visual: qué se puede robar de las maquetas y qué no
-State: PROPOSAL
+State: FIXED_PENDING_REVIEW
 Severity: P3 (producto / diseño)
 Subsystem: firmware / UI / DISENO.md / listui
 
@@ -5467,3 +5570,41 @@ de RSS-only se queda: no usa modelo y mantiene la lista instantánea) y el 3 (na
 v1)—, y **REV-086** por el clima, con el `--only-intervals` de `fontconvert.py` que marcaste como la
 trampa real. De REV-084 queda la medición de tokens por modelo/subsistema/día, que ahora es el
 prerrequisito de los dos.
+
+
+### 2026-09-21 — Executor (Claude) — todo lo que quedaba: nueve P1/P2 de energía + las tres propuestas
+El dueño dijo "vamos con todo lo que quedó pendiente". Esto es lo que entró, en cuatro tandas.
+
+**1. La familia del PMIC y el RTC (REV-072, 075, 076, 077, 079, 080).** Siete de los nueve son la misma
+forma: un retorno de I2C que nadie miraba antes de un paso irreversible. Los seis confirmados y
+arreglados; en dos me aparté de tu fix y lo digo en cada respuesta:
+- **REV-079**: no dejo el PMIC como no disponible cuando INTEN2 falla — eso apagaría PWR entero. Modo
+  degradado por sondeo de `INTSTS2`. **Se apoya en que el STATUS se latchea aunque INTEN esté en cero;
+  si tenés evidencia de lo contrario, decímelo.**
+- **REV-076**: la salida nueva también hace el `devlog::close()` + `prepareForDeepSleep()`, porque el
+  llamador cae a `sleepNow()` dando por hecho que el volumen ya se desmontó (REV-057).
+
+**2. El ciclo de vida (REV-071, 068, 069).** El `tearDownForSleep()` va DESPUÉS de pintar el fondo y no
+antes del display como pedía tu fix: el `onExit()` del lector devuelve el renderer a Portrait y
+hacerlo antes dejaría el fondo con la orientación equivocada — que es el segundo punto de tu propia
+lista de impactos.
+
+**3. REV-085, noticias a demanda, con tus seis ajustes.** El cron se queda pero sin modelo; el cuerpo
+se paga al abrir (`ensureBody`); los títulos de PubMed en UNA llamada de lote; sin prefetch en la v1;
+`failed` desacoplado del titular; lo de la tarjeta sigue sin red. En el aparato, la sincronización ya
+no baja cuerpos (sin `sha` = el servidor no lo tiene) y abrir una nota llama a `newspack::fetchOne()`.
+Dos suites nuevas sin red: `ondemand.test.ts` (seis casos) y `titles.test.ts` (el parser numerado, con
+el caso de la línea que falta: el hueco queda vacío en vez de correrle el título al paper siguiente).
+
+**4. REV-084 y REV-086.** `src/tokens.ts` anota modelo, subsistema y tokens por día, y se ve en
+`/board`. Y la cara de display: tenías razón con `fontconvert.py`, `--additional-intervals` SUMA sobre
+el juego base. Con `--only-intervals`, **medido con las dos generaciones: 157 KB → 2,8 KB**. El clima
+estrena `HeroMetric` (número héroe + fila de medidas en columnas). Los ids de las otras doce fuentes
+NO se movieron (verificado con diff), así que nadie cambia de tipografía por esto.
+
+Lo que NO hice de REV-086 y queda para la próxima, como pediste incremental: la hora en el cabezal,
+los puntos de paginación y las ilustraciones tramadas.
+
+Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` sin defectos, `tsc
+--noEmit` limpio, `node --check` de `app.js`, las veinte suites de escritorio en verde,
+`ascii_identifiers` sobre 537 archivos. **Sin OTA**: `.ws397-build` sigue en 120.

@@ -208,6 +208,19 @@ EpdFontFamily smallFontFamily(&smallFont, &smallBoldFont);
 EpdFont ui14BoldFont(&ubuntu_14_bold);
 EpdFontFamily ui14FontFamily(&ui14BoldFont);
 
+#ifdef FREEINK_DEVICE_WS397
+// REV-086: LA CARA DEL NÚMERO GRANDE. Sólo los dígitos y seis símbolos
+// (espacio, %, + - . / , :, °), porque es lo único que necesita un dato: 18°,
+// 78 %, 25:00. Con el juego completo de los seis idiomas la misma cara a 32 px
+// son 157 KB; con `--only-intervals` son 2,8 KB, y el flash va en 87,8 %.
+//
+// NO reemplaza a `SevenSegment`: los dígitos dibujados están bien donde son un
+// CRONÓMETRO (el temporizador, el reproductor) y mal donde son un dato, que es
+// lo que se lee como calculadora. Sólo negrita, como UI_14.
+EpdFont display32BoldFont(&ubuntu_display_32_bold);
+EpdFontFamily display32FontFamily(&display32BoldFont);
+#endif
+
 EpdFont ui10RegularFont(&ubuntu_10_regular);
 EpdFont ui10BoldFont(&ubuntu_10_bold);
 EpdFontFamily ui10FontFamily(&ui10RegularFont, &ui10BoldFont);
@@ -339,6 +352,18 @@ void silentRestartToReader() {
 #if FREEINK_CAP_TOUCH
   if (finishWifiSessionWithoutRestart()) return;
 #endif
+  // REV-069: el mismo criterio que `silentRestart()`, que acá faltaba. El
+  // reinicio existe para recuperar un bloque contiguo grande después de una
+  // sesión de TLS; si el bloque mayor sigue holgado no hay nada que recuperar y
+  // reiniciar es puro costo. El caso reproducible es el que menos lo merece:
+  // entrar a KOReader Sync, CANCELAR el selector de WiFi y volver — ahí no hubo
+  // sesión de TLS ni fragmentación, y el aparato se reiniciaba igual.
+  //
+  // Volver al lector sin reiniciar es seguro porque los que llaman ya dejaron la
+  // navegación encolada (`returnToReader()` hace `goToReader()` ANTES de que
+  // corra este `onExit()`); el único que no lo hacía es LuaApps, y ahora cae a
+  // su `goToReader()` de siempre cuando esta función vuelve.
+  if (finishWifiSessionIfHeapIsHealthy()) return;
   silentRebootTarget = SILENT_REBOOT_TARGET_READER;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   LOG_DBG("MAIN", "Silent restart (target=reader)");
@@ -1008,6 +1033,31 @@ static void powerOffNow() {
     POWER_KEY.pump();
     delay(20);
   }
+  // REV-076: POR QUÉ SALIÓ DEL WHILE. El lazo terminaba por suelta o por
+  // vencimiento y el log decía "PWR soltado" en los dos casos — mintiendo justo
+  // en el que importa. Con la tecla todavía abajo, mandar el soft-off es
+  // exactamente la secuencia que el comentario de arriba identifica como
+  // peligrosa: el PMIC corta, PressOn lo vuelve a encender en el acto, el
+  // firmware arranca con la tecla mantenida y a los 3 s vuelve a apagar. Ese
+  // ciclo sólo se rompe soltando en una ventana chica o sacando la batería.
+  //
+  // Normalmente no se llega acá porque el corte duro del PMIC a los 10 s gana
+  // primero — pero REV-066 ya mostró que esa configuración puede no haber
+  // quedado armada, y este es exactamente el estado degradado en el que no hay
+  // que apagar.
+  if (POWER_KEY.pressed()) {
+    LOG_ERR("MAIN",
+            "PWR sigue apretado tras %lu ms: NO se manda el apagado (el PMIC lo volveria a encender por "
+            "PressOn y quedaria en ciclo). Se suspende en su lugar; solta y volve a intentarlo",
+            millis() - waitFrom);
+    // El llamador cae a `sleepNow()`, que NO toca el filesystem porque da por
+    // hecho que esta función ya lo desmontó (REV-057). Ese contrato se cumple
+    // también por esta salida: lo único que se saltea es el corte del PMIC.
+    devlog::event("MAIN", "apagado abortado: PWR seguia apretado");
+    devlog::close();
+    Storage.prepareForDeepSleep();
+    return;
+  }
   LOG_INF("MAIN", "PWR soltado tras %lu ms de espera: se apaga", millis() - waitFrom);
   devlog::event("MAIN", "apagado por PWR mantenido");
   devlog::close();
@@ -1113,6 +1163,23 @@ void enterDeepSleep(bool fromTimeout = false) {
   // Después de guardar el cuadro de Quick Resume (ese tiene que ser la pantalla
   // anterior, no el fondo) y antes de apagar el panel.
   paintWallpaperForSleep();
+
+  // REV-071: EL onExit() DE LA PANTALLA DE TURNO, QUE EN ESTA PLACA NO CORRÍA.
+  //
+  // `goToSleep(fromTimeout, render)` hace `replaceActivity()`, que con una
+  // Activity viva NO reemplaza nada en el momento: deja el cambio pendiente y el
+  // `onExit()` recién corre cuando `ActivityManager::loop()` procesa ese
+  // pendiente. Acá se pasa `render=false` (la pantalla de sueño del SDK no se
+  // pinta: la tapa entera el fondo informativo), así que ese `loop()` nunca
+  // corría y el sueño profundo se llevaba puesto el teardown de la pantalla.
+  // No es teórico: `ReaderActivity::onExit()` es el que pone
+  // `readerActivityLoadCount` en 0, y sin eso el arranque siguiente lo lee como
+  // "el lector se cayó" y manda al Home en vez de reanudar el libro.
+  //
+  // Va DESPUÉS de pintar el fondo y no en el lugar de `goToSleep()` a propósito:
+  // ese mismo `onExit()` devuelve el renderer a Portrait, y hacerlo antes
+  // dejaría el fondo de sueño pintado con la orientación equivocada.
+  if (BoardConfig::isWS397()) activityManager.tearDownForSleep();
 
   // Tear down WiFi so the modem power domain isn't held alive across deep sleep.
   // Wake from deep sleep is effectively a chip reset, so no state needs to survive.
@@ -1475,6 +1542,9 @@ void setupDisplayAndFonts(bool seamless = false) {
   renderer.insertFont(UI_10_FONT_ID, ui10FontFamily);
   renderer.insertFont(UI_12_FONT_ID, ui12FontFamily);
   renderer.insertFont(UI_14_FONT_ID, ui14FontFamily);
+#ifdef FREEINK_DEVICE_WS397
+  renderer.insertFont(DISPLAY_32_FONT_ID, display32FontFamily);
+#endif
   renderer.insertFont(SMALL_FONT_ID, smallFontFamily);
 
   // Discover and load SD card fonts
@@ -1734,11 +1804,36 @@ void setup() {
     case HalGPIO::WakeupReason::PowerButton:
       // With Short Power Button Press = Sleep, a single click wakes on any
       // device; otherwise the button must still be held (ghost-wake debounce).
-      if (!wakeHoldVerified && SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
+      // REV-068: EN LA ws397 ESTA GUARDIA NO APLICA, y aplicarla rompía el
+      // despertar.
+      //
+      // `verifyPowerButtonWakeup()` toma dos muestras y sólo da true si la tecla
+      // SIGUE apretada cuando el setup llega hasta acá. Eso tiene sentido para
+      // el PWR de las otras placas, donde un toque corto es "limpiar pantalla" y
+      // sólo un mantenido enciende. Acá el que despierta es **OK** (GPIO5, el
+      // único RTC GPIO), y un toque de OK es la forma normal de despertar: se
+      // suelta en 50 ms y para cuando el setup pregunta ya no hay nada que ver.
+      //
+      // Peor: el permiso para aceptar un click ya soltado salía de
+      // `SETTINGS.shortPwrBtn == SLEEP`, y unas líneas más arriba esta misma
+      // placa lo fuerza a IGNORE a propósito (el PWR real es el del PMIC y no
+      // pasa por este mapeo). O sea que la política de UN botón decidía la
+      // validez del despertar de OTRO, y el resultado era un toque corto que
+      // despierta el chip y lo vuelve a dormir en el acto: desde afuera, "a
+      // veces no prende".
+      //
+      // El anti-fantasma sigue existiendo y es el de siempre: EXT1 sólo se arma
+      // sobre el pin de despertar, así que si llegamos acá por PowerButton fue
+      // ese pin el que bajó.
+      if (!wakeHoldVerified && !BoardConfig::isWS397() &&
+          SETTINGS.shortPwrBtn != CrossPointSettings::SHORT_PWRBTN::SLEEP) {
         LOG_DBG("MAIN", "Power-button wake not held through verification, sleeping");
         devlog::close();
         Storage.prepareForDeepSleep();
         sleepNow();
+      }
+      if (BoardConfig::isWS397() && !wakeHoldVerified) {
+        LOG_INF("MAIN", "despertó con un toque de OK ya soltado: se acepta (es la forma normal de despertar)");
       }
       wakeKeyReleasePending = true;
       // ws397: the OK hold that woke us is BTN_CONFIRM now. Do not let the
@@ -2175,7 +2270,23 @@ void loop() {
   // pregunta si el PMIC está cargando, y con la batería llena eso da false con
   // el cable puesto. Se pregunta lo uno O lo otro. Se calcula ACÁ ARRIBA porque
   // ahora lo miran los dos: el auto-sleep (REV-067) y el reposo de más abajo.
-  const bool cablePuesto = BoardConfig::isWS397() && (POWER_KEY.vbusPresent() || gpio.isUsbConnected());
+  // REV-080: "no hay cable" y "no se pudo preguntar" NO son lo mismo, y acá esa
+  // diferencia decide si el aparato desaparece del puerto USB. `vbusPresent()`
+  // devolvía false para los dos casos, y con la batería llena el otro término
+  // (`isUsbConnected()`, que mira la CARGA y no el cable) también es false: un
+  // solo NACK al leer STATUS1 bastaba para autorizar el sueño con el cable
+  // puesto. Ante la duda se asume que el cable ESTÁ, que es el lado que sólo
+  // cuesta un poco de batería; el otro cuesta el puerto serie del que está
+  // depurando.
+  const PowerKey::Vbus vbus = BoardConfig::isWS397() ? POWER_KEY.vbusState() : PowerKey::Vbus::Absent;
+  if (vbus == PowerKey::Vbus::Unknown) {
+    static unsigned long ultimoAviso = 0;
+    if (ultimoAviso == 0 || millis() - ultimoAviso > 60000) {
+      ultimoAviso = millis();
+      LOG_ERR("MAIN", "no se pudo leer VBUS del PMIC: se asume que el cable esta puesto y no se duerme");
+    }
+  }
+  const bool cablePuesto = BoardConfig::isWS397() && (vbus != PowerKey::Vbus::Absent || gpio.isUsbConnected());
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
   if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {

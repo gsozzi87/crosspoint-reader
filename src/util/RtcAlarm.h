@@ -48,6 +48,14 @@ class RtcAlarm {
 
   bool available_ = false;
   uint8_t addr_ = 0;
+  // REV-077: apaga AIE y limpia AF. Es lo primero de desarmar y lo primero de
+  // reprogramar: mientras los cinco campos se escriben en cadena, una alarma
+  // vieja habilitada puede coincidir con una hora a medio escribir.
+  bool disableInterrupt();
+
+  // 0 = no hay alarma; -1 = NO SE SABE (una escritura falló a mitad). El -1 no
+  // coincide con ningún epoch válido, así que el atajo "ya está armada" de
+  // armAt() no se lo puede saltear.
   time_t armedAt_ = 0;
 };
 

@@ -38,4 +38,6 @@
 #include <builtinFonts/ubuntu_10_regular.h>
 #include <builtinFonts/ubuntu_12_bold.h>
 #include <builtinFonts/ubuntu_14_bold.h>
+// REV-086: la cara de DISPLAY (sólo dígitos y seis símbolos, 2,8 KB).
+#include <builtinFonts/ubuntu_display_32_bold.h>
 #include <builtinFonts/ubuntu_12_regular.h>
