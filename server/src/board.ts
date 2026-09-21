@@ -38,6 +38,7 @@ import { searchWeb } from "./websearch";
 import { checkUrl, isSafeRemoteUrl, readBody } from "./net";
 import { providerFailures } from "./providerLog";
 import { tokenRows } from "./tokens";
+import { buildInfo } from "./build";
 import { probeFeed, checkFeed } from "./rss";
 import { isMedicalFeed, MEDICAL_FEED_NAME, MEDICAL_URL, readMedicalFeed } from "./medical";
 import { accountOf, isAdmin, type AppEnv } from "./tenant";
@@ -464,6 +465,9 @@ boardApi.get("/state", async (c) => {
     // llamadas no contesta "¿en qué se fue el cupo?". Se manda lo de los
     // últimos días, que es lo que se mira.
     tokens: (await tokenRows()).slice(0, 40),
+    // Qué commit está corriendo y desde cuándo. Sin esto, "¿se desplegó?" sólo
+    // se puede contestar bajando un archivo estático y comparando su sha.
+    build: buildInfo(),
     multi: multiUser,
   });
 });
