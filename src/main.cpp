@@ -75,7 +75,9 @@
 #include "util/CardLayout.h"
 #include "util/CodecSleep.h"
 #include "util/IdleSleep.h"
+#include "util/LoopWatchdog.h"
 #include "util/NetPumpHooks.h"
+#include "util/PanelRescue.h"
 #include "util/PowerKey.h"
 #include "util/RtcAlarm.h"
 #include "util/ScreenshotUtil.h"
@@ -224,12 +226,12 @@ constexpr int MAX_CLOCKLESS_RETRIES = 5;
 
 RTC_NOINIT_ATTR uint32_t silentRebootMagic;
 RTC_NOINIT_ATTR uint32_t silentRebootTarget;
-// EL PANEL NO CONTESTA (1.5.108): con este valor puesto ya se le dio un ciclo
-// de corriente al panel y se reinició UNA vez; si sigue mudo no se insiste, el
-// aparato arranca igual (cada pintada tarda el tope de BUSY) y el log lo dice.
+// EL PANEL NO CONTESTA (1.5.108): acá vive el estado del rescate del panel —
+// si el ciclo de corriente ya se HIZO (y entonces no se repite) o si se INTENTÓ
+// y el PMIC no dejó (y entonces se vuelve a probar, hasta un tope). La cuenta y
+// los valores están en util/PanelRescue.h, que es puro y se prueba sin placa.
 // Sobrevive a un reinicio y al sueño profundo, no a un corte de energía — que
 // es justamente el otro remedio.
-static constexpr uint32_t PANEL_RESCUE_MAGIC = 0x50414E4C;  // "PANL"
 RTC_NOINIT_ATTR uint32_t panelRescueMagic;
 // REV-061: los rieles no se pudieron cortar al dormir.
 //
@@ -556,6 +558,10 @@ static void ensureSomeWakeSource() {
 }
 
 static void sleepNow() {
+  // El supervisor del loop no tiene que ver el sueño como un cuelgue: de acá no
+  // se vuelve, y lo que sigue (pintar, desmontar, cortar rieles) puede tardar
+  // segundos sin que nadie late.
+  loopwdt::pause("sueño profundo");
   // La música no sobrevive al deep sleep: cortarla acá deja el códec y el I2S
   // en un estado conocido antes de apagar.
   MUSIC.stop();
@@ -956,6 +962,7 @@ static void paintWallpaperForSleep(const sleepscreen::State state = sleepscreen:
 // tarjeta y le pide al PMIC que corte los rieles. Vuelve sólo si el PMIC no
 // contestó, para que el llamador se conforme con dormir.
 static void powerOffNow() {
+  loopwdt::pause("apagado");
   MUSIC.stop();
   HUB_STORE.saveToFile();
   APP_STATE.showBootScreen = false;
@@ -987,6 +994,7 @@ static void powerOffNow() {
 
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
+  loopwdt::pause("preparando el sueño");
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   // REV-064: LA MÚSICA SE CORTA ACÁ, no en `sleepNow()`.
   //
@@ -1271,7 +1279,7 @@ static bool handlePowerHold(const bool gateOpen) {
 void checkPanelAfterInit(unsigned long initMs) {
   const uint32_t timeouts = display.busyTimeouts();
   if (timeouts == 0) {
-    if (panelRescueMagic == PANEL_RESCUE_MAGIC) {
+    if (panelrescue::attempted(panelRescueMagic)) {
       LOG_INF("MAIN", "el panel volvió a contestar después del ciclo de corriente (init %lu ms)", initMs);
       panelRescueMagic = 0;
     }
@@ -1279,16 +1287,32 @@ void checkPanelAfterInit(unsigned long initMs) {
   }
   LOG_ERR("MAIN", "EL PANEL NO CONTESTA: BUSY quedó en alto, %lu esperas vencidas en el init (%lu ms)",
           static_cast<unsigned long>(timeouts), initMs);
-  if (panelRescueMagic == PANEL_RESCUE_MAGIC) {
+  if (panelrescue::done(panelRescueMagic)) {
     LOG_ERR("MAIN",
             "ya se le dio un ciclo de corriente y sigue mudo: se arranca igual (cada pintada tarda el tope). "
             "Probar PWR 10 s o sacar batería Y cable; si persiste, es el panel o su cable plano");
     return;
   }
-  LOG_ERR("MAIN", "ciclo de corriente al panel y reinicio, una sola vez");
-  panelRescueMagic = PANEL_RESCUE_MAGIC;
+  // El PMIC no dejó cortar los rieles las veces anteriores, así que el rescate
+  // NO se hizo nunca. Se reintenta, pero con tope: cada intento termina en un
+  // reinicio y sin tope esto sería un bucle de arranques.
+  if (!panelrescue::mayCycle(panelRescueMagic)) {
+    LOG_ERR("MAIN",
+            "el PMIC no dejó cortar los rieles en %lu intentos: el ciclo de corriente NUNCA llegó a hacerse. "
+            "Se arranca igual (cada pintada tarda el tope). Mirar la línea «AXP2101 rieles:»; si el riel está "
+            "bien, probar PWR 10 s o sacar batería Y cable",
+            static_cast<unsigned long>(panelrescue::MAX_TRIES));
+    return;
+  }
+  const uint32_t intento = panelrescue::failedTries(panelRescueMagic) + 1;
+  LOG_ERR("MAIN", "ciclo de corriente al panel y reinicio (intento %lu de %lu)", static_cast<unsigned long>(intento),
+          static_cast<unsigned long>(panelrescue::MAX_TRIES));
+  panelRescueMagic = panelrescue::markAttempt(panelRescueMagic);
   const bool cycled = POWER_KEY.railsCycle(500);
-  if (!cycled) LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual");
+  panelRescueMagic = panelrescue::afterCycle(panelRescueMagic, cycled);
+  if (!cycled) {
+    LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual y se vuelve a probar al arrancar");
+  }
   devlog::flush();
   delay(50);
   ESP.restart();
@@ -1306,15 +1330,26 @@ void checkPanelHealth() {
   LOG_ERR("MAIN", "EL PANEL NO CONTESTÓ: la espera de BUSY venció (van %lu en esta sesión); cada pintada tarda el tope",
           static_cast<unsigned long>(now));
   if (now < 3 || deepSleepInProgress) return;
-  if (panelRescueMagic == PANEL_RESCUE_MAGIC) {
+  if (panelrescue::done(panelRescueMagic)) {
     LOG_ERR("MAIN", "el ciclo de corriente ya se hizo una vez en este encendido: no se repite");
     return;
   }
-  LOG_ERR("MAIN", "tres esperas vencidas: ciclo de corriente al panel y reinicio, una sola vez");
-  panelRescueMagic = PANEL_RESCUE_MAGIC;
+  if (!panelrescue::mayCycle(panelRescueMagic)) {
+    LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles en %lu intentos: no se insiste (mirar «AXP2101 rieles:»)",
+            static_cast<unsigned long>(panelrescue::MAX_TRIES));
+    return;
+  }
+  LOG_ERR("MAIN", "tres esperas vencidas: ciclo de corriente al panel y reinicio (intento %lu de %lu)",
+          static_cast<unsigned long>(panelrescue::failedTries(panelRescueMagic) + 1),
+          static_cast<unsigned long>(panelrescue::MAX_TRIES));
+  panelRescueMagic = panelrescue::markAttempt(panelRescueMagic);
   silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
-  if (!POWER_KEY.railsCycle(500)) LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual");
+  const bool cycled = POWER_KEY.railsCycle(500);
+  panelRescueMagic = panelrescue::afterCycle(panelRescueMagic, cycled);
+  if (!cycled) {
+    LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual y se vuelve a probar al arrancar");
+  }
   devlog::flush();
   delay(50);
   ESP.restart();
@@ -1388,6 +1423,11 @@ void setup() {
 #endif
 #endif
 
+  // ANTES de HalSystem::begin(), que en todo arranque que no sea un pánico
+  // capturado borra el anillo de las últimas 16 líneas — justo el brownout y el
+  // watchdog sin marker, que son los dos que no dejan crash_report y los únicos
+  // para los que "se reinició solo" era toda la evidencia (REV-081).
+  devlog::snapshotPreviousCrash(loopwdt::trippedLastBoot());
   HalSystem::begin();
   // checkPanic() clears the watchdog capture marker after a successful SD
   // dump, so retain the boot classification for the later activity route.
@@ -1513,6 +1553,9 @@ void setup() {
   // Atrás (include/NetPump.h). Va después de POWER_KEY.begin() y del log, para
   // que la línea de instalación llegue a /board/log.
   netpumphooks::begin();
+  // REV-065: lo que dejó anotado el supervisor si al arranque anterior lo forzó
+  // él. Va acá, con el log ya abierto y antes de que pase nada más.
+  loopwdt::reportBoot();
   // Cuánto se fue durmiendo, dicho por el aparato: la última línea del diario
   // es la de "antes de dormir" y ésta es la de ahora.
   if (BoardConfig::isWS397() && esp_reset_reason() == ESP_RST_DEEPSLEEP) batterylog::reportAfterSleep();
@@ -1819,6 +1862,12 @@ void setup() {
   }
 
   allowSleepAt = millis() + 2000;
+
+  // REV-065: de acá en adelante hay alguien mirando que el loop siga latiendo.
+  // Se arma al final del setup a propósito: el arranque tiene sus propias
+  // esperas largas (el init del panel puede pagar el tope de BUSY) y todavía no
+  // hay nadie a quien responderle.
+  loopwdt::begin();
 }
 
 void loop() {
@@ -2314,6 +2363,11 @@ void loop() {
     enterDeepSleep();
     return;  // no se llega: enterDeepSleep termina en esp_deep_sleep_start
   }
+
+  // El loop volvió: ésta es la señal de vida que mira el supervisor (REV-065).
+  // El bombeo de red da la suya cada 25 ms, así que una descarga de noventa
+  // segundos late igual sin que la pasada termine.
+  loopwdt::beat();
 
   const unsigned long loopDuration = millis() - loopStartTime;
   if (loopDuration > maxLoopDuration) {

@@ -2350,6 +2350,52 @@ pasada de noticias, con todo lo demás adentro. Ahora es `on` con bandera. Verif
 verdad: antes `Bun v1.3.11` y el proceso muerto; ahora la línea `news feed: pubmed: Error…` y la pasada
 termina sola.
 
+## El diagnóstico se perdía justo cuando hacía falta (después de 1.5.120)
+
+Tres hallazgos de la revisión externa, el mismo defecto en tres lugares: el aparato se rompe y lo único
+que queda es que el dueño lo cuente.
+
+- **El rescate del panel gastaba su único intento aunque el corte NO se hubiera hecho** (`src/util/PanelRescue.h`).
+  Desde 1.5.108, un SSD1677 trabado se destraba cortándole la corriente a ALDO1-3 medio segundo y
+  reiniciando, una vez por encendido. Pero la marca de "ya se le dio el ciclo" se ponía ANTES de llamar
+  al PMIC y no se volvía a mirar, y `railsCycle()` devuelve false sin haber cortado nada si el I2C falla,
+  si no se puede leer 0x90 o si la relectura no confirma. O sea: un panel trabado **más** un fallo de
+  I2C de un momento dejaba el aparato reiniciando una vez, concluyendo "ya se intentó y sigue mudo", y
+  con el único arreglo posible **sin ejecutar**. Ahora la palabra de RTC distingue **HECHO** (el PMIC
+  confirmó el corte: se gastó el one-shot y no se repite, porque si sigue mudo es el panel) de
+  **INTENTADO n veces** (el PMIC no dejó: se vuelve a probar al arrancar, hasta tres). El tope no es
+  decorativo: cada intento termina en `ESP.restart()`, así que sin él un PMIC que no contesta sería un
+  bucle de arranques — peor que un aparato lento, porque no se llega ni a Ajustes ni a la OTA. La marca
+  del intento se escribe ANTES de tocar el PMIC, por si el corte se llevara al ESP por delante. Se prueba
+  sin placa: **`./test/panel_rescue/run.sh`**.
+- **El loop que no vuelve no lo detectaba nadie** (`src/util/LoopWatchdog.{h,cpp}`). El detector de
+  pasadas largas de 1.5.117 mide DESPUÉS de `activityManager.loop()`: sirve para una operación que tarda
+  un montón y termina, y no puede servir para una que no termina nunca. Y el watchdog de tarea del
+  framework tampoco: Arduino-ESP32 3.3.7 arranca con `loopTaskWDTEnabled = false` y **en este árbol
+  nadie lo suscribe**, así que `esp_task_wdt_reset()` es un no-op — incluido el del bombeo de red. Un
+  mutex tomado dos veces o una espera sin plazo dejaba la UI, los botones y PWR congelados para siempre,
+  con el corte duro del PMIC (PWR 10 s) como única salida. Ahora hay un supervisor propio, y no la
+  suscripción al TWDT de la IDF, por tres motivos: corre en el **otro núcleo** (un busy-loop de la UI no
+  lo mata de hambre), **deja el motivo en RAM del RTC** —qué pantalla, qué operación de red, cuántos ms
+  sin latir— para que lo cuente el arranque siguiente, y se le puede decir "esto es a propósito", que
+  hace falta porque el reposo congela el chip mientras `millis()` sigue corriendo.
+  **El presupuesto son 120 s y el número está razonado**: lo más largo que este firmware puede tardar
+  sin un solo latido no son los renders ni las descargas —eso late cada 25 ms por el bombeo de red— sino
+  el `connect()` de TCP más el handshake de TLS, los dos huecos sin bombeo que quedaron anotados en
+  1.5.117. **El latido del bombeo va después de la guardia de "esto lo llama el loop"**: uno desde otra
+  tarea taparía justo lo que hay que ver. **Nada de tarjeta ni de `LOG_*` desde el supervisor**: si el
+  loop se colgó teniendo el mutex del almacenamiento, escribir colgaría también al supervisor y no
+  quedaría nadie para reiniciar. Tope de tres reinicios, y la racha se olvida sola tras cinco minutos de
+  loop sano.
+- **Un brownout borraba la evidencia de sí mismo.** La cabecera de 1.5.96 dice POR QUÉ se reinició y eso
+  ya destrabó un diagnóstico entero, pero no dice QUÉ estaba haciendo — y eso lo contestaban las últimas
+  16 líneas del anillo de RAM del RTC, que `HalSystem::begin()` borra en todo arranque que no sea un
+  **pánico capturado**. Justo el brownout y el watchdog sin marker, que son los dos que no dejan
+  `crash_report.txt`. `devlog::snapshotPreviousCrash()` las copia **antes** de esa llamada (sólo cuando
+  el reset no fue normal: en un arranque normal no se reserva ni un byte) y la cabecera del log las
+  vuelca debajo del grito. Cubre también el reinicio que pide el supervisor del loop, que para
+  `esp_reset_reason()` es un reinicio normal y es justo cuando más sirve.
+
 ## Roadmap acordado
 
 La lista completa de funciones, con fase, estado y contrato del servidor, está en `docs/ws397/FUNCIONES.md`

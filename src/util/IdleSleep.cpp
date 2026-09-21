@@ -8,6 +8,7 @@
 #include <esp_sleep.h>
 #include <soc/gpio_struct.h>
 
+#include "LoopWatchdog.h"
 #include "PowerKey.h"
 
 IdleSleep IDLE_SLEEP;
@@ -204,9 +205,15 @@ IdleSleep::Woke IdleSleep::tick(const unsigned long idleMs, const bool blocked) 
   // vuelve a encender solo en cuanto el loop corra de nuevo.
   halTiltSensor.deepSleep();
 
+  // El reposo congela el chip entero —el supervisor del loop incluido— pero
+  // `millis()` sigue corriendo, así que sin avisar una noche de reposo se
+  // leería al despertar como un cuelgue de horas y el aparato se reiniciaría
+  // solo justo al volver (REV-065).
+  loopwdt::pause("reposo");
   const unsigned long before = millis();
   const esp_err_t err = esp_light_sleep_start();
   const unsigned long slept = millis() - before;
+  loopwdt::resume();
   // El timer se desarma siempre: si quedara puesto, el deep sleep que venga
   // después heredaría estos 2 s y el aparato arrancaría en bucle.
   disarmWakeSources();

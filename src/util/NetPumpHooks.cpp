@@ -8,6 +8,7 @@
 #include <freertos/task.h>
 
 #include "DeviceLog.h"
+#include "LoopWatchdog.h"
 #include "PowerKey.h"
 #include "TaskWatchdog.h"
 
@@ -45,6 +46,13 @@ void slice(const bool prime) {
   // alguna vez una tarea propia hace red, que no se meta con el decodificador
   // de PWR por debajo del loop.
   if (s_loopTask == nullptr || xTaskGetCurrentTaskHandle() != s_loopTask) return;
+
+  // El supervisor del loop (REV-065) tiene que ver latir una descarga larga:
+  // una pasada de noventa segundos es lenta, no está colgada, y reiniciar en el
+  // medio de una OTA o de una pregunta sería peor que la espera. Va DESPUÉS de
+  // la guardia de arriba a propósito: un latido desde otra tarea taparía
+  // justamente lo que el supervisor tiene que ver, que es el loop parado.
+  loopwdt::beat();
   if (!BoardConfig::isWS397()) return;
 
   // PWR es del PMIC y se decodifica por I2C desde el loop: si el loop no corre,
