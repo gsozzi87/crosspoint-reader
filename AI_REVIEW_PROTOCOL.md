@@ -3189,6 +3189,12 @@ No es teórico: distintos `onExit()` hacen limpieza crítica:
 - otras Activities liberan recursos o guardan estado.
 
 Impacto visible:
+- si el lector fue reanudado desde deep sleep, setup() incrementa readerActivityLoadCount antes de abrirlo;
+  como ReaderActivity::onExit() es quien lo devuelve a 0, dormir otra vez desde ese lector puede dejar
+  readerActivityLoadCount en 1. En el siguiente wake setup interpreta eso como "el reader crasheó" y
+  manda al Home en vez de reanudar el libro;
+- ReaderActivity::onExit() también devuelve la orientación del renderer a Portrait. Saltarlo deja el
+  wallpaper de sueño expuesto a pintarse con la orientación del libro;
 - recursos/tareas pueden seguir vivos mientras se desmonta Storage o se apagan periféricos;
 - puede haber carreras de audio/red/SD justo en la transición a sueño;
 - el próximo boot puede ver estado que la Activity debía cerrar en onExit();
@@ -3540,6 +3546,90 @@ Fix recomendado:
 - no declarar `POWER_KEY.available_=true` con INTEN2 sin los bits de tecla esperados;
 - si fuentes extra no pueden apagarse, entrar en polling degradado explícito y no confiar en el latch del pin;
 - fault injection en cada INTEN write/readback.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-080 — Un fallo transitorio al leer VBUS se interpreta como “cable ausente” y puede tumbar USB
+State: OPEN
+Severity: P2
+Subsystem: firmware / USB / light sleep / PMIC telemetry
+
+Hallazgo CONFIRMADO por lectura de código en el cierre del Paso 1.
+
+La protección de light sleep en WS397 calcula:
+    cablePuesto = POWER_KEY.vbusPresent() || gpio.isUsbConnected();
+
+La intención es correcta: `vbusPresent()` mira VBUS_GOOD del PMIC y cubre el caso de batería llena,
+donde "está cargando" puede ser false aunque el cable siga conectado.
+
+Pero `PowerKey::vbusPresent()` devuelve false tanto para “VBUS realmente ausente” como para:
+- POWER_KEY no disponible;
+- fallo I2C al leer REG_STATUS1.
+
+Y `gpio.isUsbConnected()` en WS397 usa precisamente el estado de carga, que a batería llena puede
+ser false con el cable puesto (el propio comentario de main.cpp documenta ese caso).
+
+Por tanto, con batería llena basta un fallo I2C puntual de REG_STATUS1 para que ambos términos den
+false y el firmware autorice light sleep. El CDC USB puede desaparecer aun con el cable físicamente puesto.
+
+Impacto visible:
+- desconexión USB/serial aparentemente aleatoria cuando el equipo está enchufado;
+- más probable de confundirse con “se reinició/se colgó” porque el host pierde el puerto;
+- REV-067 corrige el auto-deep-sleep con cable, pero si la corrección reutiliza este bool sin estado
+  “unknown”, el mismo fallo puede afectar también esa nueva guardia.
+
+Fix recomendado:
+- distinguir VBUS=false de VBUS=unknown/error;
+- para decisiones de sueño, un estado unknown reciente debe ser conservador (no dormir) o usar el
+  último VBUS válido con una ventana/histeresis;
+- 2-3 retries cortos para la lectura crítica antes de permitir sleep;
+- test: batería 100 %, cable puesto, una lectura I2C de STATUS1 falla => CDC permanece vivo y no se duerme.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-081 — Los resets inesperados no-panic borran la evidencia y arrancan como si fueran normales
+State: OPEN
+Severity: P2
+Subsystem: firmware / reset diagnostics / brownout / watchdog recovery
+
+Hallazgo CONFIRMADO por lectura de código en el cierre del Paso 1.
+
+`HalSystem::begin()` conserva el ring de logs/panic sólo cuando `isRebootFromPanic()` devuelve true.
+Para cualquier otro reset llama `clearPanic()`, que también ejecuta `clearLastLogs()`.
+
+`isRebootFromPanic()` reconoce:
+- ESP_RST_PANIC;
+- ESP_RST_CPU_LOCKUP;
+- INT/TASK/general WDT únicamente si además `panicCaptureMarker == PANIC_CAPTURE_MAGIC`.
+
+No reconoce como diagnóstico a conservar, entre otros:
+- ESP_RST_BROWNOUT;
+- watchdog/reset donde el panic hook no alcanzó a poner el marker;
+- otros resets inesperados distintos de los reinicios silenciosos deliberados.
+
+Además main.cpp no registra de forma persistente el `esp_reset_reason()` general; sólo lo consulta
+para el caso ESP_RST_DEEPSLEEP del battery log.
+
+Resultado: un brownout o un WDT sin marker puede reiniciar el aparato, borrar las últimas 16 líneas
+retenidas y continuar por el boot normal sin dejar una explicación persistente. Para el usuario es
+literalmente “se reinició solo”, y el dato que podía separar alimentación de software desaparece.
+
+Impacto:
+- post-mortem muy pobre de reinicios espontáneos;
+- dificulta distinguir brownout, watchdog, reset software y power-on;
+- una regresión de estabilidad puede parecer aleatoria aunque el ESP sí entregue el reset reason.
+
+Fix recomendado:
+- capturar `esp_reset_reason()` al principio del boot antes de limpiar RTC logs;
+- distinguir resets deliberados (deep sleep, silentRestart/OTA) de resets inesperados;
+- para brownout/WDT/CPU lockup/etc. conservar un snapshot pequeño de reset reason + últimas líneas y
+  persistirlo cuando SD esté disponible;
+- no mostrar necesariamente CrashActivity para todo reset, pero sí dejar diagnóstico consultable;
+- test: brownout y WDT sin panic marker conservan razón + logs; ESP.restart deliberado no genera falso crash.
 
 Executor response:
 Reviewer final check:
