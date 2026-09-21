@@ -4128,6 +4128,101 @@ visto dos veces.
 Firmware: `pio run -e ws397` limpio. **Sin OTA.**
 Reviewer final check:
 
+## REV-084 — PROPUESTA: el masticado de noticias se come el cupo del proveedor y deja mudo a Hablar
+State: PROPOSAL — pido opinión del Reviewer antes de implementar
+Severity: P1
+Subsystem: server / news / llm / cuotas
+
+Esto lo abre el Executor a pedido del dueño, y va como PROPUESTA y no como fix: hay una decisión de
+diseño en el medio que prefiero discutir antes de escribir código.
+
+### El problema
+
+El dueño se quedó sin cupo de Groq (REV-054, el 429 que llegaba disfrazado de 502). La lectura fácil
+es "usó mucho el aparato". Mirando el código, no es eso.
+
+`server/src/news.ts`, cada hora y **sin que nadie lo pida**:
+
+    DIGEST_PER_RUN          = 10   notas masticadas    (maxTokens  900)
+    MEDICAL_DIGEST_PER_RUN  = 12   papers traducidos   (maxTokens 2600)
+    REFRESH_MS              = 1 h
+
+Hasta **22 llamadas al modelo por hora, 528 por día**. Verificado contra la doc de Groq: el plan
+gratis para `openai/gpt-oss-120b` da **8.000 TPM y 200.000 TPD**.
+
+Con una cuenta conservadora (entrada del artículo + salida) eso da del orden de **50.000 tokens por
+hora**: el masticado solo vacía el día en unas cuatro horas, se use o no se use el aparato. Y el
+límite por MINUTO es peor: una traducción médica son ~4.000 tokens entre entrada y salida, así que
+**dos papers en el mismo minuto ya se pasan de los 8.000 TPM** — y la pasada los hace en un bucle.
+
+La fecha calza: PubMed entró el 19 a la tarde (6b4cdfa) y el primer 429 del dueño fue esa madrugada.
+Los doce papers por hora a 2.600 tokens de salida son lo más caro del sistema, y los puse yo.
+
+**El daño no es el gasto: es el ORDEN DE PRIORIDAD.** Un trabajo de fondo que nadie pidió deja sin
+servicio a lo único que el usuario toca con el dedo. Cuando él pregunta algo, el cupo ya se lo comió
+un resumen de diario que capaz ni va a leer.
+
+### Lo que NO puedo afirmar, y es un hueco propio
+
+Los 50.000/hora son una ESTIMACIÓN, no una medición. `usage.ts` cuenta **llamadas**
+(`llm_calls`), no tokens — y el proveedor nos manda `usage.prompt_tokens` /
+`completion_tokens` en CADA respuesta, que hoy sólo leemos en el diagnóstico de respuesta vacía
+(REV-049) y tiramos. O sea que llevamos meses sin poder contestar "¿en qué se va el cupo?" con un
+número. Eso hay que arreglarlo igual, gane la opción que gane.
+
+### Las opciones, con lo que cuesta cada una
+
+**A. Bajar el volumen** (`NEWS_MEDICAL_DIGEST`, `NEWS_DIGEST_PER_RUN`, `NEWS_REFRESH_MS`).
+Gratis, inmediato, reversible, son variables de entorno en Railway sin desplegar. Se pierde valor: menos
+notas reescritas. Los TITULARES no se tocan — salen del manifiesto, no del modelo.
+
+**B. Un modelo distinto y más barato para el masticado** (idea del dueño).
+Lo que la vuelve mejor de lo que parece: **los límites de Groq son POR MODELO**. Mandar el masticado
+a `gpt-oss-20b` no reparte el cupo: le da su PROPIO cupo de 200.000 TPD y deja el del 120b entero
+para Hablar, Preguntar y el Traductor. No es ahorrar, es dejar de compartir.
+(Confirmar con el Reviewer que la tabla de Groq es por modelo y no por organización; la doc la
+presenta por modelo y así la leímos los dos, pero no lo probamos.)
+
+**C. Frenar por los headers.** Groq devuelve `x-ratelimit-remaining-tokens` y
+`x-ratelimit-remaining-requests` en cada respuesta. El masticado puede parar solo cuando queda poco
+margen, en vez de chocar contra el 429. Barato y nuestro.
+
+**D. Prioridad explícita: lo interactivo siempre gana.** Reservar un colchón del cupo que el trabajo
+de fondo no puede tocar. Es la regla que hace que esto no vuelva con otra cara cuando mañana
+agreguemos otro trabajo automático.
+
+**E. Fallback a otro proveedor** (Fireworks tiene el mismo `gpt-oss-120b` al mismo precio).
+Cuenta aparte, clave aparte, más superficie. **Y no arregla la fuga**: hace quemar dos cupos en vez
+de uno.
+
+### Lo que yo haría
+
+**B + C + D**, con A como palanca inmediata mientras tanto, y E al final o nunca.
+
+**Pero con una excepción que me importa más que el ahorro**: el masticado de diarios y la traducción
+de papers NO son el mismo trabajo. Un resumen de diario que sale un poco peor es un resumen un poco
+peor. Una traducción médica que sale peor es **el defecto que arreglamos a propósito**: el dueño pidió
+textualmente "no las quiero para público en general, las quiero para un médico, tienen que tener el
+lenguaje técnico con el que fueron escritos, no cambiar palabras sino traducirlas". Bajar de modelo
+justo ahí es donde más barato parece y donde más caro sale.
+
+Mi propuesta concreta: **diarios al modelo barato, papers al bueno pero con volumen bajo** (tres por
+pasada en vez de doce). Los papers son el 70 % del gasto y el 10 % del volumen, así que recortarlos
+por cantidad rinde más que degradarlos por calidad.
+
+### Lo que le pido al Reviewer
+
+1. ¿Coincidís en que los límites de Groq son por modelo? Si no, la opción B se cae entera.
+2. ¿Te parece bien la asimetría diarios/papers, o preferís una regla única y más simple?
+3. El colchón de D: ¿en qué lo expresarías — porcentaje del cupo diario, tokens absolutos, o
+   "el trabajo de fondo no corre si quedan menos de N"?
+4. ¿Algo que se me escape sobre medir tokens de verdad? Pienso sumar `prompt_tokens` y
+   `completion_tokens` a `usage` por subsistema (voz / lector / noticias / apps), pero eso cambia el
+   esquema y quiero que lo mires antes.
+
+Executor response: (la propuesta es mía; espero la del Reviewer)
+Reviewer final check:
+
 ---
 
 # Product behavior already known from prior device testing
@@ -4601,6 +4696,18 @@ Reviewer final check:
   caso normal robusto y DETECTABAN el fallo, pero no lo EVITABAN ni reintentaban. Detectar no es
   evitar.
 - `pio run -e ws397` limpio, `ascii_identifiers` en verde. **Sin OTA**: 1.5.120 sigue publicada.
+
+### 2026-09-21 — Executor (Claude) — REV-084, propuesta sobre el cupo del proveedor
+- El dueño trajo los límites de Groq y la idea de "un modelo más barato para las noticias". Verifiqué
+  la doc: free de `gpt-oss-120b` son 8K TPM y 200K TPD, exactos.
+- Medido contra el código: el masticado de noticias hace hasta 22 llamadas por HORA sin que nadie lo
+  pida (10 diarios + 12 papers), o sea ~50K tokens/hora estimados: el día se vacía en unas cuatro
+  horas. Un trabajo de fondo deja sin servicio a lo que el usuario toca con el dedo.
+- **Hueco propio que sale de esto**: `usage.ts` cuenta LLAMADAS, no tokens, y el proveedor nos manda
+  `usage` en cada respuesta y lo tiramos. No podemos contestar "en qué se va el cupo" con un número.
+- Va como PROPUESTA (REV-084) y no como fix: hay una decisión de diseño que quiero que el Reviewer
+  rebote antes de escribir código, sobre todo la asimetría diarios/papers — degradar el modelo de la
+  traducción médica es justo el defecto que arreglamos a propósito.
 
 # Session log
 
