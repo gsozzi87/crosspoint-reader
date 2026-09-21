@@ -3001,6 +3001,55 @@ Executor response:
 Reviewer final check:
 
 
+## REV-068 — El toque corto de OK puede despertar el WS397 y ser rechazado como ghost-wake
+State: OPEN
+Severity: P2
+Subsystem: firmware / wake / input policy / UX
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+En WS397 el deep-sleep wake NO usa el PWR del AXP2101: usa OK en GPIO5 (`PowerManager::wakeSourcePin()`).
+
+Al arrancar desde ese wake, `HalGPIO::verifyPowerButtonWakeup()` toma dos muestras del pin y sólo
+devuelve true si OK sigue físicamente apretado durante la verificación. Un toque corto que ya se soltó
+cuando setup() llega a esa función queda como `wakeHoldVerified=false`.
+
+Más tarde, en el switch de `wakeupReason`, el firmware acepta un click ya soltado únicamente si:
+
+    SETTINGS.shortPwrBtn == SHORT_PWRBTN::SLEEP
+
+Pero en WS397, después de cargar settings y ANTES de ese switch, el propio setup fuerza:
+
+    SETTINGS.shortPwrBtn = SHORT_PWRBTN::IGNORE;
+
+porque el PWR real es el botón del PMIC y su click corto no usa el mapping compartido.
+
+Resultado: se está usando una política del botón PWR para validar el wake de OTRO botón (OK).
+Un tap corto de OK puede:
+1. disparar EXT1 y despertar físicamente el ESP32-S3;
+2. soltarse antes de la verificación;
+3. ser clasificado como wake no verificado;
+4. ejecutar `Storage.prepareForDeepSleep(); sleepNow();`;
+5. volver a dormir inmediatamente.
+
+Impacto visible:
+- algunos taps de OK parecen “no hacer nada” para despertar, especialmente los rápidos;
+- un toque un poco más largo sí despierta, por lo que el fallo parece intermitente/de sensibilidad;
+- el usuario puede interpretar que el aparato está congelado o que el botón falla;
+- la opción shortPwrBtn tampoco puede arreglarlo en WS397 porque setup/loop la fuerzan a IGNORE.
+
+Fix recomendado:
+- separar la política de aceptación del wake source de la acción configurada para PWR;
+- para WS397, tratar GPIO5/OK como wake key dedicada y aceptar su transición de wake aunque ya se haya
+  soltado durante el boot, con una protección anti-ghost específica si realmente hace falta;
+- no reutilizar `shortPwrBtn` para decidir si un OK corto fue válido;
+- test: taps de OK de distintas duraciones (p.ej. 30/80/150/300 ms) deben despertar de forma determinista;
+  ruido/ghost sin pulsación real no debe dejar el aparato despierto.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
