@@ -2699,6 +2699,17 @@ Arreglo esperado:
 Executor response:
 Reviewer final check:
 
+Reviewer pre-release check (2026-09-21):
+BLOQUEA 1.5.121 estable. Revalidado contra HEAD 7b6167a:
+- `src/news/NewsPack.cpp::readAll()` todavía hace `out.resize(f.size())` sin límite;
+- `src/activities/home/SleepScreen.cpp` todavía hace `raw.resize(f.size())` sobre feeds.json sin límite.
+
+El refactor de Noticias a demanda NO corrigió este riesgo. Antes de publicar, implementar lectura
+acotada/reutilizable y degradar a "sin titulares" ante oversize/corrupción. Añadir test con
+0 / límite / límite+1 / tamaño absurdo. No considerar suficiente que el archivo normalmente sea
+pequeño: el caso de interés es FAT/cache corrupta justo durante suspend/off.
+
+
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
 State: NEEDS_HARDWARE — código del defecto original aceptado
 Severity: P1
@@ -5362,7 +5373,7 @@ Reviewer final check:
 
 
 ## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
-State: PROPOSAL APPROVED — no implementar hasta orden del dueño
+State: APPROVED_BY_OWNER — implementar antes de 1.5.121
 Severity: P2 (arquitectura / UX)
 Subsystem: settings / account / cloud / USB MSC / file transfer
 
@@ -5634,6 +5645,25 @@ de la pestaña y el pie de ayuda.
 Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
 
 Reviewer final check:
+
+Owner decision + Reviewer handoff (2026-09-21):
+El dueño APRUEBA la variante A y el ajuste del Reviewer.
+
+Implementar antes de la próxima OTA:
+- quinta pestaña **Archivos** en Ajustes;
+- mover allí **Modo memoria USB** y **Limpiar caché de lectura**;
+- puede mostrar espacio usado/libre de SD si la lectura queda confinada a esa pantalla;
+- ayuda corta con carpetas relevantes;
+- formalizar "local-first, nube opcional";
+- mantener pairing por código/token, sin correo/contraseña en el dispositivo;
+- NO crear pestaña Cuenta todavía;
+- ocultar `STR_FILE_TRANSFER` de la Home clásica **sólo en WS397**, porque esa Home cuelga de Leer y
+  deja una puerta duplicada/confusa. Conservar upstream intacto para otras placas.
+
+Antes de tocar HomeActivity, ajustar de forma consistente `getMenuItemCount()`,
+`menuItemToIndex()`, `indexToMenuItem()`, render y selección para que OPDS/recientes no desplacen
+índices en WS397.
+
 
 Reviewer sobre respuesta del Executor (2026-09-21):
 La variante A queda APROBADA como dirección de producto, con un ajuste.
@@ -6239,3 +6269,14 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - Ajuste del Reviewer: al crear la pestaña Archivos, ocultar FILE_TRANSFER de HomeActivity sólo en
   WS397 para evitar dos puertas visibles al mismo USB dentro del flujo Leer.
 - Sin cambios de firmware ni OTA por parte del Reviewer.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — decisión previa a 1.5.121
+- El dueño aprobó REV-088: implementar pestaña Archivos y ocultar la puerta FILE_TRANSFER de la Home
+  clásica sólo en WS397.
+- NO publicar todavía 1.5.121 estable.
+- Bloqueador confirmado: REV-059 P1 sigue abierto en HEAD (resize sin límite en NewsPack y SleepScreen).
+- Después de REV-059 + REV-088: Reviewer hará una última pasada PRE-RELEASE sobre todos los
+  FIXED_PENDING_REVIEW P1/P2; con CI completa verde, entonces sí autorizar 1.5.121.
+- La 1.5.121 debe considerarse además build de validación física de los NEEDS_HARDWARE del Paso 1.
