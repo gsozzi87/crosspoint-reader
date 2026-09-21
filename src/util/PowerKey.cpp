@@ -167,6 +167,10 @@ void PowerKey::begin() {
             "!!! OJO: el PMIC de 0x%02X no contesta (id=%02X) tras 3 intentos: el boton PWR queda "
             "deshabilitado Y los rieles del panel y el audio NO se pueden volver a encender",
             addr_, id);
+    // REV-070: y eso NO es "rieles confirmados". La bandera nace en false y esta
+    // salida no la tocaba, así que el peor caso —el PMIC mudo— se reportaba como
+    // el mejor. Queda explícito para que se lea desde acá.
+    railsConfirmed_ = false;
     return;
   }
 
@@ -220,6 +224,9 @@ void PowerKey::begin() {
   }
   if (leyo) {
     const uint8_t missing = static_cast<uint8_t>(~ldo & ALDO123_MASK);
+    // Ya están prendidos: no hay nada que escribir y quedan confirmados por la
+    // lectura misma. Si falta alguno, lo decide el writeVerified de abajo.
+    if (missing == 0) railsConfirmed_ = true;
     if (missing != 0) {
       // SOLO el bit de encendido: la tensión de cada ALDO queda como la dejó la
       // fábrica. El volcado de 1.5.108 mostró ALDO1-4 = 1C 1C 19 0D, o sea que
@@ -234,6 +241,7 @@ void PowerKey::begin() {
       if (writeVerified(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK), ALDO123_MASK,
                         "el reencendido de los rieles ALDO1-3")) {
         railsRestored_ = missing;
+        railsConfirmed_ = true;
       } else {
         railsConfirmed_ = false;
         LOG_ERR(TAG,

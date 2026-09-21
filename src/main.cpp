@@ -77,8 +77,8 @@
 #include "util/IdleSleep.h"
 #include "util/LoopWatchdog.h"
 #include "util/NetPumpHooks.h"
-#include "util/PanelRescue.h"
 #include "util/PowerKey.h"
+#include "util/RescueState.h"
 #include "util/RtcAlarm.h"
 #include "util/ScreenshotUtil.h"
 #include "util/Shtc3.h"
@@ -248,7 +248,10 @@ RTC_NOINIT_ATTR uint32_t railsStuckMagic;
 // Mismo patrón que el rescate del panel: un ciclo de corriente y un reinicio, y
 // si al volver sigue sin confirmarse no se insiste — se arranca degradado y el
 // log lo dice, que es mejor que un bucle de reinicios.
-static constexpr uint32_t RAILS_RESCUE_MAGIC = 0x524C5243;  // "RLRC"
+// REV-070: mismo estado que el rescate del panel y por el mismo motivo — la
+// marca se ponía ANTES de llamar al PMIC y el retorno de `railsCycle()` se
+// tiraba, así que un fallo de I2C durante el rescate gastaba el único intento
+// con el corte SIN HACER. Los valores y la cuenta viven en util/RescueState.h.
 RTC_NOINIT_ATTR uint32_t railsRescueMagic;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
@@ -440,6 +443,14 @@ static bool wakeTimerArmed = false;
 // log, sleepNow en silencio); esto los cuenta para poder hacer algo distinto en
 // el segundo en vez de resignar el vencimiento.
 static int reminderRetries = 0;
+// REV-073: hay un vencimiento pendiente y NO se pudo dejar armado el timer que
+// lo va a hacer sonar. Lo mira `enterDeepSleep()` ANTES de desmontar nada.
+static bool reminderWakeMissed = false;
+// Cuántas veces seguidas se abortó un sueño por eso. Acotado: a la cuarta se
+// duerme igual, porque un aparato que se niega a suspender para siempre es peor
+// que una alarma perdida con su línea en el log.
+static uint32_t reminderSleepAborts = 0;
+static constexpr uint32_t MAX_SLEEP_ABORTS = 3;
 static void armReminderWake(const bool quiet = false) {
   if (reminderWakeArmed) return;
   time_t now = 0;
@@ -457,6 +468,15 @@ static void armReminderWake(const bool quiet = false) {
   }
   uint64_t seconds = due > now ? static_cast<uint64_t>(due - now) : 0;
   if (seconds < 5) seconds = 5;
+  // REV-073: y TOPE POR ARRIBA, que es lo que faltaba. `esp_sleep_enable_timer_wakeup()`
+  // rechaza un plazo fuera de rango, y `nextWakeInstant()` sale de un `dueAt`
+  // que puede venir del servidor, de la caché o de un reloj mal puesto: un
+  // recordatorio con una fecha absurda era la causa MÁS probable de que la
+  // llamada fallara, y todo el manejo de abajo existe para ese fallo. Con el
+  // tope, despertar de más cuesta un arranque y recalcular; sin él, el
+  // vencimiento se perdía entero.
+  constexpr uint64_t MAX_SLEEP_S = 12ULL * 60 * 60;
+  if (seconds > MAX_SLEEP_S) seconds = MAX_SLEEP_S;
   // REV-073: el retorno se mira, y la bandera se pone DESPUÉS y sólo si salió
   // bien. Antes se latcheaba arriba de todo: si esta llamada fallaba, el
   // `if (reminderWakeArmed) return;` del principio se comía el único reintento
@@ -477,6 +497,8 @@ static void armReminderWake(const bool quiet = false) {
       if (err2 == ESP_OK) {
         reminderWakeArmed = true;
         wakeTimerArmed = true;
+        reminderWakeMissed = false;
+        reminderSleepAborts = 0;
         LOG_ERR("MAIN",
                 "no se pudo armar el despertador del recordatorio (%llu s, err %d) dos veces: se vuelve en "
                 "%llu s a recalcularlo en vez de perder el vencimiento",
@@ -486,12 +508,19 @@ static void armReminderWake(const bool quiet = false) {
       err = err2;
     }
     ++reminderRetries;
+    // REV-073: queda ANOTADO que hay un vencimiento sin despertador. Antes esto
+    // era sólo una línea de log y el sueño seguía su curso: `ensureSomeWakeSource()`
+    // veía que OK puede despertar, se daba por satisfecho, y la alarma se perdía
+    // en silencio. Ahora lo mira `enterDeepSleep()` antes de desmontar nada.
+    reminderWakeMissed = true;
     LOG_ERR("MAIN", "no se pudo armar el despertador del recordatorio (%llu s, err %d): se reintenta",
             (unsigned long long)seconds, (int)err);
     return;
   }
   reminderWakeArmed = true;
   wakeTimerArmed = true;
+  reminderWakeMissed = false;
+  reminderSleepAborts = 0;
   if (!quiet) LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
 }
 
@@ -995,6 +1024,51 @@ static void powerOffNow() {
 // Enter deep sleep mode
 void enterDeepSleep(bool fromTimeout = false) {
   loopwdt::pause("preparando el sueño");
+
+  // REV-073: EL DESPERTADOR SE DECIDE ACÁ, ANTES DE TOCAR NADA.
+  //
+  // Estaba diez líneas más abajo, después de pintar el fondo, apagar el WiFi y
+  // dormir el panel — o sea después de que todo fuera irreversible. Si el timer
+  // no se podía armar, lo único que pasaba era una línea de log:
+  // `ensureSomeWakeSource()` veía que OK puede despertar, se daba por
+  // satisfecho, y el aparato se dormía con un recordatorio pendiente que no iba
+  // a sonar nunca. El usuario podía despertarlo; la alarma se había perdido.
+  //
+  // Con la decisión acá arriba todavía se puede NO dormir, que es la única
+  // respuesta correcta mientras haya un vencimiento sin despertador.
+  //
+  // Y no se reinicia, que sería la otra salida obvia: en este aparato PWR
+  // **nunca** reinicia (esa regla costó de 1.5.96 a 1.5.99 y está escrita en
+  // piedra), y este camino es justamente el de PWR mantenido. Así que se aborta
+  // el sueño y se sigue despierto, que deja el aparato respondiendo y la alarma
+  // viva — `checkTimeAlarms()` la va a hacer sonar desde el loop.
+  //
+  // Acotado, porque negarse a suspender para siempre es peor que perder una
+  // alarma con su línea en el log: a la cuarta se duerme igual y se dice.
+  armReminderWake();
+  if (reminderWakeMissed) {
+    if (reminderSleepAborts < MAX_SLEEP_ABORTS) {
+      ++reminderSleepAborts;
+      LOG_ERR("MAIN",
+              "!!! hay una alarma pendiente y NO se pudo armar el despertador: NO se suspende (%lu de %lu). "
+              "El aparato queda despierto para que la alarma suene; volvé a intentarlo en un rato",
+              static_cast<unsigned long>(reminderSleepAborts), static_cast<unsigned long>(MAX_SLEEP_ABORTS));
+      // El latch del armado se suelta: el próximo intento tiene que ser uno
+      // nuevo de verdad. Sin esto, `armReminderWake()` volvería con el
+      // `if (reminderWakeArmed) return;` del principio y ni siquiera miraría un
+      // recordatorio creado mientras tanto.
+      reminderWakeArmed = false;
+      reminderRetries = 0;
+      loopwdt::resume();
+      return;
+    }
+    LOG_ERR("MAIN",
+            "!!! OJO: tras %lu intentos sigue sin poder armarse el despertador. Se suspende igual y la "
+            "alarma pendiente NO va a sonar; se despierta con OK",
+            static_cast<unsigned long>(MAX_SLEEP_ABORTS));
+    reminderSleepAborts = 0;
+  }
+
   HalPowerManager::Lock powerLock;  // Ensure we are at normal CPU frequency for sleep preparation
   // REV-064: LA MÚSICA SE CORTA ACÁ, no en `sleepNow()`.
   //
@@ -1054,9 +1128,10 @@ void enterDeepSleep(bool fromTimeout = false) {
 
   halTiltSensor.deepSleep();  // idempotente: sleepNow() lo repite para los caminos que no pasan por acá
   display.deepSleep();
-  // Armar y loguear con la SD todavía montada: después de prepareForDeepSleep()
-  // el log se escribe sobre un filesystem desmontado y se pierde.
-  armReminderWake();
+  // El despertador ya se armó ARRIBA DE TODO (REV-073), con la SD montada y
+  // cuando todavía se podía decidir no dormir. Acá era tarde: para cuando se
+  // sabía que no se había podido armar, el fondo ya estaba pintado y el panel
+  // dormido, así que lo único que quedaba era loguearlo.
   LOG_DBG("MAIN", "Entering deep sleep");
   devlog::close();
   Storage.prepareForDeepSleep();
@@ -1279,7 +1354,7 @@ static bool handlePowerHold(const bool gateOpen) {
 void checkPanelAfterInit(unsigned long initMs) {
   const uint32_t timeouts = display.busyTimeouts();
   if (timeouts == 0) {
-    if (panelrescue::attempted(panelRescueMagic)) {
+    if (rescue::attempted(panelRescueMagic)) {
       LOG_INF("MAIN", "el panel volvió a contestar después del ciclo de corriente (init %lu ms)", initMs);
       panelRescueMagic = 0;
     }
@@ -1287,7 +1362,7 @@ void checkPanelAfterInit(unsigned long initMs) {
   }
   LOG_ERR("MAIN", "EL PANEL NO CONTESTA: BUSY quedó en alto, %lu esperas vencidas en el init (%lu ms)",
           static_cast<unsigned long>(timeouts), initMs);
-  if (panelrescue::done(panelRescueMagic)) {
+  if (rescue::done(panelRescueMagic)) {
     LOG_ERR("MAIN",
             "ya se le dio un ciclo de corriente y sigue mudo: se arranca igual (cada pintada tarda el tope). "
             "Probar PWR 10 s o sacar batería Y cable; si persiste, es el panel o su cable plano");
@@ -1296,20 +1371,20 @@ void checkPanelAfterInit(unsigned long initMs) {
   // El PMIC no dejó cortar los rieles las veces anteriores, así que el rescate
   // NO se hizo nunca. Se reintenta, pero con tope: cada intento termina en un
   // reinicio y sin tope esto sería un bucle de arranques.
-  if (!panelrescue::mayCycle(panelRescueMagic)) {
+  if (!rescue::mayCycle(panelRescueMagic)) {
     LOG_ERR("MAIN",
             "el PMIC no dejó cortar los rieles en %lu intentos: el ciclo de corriente NUNCA llegó a hacerse. "
             "Se arranca igual (cada pintada tarda el tope). Mirar la línea «AXP2101 rieles:»; si el riel está "
             "bien, probar PWR 10 s o sacar batería Y cable",
-            static_cast<unsigned long>(panelrescue::MAX_TRIES));
+            static_cast<unsigned long>(rescue::MAX_TRIES));
     return;
   }
-  const uint32_t intento = panelrescue::failedTries(panelRescueMagic) + 1;
+  const uint32_t intento = rescue::failedTries(panelRescueMagic) + 1;
   LOG_ERR("MAIN", "ciclo de corriente al panel y reinicio (intento %lu de %lu)", static_cast<unsigned long>(intento),
-          static_cast<unsigned long>(panelrescue::MAX_TRIES));
-  panelRescueMagic = panelrescue::markAttempt(panelRescueMagic);
+          static_cast<unsigned long>(rescue::MAX_TRIES));
+  panelRescueMagic = rescue::markAttempt(panelRescueMagic);
   const bool cycled = POWER_KEY.railsCycle(500);
-  panelRescueMagic = panelrescue::afterCycle(panelRescueMagic, cycled);
+  panelRescueMagic = rescue::afterCycle(panelRescueMagic, cycled);
   if (!cycled) {
     LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual y se vuelve a probar al arrancar");
   }
@@ -1330,23 +1405,23 @@ void checkPanelHealth() {
   LOG_ERR("MAIN", "EL PANEL NO CONTESTÓ: la espera de BUSY venció (van %lu en esta sesión); cada pintada tarda el tope",
           static_cast<unsigned long>(now));
   if (now < 3 || deepSleepInProgress) return;
-  if (panelrescue::done(panelRescueMagic)) {
+  if (rescue::done(panelRescueMagic)) {
     LOG_ERR("MAIN", "el ciclo de corriente ya se hizo una vez en este encendido: no se repite");
     return;
   }
-  if (!panelrescue::mayCycle(panelRescueMagic)) {
+  if (!rescue::mayCycle(panelRescueMagic)) {
     LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles en %lu intentos: no se insiste (mirar «AXP2101 rieles:»)",
-            static_cast<unsigned long>(panelrescue::MAX_TRIES));
+            static_cast<unsigned long>(rescue::MAX_TRIES));
     return;
   }
   LOG_ERR("MAIN", "tres esperas vencidas: ciclo de corriente al panel y reinicio (intento %lu de %lu)",
-          static_cast<unsigned long>(panelrescue::failedTries(panelRescueMagic) + 1),
-          static_cast<unsigned long>(panelrescue::MAX_TRIES));
-  panelRescueMagic = panelrescue::markAttempt(panelRescueMagic);
+          static_cast<unsigned long>(rescue::failedTries(panelRescueMagic) + 1),
+          static_cast<unsigned long>(rescue::MAX_TRIES));
+  panelRescueMagic = rescue::markAttempt(panelRescueMagic);
   silentRebootTarget = SILENT_REBOOT_TARGET_HOME;
   silentRebootMagic = SILENT_REBOOT_MAGIC;
   const bool cycled = POWER_KEY.railsCycle(500);
-  panelRescueMagic = panelrescue::afterCycle(panelRescueMagic, cycled);
+  panelRescueMagic = rescue::afterCycle(panelRescueMagic, cycled);
   if (!cycled) {
     LOG_ERR("MAIN", "el PMIC no dejó cortar los rieles: se reinicia igual y se vuelve a probar al arrancar");
   }
@@ -1572,20 +1647,37 @@ void setup() {
   // confirmarse, se arranca igual y el log lo dice — un bucle de reinicios es
   // peor que una pantalla muerta con diagnóstico.
   if (BoardConfig::isWS397() && !POWER_KEY.railsConfirmed()) {
-    if (railsRescueMagic == RAILS_RESCUE_MAGIC) {
+    if (rescue::done(railsRescueMagic)) {
       railsRescueMagic = 0;
       LOG_ERR("MAIN",
               "!!! OJO: los rieles del panel y el audio siguen sin confirmarse despues del ciclo de "
               "corriente. Se arranca igual; si la pantalla no va, es el PMIC o el bus I2C");
+    } else if (!rescue::mayCycle(railsRescueMagic)) {
+      // El PMIC no dejó cortar los rieles ninguna de las veces, así que el
+      // rescate NUNCA se ejecutó. No se insiste más: cada intento termina en un
+      // reinicio y sin tope esto sería un bucle de arranques.
+      railsRescueMagic = 0;
+      LOG_ERR("MAIN",
+              "!!! OJO: el PMIC no dejo cortar los rieles en %lu intentos: el ciclo de corriente NUNCA "
+              "llego a hacerse. Se arranca igual; mirar la linea «AXP2101 rieles:»",
+              static_cast<unsigned long>(rescue::MAX_TRIES));
     } else {
-      railsRescueMagic = RAILS_RESCUE_MAGIC;
-      LOG_ERR("MAIN", "los rieles del panel y el audio no se pudieron confirmar: ciclo de corriente y reinicio");
+      LOG_ERR("MAIN",
+              "los rieles del panel y el audio no se pudieron confirmar: ciclo de corriente y reinicio (intento %lu de "
+              "%lu)",
+              static_cast<unsigned long>(rescue::failedTries(railsRescueMagic) + 1),
+              static_cast<unsigned long>(rescue::MAX_TRIES));
+      // La marca del intento va ANTES de tocar el PMIC: si el corte se llevara
+      // al ESP por delante, el arranque siguiente tiene que encontrarlo contado.
+      railsRescueMagic = rescue::markAttempt(railsRescueMagic);
       devlog::close();
       delay(50);
-      POWER_KEY.railsCycle(500);
+      // REV-070: el retorno NO se tira. Un ciclo que el PMIC no aceptó no gasta
+      // el único intento; si lo aceptó, se gasta y no se repite.
+      railsRescueMagic = rescue::afterCycle(railsRescueMagic, POWER_KEY.railsCycle(500));
       esp_restart();
     }
-  } else if (BoardConfig::isWS397() && railsRescueMagic == RAILS_RESCUE_MAGIC) {
+  } else if (BoardConfig::isWS397() && rescue::attempted(railsRescueMagic)) {
     railsRescueMagic = 0;
     LOG_INF("MAIN", "los rieles volvieron despues del ciclo de corriente");
   }

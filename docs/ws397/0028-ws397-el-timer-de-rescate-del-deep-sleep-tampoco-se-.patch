@@ -1,0 +1,53 @@
+From 2683bfa083911ba27b2be11e00dc98a634cc19b7 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Mon, 21 Sep 2026 19:04:05 +0000
+Subject: [PATCH] ws397: el timer de rescate del deep sleep tampoco se arma a
+ ciegas (REV-060)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+deepSleepUntilPowerButton() ya comprobaba armPowerButtonWakeup(), pero el timer
+de respaldo que se arma cuando ese falla ignoraba su propio esp_err_t y llamaba
+a deepSleep() igual. O sea que la garantia escrita en el comentario —'a timer
+always remains'— se apoyaba en una llamada que nadie miraba, y un doble fallo
+seguia entrando al paso irreversible sin ninguna fuente confirmada.
+
+Ahora, si tampoco se puede armar el timer, se reinicia en vez de dormir: un
+reinicio es recuperable y un sueño profundo sin fuente de despertar no lo es.
+---
+ .../hardware/PowerManager/src/PowerManager.cpp | 18 +++++++++++++++++-
+ 1 file changed, 17 insertions(+), 1 deletion(-)
+
+diff --git a/libs/hardware/PowerManager/src/PowerManager.cpp b/libs/hardware/PowerManager/src/PowerManager.cpp
+index b42cd9a..9c60e4c 100644
+--- a/libs/hardware/PowerManager/src/PowerManager.cpp
++++ b/libs/hardware/PowerManager/src/PowerManager.cpp
+@@ -165,7 +165,23 @@ void PowerManager::deepSleepUntilPowerButton() {
+   if (!armPowerButtonWakeup()) {
+     log_e("no button wake armed: falling back to a %u s timer so the device comes back",
+           static_cast<unsigned>(WAKE_FALLBACK_MS / 1000));
+-    esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(WAKE_FALLBACK_MS) * 1000ULL);
++    // And this return is CHECKED too. Saying "a timer always remains" while
++    // dropping the one value that says whether it was armed guarantees nothing:
++    // the API returns esp_err_t, so it can refuse, and the call right after is
++    // the irreversible one. Deep sleep with no wake source at all is
++    // indistinguishable from a dead device, and the only way back is the
++    // board's hardware escape, if it has one.
++    const esp_err_t err = esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(WAKE_FALLBACK_MS) * 1000ULL);
++    if (err != ESP_OK) {
++      // A restart is recoverable and sleeping without a wake source is not, so
++      // when there is no confirmed source left the device restarts instead. It
++      // comes back on its own, the boot log names the reason, and whatever made
++      // both arms fail gets a fresh chance.
++      log_e("neither the wake button nor the fallback timer could be armed (%s): restarting instead of "
++            "sleeping with no way back",
++            esp_err_to_name(err));
++      esp_restart();
++    }
+   }
+   deepSleep();
+ }
+-- 
+2.43.0
+
