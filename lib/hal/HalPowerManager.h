@@ -40,7 +40,10 @@ class HalPowerManager {
 
   // Setup wake up GPIO and enter deep sleep
   // Should be called inside main loop() to handle the currentLockMode
-  void startDeepSleep(HalGPIO& gpio) const;
+  // `timerAlreadyArmed`: el llamador ya dejó armado un timer que NECESITA (el
+  // plazo de un recordatorio). Sin eso, el rescate del SDK lo pisa con su
+  // propio plazo de 5 minutos cuando el botón no se puede armar (REV-087).
+  void startDeepSleep(HalGPIO& gpio, bool timerAlreadyArmed = false) const;
 
   // Get battery percentage (range 0-100)
   uint16_t getBatteryPercentage() const;

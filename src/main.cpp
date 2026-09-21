@@ -476,6 +476,15 @@ static bool reminderWakeMissed = false;
 // que una alarma perdida con su línea en el log.
 static uint32_t reminderSleepAborts = 0;
 static constexpr uint32_t MAX_SLEEP_ABORTS = 3;
+// REV-073, 4ª vuelta: cuánto falta para el vencimiento que no se pudo armar.
+// El tope de abortos deja de ser lo único que decide — con la alarma CERCA no
+// se duerme y punto, sin tope. Ver `enterDeepSleep()`.
+static time_t reminderMissedDueAt = 0;
+// Si el vencimiento cae dentro de esto, el aparato se queda despierto hasta que
+// suene. Media hora a ~40 mA son unos 20 mAh: el 1,3 % de la batería. Más lejos
+// que eso, quedarse despierto la gasta entera y la alarma tampoco suena, porque
+// el aparato llega muerto.
+static constexpr uint32_t STAY_AWAKE_MAX_S = 30 * 60;
 static void armReminderWake(const bool quiet = false) {
   if (reminderWakeArmed) return;
   time_t now = 0;
@@ -538,6 +547,7 @@ static void armReminderWake(const bool quiet = false) {
     // veía que OK puede despertar, se daba por satisfecho, y la alarma se perdía
     // en silencio. Ahora lo mira `enterDeepSleep()` antes de desmontar nada.
     reminderWakeMissed = true;
+    reminderMissedDueAt = due;
     LOG_ERR("MAIN", "no se pudo armar el despertador del recordatorio (%llu s, err %d): se reintenta",
             (unsigned long long)seconds, (int)err);
     return;
@@ -663,7 +673,10 @@ static void sleepNow() {
   // on the next boot); a 10 s PWR hold makes the PMIC cut the rails (PressOff,
   // the deliberate hardware escape), after which PWR held 1 s powers it back on.
   ensureSomeWakeSource();
-  powerManager.startDeepSleep(gpio);
+  // REV-087: `wakeTimerArmed` dice que acá ABAJO hay un plazo que importa (el
+  // vencimiento de un recordatorio). Sin eso, el rescate del SDK lo pisa con
+  // sus 5 minutos cuando el botón no se puede armar, y la alarma llega tarde.
+  powerManager.startDeepSleep(gpio, wakeTimerArmed);
 }
 
 // ws397: el temporizador y los recordatorios tienen que sonar aunque el aparato
@@ -1097,6 +1110,33 @@ void enterDeepSleep(bool fromTimeout = false) {
   // alarma con su línea en el log: a la cuarta se duerme igual y se dice.
   armReminderWake();
   if (reminderWakeMissed) {
+    // REV-073, lo que el revisor no dio por cerrado: con el tope de abortos
+    // solo, a la cuarta el aparato se dormía ACEPTANDO perder el vencimiento.
+    // Eso es una degradación deliberada, no una garantía.
+    //
+    // La regla pasa a mirar CUÁNTO FALTA, que es lo que de verdad decide:
+    //  - vencimiento CERCA (≤ 30 min): no se duerme, sin tope. El aparato se
+    //    queda despierto y `checkTimeAlarms()` lo hace sonar a su hora. Cuesta
+    //    como mucho ~20 mAh, el 1,3 % de la batería.
+    //  - vencimiento LEJOS: el tope sigue valiendo. Quedarse despierto ocho
+    //    horas a 40 mA vacía la batería, y entonces la alarma no suena
+    //    igual — sólo que además el aparato llega muerto. Dormir y sonar
+    //    tarde (al primer botón, por `checkTimeAlarms()`) es estrictamente
+    //    mejor que eso, y queda GRITADO en el log.
+    time_t ahora = 0;
+    const bool hayReloj = halClock.getEpochUtc(ahora);
+    const bool cerca =
+        hayReloj && reminderMissedDueAt > 0 && reminderMissedDueAt - ahora <= static_cast<time_t>(STAY_AWAKE_MAX_S);
+    if (cerca) {
+      LOG_ERR("MAIN",
+              "!!! hay una alarma a menos de %lu min y NO se pudo armar el despertador: NO se suspende "
+              "hasta que suene. Es a propósito; el aparato queda despierto",
+              static_cast<unsigned long>(STAY_AWAKE_MAX_S / 60));
+      reminderWakeArmed = false;
+      reminderRetries = 0;
+      loopwdt::resume();
+      return;
+    }
     if (reminderSleepAborts < MAX_SLEEP_ABORTS) {
       ++reminderSleepAborts;
       LOG_ERR("MAIN",
@@ -1113,8 +1153,9 @@ void enterDeepSleep(bool fromTimeout = false) {
       return;
     }
     LOG_ERR("MAIN",
-            "!!! OJO: tras %lu intentos sigue sin poder armarse el despertador. Se suspende igual y la "
-            "alarma pendiente NO va a sonar; se despierta con OK",
+            "!!! OJO: tras %lu intentos sigue sin poder armarse el despertador y el vencimiento está "
+            "lejos. Se suspende: quedarse despierto hasta entonces vaciaría la batería y la alarma "
+            "tampoco sonaría. Va a sonar TARDE, al primer botón",
             static_cast<unsigned long>(MAX_SLEEP_ABORTS));
     reminderSleepAborts = 0;
   }

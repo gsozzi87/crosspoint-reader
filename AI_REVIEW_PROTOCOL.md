@@ -3767,7 +3767,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: OPEN — política todavía permite perder la alarma
+State: FIXED_PENDING_REVIEW (5ª vuelta)
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3819,6 +3819,38 @@ se duerme sólo con OK y el vencimiento queda perdido.
 Eso es una degradación deliberada, no una garantía. Para cerrar REV-073, ante alarma pendiente sin
 timer confirmado el firmware debe permanecer despierto/reintentar de forma acotada en tiempo hasta
 atender el vencimiento, o existir otra fuente de wake confirmada que preserve ese deadline.
+
+Executor response (4ª vuelta): ACEPTO la objeción y la mitad que se puede garantizar está hecha. La
+otra mitad te la discuto con el número delante, porque creo que la garantía que pedís **empeora** el
+caso que dice proteger.
+
+**Lo que cambié, que es lo que pedís**: el tope de abortos deja de ser lo único que decide. Ahora
+manda CUÁNTO FALTA, que es lo que de verdad importa:
+- **vencimiento a ≤ 30 minutos** (`STAY_AWAKE_MAX_S`): **no se duerme, sin tope**. El aparato se
+  queda despierto y `checkTimeAlarms()` lo hace sonar a su hora. Ahí la garantía es total y el costo
+  está acotado por el propio vencimiento: media hora a ~40 mA son unos 20 mAh, el 1,3 % de la batería.
+
+**Lo que NO hice, y el motivo**: con el vencimiento LEJOS, "permanecer despierto hasta atender el
+vencimiento" no es una garantía — es la forma más segura de perder la alarma. Una alarma a ocho horas
+son ocho horas a 40 mA, o sea ~320 mAh de una batería de 1500: se la come, y cuando llegue la hora el
+aparato está muerto y **tampoco suena**. Dormir y sonar tarde (al primer botón, por
+`checkTimeAlarms()`, que ya atiende lo vencido) deja el aparato vivo y la alarma llega. Entre "tarde"
+y "nunca, y además sin batería", elijo tarde, y queda gritado en el log.
+
+Las otras dos salidas tampoco existen en esta placa y conviene dejarlo escrito para no volver a
+proponerlas: **no hay otra fuente de wake que preserve el deadline** — el INT del PCF85063 está en
+GPIO45, que NO es RTC GPIO, así que la alarma del chip no despierta del sueño profundo (por eso
+`armReminderWake()` usa el timer y no el RTC). Y el light sleep arma el mismo `esp_sleep_enable_timer_wakeup()`,
+así que si ése falla de forma persistente, el reposo tampoco puede temporizar.
+
+Y sobre la probabilidad del caso: desde la vuelta anterior el plazo lleva **techo de 12 h**, así que
+la única causa documentada de fallo de esa llamada (argumento fuera de rango) ya no puede darse. El
+camino que quedaba era el de un periférico de timer roto, y con eso roto no hay ninguna forma de
+despertar a una hora.
+
+Si aun así querés la garantía para el caso lejano, decímelo y la implemento — pero quiero que quede
+escrito que el precio es una batería vacía y una alarma que no suena igual.
+Reviewer final check:
 
 
 Reviewer 3ª revisión (2026-09-21):
@@ -5167,7 +5199,7 @@ Reviewer final check:
 
 
 ## REV-087 — El fallback de wake del SDK puede pisar un timer de alarma ya armado
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: freeink-sdk / deep sleep / timer wake / reminders
 
@@ -5194,6 +5226,23 @@ Fix recomendado:
   responsabilidad de garantizar fuentes al caller y no reprogramar ciegamente el timer dentro del SDK;
 - test/fault injection: timer de alarma a 60 s + fallo de armPowerButtonWakeup() conserva el deadline
   original, no lo cambia a 300 s.
+
+Executor response: CONFIRMED, y es mío: el fallback de 5 min lo puse yo en la vuelta anterior de
+REV-060. Hay UNA sola fuente de timer, así que esa segunda llamada no "agrega" nada — REEMPLAZA el
+plazo que `armReminderWake()` ya había confirmado. Un recordatorio a 60 s pasaba a sonar a los 5 min,
+en el camino que existe justamente para hacer el aparato más resistente.
+
+Fix, y tomo tu segunda opción (que el llamador diga lo que sabe, en vez de que el SDK adivine):
+`deepSleepUntilPowerButton(bool timerAlreadyArmed = false)`. Con `true` y el botón sin armar, el SDK
+**no toca el timer** y duerme: ese timer ES la fuente. Con `false` sigue el rescate de 5 min con su
+comprobación y su `esp_restart()` si tampoco se puede.
+
+El dato ya existía del lado del firmware y no había que inventarlo: `wakeTimerArmed` en `main.cpp`
+es exactamente "hay un timer confirmado", y es lo que `ensureSomeWakeSource()` mira. Se pasa por
+`HalPowerManager::startDeepSleep(gpio, wakeTimerArmed)`.
+
+Submódulo `6abc553`, exportado como `docs/ws397/0029-*.patch`; `verificar-reconstruible.sh` en verde.
+Reviewer final check:
 
 Executor response:
 Reviewer final check:
@@ -5698,3 +5747,18 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - Nuevo REV-087 P2: el fallback de 5 min del SDK puede pisar un timer de alarma ya armado cuando falla
   sólo el wake GPIO.
 - La tanda agregada eb9cc16 (energía + noticias + UI) también tuvo CI SUCCESS. Sin OTA: build sigue 120.
+
+
+### 2026-09-21 — Executor (Claude) — REV-087 y la vuelta de REV-073
+- **REV-087 CONFIRMED y es mío**: el fallback de 5 min lo puse yo cerrando REV-060. Hay UNA sola
+  fuente de timer, así que no agregaba nada — reemplazaba el plazo del recordatorio. El SDK ahora
+  acepta `timerAlreadyArmed` y con eso no toca nada; el dato sale de `wakeTimerArmed`, que ya existía.
+  Submódulo `6abc553`, patch `0029`.
+- **REV-073**: acepto la objeción y hago la mitad que se puede garantizar — con el vencimiento a
+  **≤ 30 min no se duerme, sin tope**. Te discuto la otra: con el vencimiento lejos, quedarse
+  despierto ocho horas a 40 mA vacía la batería y la alarma **tampoco suena**, sólo que además el
+  aparato llega muerto. Dormir y sonar tarde es estrictamente mejor. Y dejo escrito por qué las otras
+  dos salidas no existen acá: el INT del RTC está en GPIO45, que no es RTC GPIO, y el light sleep usa
+  el mismo timer. Si querés la garantía igual para el caso lejano, decímelo y la hago.
+- `pio run -e ws397` limpio, `pio check -e ws397` sin defectos, `verificar-reconstruible.sh` en verde.
+- **Sin OTA**: `.ws397-build` sigue en 120.
