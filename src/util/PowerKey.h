@@ -72,6 +72,8 @@ class PowerKey {
   void resumeIrq();
   // The PMIC answered in begin() and the key is being decoded.
   bool available() const { return available_; }
+  // Si el escape físico de PWR 10 s quedó confirmado en este arranque (REV-066).
+  bool hardOffArmed() const { return hardOffArmed_; }
 
   // RIELES EN EL SUEÑO PROFUNDO (1.5.107). Según el esquemático, ALDO1-3 del
   // AXP2101 alimentan EPD_VCC_AXP (el panel, vía el P-MOSFET Q2), Audio_VCC
@@ -120,6 +122,10 @@ class PowerKey {
 
   bool readReg(uint8_t reg, uint8_t& out) const;
   bool writeReg(uint8_t reg, uint8_t val) const;
+  // Escribe y RELEE para confirmar los bits de `mask`, con tres intentos: el
+  // bus I2C es compartido y un NACK suelto no puede pasar por configuración
+  // aplicada (REV-066 / REV-070).
+  bool writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char* qué) const;
   void decode(uint8_t sts2, unsigned long now, unsigned long edgeAt);
   void learnPressEdge(uint8_t edgeBit, const char* how);
   void flushAllStatus(const char* why);
@@ -132,15 +138,15 @@ class PowerKey {
   // reading of an active-low PWRON says NEGATIVE), so it is learned at runtime:
   // SHORT is latched together with the release edge, and LONG can only follow
   // a press. Persisted in RTC memory across deep sleep.
-  uint8_t pressEdge_ = 0;    // 0 = unknown, else BIT_POSITIVE or BIT_NEGATIVE
-  bool edgeLearned_ = false;  // pressEdge_ is authoritative (not a first guess)
+  uint8_t pressEdge_ = 0;        // 0 = unknown, else BIT_POSITIVE or BIT_NEGATIVE
+  bool edgeLearned_ = false;     // pressEdge_ is authoritative (not a first guess)
   bool pinLatchTrusted_ = true;  // IRQ line stays LOW while status is pending
   unsigned long lastPollMs_ = 0;
   unsigned long lastFailMs_ = 0;
 
   bool pressed_ = false;
-  bool confirmed_ = false;   // polarity known, or LONG seen for this press
-  bool longSeen_ = false;    // LONG latched during the current press
+  bool confirmed_ = false;  // polarity known, or LONG seen for this press
+  bool longSeen_ = false;   // LONG latched during the current press
   bool holdConsumed_ = false;
   bool shortPress_ = false;
   bool releasePending_ = false;
@@ -150,6 +156,10 @@ class PowerKey {
 
   uint8_t snapshot_[17] = {};
   uint8_t railsRestored_ = 0;  // qué ALDO de 1-3 tuvo que volver a encender begin()
+  // REV-066: si la configuración del corte duro (PWR mantenido 10 s) quedó
+  // CONFIRMADA por relectura. Es la última salida cuando todo lo demás falló,
+  // así que no alcanza con haber escrito los registros: hay que comprobarlo.
+  bool hardOffArmed_ = false;
   bool snapshotValid_ = false;
 };
 
