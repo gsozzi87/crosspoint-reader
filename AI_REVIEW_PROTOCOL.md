@@ -2656,7 +2656,7 @@ Executor response:
 Reviewer final check:
 
 ## REV-060 — Deep sleep entra aunque no se haya podido armar ninguna tecla de wake
-State: OPEN
+State: FIXED_PENDING_REVIEW (la mitad de la ws397; la del SDK sigue OPEN)
 Severity: P1
 Subsystem: freeink-sdk / deep sleep / recovery
 
@@ -2689,6 +2689,44 @@ Arreglo esperado:
 - test de SDK donde armWakeOnPins falla y se demuestra que NO se llama deepSleep.
 
 Executor response:
+Reviewer final check:
+
+Executor response: CONFIRMED, y **también en el camino de la ws397**, que es peor de lo que decía el
+hallazgo.
+
+Verificado contra el árbol:
+- `PowerManager::deepSleepUntilPowerButton()` (SDK, líneas 132-136) ignora el retorno de
+  `armPowerButtonWakeup()` y llama a `deepSleep()` igual. Tal cual lo describiste.
+- `waitForPowerButtonRelease()` (76-86) es un `while (digitalRead(pin) == pressedLevel) delay(50);`
+  **sin tope**. También tal cual.
+- **Pero la ws397 no pasa por ahí**: su camino es `sleepNow()` → `powerManager.startDeepSleep()`. Y
+  tiene el MISMO defecto con otra cara: los dos casos de "el botón no va a despertar" (no hay pin en
+  el perfil, el pin no es RTC GPIO) **ya estaban detectados y logueados**… y después se dormía igual.
+- Y lo que lo vuelve grave acá: el timer casi nunca está armado. `armReminderWake()` sólo llama a
+  `esp_sleep_enable_timer_wakeup()` si hay algo que suene (`if (due == 0) return;`), o sea que en el
+  uso normal **el único despertador es el botón**. Si no se puede armar, el aparato queda muerto
+  hasta PWR 10 s o sacarle la batería — y este dueño ya vivió esa salida en 1.5.98.
+
+Fix (`src/main.cpp`): `ensureSomeWakeSource()`. Si el botón no puede despertar y no hay timer puesto,
+arma uno de **cinco minutos** y lo grita en el log. El timer no depende de ningún GPIO ni de que el
+pin sea RTC, así que es la única fuente que no puede fallar por perfil. Cinco minutos es el
+compromiso: corto para que no parezca roto, largo para no volverse un ciclo de arranques si el
+defecto es permanente.
+
+Dos detalles que hacían falta para que no rompa nada:
+- **`wakeTimerArmed` es una bandera nueva**, separada de `reminderWakeArmed`. Esta última se pone en
+  true también cuando NO hay nada que sonar, así que no servía para saber si quedó un timer puesto.
+- **Vale en los DOS caminos que llaman a `startDeepSleep()`**: el normal y el reintento de "timer
+  wake sin reloj" del `setup()`, que CLAUDE.md ya documentaba como la excepción que no pasa por
+  `sleepNow()`. Ahí además marco `wakeTimerArmed` al armar los 60 s del reintento, para que la red
+  no los pise con sus 300.
+
+**Queda OPEN la mitad del SDK** (el retorno ignorado en `deepSleepUntilPowerButton()` y el `while`
+sin tope). No la toqué en esta tanda a propósito: es el submódulo, afecta a las otras cinco placas y
+no a la ws397, y arrastra el ciclo de commit + export del `.patch` + push del submódulo. Va en su
+propia tanda para no mezclar un cambio de la placa con uno de upstream.
+
+Firmware: `pio run -e ws397` limpio. **Sin OTA.**
 Reviewer final check:
 
 ## REV-061 — Fallar al cortar los rails para dormir es silencioso para la política de energía
@@ -4067,6 +4105,24 @@ el síntoma contra los despliegues y contra lo que el log PRUEBA, no contra lo q
   renumerado: el registro es del Reviewer.
 - Recibida la tanda de energía REV-057..REV-081 (25 hallazgos, 15 P1). Sin empezar todavía: espero
   que el dueño priorice.
+- Sin OTA: `.ws397-build` sigue en 119.
+
+### 2026-09-21 — Executor (Claude) — prioridad propia sobre la tanda de energía; REV-060
+El dueño dijo "prioriza tú". El criterio que uso, y por qué: en un aparato de mano lo único
+irrecuperable por el usuario es **que no vuelva a encender**. Todo lo demás —batería, tarjeta,
+diagnóstico— se arregla con un cable o con una sincronización. Así que el orden es:
+
+1. **No vuelve** — REV-060, 078, 073, 074, 066, 070. Ocho de los veinticinco son la MISMA forma:
+   una llamada de IDF o de I2C cuyo retorno se ignora y el firmware sigue como si hubiera salido
+   bien, justo antes del paso irreversible (dormir, cortar rieles). No son ocho parches: son una
+   disciplina — comprobar el retorno, anotarlo, y NO dar el paso irreversible sin la precondición.
+2. **Pierde datos** — REV-064 (desmonta la SD con la tarea de música viva) y REV-057. La tarjeta
+   dañada de este dueño ya causó una cascada fea (token nuevo, asistente de primer arranque).
+3. **Se come la batería** — REV-058, 062, 067, 061.
+4. **Sólo ensucia el diagnóstico** — REV-081, 065, 063.
+
+Empezado por REV-060, que es el peor de todos: el aparato se duerme sin ninguna fuente de despertar.
+Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo + patch + push).
 - Sin OTA: `.ws397-build` sigue en 119.
 
 # Session log

@@ -411,6 +411,11 @@ static time_t nextWakeInstant(const time_t now) {
 }
 
 static bool reminderWakeArmed = false;  // enterDeepSleep() arms with the log; sleepNow() only fills the gap
+// REV-060: si de verdad quedó un TIMER armado. `reminderWakeArmed` no sirve
+// para eso: se pone en true también cuando no hay nada que sonar (`due == 0`),
+// que es el caso normal. Esto distingue "ya lo intenté" de "hay una fuente de
+// despertar puesta", y es lo que decide si hace falta la red de seguridad.
+static bool wakeTimerArmed = false;
 static void armReminderWake(const bool quiet = false) {
   if (reminderWakeArmed) return;
   time_t now = 0;
@@ -425,12 +430,53 @@ static void armReminderWake(const bool quiet = false) {
   uint64_t seconds = due > now ? static_cast<uint64_t>(due - now) : 0;
   if (seconds < 5) seconds = 5;
   esp_sleep_enable_timer_wakeup(seconds * 1000000ULL);
+  wakeTimerArmed = true;
   if (!quiet) LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
 }
 
 // Todo camino de deep sleep pasa por acá: si alguno se olvida de armar el
 // despertador, el temporizador y los recordatorios quedan mudos hasta que el
 // usuario apriete un botón (pasaba en el re-sleep por wake espurio del botón).
+// REV-060: NUNCA se entra al sueño profundo sin UNA fuente de despertar.
+//
+// Los dos casos en que el botón no puede despertar —no hay pin en el perfil, o
+// el pin no es RTC GPIO— se detectaban, se anotaban… y se dormía igual. Y el
+// timer casi nunca está puesto: `armReminderWake()` sólo lo arma si hay un
+// recordatorio o un temporizador pendiente (`due == 0` es el caso normal), así
+// que lo habitual es que el ÚNICO despertador sea el botón. Si ese botón no se
+// puede armar, el aparato se duerme sin nada: desde afuera está muerto, y la
+// única salida es PWR 10 s o sacarle la batería.
+//
+// El timer no depende de ningún GPIO ni de que el pin sea RTC, así que sirve de
+// red. Cinco minutos es el compromiso: bastante corto para que no parezca roto,
+// bastante largo para no ser un ciclo de arranques si el defecto es permanente.
+//
+// Vive en una función porque hay DOS caminos que llaman a `startDeepSleep()`:
+// el normal y el reintento de "timer wake sin reloj" del `setup()`. Escrita dos
+// veces se separaría, como ya pasó con las rutas protegidas en 1.5.91.
+static void ensureSomeWakeSource() {
+  const int8_t wakePin = freeink::PowerManager::wakeSourcePin();
+  bool elBotonPuedeDespertar = wakePin >= 0;
+  if (wakePin < 0) {
+    LOG_ERR("MAIN", "no wake pin in the board profile: only the timer can wake the device");
+  }
+#if SOC_PM_SUPPORT_EXT1_WAKEUP
+  else if (!rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(wakePin))) {
+    // The SDK refuses to arm it (and says so only on the serial console).
+    LOG_ERR("MAIN", "wake pin GPIO%d is not an RTC GPIO: the button will NOT wake the device", wakePin);
+    elBotonPuedeDespertar = false;
+  }
+#endif
+  if (elBotonPuedeDespertar || wakeTimerArmed) return;
+  constexpr uint64_t RESCATE_S = 300;
+  esp_sleep_enable_timer_wakeup(RESCATE_S * 1000000ULL);
+  wakeTimerArmed = true;
+  LOG_ERR("MAIN",
+          "!!! OJO: ningun boton puede despertar al aparato. Se arma un temporizador de %llu s para que "
+          "vuelva solo; sin esto quedaria muerto hasta PWR 10 s o sacarle la bateria",
+          (unsigned long long)RESCATE_S);
+}
+
 static void sleepNow() {
   // La música no sobrevive al deep sleep: cortarla acá deja el códec y el I2S
   // en un estado conocido antes de apagar.
@@ -474,16 +520,7 @@ static void sleepNow() {
   // asleep only latches status in the AXP2101 (flushed by PowerKey::begin()
   // on the next boot); a 10 s PWR hold makes the PMIC cut the rails (PressOff,
   // the deliberate hardware escape), after which PWR held 1 s powers it back on.
-  const int8_t wakePin = freeink::PowerManager::wakeSourcePin();
-  if (wakePin < 0) {
-    LOG_ERR("MAIN", "no wake pin in the board profile: only the timer can wake the device");
-  }
-#if SOC_PM_SUPPORT_EXT1_WAKEUP
-  else if (!rtc_gpio_is_valid_gpio(static_cast<gpio_num_t>(wakePin))) {
-    // The SDK refuses to arm it (and says so only on the serial console).
-    LOG_ERR("MAIN", "wake pin GPIO%d is not an RTC GPIO: the button will NOT wake the device", wakePin);
-  }
-#endif
+  ensureSomeWakeSource();
   powerManager.startDeepSleep(gpio);
 }
 
@@ -1474,6 +1511,7 @@ void setup() {
         LOG_ERR("MAIN", "timer wake without a clock (%d/%d): retrying in 60 s", clocklessRetries,
                 MAX_CLOCKLESS_RETRIES);
         esp_sleep_enable_timer_wakeup(60ULL * 1000000ULL);
+        wakeTimerArmed = true;  // que la red de REV-060 no lo pise con sus 300 s
       }
       // Se apagan a mano los mismos consumidores que apaga sleepNow(): este
       // camino NO pasa por ahí, y si el RTC sigue mudo el aparato se queda en
@@ -1482,6 +1520,7 @@ void setup() {
       AudioManager::silenceAmp();
       devlog::close();
       Storage.prepareForDeepSleep();
+      ensureSomeWakeSource();  // REV-060: este camino NO pasa por sleepNow()
       powerManager.startDeepSleep(gpio);
     }
     if (isReminderWake && !dueReminder && !timerFired) {
