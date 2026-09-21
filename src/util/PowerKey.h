@@ -125,7 +125,7 @@ class PowerKey {
   // Escribe y RELEE para confirmar los bits de `mask`, con tres intentos: el
   // bus I2C es compartido y un NACK suelto no puede pasar por configuración
   // aplicada (REV-066 / REV-070).
-  bool writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char* qué) const;
+  bool writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char* what) const;
   void decode(uint8_t sts2, unsigned long now, unsigned long edgeAt);
   void learnPressEdge(uint8_t edgeBit, const char* how);
   void flushAllStatus(const char* why);

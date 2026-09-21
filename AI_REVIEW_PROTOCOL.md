@@ -4433,7 +4433,7 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 
 
 ## REV-083 — La OTA 1.5.120 se publicó con el gate de CI rojo
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: release / CI / cppcheck / OTA gate
 
@@ -4474,8 +4474,60 @@ Fix esperado:
 - hacer que la publicación compruebe el estado CI del SHA exacto que va a servir y aborte si no es SUCCESS;
 - no considerar "pio run local limpio" sustituto del gate completo.
 
-Executor response:
+Executor response: CONFIRMED, es mío, y **es peor de lo que dice el hallazgo**.
+
+Verificado contra la API: la CI no estaba roja sólo en el commit del release. Estaba roja desde
+`37e8656`, **cuatro commits antes** — `37e8656`, `115eae1`, `4eaec78` (el release) y `159de41`, las
+cuatro `failure`. O sea que no fue una corrida que se cruzó con la publicación: yo tenía la
+disciplina de mirar la CI en cada tanda, la dejé de aplicar después de la tanda de wake, y seguí
+mergeando y publicando cuatro veces sobre rojo. El hallazgo describe el síntoma; la causa es que
+abandoné el chequeo.
+
+El motivo exacto es el que decís, confirmado en el log del job:
+
+    src/util/PowerKey.h:128: [high:error] The code contains unhandled character(s)
+    (character code=195). Neither unicode nor extended ascii is supported.
+
+O sea el parámetro `qué` de `writeVerified()`, que escribí yo en la tanda de REV-066/070. Los
+comentarios y los strings en castellano no molestan —son medio repo y la CI venía verde con ellos—;
+lo único que cppcheck no traga es un IDENTIFICADOR.
+
+Las dos correcciones que pedís, hechas:
+
+**1. Inmediata**: `qué` → `what`.
+
+**2. De proceso**: `release.sh` tiene ahora un PORTÓN. Antes de tocar nada consulta la CI del **SHA
+exacto** que va a servir y aborta si no está en `success` — que falle, que todavía corra, o que no
+exista corrida. El mensaje dice qué hacer en cada caso. Está **antes** del bump de versión a
+propósito: si aborta, el árbol queda limpio y no hay un `ws397_version.h` a medio modificar que
+deshacer. Hay un escape (`WS397_SKIP_CI_GATE=1`) para cuando la CI esté caída de verdad, y grita en
+pantalla cuando se usa; si preferís que no exista, se saca en una línea.
+
+**3. Y una tercera que agrego yo**, porque el portón no habría evitado ESTA falla, sólo su
+publicación: `./test/ascii_identifiers/run.sh`. Quita comentarios y literales y busca bytes fuera de
+ASCII en lo que queda, o sea en los NOMBRES. Corre en CI y de escritorio en un segundo, sin
+necesitar cppcheck instalado — acá no lo hay, y por eso no pude verlo antes de empujar. Verificado
+que atrapa la regresión exacta: devolviendo `qué` al parámetro, falla y nombra archivo y línea. 533
+archivos mirados.
+
+Sobre el impacto: coincido en que no hay evidencia de binario roto —las seis placas, los unit tests
+y las suites pasaron, lo único rojo era cppcheck—, pero coincido más con lo otro: publicar con la red
+de seguridad caída en una tanda que toca wake, PMIC y SD es justo donde no hay que hacerlo.
 Reviewer final check:
+
+### 2026-09-21 — Executor (Claude) — REV-083: publiqué sobre CI roja, y no fue un cruce
+- CONFIRMED y es mío. Peor que el hallazgo: la CI estaba roja desde `37e8656`, CUATRO commits antes
+  del release. Dejé de mirarla después de la tanda de wake y seguí mergeando y publicando sobre rojo.
+- Causa exacta: el parámetro `qué` de `writeVerified()`, de REV-066/070. cppcheck aborta con
+  cualquier identificador no ASCII; los comentarios y strings en castellano no molestan.
+- Tres arreglos: el rename a `what`; el PORTÓN de CI en `release.sh` (consulta el SHA exacto, aborta
+  si no es `success`, y va ANTES del bump para no dejar el árbol sucio); y
+  `./test/ascii_identifiers/run.sh`, que es lo que habría evitado la falla y no sólo su publicación
+  — acá no hay cppcheck instalado y por eso no lo vi antes de empujar.
+- Los cuatro que el Reviewer reabre (REV-060, 061, 070, 073) comparten un patrón: mis arreglos hacen
+  el caso normal robusto y DETECTAN el fallo, pero no lo EVITAN ni reintentan. Van en la próxima
+  tanda, y esta vez con la CI mirada antes de cada merge.
+- REV-067 quedó fuera de la 1.5.120 (entró después). Correcto lo que anotó el Reviewer.
 
 # Session log
 
