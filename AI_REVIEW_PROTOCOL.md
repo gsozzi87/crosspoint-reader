@@ -3050,6 +3050,55 @@ Executor response:
 Reviewer final check:
 
 
+## REV-069 — Volver del KOReader Sync fuerza reboot incluso con WiFi cancelado y heap sano
+State: OPEN
+Severity: P2
+Subsystem: firmware / silent restart / KOReader sync / UX
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`silentRestart()` tiene una optimización específica para WS397:
+- mide `ESP.getMaxAllocHeap()`;
+- si el bloque mayor sigue >= 96 KB, apaga WiFi en el lugar y NO reinicia;
+- sólo reinicia si la fragmentación realmente lo justifica.
+
+`silentRestartToReader()`, en cambio, NO llama `finishWifiSessionIfHeapIsHealthy()`: en WS397
+siempre prepara el target reader y hace `ESP.restart()`.
+
+El único caller actual es `KOReaderSyncActivity::onExit()`, y esa Activity pone
+`wifiActivated = true` ANTES de abrir `WifiSelectionActivity`. Si la selección/conexión falla o
+el usuario la cancela, `onWifiSelectionComplete(false)` llama `returnToReader()`; al salir,
+`onExit()` ve `wifiActivated=true` y hace `silentRestartToReader()`.
+
+Por tanto hay un caso totalmente reproducible sin ninguna sesión TLS ni heap fragmentado:
+1. entrar a KOReader Sync;
+2. cancelar/no conectar WiFi;
+3. volver al lector;
+4. el dispositivo hace un reboot silencioso completo.
+
+También se reinicia tras una sync real aunque el heap haya quedado suficientemente sano, porque el
+camino "to reader" no comparte la comprobación de 96 KB que sí usa el camino "to home".
+
+Impacto visible:
+- volver/cancelar Sync puede tardar varios segundos y parecer un reinicio espontáneo;
+- si hay USB, el CDC se desconecta/reconecta;
+- se paga arranque completo, montaje de SD e inicialización de periféricos sin necesidad;
+- aumenta el número de resets justo en una ruta de usuario frecuente del lector.
+
+Fix recomendado:
+- aplicar a `silentRestartToReader()` la misma política condicional de WS397 que usa
+  `silentRestart()`;
+- si el heap está sano, apagar WiFi y continuar al Reader sin reboot;
+- distinguir además "WiFi selector cancelado / nunca hubo sesión" de "TLS dejó fragmentación";
+- mantener el reboot sólo cuando el bloque contiguo realmente quedó por debajo del umbral necesario
+  para reabrir el EPUB;
+- test: cancelar WiFi en KOReader Sync NO reinicia; sync con heap sano NO reinicia; heap fragmentado
+  bajo el umbral sí conserva el silent reboot al reader.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
