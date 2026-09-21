@@ -1,11 +1,10 @@
 #include "PowerKey.h"
 
-#include <driver/gpio.h>
-#include <soc/gpio_struct.h>
-
 #include <BoardConfig.h>
 #include <Logging.h>
 #include <Wire.h>
+#include <driver/gpio.h>
+#include <soc/gpio_struct.h>
 
 #include <algorithm>
 
@@ -17,12 +16,12 @@ constexpr const char* TAG = "PWRKEY";
 // AXP2101 registers (TG28 clone on the ws397, IC_TYPE 0x4A). Only the key,
 // interrupt and power-off registers are touched: rails and charging stay as
 // the PMIC configured them (CLAUDE.md rule).
-constexpr uint8_t REG_IC_TYPE = 0x03;        // 0x4A
-constexpr uint8_t REG_COMMON_CONFIG = 0x10;  // bit0 soft off, bit1 reset, bit2 PWRON shuts the PMIC
-constexpr uint8_t REG_STATUS1 = 0x00;        // bit5 VBUS_GOOD: hay cable, cargue o no
-constexpr uint8_t REG_PWRON_STATUS = 0x20;   // what powered the PMIC on (log only)
-constexpr uint8_t REG_PWROFF_STATUS = 0x21;  // what powered it off last time (log only)
-constexpr uint8_t REG_PWROFF_EN = 0x22;      // bit1 PWRON > OFFLEVEL powers off, bit0 1 = restart / 0 = off
+constexpr uint8_t REG_IC_TYPE = 0x03;           // 0x4A
+constexpr uint8_t REG_COMMON_CONFIG = 0x10;     // bit0 soft off, bit1 reset, bit2 PWRON shuts the PMIC
+constexpr uint8_t REG_STATUS1 = 0x00;           // bit5 VBUS_GOOD: hay cable, cargue o no
+constexpr uint8_t REG_PWRON_STATUS = 0x20;      // what powered the PMIC on (log only)
+constexpr uint8_t REG_PWROFF_STATUS = 0x21;     // what powered it off last time (log only)
+constexpr uint8_t REG_PWROFF_EN = 0x22;         // bit1 PWRON > OFFLEVEL powers off, bit0 1 = restart / 0 = off
 constexpr uint8_t REG_IRQ_OFF_ON_LEVEL = 0x27;  // [1:0] PressOn [3:2] PressOff [5:4] IrqLevel
 // Cargador de la PILA DE RESPALDO, la que sostiene al RTC cuando se corta el
 // riel principal. ACÁ ESA PILA ES UNA CR2032, o sea PRIMARIA: no se carga.
@@ -51,12 +50,12 @@ constexpr uint8_t CHIP_ID = 0x4A;
 constexpr uint8_t IRQ_OFF_ON_LEVEL_VALUE = (0 << 4) | (3 << 2) | 2;  // 0x0E
 constexpr uint8_t INTEN2_KEY_BITS = 0x0F;  // POSITIVE, NEGATIVE, LONG, SHORT; VBUS insert/remove left off
 
-constexpr unsigned long POLL_FALLBACK_MS = 100;   // when the IRQ level cannot be trusted (rustmix cadence)
-constexpr unsigned long I2C_RETRY_MS = 100;       // after a failed bus transaction
-constexpr unsigned long IRQ_LEVEL_MS = 1000;      // the LONG threshold programmed above
+constexpr unsigned long POLL_FALLBACK_MS = 100;     // when the IRQ level cannot be trusted (rustmix cadence)
+constexpr unsigned long I2C_RETRY_MS = 100;         // after a failed bus transaction
+constexpr unsigned long IRQ_LEVEL_MS = 1000;        // the LONG threshold programmed above
 constexpr unsigned long UNCONFIRMED_MAX_MS = 1500;  // a real press shows LONG by then
-constexpr unsigned long STALE_PRESS_MS = 12000;   // the PMIC hard-cuts at 10 s: longer = missed release
-constexpr unsigned long STALE_EDGE_MS = 5000;     // an edge older than this was latched while the loop was busy
+constexpr unsigned long STALE_PRESS_MS = 12000;     // the PMIC hard-cuts at 10 s: longer = missed release
+constexpr unsigned long STALE_EDGE_MS = 5000;       // an edge older than this was latched while the loop was busy
 
 // Learned edge polarity survives deep sleep (a chip reset with RTC RAM intact)
 // so the first press after a wake is decoded at once. Lost with the rails,
@@ -93,7 +92,9 @@ void IRAM_ATTR onIrqFalling() {
   }
 }
 
-const char* edgeName(uint8_t bit) { return bit == 0x01 ? "POSITIVE(bit0)" : bit == 0x02 ? "NEGATIVE(bit1)" : "unknown"; }
+const char* edgeName(uint8_t bit) {
+  return bit == 0x01 ? "POSITIVE(bit0)" : bit == 0x02 ? "NEGATIVE(bit1)" : "unknown";
+}
 }  // namespace
 
 bool PowerKey::readReg(uint8_t reg, uint8_t& out) const {
@@ -112,6 +113,29 @@ bool PowerKey::writeReg(uint8_t reg, uint8_t val) const {
   return Wire.endTransmission(true) == 0;
 }
 
+// REV-066 / REV-070: escribir un registro del PMIC y COMPROBAR que quedó.
+//
+// El bus I2C es compartido (PMIC, RTC, códec, IMU, sensores) y un NACK suelto
+// es una cosa real acá — el arranque ya reintenta tres veces la lectura del
+// reloj por el mismo motivo. Hasta ahora estos `writeReg()` se llamaban sin
+// mirar el retorno y sin releer, así que un fallo transitorio dejaba al
+// firmware CREYENDO que había configurado el PMIC.
+//
+// `mask` son los bits que nos importan: en 0x10 los bits 0/1 son de disparo
+// (apagado por software, reinicio) y no se pueden comparar en una relectura,
+// y en 0x27 los bits 7:6 son de otra cosa y se conservan.
+bool PowerKey::writeVerified(uint8_t reg, uint8_t val, uint8_t mask, const char* qué) const {
+  for (int intento = 1; intento <= 3; ++intento) {
+    if (writeReg(reg, val)) {
+      uint8_t leido = 0;
+      if (readReg(reg, leido) && ((leido ^ val) & mask) == 0) return true;
+    }
+    delay(2);
+  }
+  LOG_ERR(TAG, "el PMIC no aceptó %s (reg 0x%02X = %02X): tres intentos y la relectura no coincide", qué, reg, val);
+  return false;
+}
+
 void PowerKey::begin() {
   available_ = false;
   const auto& board = BoardConfig::ACTIVE;
@@ -127,9 +151,22 @@ void PowerKey::begin() {
   const auto& g = board.batteryGauge;
   Wire.begin(g.i2cSda, g.i2cScl, g.i2cHz);  // idempotent on an already-started bus
 
+  // REV-070: se reintenta. Un solo NACK acá no es "no hay PMIC": es el bus
+  // compartido. Y rendirse a la primera cuesta caro en esta placa, porque abajo
+  // se vuelven a encender los rieles que `sleepNow()` cortó para dormir — sin
+  // eso el panel y el audio se quedan sin alimentación y el aparato parece
+  // muerto hasta un corte de corriente de verdad.
   uint8_t id = 0;
-  if (!readReg(REG_IC_TYPE, id) || id != CHIP_ID) {
-    LOG_ERR(TAG, "PMIC at 0x%02X not answering (id=%02X): PWR key disabled", addr_, id);
+  bool contesta = false;
+  for (int intento = 1; intento <= 3 && !contesta; ++intento) {
+    contesta = readReg(REG_IC_TYPE, id) && id == CHIP_ID;
+    if (!contesta) delay(2);
+  }
+  if (!contesta) {
+    LOG_ERR(TAG,
+            "!!! OJO: el PMIC de 0x%02X no contesta (id=%02X) tras 3 intentos: el boton PWR queda "
+            "deshabilitado Y los rieles del panel y el audio NO se pueden volver a encender",
+            addr_, id);
     return;
   }
 
@@ -140,10 +177,23 @@ void PowerKey::begin() {
   // tensión de ALDO1-4 (0x92-0x95: 0x1C = 3,3 V). Según el esquemático, DC1 es
   // VCC3V3 (ESP, tarjeta, sensores) y ALDO1-3 alimentan EPD_VCC_AXP, Audio_VCC
   // y AudioCTR_VCC: lo que sigue prendido toda la noche en el sueño profundo.
-  static const uint8_t SNAP_REGS[17] = {REG_COMMON_CONFIG, REG_PWRON_STATUS, REG_PWROFF_STATUS, REG_PWROFF_EN,
-                                        REG_IRQ_OFF_ON_LEVEL, REG_INTEN1, REG_INTEN2, REG_INTEN3,
-                                        REG_INTSTS1, REG_INTSTS2, REG_INTSTS3,
-                                        0x80, 0x90, 0x92, 0x93, 0x94, 0x95};
+  static const uint8_t SNAP_REGS[17] = {REG_COMMON_CONFIG,
+                                        REG_PWRON_STATUS,
+                                        REG_PWROFF_STATUS,
+                                        REG_PWROFF_EN,
+                                        REG_IRQ_OFF_ON_LEVEL,
+                                        REG_INTEN1,
+                                        REG_INTEN2,
+                                        REG_INTEN3,
+                                        REG_INTSTS1,
+                                        REG_INTSTS2,
+                                        REG_INTSTS3,
+                                        0x80,
+                                        0x90,
+                                        0x92,
+                                        0x93,
+                                        0x94,
+                                        0x95};
   for (size_t i = 0; i < sizeof(SNAP_REGS); ++i) {
     if (!readReg(SNAP_REGS[i], snapshot_[i])) snapshot_[i] = 0xEE;
   }
@@ -160,24 +210,70 @@ void PowerKey::begin() {
       // ALDO3 va a 3,0 V y no a 3,3: escribirle 0x1C, como hacía 1.5.107,
       // habría subido 0,3 V a un chip que no sabemos cuál es. El PMIC no se
       // resetea con el ESP, así que esos registros no se pierden entre sueños.
-      writeReg(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK));
+      // REV-070: verificado. Si esta escritura falla y nadie la mira, el panel y
+      // el audio se quedan sin alimentación y el aparato parece muerto — y la
+      // única salida es el corte duro del PMIC, que es justo lo que REV-066
+      // dice que puede no estar armado. Los dos defectos juntos son "no hay
+      // forma de volver".
+      if (writeVerified(REG_LDO_ONOFF0, static_cast<uint8_t>(ldo | ALDO123_MASK), ALDO123_MASK,
+                        "el reencendido de los rieles ALDO1-3")) {
+        railsRestored_ = missing;
+      } else {
+        LOG_ERR(TAG,
+                "!!! OJO: los rieles del panel y el audio quedaron APAGADOS (faltan %02X): la pantalla "
+                "y el sonido no van a funcionar en este arranque",
+                missing);
+      }
       delay(20);  // que los LDO suban y el panel salga de su reset antes de display.begin()
-      railsRestored_ = missing;
     }
   }
   snapshotValid_ = true;
   logSnapshot();
 
   // Key timings (read-modify-write keeps bits 7:6).
+  // REV-066: las tres escrituras del ESCAPE FÍSICO se verifican. Mantener PWR
+  // 10 s es la última salida cuando todo lo demás falló —el loop trabado, los
+  // rieles sin volver (REV-070)—, así que el firmware no puede darla por
+  // armada sin comprobarlo. Si alguna no queda, se dice y `hardOffArmed_`
+  // queda en false.
+  hardOffArmed_ = true;
   uint8_t v = 0;
-  if (readReg(REG_IRQ_OFF_ON_LEVEL, v)) writeReg(REG_IRQ_OFF_ON_LEVEL, (v & 0xC0) | IRQ_OFF_ON_LEVEL_VALUE);
+  if (readReg(REG_IRQ_OFF_ON_LEVEL, v)) {
+    if (!writeVerified(REG_IRQ_OFF_ON_LEVEL, static_cast<uint8_t>((v & 0xC0) | IRQ_OFF_ON_LEVEL_VALUE), 0x3F,
+                       "el tiempo de PressOff (PWR 10 s)")) {
+      hardOffArmed_ = false;
+    }
+  } else {
+    hardOffArmed_ = false;
+  }
   // Hard power-off by the key: both enables the driver knows about, and "off"
   // rather than "restart" (0x22 bit0). Which one the silicon honours is a
   // hardware check; setting both makes the 10 s escape real either way.
   // Bits 0/1 of 0x10 are write-to-trigger (soft power-off, reset) and must
   // never be echoed back from a read.
-  if (readReg(REG_COMMON_CONFIG, v)) writeReg(REG_COMMON_CONFIG, (v & static_cast<uint8_t>(~0x03)) | 0x04);
-  if (readReg(REG_PWROFF_EN, v)) writeReg(REG_PWROFF_EN, (v | 0x02) & static_cast<uint8_t>(~0x01));
+  // `mask` 0x04 y no el byte entero: los bits 0/1 de 0x10 son de disparo y no
+  // se pueden comparar en una relectura.
+  if (readReg(REG_COMMON_CONFIG, v)) {
+    if (!writeVerified(REG_COMMON_CONFIG, static_cast<uint8_t>((v & static_cast<uint8_t>(~0x03)) | 0x04), 0x04,
+                       "que PWRON pueda apagar el PMIC")) {
+      hardOffArmed_ = false;
+    }
+  } else {
+    hardOffArmed_ = false;
+  }
+  if (readReg(REG_PWROFF_EN, v)) {
+    if (!writeVerified(REG_PWROFF_EN, static_cast<uint8_t>((v | 0x02) & static_cast<uint8_t>(~0x01)), 0x03,
+                       "el apagado por PWRON (y no reinicio)")) {
+      hardOffArmed_ = false;
+    }
+  } else {
+    hardOffArmed_ = false;
+  }
+  if (!hardOffArmed_) {
+    LOG_ERR(TAG,
+            "!!! OJO: el escape fisico (PWR mantenido 10 s corta la corriente) NO quedo confirmado. "
+            "Si el aparato se traba, puede no haber forma de apagarlo sin sacarle la bateria");
+  }
   // NUNCA cargar la pila de respaldo: es una CR2032, primaria. El bit viene
   // apagado de fábrica, pero "de fábrica" acá es el OTP del clon del PMIC y un
   // gestor de arranque del vendor, y ninguno de los dos lo decidimos nosotros.
@@ -293,9 +389,11 @@ bool PowerKey::railsCycle(uint16_t offMs) const {
 
 void PowerKey::logSnapshot() const {
   if (!snapshotValid_) return;
-  LOG_INF(TAG, "AXP2101 regs at boot: 10=%02X 20=%02X 21=%02X 22=%02X 27=%02X 40=%02X 41=%02X 42=%02X 48=%02X 49=%02X 4A=%02X",
-          snapshot_[0], snapshot_[1], snapshot_[2], snapshot_[3], snapshot_[4], snapshot_[5], snapshot_[6],
-          snapshot_[7], snapshot_[8], snapshot_[9], snapshot_[10]);
+  LOG_INF(
+      TAG,
+      "AXP2101 regs at boot: 10=%02X 20=%02X 21=%02X 22=%02X 27=%02X 40=%02X 41=%02X 42=%02X 48=%02X 49=%02X 4A=%02X",
+      snapshot_[0], snapshot_[1], snapshot_[2], snapshot_[3], snapshot_[4], snapshot_[5], snapshot_[6], snapshot_[7],
+      snapshot_[8], snapshot_[9], snapshot_[10]);
   LOG_INF(TAG, "AXP2101 rieles: DCDC(80)=%02X LDO(90)=%02X ALDO1-4=%02X %02X %02X %02X (1C = 3,3 V)", snapshot_[11],
           snapshot_[12], snapshot_[13], snapshot_[14], snapshot_[15], snapshot_[16]);
   if (railsRestored_ != 0) {
@@ -355,7 +453,8 @@ void PowerKey::pump() {
   static uint32_t levelFixesSaid = 0;
   if (s_levelFixes != levelFixesSaid) {
     levelFixesSaid = s_levelFixes;
-    LOG_ERR(TAG, "GPIO%d estaba armado POR NIVEL con la ISR de PWR enganchada (van %lu): la ISR lo pasó a flanco. "
+    LOG_ERR(TAG,
+            "GPIO%d estaba armado POR NIVEL con la ISR de PWR enganchada (van %lu): la ISR lo pasó a flanco. "
             "Sin esto, apretar PWR colgaba el aparato en el watchdog de interrupciones",
             irqPin_, (unsigned long)levelFixesSaid);
   }
@@ -363,8 +462,10 @@ void PowerKey::pump() {
   // nivel con la ISR puesta es una bomba armada, no un estado que esperar.
   if (!irqPaused_ && pinIsLevelTriggered(irqPin_) && GPIO.pin[irqPin_].int_ena != 0) {
     gpio_set_intr_type(static_cast<gpio_num_t>(irqPin_), GPIO_INTR_NEGEDGE);
-    LOG_ERR(TAG, "GPIO%d quedó armado POR NIVEL con la ISR de PWR enganchada: se restaura a flanco. "
-            "Alguien armó el pin para despertar sin pauseIrq()", irqPin_);
+    LOG_ERR(TAG,
+            "GPIO%d quedó armado POR NIVEL con la ISR de PWR enganchada: se restaura a flanco. "
+            "Alguien armó el pin para despertar sin pauseIrq()",
+            irqPin_);
   }
 
   // A confirmed press that outlives the PMIC's own 10 s hard cut cannot be a
@@ -463,8 +564,10 @@ void PowerKey::decode(const uint8_t s2, const unsigned long now, const unsigned 
     release = true;
   } else if (singleEdge) {
     if (edgeLearned_) {
-      if (edges == pressEdge_) press = true;
-      else release = true;
+      if (edges == pressEdge_)
+        press = true;
+      else
+        release = true;
     } else if (!pressed_) {
       // First edge ever: take it as a press; pump() undoes it if nothing
       // confirms it (see UNCONFIRMED_MAX_MS) and learns the opposite.

@@ -2950,7 +2950,7 @@ Reviewer final check:
 
 
 ## REV-066 — El hard-off físico de 10 s puede quedar sin armar y el firmware no lo detecta
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / PMIC / hard-off / recovery
 
@@ -2989,6 +2989,26 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED. Verificado en `PowerKey::begin()`: las tres escrituras del escape
+físico (0x27 PressOff, 0x10 PWRON puede apagar, 0x22 apagado y no reinicio) se hacían con el retorno
+ignorado, y los valores que se releen para el log **no se comparan contra lo esperado**.
+
+Y tenés razón en la interacción, que es lo que lo vuelve serio: junto con REV-070 es el escenario "no
+hay forma de volver". REV-070 puede dejar el panel y el audio sin alimentación, y la salida
+documentada para eso es justamente mantener PWR 10 s — o sea el escape que éste dice que puede no
+estar armado.
+
+Fix: `writeVerified(reg, val, mask, qué)` — escribe, RELEE y compara los bits que importan, con tres
+intentos. El bus I²C es compartido (PMIC, RTC, códec, IMU, sensores) y un NACK suelto es una cosa
+real acá; el arranque ya reintenta tres veces la lectura del reloj por el mismo motivo. El `mask` no
+es cosmético: en 0x10 los bits 0/1 son de DISPARO (apagado por software, reinicio) y no se pueden
+comparar en una relectura, y en 0x27 los bits 7:6 son de otra cosa y se conservan.
+
+Y la bandera que pedías: **`hardOffArmed_`**, con su getter. Si alguna de las tres no queda
+confirmada, sale una línea gritada — "si el aparato se traba, puede no haber forma de apagarlo sin
+sacarle la batería" —, que es exactamente el dato que el dueño necesita ANTES de quedarse sin salida,
+no después.
+Reviewer final check:
 
 ## REV-067 — El auto deep-sleep ignora el cable USB aunque el light sleep lo protege
 State: OPEN
@@ -3138,7 +3158,7 @@ Reviewer final check:
 
 
 ## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / wake / PMIC / rail restore
 
@@ -3186,6 +3206,25 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED, las dos mitades.
+
+1. `readReg(REG_IC_TYPE)` fallaba una vez y `begin()` hacía `return` — sin intentar restaurar los
+   rieles. En esta placa eso es grave: `sleepNow()` cortó ALDO1-3 para dormir, así que no
+   restaurarlos deja el panel y el audio SIN ALIMENTACIÓN y el aparato parece muerto.
+2. Y aun con la lectura buena, el `writeReg(REG_LDO_ONOFF0, …)` iba con el retorno ignorado y
+   `railsRestored_ = missing` se ponía igual, sin relectura.
+
+Fix:
+- la lectura de `REG_IC_TYPE` se **reintenta tres veces**. Un NACK suelto en un bus compartido no es
+  "no hay PMIC", y rendirse a la primera cuesta la pantalla entera;
+- el encendido de los rieles pasa por `writeVerified()` (escribe, relee, compara, tres intentos), y
+  `railsRestored_` se pone **sólo si quedó confirmado**;
+- si no queda, sale una línea gritada diciendo que la pantalla y el sonido no van a funcionar en este
+  arranque. Antes el síntoma era un aparato a oscuras sin una sola línea que lo explicara.
+
+El `delay(20)` de los LDO se mantiene en los dos casos: si la escritura salió pero la relectura
+falló, mejor esperar igual que arrancar el panel sobre un riel a medio subir.
+Reviewer final check:
 
 ## REV-071 — En WS397 el deep sleep no ejecuta onExit() de la Activity actual
 State: OPEN
@@ -4178,6 +4217,22 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
   para poder verlos sin cable.
 - `pio run -e ws397` limpio. Sin OTA: `.ws397-build` sigue en 119.
 - Sigue: REV-066 y REV-070 (misma familia, lado PMIC), después la tanda de la tarjeta (REV-064/057).
+
+### 2026-09-21 — Executor (Claude) — el lado PMIC de la misma familia (REV-066, REV-070)
+- Los dos CONFIRMADOS. Es el mismo patrón que REV-060/073/074/078 una capa más abajo: acá lo que se
+  ignora no es un `esp_err_t` sino el retorno de un `writeReg()` de I²C, y el firmware sigue creyendo
+  que configuró el PMIC.
+- **Juntos son el escenario "no hay forma de volver"**: REV-070 puede dejar el panel y el audio sin
+  alimentación, y la salida documentada para eso es mantener PWR 10 s — el escape que REV-066 dice
+  que puede no estar armado. Por eso van en la misma tanda.
+- `writeVerified()`: escribe, RELEE y compara los bits que importan, tres intentos. El `mask` hace
+  falta de verdad — en 0x10 los bits 0/1 son de disparo y no se pueden comparar en una relectura.
+- `hardOffArmed_` con getter, y una línea gritada cuando el escape no queda confirmado: es el dato
+  que hay que tener ANTES de quedarse sin salida.
+- La lectura de `REG_IC_TYPE` se reintenta: rendirse a la primera costaba la pantalla entera.
+- `pio run -e ws397` limpio. Sin OTA: `.ws397-build` sigue en 119.
+- Con esto queda cerrada la tanda "el aparato no vuelve" salvo la mitad del SDK de REV-060. Sigue la
+  tanda de la tarjeta: REV-064 (desmonta la SD con la tarea de música viva) y REV-057.
 
 # Session log
 
