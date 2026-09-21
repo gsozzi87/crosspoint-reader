@@ -231,6 +231,17 @@ RTC_NOINIT_ATTR uint32_t silentRebootTarget;
 // es justamente el otro remedio.
 static constexpr uint32_t PANEL_RESCUE_MAGIC = 0x50414E4C;  // "PANL"
 RTC_NOINIT_ATTR uint32_t panelRescueMagic;
+// REV-061: los rieles no se pudieron cortar al dormir.
+//
+// `railsOffForSleep()` ya devuelve false cuando la escritura o la relectura
+// fallan, pero su resultado se tiraba — y no alcanza con loguearlo, porque para
+// cuando se llama el log YA ESTÁ CERRADO (tiene que estarlo: se corta la
+// alimentación del panel y del códec justo después). Así que la noticia viaja
+// en RTC RAM, que sobrevive al sueño profundo, y se cuenta en el arranque
+// siguiente. Sin esto, dormir con el panel y el audio alimentados toda la noche
+// —el mismo drenaje que motivó cortar ALDO1-3— no dejaba una sola línea.
+static constexpr uint32_t RAILS_STUCK_MAGIC = 0x52414C53;  // "RALS"
+RTC_NOINIT_ATTR uint32_t railsStuckMagic;
 constexpr uint32_t SILENT_REBOOT_MAGIC = 0xC1EAB007;
 constexpr uint32_t SILENT_REBOOT_TARGET_HOME = 0;
 constexpr uint32_t SILENT_REBOOT_TARGET_READER = 1;
@@ -530,7 +541,11 @@ static void sleepNow() {
   // hasta el próximo arranque, donde PowerKey::begin() los enciende antes que
   // nada. Va al final, con el panel ya en su deep sleep y el log cerrado: desde
   // acá hasta esp_deep_sleep_start() no se toca ni la pantalla ni el audio.
-  if (BoardConfig::isWS397()) POWER_KEY.railsOffForSleep();
+  if (BoardConfig::isWS397()) {
+    // REV-061: el resultado NO se tira. El log ya está cerrado acá, así que la
+    // marca va a RTC RAM y el próximo arranque lo cuenta.
+    railsStuckMagic = POWER_KEY.railsOffForSleep() ? 0 : RAILS_STUCK_MAGIC;
+  }
   // ws397: the wake key is OK (GPIO5, RTC-capable, EXT1 low). PWR cannot wake:
   // the PMIC IRQ is on GPIO38, which is not an RTC GPIO. A PWR press while
   // asleep only latches status in the AXP2101 (flushed by PowerKey::begin()
@@ -1450,6 +1465,16 @@ void setup() {
   // Cuánto se fue durmiendo, dicho por el aparato: la última línea del diario
   // es la de "antes de dormir" y ésta es la de ahora.
   if (BoardConfig::isWS397() && esp_reset_reason() == ESP_RST_DEEPSLEEP) batterylog::reportAfterSleep();
+  // REV-061: lo que no se pudo decir al dormir, porque el log ya estaba
+  // cerrado. Va junto al diario de batería a propósito: son la misma pregunta
+  // —qué pasó mientras dormía— y si los rieles quedaron arriba, el número de
+  // "dormido X %/h" de la línea de al lado se explica solo.
+  if (BoardConfig::isWS397() && railsStuckMagic == RAILS_STUCK_MAGIC) {
+    LOG_ERR("MAIN",
+            "!!! OJO: al dormir NO se pudieron cortar los rieles ALDO1-3: el panel, el codec y el "
+            "amplificador pasaron el sueño alimentados. Eso son varios mA de mas");
+    railsStuckMagic = 0;
+  }
   // ws397: the short-press binding is meaningless here (PWR short = clean
   // screen, and OK is plain Confirm), and SLEEP would make a 10 ms wake tap
   // count as verified. Force it whatever the file (or the web) says.
