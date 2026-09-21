@@ -3767,7 +3767,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: FIXED_PENDING_REVIEW (6ª vuelta)
+State: NEEDS_HARDWARE — código aceptado
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3805,6 +3805,32 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer 6ª revisión (2026-09-21):
+Código aceptado. La solución RTC -> light sleep cierra el hueco conceptual de las vueltas anteriores:
+
+- si falla el timer de deep sleep, primero intenta `RTC_ALARM.armAt(due)` + `rtcIntUsable()`;
+- activa `alarmRtcFallback` y aborta el deep sleep antes del teardown;
+- mientras ese modo está activo, el auto-deep-sleep queda suprimido;
+- `msUntilNextAlarm()` devuelve cap=0 cuando RTC_INT está confirmado, por lo que IdleSleep NO
+  vuelve a depender del timer ESP que falló;
+- también se elimina el cap de "faltaParaDormir", evitando el bug de cap=1 ms < MIN_REST_MS que
+  habría dejado el equipo despierto a ~40 mA;
+- al vencer el deadline o volver a funcionar el timer ESP, el modo se limpia solo.
+
+La secuencia del loop es coherente: el chequeo de RTC/checkTimeAlarms ocurre antes de la política de
+auto-sleep, así que al despertar por GPIO45 la alarma puede atenderse y luego el fallback se limpia.
+
+Queda NEEDS_HARDWARE porque el camino requiere fault injection real:
+1. forzar `esp_sleep_enable_timer_wakeup()` a fallar;
+2. confirmar que PCF85063/GPIO45 despierta exactamente al deadline desde light sleep;
+3. confirmar que no entra en deep sleep durante el fallback;
+4. confirmar que después de sonar vuelve a la política normal de sueño.
+
+CI del merge 6b9f495 estaba todavía en curso al momento de esta revisión; los jobs ya finalizados
+(Server typecheck, unit-tests, desktop tests y clang-format) estaban en verde. No marcar VERIFIED
+hasta CI completa + prueba física.
+
 
 Executor 6ª vuelta (2026-09-21) — **tenías razón y la frase era mía**:
 "no hay otra fuente de wake que preserve el deadline" es **FALSA**, y está escrita ahí abajo en la
@@ -5336,7 +5362,7 @@ Reviewer final check:
 
 
 ## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
-State: PROPOSAL — rebotar con Executor antes de implementar
+State: PROPOSAL APPROVED — no implementar hasta orden del dueño
 Severity: P2 (arquitectura / UX)
 Subsystem: settings / account / cloud / USB MSC / file transfer
 
@@ -5608,6 +5634,51 @@ de la pestaña y el pie de ayuda.
 Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
 
 Reviewer final check:
+
+Reviewer sobre respuesta del Executor (2026-09-21):
+La variante A queda APROBADA como dirección de producto, con un ajuste.
+
+### Decisión propuesta
+Quinta pestaña de Ajustes llamada **Archivos**:
+- Modo memoria USB;
+- Limpiar caché de lectura;
+- opcionalmente, espacio usado/libre de la SD sólo dentro de esa pestaña;
+- ayuda corta con las carpetas relevantes (/Books, /Music, /Apps, /fonts, /dictionaries).
+
+"Archivos" es el nombre correcto: medido por el Executor, cabe con mucha holgura en las seis
+traducciones; "Almacenamiento" queda demasiado justo en ES/PT y "Transferencia" describe sólo una
+de las funciones.
+
+### Arquitectura
+También acepto formalizar en CLAUDE.md:
+**local-first, nube opcional**.
+El Paper debe poder leer contenido local, usar diccionario, música, timers, Lua local, USB y OTA sin
+cuenta. La cuenta queda para servicios que genuinamente necesitan servidor. El pairing actual por
+código/token es mejor que introducir correo/contraseña en el aparato y debe mantenerse.
+
+No crear pestaña "Cuenta" ahora: hoy tendría demasiado poco contenido. "Vincular con mi cuenta" puede
+seguir en Sistema hasta que exista una verdadera superficie de cuenta local.
+
+### Modificación respecto de la recomendación del Executor
+No mantendría tres puertas visibles al mismo modo USB en WS397.
+
+Es correcto que `goToFileTransfer()` no está dentro de EpubReaderActivity; está en la Home clásica
+de upstream. Pero en WS397 esa Home cuelga del mosaico **Leer**, así que desde la experiencia del
+dueño se siente exactamente como "transferencia dentro del lector".
+
+Cuando exista Ajustes -> Archivos, propongo ocultar **sólo en WS397** la fila/tile
+`STR_FILE_TRANSFER` de HomeActivity, conservándola intacta para las otras placas. No hace falta
+romper upstream globalmente: puede hacerse con construcción dinámica/condicional igual que ya se
+ocultan otras capacidades específicas de WS397.
+
+Objetivo UX: UNA puerta canónica para administración de archivos:
+**Ajustes -> Archivos -> Modo memoria USB**.
+El acceso USB sigue siendo independiente de cloud/cuenta.
+
+Antes de implementar, el Executor debe proponer el diff mínimo para ocultar FILE_TRANSFER sólo en
+WS397 sin romper getMenuItemCount(), menuItemToIndex(), indexToMenuItem() ni el selector con OPDS /
+recientes. No tocar código hasta orden del dueño.
+
 
 # Session log
 
@@ -6157,3 +6228,14 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` sin defectos, `ascii_identifiers`
   en verde.
 - **Sin OTA**: `.ws397-build` sigue en 120.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — REV-073 aceptado y REV-088 arquitectura aprobada
+- REV-073 -> NEEDS_HARDWARE. El fallback RTC/PCF85063 -> GPIO45 -> light sleep está bien integrado;
+  falta CI completa del merge y fault injection físico.
+- REV-088 -> propuesta aprobada sin implementación: quinta pestaña "Archivos", local-first/cloud
+  opcional, pairing por token se mantiene.
+- Ajuste del Reviewer: al crear la pestaña Archivos, ocultar FILE_TRANSFER de HomeActivity sólo en
+  WS397 para evitar dos puertas visibles al mismo USB dentro del flujo Leer.
+- Sin cambios de firmware ni OTA por parte del Reviewer.
