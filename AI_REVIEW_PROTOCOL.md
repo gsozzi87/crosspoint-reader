@@ -3099,6 +3099,56 @@ Executor response:
 Reviewer final check:
 
 
+## REV-070 — Un fallo I2C al despertar puede dejar ALDO1-3 apagados y el boot continúa igual
+State: OPEN
+Severity: P1
+Subsystem: firmware / wake / PMIC / rail restore
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+En WS397, `sleepNow()` apaga ALDO1-3 antes de entrar en deep sleep. Esos tres rieles alimentan
+panel, códec y amplificador. Por tanto el siguiente boot depende de que `PowerKey::begin()` los
+restaure ANTES de inicializar display/audio.
+
+El restore actual no es transaccional:
+1. `PowerKey::begin()` primero lee `REG_IC_TYPE`;
+2. si esa lectura falla una sola vez, hace `return` inmediatamente;
+3. en ese caso NO intenta restaurar ALDO1-3;
+4. setup() continúa normalmente con `POWER_KEY.available_=false`.
+
+Incluso cuando la lectura inicial sí funciona:
+- lee `REG_LDO_ONOFF0`;
+- calcula qué ALDO faltan;
+- llama `writeReg(... | ALDO123_MASK)`;
+- IGNORA el bool de `writeReg()`;
+- espera 20 ms;
+- pone `railsRestored_ = missing` aunque la escritura haya fallado;
+- no hace readback.
+
+Además `logSnapshot()` interpreta `railsRestored_ != 0` como
+"rieles ALDO1-3 re-encendidos al arrancar", de modo que el log puede afirmar recuperación aunque
+nunca haya ocurrido.
+
+Impacto visible:
+- un error I2C transitorio justo al despertar puede dejar panel/códec/amp sin alimentación;
+- el aparato puede parecer muerto, con pantalla sin responder y sin audio aunque el ESP sí esté corriendo;
+- el diagnóstico puede ser engañoso porque el log dice que los rieles fueron re-encendidos;
+- el rescue del panel puede acabar forzando otro reboot, pero si `POWER_KEY.available_` quedó false
+  el primer `railsCycle()` tampoco puede actuar (y REV-063 además consume el one-shot antes de saber
+  si el ciclo se ejecutó).
+
+Fix recomendado:
+- tratar el restore de ALDO1-3 como requisito crítico del wake;
+- 2-3 reintentos cortos para identidad/read de 0x90/write/readback;
+- sólo marcar `railsRestored_` cuando el readback confirme ALDO1-3 encendidos;
+- si no se logra restaurar, entrar en recovery explícito y NO continuar como si display/audio estuvieran listos;
+- test/fault injection: fallo en IC_TYPE, fallo en read 0x90 y fallo en write 0x90 deben impedir un boot
+  silenciosamente degradado y producir retry/recovery observable.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
