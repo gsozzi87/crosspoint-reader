@@ -14,7 +14,7 @@
 #include <cstdio>
 #include <initializer_list>
 
-#include "../../src/util/PanelRescue.h"
+#include "../../src/util/RescueState.h"
 
 static int fallos = 0;
 
@@ -31,7 +31,7 @@ static void chkNum(const char* que, uint32_t dio, uint32_t esperado) {
 }
 
 int main() {
-  using namespace panelrescue;
+  using namespace rescue;
 
   // Arranque en frío: RTC_NOINIT es basura. Nada tocado, se puede cortar.
   for (const uint32_t basura : {0u, 0xFFFFFFFFu, 0x12345678u, 0xDEADBEEFu, 0x50414E00u}) {
@@ -96,6 +96,6 @@ int main() {
   chk("DONE no se lee como intento", failedTries(DONE) == 0, true);
   chk("un intento no se lee como DONE", done(markAttempt(0u)), false);
 
-  if (fallos == 0) printf("panel_rescue: OK\n");
+  if (fallos == 0) printf("rescue_state: OK\n");
   return fallos == 0 ? 0 : 1;
 }

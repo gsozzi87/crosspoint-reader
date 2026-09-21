@@ -280,8 +280,8 @@ jobs:
       - name: Política de reintentos
         run: ./test/retry_policy/run.sh
 
-      - name: Rescate del panel
-        run: ./test/panel_rescue/run.sh
+      - name: Rescate por corte de corriente
+        run: ./test/rescue_state/run.sh
 
       - name: Resolución de nombres fijada
         run: ./test/net_lookup/run.sh

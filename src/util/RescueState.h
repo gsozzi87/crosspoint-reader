@@ -1,6 +1,6 @@
 #pragma once
 
-// EL RESCATE DEL PANEL, CONTADO (REV-063).
+// EL RESCATE POR CORTE DE CORRIENTE, CONTADO (REV-063, REV-070).
 //
 // Cuando el SSD1677 se traba, BUSY se queda en alto y cada pintada paga el tope
 // entero: el aparato parece colgado. Lo único que lo destraba es un corte de
@@ -22,12 +22,17 @@
 //     el arranque siguiente, hasta MAX_TRIES — acotado a propósito, porque cada
 //     intento termina en un reinicio y sin tope sería un bucle de arranques.
 //
+// Lo usan los DOS rescates que hay, porque son el mismo defecto con distinto
+// síntoma: el del panel (BUSY trabado) y el de los rieles (el PMIC no confirma
+// que ALDO1-3 quedaran encendidos al arrancar, REV-070). Cada uno tiene su
+// propia palabra en RTC_NOINIT; lo que comparten es la cuenta.
+//
 // Es un header puro y sin nada del aparato adentro justamente para poder
-// probarlo sin placa: ./test/panel_rescue/run.sh
+// probarlo sin placa: ./test/rescue_state/run.sh
 
 #include <cstdint>
 
-namespace panelrescue {
+namespace rescue {
 
 // El corte se hizo y el PMIC lo confirmó ("PANL").
 inline constexpr uint32_t DONE = 0x50414E4Cu;
@@ -63,4 +68,4 @@ inline uint32_t markAttempt(uint32_t word) { return TRY_BASE + failedTries(word)
 // conserva el conteo para volver a probar en el arranque siguiente.
 inline uint32_t afterCycle(uint32_t markedWord, bool cycled) { return cycled ? DONE : markedWord; }
 
-}  // namespace panelrescue
+}  // namespace rescue

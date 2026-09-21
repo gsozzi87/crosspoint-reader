@@ -166,7 +166,12 @@ class PowerKey {
   // false = o no se pudo leer 0x90, o el reencendido no se pudo confirmar: en
   // los dos casos el panel y el audio pueden estar sin alimentación y el
   // arranque no puede seguir como si nada.
-  bool railsConfirmed_ = true;
+  // REV-070: nace en FALSE y sólo pasa a true cuando se SABE que ALDO1-3 están
+  // encendidos. Nacía en true, y `begin()` tiene una salida temprana —el PMIC
+  // no contesta el REG_IC_TYPE ni en tres intentos— que no lo tocaba: el peor
+  // caso posible, el PMIC mudo, se reportaba como "rieles confirmados". El
+  // default de una bandera de seguridad tiene que ser el lado inseguro.
+  bool railsConfirmed_ = false;
   bool snapshotValid_ = false;
 };
 
