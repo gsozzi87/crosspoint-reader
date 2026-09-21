@@ -2530,7 +2530,7 @@ diagnóstico. La próxima OTA de diagnóstico debería conservarla al menos hast
 
 
 ## REV-057 — El fallback de apagado vuelve a tocar la SD después de desmontarla
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / power-off / storage
 
@@ -2569,6 +2569,25 @@ Arreglo esperado:
   punto de shutdown en el fallback.
 
 Executor response:
+Reviewer final check:
+
+Executor response: CONFIRMED, y con una consecuencia de más que el hallazgo no nombra.
+
+Verificado: `powerOffNow()` hace `Storage.prepareForDeepSleep()` y, si el PMIC no acepta o no corta
+en dos segundos, RETORNA; el llamador (`handlePowerHold()`) llamaba entonces a `enterDeepSleep()`,
+que vuelve a hacer trabajo de filesystem sobre un volumen ya terminado: `APP_STATE.saveToFile()`, el
+cuadro de Quick Resume, la lectura de los titulares para el fondo y la muestra de la batería.
+
+**Lo que falta en el hallazgo**: `enterDeepSleep()` además vuelve a pintar el fondo de **SUSPENDIDO**
+encima del de **APAGADO** que `powerOffNow()` acaba de dejar en el vidrio. El usuario mantuvo PWR
+para apagar y el cartel le terminaba diciendo otra cosa — en un panel biestable ese cartel es lo
+único que queda cuando el aparato se muere, así que no es cosmético.
+
+Fix: el fallback va a **`sleepNow()`** y no a `enterDeepSleep()`. `sleepNow()` no toca el filesystem
+ni pinta — apaga el IMU, el códec y el amplificador, arma el despertador y corta los rieles —, y todo
+lo demás (estado guardado, pantalla pintada, log cerrado) ya lo hizo `powerOffNow()`. Con `sleepNow()`
+además entra la garantía de REV-060, así que este camino tampoco puede quedarse sin fuente de
+despertar. Y deja su línea: "el apagado no cortó: se suspende con la tarjeta ya desmontada".
 Reviewer final check:
 
 ## REV-058 — Timer-wake sin RTC vuelve a dormir con ALDO1-3 encendidos
@@ -2853,7 +2872,7 @@ Reviewer final check:
 
 
 ## REV-064 — Deep sleep desmonta la SD antes de detener la tarea de música
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / deep sleep / audio task / SD lifecycle
 
@@ -2901,6 +2920,21 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED. Verificado: `enterDeepSleep()` termina con
+`devlog::close(); Storage.prepareForDeepSleep(); sleepNow();` y `sleepNow()` **empieza** con
+`MUSIC.stop()`. O sea que el volumen se desmonta con la tarea de audio todavía viva, y esa tarea lee
+el MP3 de la tarjeta por `HalFile::read()`. La ventana es exactamente la que describís.
+
+Fix, y es de ORDEN, no de lógica: `MUSIC.stop()` pasa a ser lo PRIMERO de `enterDeepSleep()`, antes
+de tocar nada. El `MUSIC.stop()` de `sleepNow()` se queda donde está — es idempotente y cubre los
+caminos del `setup()` (los re-sleep por wake espurio y por timer sin reloj) que no pasan por
+`enterDeepSleep()`.
+
+Por qué no lo resolví moviendo el desmontaje: `prepareForDeepSleep()` tiene que ser lo último
+justamente para que el log y el diario de batería lleguen a escribirse. Mover el corte de la música
+hacia arriba cierra la ventana sin tocar ese orden, que está así por dos defectos ya pagados
+(1.5.92 y 1.5.99).
+Reviewer final check:
 
 ## REV-065 — El detector de stalls no puede recuperar un loop que nunca vuelve
 State: OPEN
@@ -4233,6 +4267,21 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 - `pio run -e ws397` limpio. Sin OTA: `.ws397-build` sigue en 119.
 - Con esto queda cerrada la tanda "el aparato no vuelve" salvo la mitad del SDK de REV-060. Sigue la
   tanda de la tarjeta: REV-064 (desmonta la SD con la tarea de música viva) y REV-057.
+
+### 2026-09-21 — Executor (Claude) — la tanda de la tarjeta (REV-064, REV-057)
+- Los dos CONFIRMADOS, y los dos son de ORDEN, no de lógica.
+- REV-064: `enterDeepSleep()` desmonta el volumen y RECIÉN DESPUÉS `sleepNow()` corta la música, cuya
+  tarea está leyendo el MP3 de la tarjeta. `MUSIC.stop()` pasa a ser lo primero de
+  `enterDeepSleep()`. No moví el desmontaje: está último a propósito para que el log y el diario de
+  batería lleguen a escribirse (1.5.92, 1.5.99).
+- REV-057: el fallback del apagado fallido va ahora a `sleepNow()` y no a `enterDeepSleep()`. Y
+  aparece una consecuencia que el hallazgo no nombra: `enterDeepSleep()` repintaba SUSPENDIDO encima
+  del APAGADO recién pintado. En un panel biestable ese cartel es lo único que queda cuando el
+  aparato se muere, así que decir lo que el usuario NO pidió no es cosmético.
+- De paso, ese camino hereda la garantía de REV-060: tampoco puede quedarse sin fuente de despertar.
+- `pio run -e ws397` limpio. Sin OTA: `.ws397-build` sigue en 119.
+- Cerradas las dos primeras prioridades de mi orden (no vuelve / pierde datos), nueve hallazgos.
+  Sigue la de batería: REV-058, 062, 067, 061.
 
 # Session log
 
