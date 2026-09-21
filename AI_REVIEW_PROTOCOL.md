@@ -2591,7 +2591,7 @@ despertar. Y deja su línea: "el apagado no cortó: se suspende con la tarjeta y
 Reviewer final check:
 
 ## REV-058 — Timer-wake sin RTC vuelve a dormir con ALDO1-3 encendidos
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / deep sleep / battery
 
@@ -2635,6 +2635,23 @@ Arreglo esperado:
 - prueba estática/host del orden y prueba de hardware con RTC simulado/desconectado midiendo corriente.
 
 Executor response:
+Reviewer final check:
+
+Executor response: CONFIRMED. Ese camino apagaba A MANO el IMU y el amplificador y llamaba directo a
+`startDeepSleep()`, y esa copia se quedó corta cuando `sleepNow()` creció: le faltaban la suspensión
+del ES8311, la retención del enable del amplificador y —lo que más pesa— `railsOffForSleep()`. O sea
+que dormía con **ALDO1-3 encendidos**: panel, códec y amplificador alimentados. Y no es un caso de un
+minuto: con el RTC mudo son cinco arranques de 60 s y después queda dormido así hasta que alguien lo
+toque.
+
+Fix: **ese camino ya pasa por `sleepNow()`**, y con eso deja de ser la excepción que CLAUDE.md venía
+documentando ("el único camino que sigue sin pasar por `sleepNow()`"). Verifiqué que es seguro
+llamarlo desde el `setup()`: `MUSIC.stop()` está guardado por sus banderas (`active_`/`begun_`, y en
+el arranque no suena nada), `halTiltSensor` y `POWER_KEY` ya están inicializados en ese punto, y
+`armReminderWake()` no pisa el timer de 60 s porque sin reloj devuelve temprano.
+
+No lo arreglé completando la lista a mano, que era la otra opción: duplicar una lista de apagados es
+exactamente cómo ésta se separó de la verdad la primera vez.
 Reviewer final check:
 
 ## REV-059 — Suspender/apagar puede OOM por un cache de Noticias corrupto o enorme
@@ -2789,7 +2806,7 @@ Reviewer final check:
 
 
 ## REV-062 — La red de seguridad de reposo corta música legítima después de ~30 min
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: firmware / power policy / music / auto-sleep
 
@@ -2832,6 +2849,32 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Executor response: CONFIRMED la contradicción, y la resuelvo separando los dos casos en vez de
+elegir uno.
+
+Verificado: la red mide contra `lastUserInputTime`, `MUSIC.isSounding()` cuenta como `restBlocked`, y
+con `REST_AFTER_MS` = 30 s una reproducción continua sin tocar el aparato termina en deep sleep a los
+~30 min 30 s. Contradice la política de unas líneas antes, donde la música reinicia
+`lastActivityTime` justamente para que eso no pase.
+
+**Pero cortarla del todo tampoco es lo que el dueño quiere**: "la música con repetir no se corta
+nunca" está anotado en CLAUDE.md como un problema suyo, no como una función. O sea que las dos
+respuestas simples —dejarla infinita, o dejar la media hora— están las dos mal.
+
+Fix: el plazo depende de QUÉ bloquea.
+- La red de media hora existe para "algo dejó el reposo trabado y nadie va a destrabarlo" (una
+  Activity que pide `preventAutoSleep()` para siempre, un WiFi que quedó arriba). La música es lo
+  contrario: la puso una persona a propósito.
+- La música tiene su propio plazo, **tres horas** (`MUSIC_GIVE_UP_MS`): más que cualquier disco o
+  lista razonable, bastante menos que una batería.
+- Y si CAMBIA el motivo, el contador arranca de nuevo. Sin eso quedaba lo peor de los dos: dos horas
+  de música seguidas de otra cosa vencerían al instante, y media hora de otra cosa seguida de música
+  se llevaría las tres horas.
+- El log dice cuál de los dos venció, con el motivo por nombre.
+
+**Esto es una decisión de producto, no técnica**, así que la dejo escrita y a la vista: si el dueño
+quiere las tres horas más cortas o más largas, se cambia una constante.
+Reviewer final check:
 
 ## REV-063 — El rescate del panel consume su único intento aunque el power-cycle haya fallado
 State: OPEN
@@ -4282,6 +4325,20 @@ Cerrada la mitad de la ws397; la del SDK queda para una tanda propia (submódulo
 - `pio run -e ws397` limpio. Sin OTA: `.ws397-build` sigue en 119.
 - Cerradas las dos primeras prioridades de mi orden (no vuelve / pierde datos), nueve hallazgos.
   Sigue la de batería: REV-058, 062, 067, 061.
+
+### 2026-09-21 — Executor (Claude) — la tanda de batería (REV-058, REV-062)
+- REV-058 CONFIRMED: el reintento de "timer wake sin reloj" dormía con ALDO1-3 ENCENDIDOS porque su
+  lista de apagados a mano se quedó corta cuando `sleepNow()` creció. **Ahora pasa por `sleepNow()`**
+  y desaparece la última excepción que CLAUDE.md documentaba. Verificado que es seguro llamarlo desde
+  el `setup()`.
+- REV-062 CONFIRMED la contradicción, pero las dos respuestas simples están mal: dejar la música
+  infinita choca con lo que el dueño ya tenía anotado ("con repetir no se corta nunca"), y dejar la
+  media hora corta un disco. El plazo pasa a depender del motivo: tres horas para la música, media
+  para lo demás, y el contador reinicia si el motivo cambia. Queda marcado como decisión de producto.
+- `pio run -e ws397` limpio, suites en verde. Sin OTA: `.ws397-build` sigue en 119.
+- **Aviso al Reviewer y al dueño**: van ONCE arreglos acumulados desde 1.5.119, varios del tipo "el
+  aparato no vuelve a encender" (REV-060/066/070/073/074/078). Ninguno está en el aparato. Cuanto más
+  se acumula, más grande es el salto que nadie probó en hardware.
 
 # Session log
 
