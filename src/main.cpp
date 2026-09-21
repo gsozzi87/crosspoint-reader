@@ -485,6 +485,18 @@ static time_t reminderMissedDueAt = 0;
 // que eso, quedarse despierto la gasta entera y la alarma tampoco suena, porque
 // el aparato llega muerto.
 static constexpr uint32_t STAY_AWAKE_MAX_S = 30 * 60;
+// REV-073, 5ª vuelta: EL RTC EXTERNO ES LA TERCERA SALIDA, y yo la había dado
+// por inexistente. Es cierto que GPIO45 no sirve para el sueño PROFUNDO — no es
+// RTC GPIO —, pero sí despierta del REPOSO, y el firmware ya se apoya en eso
+// para las esperas largas (`msUntilNextAlarm()` devuelve 0 cuando el PCF85063
+// puede despertar). O sea que cuando el timer del ESP no se puede armar todavía
+// queda una fuente que conserva la hora EXACTA: la alarma del chip más light
+// sleep.
+//
+// Con este modo puesto: no se baja al sueño profundo (el timer que haría falta
+// es justo el que falló), se arma la alarma del chip y el reposo espera por
+// GPIO45. Al despertar, `checkTimeAlarms()` la hace sonar a su hora.
+static bool alarmRtcFallback = false;
 static void armReminderWake(const bool quiet = false) {
   if (reminderWakeArmed) return;
   time_t now = 0;
@@ -556,6 +568,7 @@ static void armReminderWake(const bool quiet = false) {
   wakeTimerArmed = true;
   reminderWakeMissed = false;
   reminderSleepAborts = 0;
+  alarmRtcFallback = false;  // el timer volvió: ya no hace falta el rescate por RTC
   if (!quiet) LOG_INF("MAIN", "Reminder wake in %llu s", (unsigned long long)seconds);
 }
 
@@ -941,6 +954,10 @@ static unsigned long msUntilNextAlarm() {
   // y el reposo puede durar toda la noche. Si NO puede, el timer del ESP se
   // corta a la hora y se vuelve a recontar: cuesta un despertar por hora, que
   // es infinitamente menos que perder el recordatorio.
+  // REV-073: en modo de rescate el timer del ESP es JUSTO el que falló, así que
+  // no se lo vuelve a pedir ni para las esperas cortas: manda el RTC y el
+  // reposo espera por GPIO45 el tiempo que haga falta.
+  if (alarmRtcFallback && rtcDespierta) return 0UL;
   if (seconds > 3600) return rtcDespierta ? 0UL : 3600UL * 1000UL;
   return static_cast<unsigned long>(seconds) * 1000UL;
 }
@@ -1125,6 +1142,23 @@ void enterDeepSleep(bool fromTimeout = false) {
     //    mejor que eso, y queda GRITADO en el log.
     time_t ahora = 0;
     const bool hayReloj = halClock.getEpochUtc(ahora);
+
+    // PRIMERO EL RTC EXTERNO, que conserva la hora EXACTA y casi no cuesta
+    // batería. Si el PCF85063 acepta la alarma y su INT está usable, no hay
+    // nada que degradar: se abandona el sueño profundo y el reposo espera por
+    // GPIO45. Sólo si esto tampoco se puede se cae a la política de abajo.
+    if (hayReloj && reminderMissedDueAt > ahora && RTC_ALARM.armAt(reminderMissedDueAt, ahora) &&
+        IDLE_SLEEP.rtcIntUsable()) {
+      alarmRtcFallback = true;
+      LOG_ERR("MAIN",
+              "!!! el despertador del sueño profundo no se pudo armar: manda la alarma del RTC y el "
+              "reposo (GPIO45 despierta a la hora exacta). NO se suspende hasta que suene");
+      reminderWakeArmed = false;
+      reminderRetries = 0;
+      loopwdt::resume();
+      return;
+    }
+
     const bool cerca =
         hayReloj && reminderMissedDueAt > 0 && reminderMissedDueAt - ahora <= static_cast<time_t>(STAY_AWAKE_MAX_S);
     if (cerca) {
@@ -1153,9 +1187,9 @@ void enterDeepSleep(bool fromTimeout = false) {
       return;
     }
     LOG_ERR("MAIN",
-            "!!! OJO: tras %lu intentos sigue sin poder armarse el despertador y el vencimiento está "
-            "lejos. Se suspende: quedarse despierto hasta entonces vaciaría la batería y la alarma "
-            "tampoco sonaría. Va a sonar TARDE, al primer botón",
+            "!!! OJO: tras %lu intentos no se pudo armar NI el timer NI la alarma del RTC, y el "
+            "vencimiento está lejos. Se suspende: quedarse despierto hasta entonces vaciaría la "
+            "batería y la alarma tampoco sonaría. Va a sonar TARDE, al primer botón",
             static_cast<unsigned long>(MAX_SLEEP_ABORTS));
     reminderSleepAborts = 0;
   }
@@ -2330,7 +2364,31 @@ void loop() {
   const bool cablePuesto = BoardConfig::isWS397() && (vbus != PowerKey::Vbus::Absent || gpio.isUsbConnected());
 
   const unsigned long sleepTimeoutMs = SETTINGS.getSleepTimeoutMs();
-  if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
+  // REV-073: con el rescate por RTC puesto, el auto-sueño NO puede llamar a
+  // `enterDeepSleep()`. El plazo ya está vencido, así que lo llamaría en cada
+  // pasada; la función abortaría siempre (el timer sigue sin armarse) y el loop
+  // se quedaría girando sobre el intento en vez de dejar que el reposo espere
+  // por GPIO45. La supresión es del MODO, no del tiempo: se levanta sola en
+  // cuanto el timer vuelve a armarse o el vencimiento se atiende.
+  // Y el modo se levanta SOLO cuando su vencimiento ya pasó: de ahí en adelante
+  // lo atiende `checkTimeAlarms()` y el aparato vuelve a poder dormir normal.
+  // Sin esto, una alarma atendida dejaría el sueño profundo suprimido para
+  // siempre, que es peor que el defecto que este modo arregla.
+  if (alarmRtcFallback) {
+    time_t ahoraFb = 0;
+    if (reminderMissedDueAt <= 0 || (halClock.getEpochUtc(ahoraFb) && ahoraFb >= reminderMissedDueAt)) {
+      alarmRtcFallback = false;
+      reminderMissedDueAt = 0;
+      LOG_INF("MAIN", "el vencimiento que esperaba por el RTC ya llegó: se puede volver a dormir");
+    }
+  }
+  if (alarmRtcFallback && sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
+    static unsigned long ultimoAviso = 0;
+    if (ultimoAviso == 0 || millis() - ultimoAviso > 5UL * 60UL * 1000UL) {
+      ultimoAviso = millis();
+      LOG_INF("MAIN", "no se baja a sueño profundo: hay una alarma esperando por el INT del RTC");
+    }
+  } else if (sleepTimeoutMs > 0 && millis() - lastActivityTime >= sleepTimeoutMs) {
     // REV-067: EL CABLE TAMBIÉN FRENA EL SUEÑO PROFUNDO, no sólo el reposo.
     //
     // El bloque de light sleep de más abajo ya decidía esto y lo dejaba escrito:
@@ -2497,7 +2555,13 @@ void loop() {
     // pasar con cada repique. Si la pantalla de turno no lo va a atender,
     // reposar no lo hace más tarde de lo que ya está: el tope no aplica.
     if (cap > 0 && cap < IdleSleep::MIN_REST_MS && !alarmWouldRingHere()) cap = 0;
-    if (sleepTimeoutMs > 0) {
+    // REV-073: con el rescate por RTC puesto el sueño profundo está suprimido,
+    // así que NO hay "lo que falta para dormir" que topear. Y el ocio ya pasó
+    // el plazo, o sea que esta cuenta daría 1 ms — justo por debajo de
+    // MIN_REST_MS — y el reposo no entraría NUNCA: 40 mA hasta que suene la
+    // alarma, que es lo contrario de lo que este modo busca. Sin el tope, el
+    // reposo espera por GPIO45 el tiempo que haga falta.
+    if (sleepTimeoutMs > 0 && !alarmRtcFallback) {
       const unsigned long ocio = millis() - lastActivityTime;
       const unsigned long faltaParaDormir = sleepTimeoutMs > ocio ? sleepTimeoutMs - ocio : 1;
       if (cap == 0 || faltaParaDormir < cap) cap = faltaParaDormir;

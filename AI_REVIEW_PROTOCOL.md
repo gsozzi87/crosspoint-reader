@@ -3767,7 +3767,7 @@ Reviewer final check:
 
 
 ## REV-073 — El wake de recordatorio se marca armado antes de saber si el timer de deep sleep quedó habilitado
-State: OPEN — usar RTC/light-sleep como fallback antes de degradar
+State: FIXED_PENDING_REVIEW (6ª vuelta)
 Severity: P1
 Subsystem: firmware / deep sleep / reminders / timer wake
 
@@ -3805,6 +3805,48 @@ Fix recomendado:
 
 Executor response:
 Reviewer final check:
+
+Executor 6ª vuelta (2026-09-21) — **tenías razón y la frase era mía**:
+"no hay otra fuente de wake que preserve el deadline" es **FALSA**, y está escrita ahí abajo en la
+5ª vuelta con todas las letras. Verificado contra el árbol antes de aceptarla:
+- `src/main.cpp`, `msUntilNextAlarm()`: `rtcDespierta = RTC_ALARM.armAt(due, now) && IDLE_SLEEP.rtcIntUsable();`
+  y con eso devuelve `cap = 0` para las esperas de más de una hora, o sea que el reposo ya se apoya
+  **sólo** en el INT del PCF85063 para esperar toda la noche;
+- `IdleSleep::armWakeSources()` arma GPIO45 con `gpio_wakeup_enable(..., GPIO_INTR_LOW_LEVEL)` y
+  comprueba el retorno.
+Lo que yo había mirado es el sueño PROFUNDO (ahí GPIO45 no sirve, no es RTC GPIO) y generalicé de
+ahí a "no existe". El reposo es la tercera salida y existe desde 1.5.48.
+
+Implementado tal cual lo planteaste, con los cuatro puntos:
+1. **`alarmRtcFallback`** (`src/main.cpp`), un estado explícito con su comentario de por qué.
+2. **`enterDeepSleep()`**: cuando `reminderWakeMissed`, lo PRIMERO que se intenta es
+   `RTC_ALARM.armAt(reminderMissedDueAt, ahora) && IDLE_SLEEP.rtcIntUsable()`. Si entra, se prende el
+   modo, se abandona el sueño profundo y se vuelve al loop. **Va antes que la política cerca/lejos**:
+   si el RTC puede, no hay nada que degradar.
+3. **`msUntilNextAlarm()`**: `if (alarmRtcFallback && rtcDespierta) return 0UL;` **antes** de la regla
+   de la hora, que era justo el caso que marcaste — con el vencimiento a menos de 60 min devolvía un
+   presupuesto para el timer del ESP, el mismo que acababa de fallar. Con cap 0 el reposo no arma
+   timer y espera por GPIO45.
+4. **Se levanta solo**: `armReminderWake()` lo apaga en cuanto el timer vuelve a armarse, y el loop lo
+   apaga cuando el vencimiento ya pasó (de ahí en adelante lo atiende `checkTimeAlarms()`). Sin eso,
+   una alarma atendida dejaría el sueño profundo suprimido para siempre, que es peor que el defecto.
+
+Dos cosas que aparecieron al implementarlo:
+- **El auto-deep-sleep hay que suprimirlo, como dijiste** — si no, con el plazo ya vencido llama a
+  `enterDeepSleep()` en cada pasada, la función aborta siempre y el loop gira sobre el intento.
+  Suprimido por MODO, no por tiempo, con una línea de log cada 5 min.
+- **Y también hay que sacar el tope del reposo**, que tu lista no menciona y sin lo cual el arreglo no
+  sirve de nada: el loop topea el reposo a "lo que falta para el sueño profundo"
+  (`faltaParaDormir`), y con el ocio ya pasado eso da **1 ms** — por debajo de `MIN_REST_MS` (500), o
+  sea que `IdleSleep::tick()` no reposaría NUNCA y el aparato quedaría a 40 mA hasta que suene la
+  alarma, que es lo contrario de lo que este modo busca. Con `alarmRtcFallback` ese tope no aplica.
+Si el RTC tampoco se puede armar (bus caído, AF trabada, `rtcIntUsable()` en false), recién ahí se
+cae a la política de la 5ª vuelta: cerca = no se duerme; lejos = tope de abortos y se suspende con el
+grito en el log. El texto de ese grito dice ahora "NI el timer NI la alarma del RTC".
+
+Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` sin defectos,
+`ascii_identifiers` en verde. **De hecho sigue siendo NEEDS_HARDWARE**: el camino sólo se ejecuta con
+inyección de fallo en `esp_sleep_enable_timer_wakeup()`, que no se puede provocar desde acá.
 
 Reviewer 5ª revisión (2026-09-21):
 La quinta vuelta mejora la política, pero la justificación "no hay otra fuente que preserve el
@@ -5377,7 +5419,194 @@ Subpasos previstos:
 
 La antigua "Pasada final transversal" pasa a ser **Paso 12**.
 
-Executor response:
+Executor response (2026-09-21) — **sin tocar código**, como pediste. Las ocho preguntas contestadas
+contra el HEAD, con lo medido donde había algo que medir.
+
+### 1. Inventario: qué SÓLO se puede administrar desde `/board`
+
+Recorrí las catorce vistas de `server/public/board/app.js` contra `getSettingsList()` y las Activities:
+
+| Sólo en `/board` | Por qué |
+|---|---|
+| Fuentes de noticias (alta, renombrar, probar, borrar, PubMed) | son **URLs**: se teclean |
+| Proveedor de IA, claves, modelos, STT, y la tabla de tokens | son **claves**: se teclean, y el aparato no las ve nunca a propósito |
+| Telegram de la app Biblioteca (api id, hash, teléfono, código) | ídem |
+| Paquete de contenido | catálogo del servidor, no del aparato |
+| Log del aparato | el aparato lo SUBE; leerlo es de la web |
+| Aparatos vinculados (renombrar, desvincular) | es de la CUENTA, no del aparato |
+| Memoria del asistente (editar y borrar) | ver abajo |
+
+Y lo que **ya existe en los dos lados** y no hay que duplicar más: idioma, voz hablada, sonidos de la
+interfaz, volumen, idioma del traductor y lugar del clima. Viajan por `settings{rev,…}` en
+`GET /api/hub` y `HubStore::applySettings` sólo los aplica si `rev` subió, así que lo que se toca en
+el aparato no se pisa.
+
+**Qué de esa lista debería existir también localmente: ninguno, y el motivo es la regla fija del
+producto** — el aparato NUNCA tiene teclado. Todo lo de la columna izquierda es texto largo y no
+dictable con sentido (una URL, una clave de API, un api hash). La única excepción real ya está
+resuelta y no por Ajustes: **la memoria del asistente se DA DE ALTA por voz** ("memoriza que…", palabra
+de orden estricta en `voice.ts`), y editarla o borrarla es lo que queda para la web. O sea que la
+respuesta honesta es "no hay nada que mudar", no "todavía no lo hicimos".
+
+Lo que SÍ tendría sentido local, y hoy no está, es **ver sin poder editar**: un renglón que diga
+cuántas fuentes de noticias hay y si el paquete llegó. Eso no es configuración, es diagnóstico, y su
+lugar natural es Ajustes → Sistema → Memoria, que ya es la pantalla de diagnóstico. Lo dejo
+propuesto, no lo meto en esta discusión.
+
+### 2. ¿Hay algún servicio de nube obligatorio para el uso básico?
+
+No, y se puede afirmar con el árbol en la mano. **Sin cuenta y sin WiFi** funcionan: leer EPUB de la
+tarjeta, el diccionario local, la música, el temporizador/cronómetro/pomodoro, las apps de Lua que no
+llaman a `cp.call`, la Biblia si está bajada a la tarjeta, las noticias ya bajadas, los recordatorios
+y alarmas de la caché, el modo memoria USB y **la OTA** (`/firmware/latest` se pide **sin** Bearer).
+El asistente sí necesita servidor —STT, LLM y TTS son del servidor por decisión de arquitectura—,
+pero eso es *no tener asistente*, no *no poder usar el aparato*.
+
+Y ya está formalizado en un lugar donde importa: `SetupActivity` deja **saltar** vincular y el lugar
+del clima con ABAJO, así que un aparato recién sacado de la caja llega a leer sin cuenta.
+
+**Propongo escribir "local-first, nube opcional" como regla explícita** en `CLAUDE.md`, con una
+consecuencia comprobable: ninguna pantalla que no sea del asistente puede quedar bloqueada por falta
+de vinculación. Hoy se cumple; lo que falta es que esté escrito para que no se rompa sin que nadie
+lo note, que es exactamente cómo se rompieron `/api/log` (1.5.82) y las tarjetas (1.5.86).
+
+### 3. ¿"Vincular con mi cuenta" se queda en Sistema o va a una pestaña Cuenta?
+
+**Se queda en Sistema, y no es pereza: una pestaña Cuenta tendría dos filas.** Lo que hay hoy es
+`STR_PAIR_TITLE` (`DevicePairActivity`) y la prueba de servidor; la URL y el token del servidor son
+`DynamicString` marcados `secret` desde 1.5.91 — se escriben desde la web, no se leen y no se
+teclean acá. Una pestaña de dos filas cuesta un quinto del ancho de la barra y le saca sitio a las
+otras cuatro.
+
+Y coincido con vos en no mezclar las dos decisiones: si algún día la cuenta gana contenido de verdad
+(ver el correo vinculado, desvincular desde el aparato, cambiar de cuenta), se discute ahí.
+
+### 4. ¿`UiTabListActivity` escala a 5 pestañas en 800×480?
+
+**Sí, estructuralmente — el tope es 8** (`MAX_TABS` en `UiTabListActivity.cpp:117`). Y el nombre de la
+quinta pestaña **no es cosmético**, así que lo medí en vez de estimarlo.
+
+La barra ocupa el ancho entero de la pantalla (`tabRect{frameRect.x, …, frameRect.width, …}`), Lyra
+usa `tabSpacing = 8` y slots de ancho igual. Con cinco pestañas:
+`(800 − 8×4) / 5 = **153 px por slot**`, y el rótulo va centrado y **sin truncar** — `fui::tabBar`
+no recorta: si no entra, se desborda sobre el vecino.
+
+Anchos reales del rótulo en NotoSans 8 negrita (la cara que Lyra usa para las pestañas), sumando los
+`advanceX` del header de la fuente:
+
+| | es | en | fr | de | pt | ru |
+|---|---|---|---|---|---|---|
+| **Archivos** | **71,8** | 37,4 | 64,3 | 65,1 | 74,8 | 60,9 |
+| Transferencia | 114,4 | 70,1 | — | — | — | — |
+| Almacenamiento | **141,8** | 64,8 | 76,3 | 71,5 | **138,9** | 101,1 |
+
+De paso, los cuatro que ya están: el más ancho es "Controles" (80,3) y "Commandes" (103,3).
+
+**Conclusión medida: "Archivos" entra con holgura en los seis idiomas** (máximo 74,8 de 153).
+"Almacenamiento" deja 11 px de margen en español y 14 en portugués **antes** de los insets de la
+pastilla, o sea que se toca con el vecino — y con `tabPillFullSlot` de RoundedRaff, directamente se
+desborda. Así que el nombre no se elige por gusto: **Archivos**, que además es el que vos preferías
+si la pestaña crece.
+
+No hace falta abreviar ni poner icono. `fui::TabItem` acepta icono (`iconAsset`), pero un icono de
+48 px por pestaña son cinco bitmaps nuevos y ningún problema que resolver.
+
+### 5. ¿Qué de Sistema pertenece de verdad a Archivos?
+
+Sistema tiene hoy diez entradas fijas más las de la ws397. Mi lectura, fila por fila:
+
+- **`STR_USB_DRIVE` → SÍ.** Es literalmente "prestá la tarjeta". Obvio, como decís.
+- **`STR_CLEAR_READING_CACHE` → SÍ.** Borra archivos de la tarjeta (los `.pxc` de las páginas
+  renderizadas). Es almacenamiento, no sistema.
+- **`STR_SD_FIRMWARE_UPDATE` → NO, aunque tiente.** Sí, lee un archivo de la tarjeta, pero lo que el
+  usuario está haciendo es **actualizar**, y su par (`STR_CHECK_UPDATES`) se queda en Sistema.
+  Separarlos deja la misma tarea en dos pestañas, que es peor que tenerla en la menos obvia.
+- **`STR_MANAGE_FONTS` → NO.** Baja tipografías a la tarjeta, pero vive en la pestaña **Lector** y
+  ahí es donde alguien la busca: está al lado del tamaño de letra.
+- **`STR_WIFI_NETWORKS`, `STR_CHECK_UPDATES`, `STR_LANGUAGE`, `STR_PAIR_TITLE`, `STR_SETTING_MEMORY`,
+  `STR_HUB_LOCATION` → NO**, coincido con vos.
+- **`STR_OPDS_SERVERS` y `STR_KOREADER_SYNC` → NO**, aunque muevan libros: son servidores remotos
+  (`CrossPointWebServerActivity` levanta WiFi), no la tarjeta. Y son de upstream.
+
+O sea: **dos filas seguras**, no una. Y suscribo tu regla — no mover nada más para llenar la pestaña.
+
+Sobre "espacio libre de la tarjeta": la API existe (`SDCardManager::sdTotalBytes()` y `sdUsedBytes()`),
+**pero `sdUsedBytes()` recorre la FAT** y por eso el propio SDK la cachea 20 s. Sirve para una pantalla
+en la que uno entra a propósito; **no** para la barra de estado ni para el hub. Si entra, entra acá.
+
+### 6. ¿Sacar "Transferencia de archivos" del lector rompe algún camino?
+
+**Aclaración de hecho: hoy no hay ninguna entrada de transferencia en el lector.** Lo verifiqué:
+`goToFileTransfer()` tiene **un solo** llamador en todo el árbol,
+`HomeActivity::onFileTransferOpen()` (`src/activities/home/HomeActivity.cpp:367`), o sea el mosaico
+**Transferir archivos de la home CLÁSICA** — no el lector. Y `NetworkModeSelectionActivity` se abre
+sólo desde `CrossPointWebServerActivity` (tres sitios, todos internos).
+
+Así que hay **dos puertas** al mismo modo USB y son de ramas distintas:
+1. Ajustes → Sistema → Modo memoria USB (`SettingAction::UsbDrive` → `goToUsbDrive()`), nuestra;
+2. Home clásica → Transferir archivos → primera opción del `menuModes[]`, de upstream.
+
+La segunda es la que toca con cuidado: la home clásica es de upstream y en la ws397 se llega por el
+mosaico Leer. **Mi recomendación: NO tocarla.** Una pestaña Archivos agrega una tercera puerta mejor
+señalizada; sacar la de upstream es cirugía en código ajeno para no ganar nada, y la regla de la casa
+es "no tocar la lógica upstream fuera de lo necesario para la placa".
+
+### 7. Seguridad: MSC y la contraseña de la cuenta
+
+Las dos comprobadas contra el árbol y **las dos ya están bien**:
+
+- **La tarjeta se le saca al firmware de verdad.** `HalStorage::beginUsbDrive()` llama a
+  `SDCard.detachFilesystemForRawAccess()` **antes** de `usbMassStorage.begin(blockDevice)`: el host
+  recibe el dispositivo de bloques y el firmware se queda sin sistema de archivos montado, no
+  "montado pero prometemos no tocarlo". Y `UsbDriveActivity::requiresExclusiveStorageLoop()` devuelve
+  **true** — es la única Activity del árbol que lo hace —, así que el loop no corre nada que quiera
+  almacenamiento mientras dura. Si `begin()` falla, se remonta y se dice en el log.
+- **El aparato nunca ve la contraseña de la cuenta, y no puede verla.** `DevicePairActivity` manda
+  `POST /api/pair/start {deviceId, token}` **sin Bearer** y muestra seis dígitos; quien escribe el
+  código es la sesión web, que ya está autenticada. El aparato se acuña su propio token de 32 bytes
+  de `esp_random` (`ServerCredentialStore::ensureToken()`) y **no se deriva de la MAC** a propósito.
+  Con eso, la identidad no necesita la contraseña en ningún momento.
+
+El único agujero conocido de esta zona está anotado y es **decisión tuya del dueño, no un olvido**:
+`POST /api/settings` del servidor web del aparato queda **sin credencial** para poder cargar la clave
+del WiFi desde el teléfono sobre el punto de acceso abierto (1.5.91). No lo toco.
+
+### 8. Tres variantes de UX, y cuál recomiendo
+
+**A — Quinta pestaña "Archivos"** (lo que propone el dueño).
+Barra: Pantalla · Lector · Controles · **Archivos** · Sistema. Contenido: Modo memoria USB, Limpiar
+caché de lectura, espacio de la tarjeta, y un pie corto diciendo dónde va cada cosa (`/Books`,
+`/Music`, `/Apps`, `/fonts`, `/dictionaries`) — que es justo lo que `cardlayout::ensure()` ya crea y
+hoy nadie explica.
+A favor: la función deja de estar perdida entre WiFi y OTA; medido, entra; hay dos filas honestas.
+En contra: cinco pestañas son más recorrido de palanca en todas las demás pantallas de Ajustes.
+
+**B — Dejarlo en Sistema pero arriba de todo, con la ayuda al lado.**
+Cero pestañas nuevas, cero riesgo de rótulo. Pero Sistema ya tiene dieciséis filas en la ws397 y el
+problema que el dueño describe —"queda perdida"— no se arregla subiéndola: sigue en la pestaña que se
+llama igual que el cajón de todo.
+
+**C — Mosaico "Archivos" en el hub** (la puerta afuera de Ajustes).
+Es la más visible de las tres y la peor: el hub tiene **trece** mosaicos y ya es una grilla 3×3 más
+una fila ancha; el catorce es una fila entera nueva, y transferir archivos no es una actividad
+cotidiana como Leer o Hablar — es algo que se hace el primer día y cada tanto.
+
+**Recomiendo A**, con el nombre **Archivos** (no Transferencia ni Almacenamiento, por lo medido en la
+4) y **sólo dos filas** al principio: Modo memoria USB y Limpiar caché de lectura, más el espacio de
+la tarjeta si el `sdUsedBytes()` cacheado se porta bien en el vidrio. Sin mudar nada más.
+
+**Lo que cuesta, sin sorpresas:** `categoryCount` es un `static constexpr int = 4` con su
+`categoryNames[]` al lado (`SettingsActivity.h:225`), así que la quinta pestaña son dos líneas más un
+`std::vector` nuevo y su rama en el `else if`. **El reparto es por `setting.category`, no por índice**
+—verificado en `SettingsActivity.cpp:94-135`—, o sea que mover `UsbDrive` y `ClearCache` de categoría
+**no le cambia el valor a nadie** y no cae en la trampa de 1.5.86 (esconder una fila de
+`getSettingsList()` le saca la clave al archivo de ajustes y al `/api/settings`; acá no se esconde
+nada, se recategoriza).
+Lo que sí hay que escribir a mano son **dos claves de traducción nuevas × seis idiomas**: el rótulo
+de la pestaña y el pie de ayuda.
+
+Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
+
 Reviewer final check:
 
 # Session log
@@ -5908,3 +6137,23 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   propia de Ajustes para Archivos/Transferencia/Almacenamiento.
 - Roadmap: REV-088 se convierte en Paso 11; la pasada final transversal pasa a Paso 12.
 - Sin implementación ni OTA por parte del Reviewer.
+
+
+### 2026-09-21 — Executor (Claude) — REV-073 (6ª) y respuesta a REV-088
+- **REV-073**: acepto la refutación entera. La frase "no hay otra fuente de wake que preserve el
+  deadline" que escribí en la 5ª vuelta es falsa: GPIO45/PCF85063 ya despierta del REPOSO y
+  `msUntilNextAlarm()` se apoya en eso desde 1.5.48. Implementado el fallback con estado explícito
+  (`alarmRtcFallback`), supresión del auto-deep-sleep y cap 0 para no volver a pedirle el timer al
+  ESP. **Y una cosa más que hacía falta y no estaba en tu lista**: sacar el tope
+  `faltaParaDormir` del reposo, que con el plazo vencido vale 1 ms y habría dejado el aparato a
+  40 mA sin reposar nunca — el arreglo no servía de nada sin eso.
+- **REV-088**: contestadas las ocho preguntas contra el HEAD, **sin tocar código**. Lo medido:
+  con cinco pestañas el slot son 153 px y el rótulo no se trunca, así que "Almacenamiento" (141,8
+  px en español) y "Armazenamento" (138,9) se tocan con el vecino y **"Archivos" (máx. 74,8 en los
+  seis idiomas) entra con holgura**. Recomiendo la variante A con ese nombre y **dos** filas:
+  Modo memoria USB y Limpiar caché de lectura.
+  Aclaración de hecho sobre tu pregunta 6: **hoy no hay entrada de transferencia en el lector** —
+  `goToFileTransfer()` tiene un solo llamador, el mosaico de la home clásica de upstream.
+- `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` sin defectos, `ascii_identifiers`
+  en verde.
+- **Sin OTA**: `.ws397-build` sigue en 120.
