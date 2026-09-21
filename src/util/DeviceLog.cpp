@@ -1,13 +1,13 @@
 #include "DeviceLog.h"
 
-#include <esp_system.h>
-
 #include <Arduino.h>
 #include <HalClock.h>
 #include <HalPowerManager.h>
 #include <HalStorage.h>
+#include <Logging.h>
 #include <WiFi.h>
 #include <esp_sleep.h>
+#include <esp_system.h>
 #include <ws397_version.h>
 
 #include <algorithm>
@@ -49,6 +49,21 @@ unsigned long lastClockPollMs = 0;
 bool clockPolled = false;
 bool wifiNoted = false;
 
+// LO QUE ESTABA HACIENDO CUANDO SE CAYÓ (REV-081). La cabecera de 1.5.96 dice
+// POR QUÉ se reinició ("se cayó por CAÍDA DE TENSIÓN"), y eso ya destrabó un
+// diagnóstico entero — pero no dice QUÉ estaba haciendo, y ése era el dato que
+// separaba alimentación de software. Las últimas 16 líneas viven en el anillo
+// de RAM del RTC, que sobrevive al reinicio... y que `HalSystem::begin()` borra
+// en todo arranque que no sea un pánico CAPTURADO. O sea que justo el brownout
+// y el watchdog sin marker —los dos que no dejan crash_report— llegaban a la
+// cabecera con la evidencia ya tirada.
+//
+// Por eso esto se copia ANTES de `HalSystem::begin()` y se guarda en heap hasta
+// que el log esté abierto (el anillo se pisa solo con las líneas del arranque
+// nuevo, que son decenas). En un arranque normal no se reserva ni un byte.
+char* retained = nullptr;
+constexpr size_t MAX_RETAINED = 3 * 1024;
+
 // EL FINAL DEL LOG TIENE QUE SOBREVIVIR A UN CUELGUE. Hasta 1.5.98 se bajaba a la
 // tarjeta cada 2 KB y nada más, así que un watchdog se llevaba hasta 2 KB de
 // las líneas anteriores: en 1.5.97/98 se diagnosticó el cuelgue de PWR mirando
@@ -59,7 +74,7 @@ bool wifiNoted = false;
 // línea es un error. Cuesta un sync de la FAT (~1-3 ms) por ráfaga, no por línea.
 unsigned long lastWriteMs = 0;
 unsigned long lastFlushMs = 0;
-constexpr unsigned long QUIET_FLUSH_MS = 250;   // sin líneas nuevas hace tanto: bajar lo que haya
+constexpr unsigned long QUIET_FLUSH_MS = 250;    // sin líneas nuevas hace tanto: bajar lo que haya
 constexpr unsigned long STREAM_FLUSH_MS = 1500;  // con líneas sin parar: bajar igual cada tanto
 
 void syncNow() {
@@ -191,6 +206,15 @@ void writeHeader() {
              resetReasonName());
     rawLine(line);
   }
+  if (retained != nullptr) {
+    rawLine("--- lo último que quedó en la RAM del RTC antes del reinicio (16 líneas; pueden ser de antes):\n");
+    rawLine(retained);
+    const size_t n = strlen(retained);
+    if (n > 0 && retained[n - 1] != '\n') rawLine("\n");
+    rawLine("--- fin de lo retenido\n");
+    free(retained);
+    retained = nullptr;
+  }
   snprintf(
       line, sizeof(line), "bateria %u%% | heap %lu KB libre (bloque mayor %lu KB) | psram %lu KB libre\n",
       static_cast<unsigned>(powerManager.getBatteryPercentage()), static_cast<unsigned long>(ESP.getFreeHeap() / 1024),
@@ -310,6 +334,20 @@ void emit(const char* line, const bool dedup) {
   }
 }
 }  // namespace
+
+void devlog::snapshotPreviousCrash(const bool force) {
+  if (retained != nullptr || (resetEsNormal() && !force)) return;
+  const std::string last = getLastLogs();
+  if (last.empty()) return;
+  // El final, que es lo más nuevo: `getLastLogs()` devuelve de lo más viejo a
+  // lo más nuevo y lo que se busca es lo de justo antes del reinicio.
+  const size_t n = std::min(last.size(), MAX_RETAINED);
+  char* buf = static_cast<char*>(malloc(n + 1));
+  if (buf == nullptr) return;  // sin heap no hay diagnóstico, pero tampoco hay arranque roto
+  memcpy(buf, last.c_str() + (last.size() - n), n);
+  buf[n] = '\0';
+  retained = buf;
+}
 
 void devlog::begin() {
   if (ready) return;

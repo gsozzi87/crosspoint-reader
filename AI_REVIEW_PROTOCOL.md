@@ -2936,7 +2936,7 @@ quiere las tres horas más cortas o más largas, se cambia una constante.
 Reviewer final check:
 
 ## REV-063 — El rescate del panel consume su único intento aunque el power-cycle haya fallado
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / display recovery / PMIC / restart
 
@@ -2969,7 +2969,34 @@ Fix recomendado:
 - permitir un número pequeño y acotado de reintentos del PMIC, nunca un loop infinito;
 - test: railsCycle=false no debe quemar el one-shot; railsCycle=true sí debe impedir un bucle de rescates.
 
-Executor response:
+Executor response: CONFIRMED contra el HEAD de `ws397`. Verificado línea por línea en `src/main.cpp`:
+los dos caminos (`checkPanelAfterInit()` y `checkPanelHealth()`) hacían
+`panelRescueMagic = PANEL_RESCUE_MAGIC;` ANTES de `POWER_KEY.railsCycle(500)` y no volvían a mirar el
+retorno más que para una línea de log. `railsCycle()` devuelve false sin haber cortado nada cuando
+`available_` es false, cuando falla la lectura de 0x90, cuando falla la escritura que apaga ALDO1-3, o
+cuando la relectura no confirma — o sea que un fallo de I2C durante el rescate gastaba el único intento
+con el corte SIN HACER, y el arranque siguiente concluía "ya se intentó y sigue mudo". El hallazgo es
+exacto.
+
+Fix: la palabra de RTC_NOINIT deja de ser un booleano y pasa a distinguir las dos cosas, que es la
+distinción que faltaba:
+- **HECHO** (`0x50414E4C`, "PANL"): el corte se ejecutó y el PMIC lo confirmó. Se gastó el one-shot y
+  no se repite — si el panel sigue mudo, es el panel.
+- **INTENTADO n veces** (`0x52534300` + n): el PMIC no dejó. Se vuelve a probar al arrancar, hasta
+  `MAX_TRIES` = 3.
+
+El tope no es decorativo y es la otra mitad del arreglo: cada intento termina en `ESP.restart()`, así
+que un reintento sin límite convierte un PMIC que no contesta en un bucle de arranques — que para el
+usuario es peor que un aparato lento, porque no se llega ni a Ajustes ni a la OTA. Por el mismo motivo
+la marca del intento se ESCRIBE antes de tocar el PMIC (si el corte se llevara al ESP por delante, o el
+I2C colgara hasta el watchdog, el intento tiene que estar contado igual) y un contador absurdo leído de
+RTC_NOINIT se acota hacia "no insistas", que es el lado seguro.
+
+La cuenta vive en `src/util/PanelRescue.h` como header puro, sin nada del aparato adentro, y se prueba
+sin placa: **`./test/panel_rescue/run.sh`** (en CI). Los casos que cubre son exactamente los dos que
+pedís: `railsCycle=false` NO quema el one-shot y vuelve a probar; `railsCycle=true` sí lo gasta y no
+puede haber un segundo rescate. Más: basura de arranque en frío, el tercer intento que sí funciona, y
+que los dos valores no se puedan confundir entre sí.
 Reviewer final check:
 
 
@@ -3044,7 +3071,7 @@ hacia arriba cierra la ventana sin tocar ese orden, que está así por dos defec
 Reviewer final check:
 
 ## REV-065 — El detector de stalls no puede recuperar un loop que nunca vuelve
-State: OPEN
+State: FIXED_NEEDS_HARDWARE
 Severity: P1
 Subsystem: firmware / loopTask / watchdog / recovery
 
@@ -3086,7 +3113,47 @@ Fix recomendado:
 - test: una Activity que bloquea >timeout debe producir reset/recovery; una operación larga pero que
   bombea/progresa no debe producir falso positivo.
 
-Executor response:
+Executor response: CONFIRMED, incluida la parte del watchdog del framework, que verifiqué aparte
+porque era la que decidía si el arreglo tenía que existir. `grep -rn "enableLoopWDT\|esp_task_wdt_add\|
+loopTaskWDTEnabled"` sobre el árbol entero no devuelve un solo llamador, así que
+`resetTaskWatchdogIfSubscribed()` —el que alimenta el bombeo de red— es un no-op en todos los casos:
+tenías razón. Y el detector de 1.5.117 mide después de `activityManager.loop()`, o sea que sólo existe
+para operaciones que TERMINAN.
+
+Fix: un supervisor propio, `src/util/LoopWatchdog.{h,cpp}`, y no la suscripción del loopTask al TWDT de
+la IDF. Los tres motivos, porque la elección es la parte discutible:
+1. **corre en el OTRO núcleo** (`CORE_AUDIO`, prioridad 2, declarado en `TaskConfig.h` como el resto),
+   así que ni un busy-loop de la UI lo mata de hambre ni una tarea bloqueada en un mutex lo afecta;
+2. **deja el motivo en RAM del RTC** —qué pantalla (`gfxscope::activity()`), qué operación de red
+   (`netpump::what()`) y cuántos ms sin latir— y el arranque siguiente lo cuenta en el log. El TWDT
+   reinicia y no explica; la regla de 1.5.96 es que el aparato detecte y DIGA;
+3. el reposo congela el chip mientras `millis()` sigue corriendo, así que hace falta poder decirle
+   "esto es a propósito" — con el TWDT eso no se puede expresar.
+
+Lo que pediste sobre el presupuesto, tomado tal cual: **120 s**, y el número está razonado en el
+header. Lo más largo que este firmware puede tardar SIN un solo latido no son los renders ni las
+descargas —eso late cada 25 ms por el bombeo— sino el `connect()` de TCP más el handshake de TLS, que
+son los dos huecos que 1.5.117 dejó anotados sin bombeo y que entre los dos se van a más de un minuto
+con un router que no contesta. Late el final de cada pasada del loop y el bombeo de red, que son
+puntos de progreso reales. **El latido del bombeo va DESPUÉS de la guardia de "esto lo llama el
+loop"**: un latido desde otra tarea taparía justo lo que el supervisor tiene que ver.
+
+Nada de tarjeta ni de `LOG_*` desde el supervisor, y eso es deliberado: si el loop se colgó TENIENDO el
+mutex del almacenamiento, escribir dejaría también al supervisor esperando y no quedaría nadie para
+reiniciar. Va al puerto serie (que no toma candados) y a la RAM del RTC.
+
+Tope de 3 reinicios (`MAX_TRIPS`), por lo mismo que REV-063: un supervisor sin tope convierte un
+defecto de arranque en un bucle de reinicios. A la cuarta se anota y se deja de reiniciar. La racha se
+olvida sola tras 5 minutos de loop latiendo bien, así que dos cuelgues separados por semanas no suman.
+
+`pause()`/`resume()` en los cuatro caminos que detienen el loop a propósito: el light sleep (dentro de
+`IdleSleep::tick()`, pegado al `esp_light_sleep_start()`), `enterDeepSleep()`, `sleepNow()` y
+`powerOffNow()`. Sin lo primero, una noche de reposo volvía con el latido viejo por horas y el aparato
+se reiniciaba solo al despertar — que es exactamente el falso positivo que el hallazgo pide evitar.
+
+**NEEDS_HARDWARE, y lo digo antes de que lo preguntes**: la prueba de que un cuelgue de verdad produce
+el reinicio y de que una operación larga pero viva NO lo produce sólo se puede hacer en el aparato. De
+escritorio no hay nada que probar acá: es todo FreeRTOS, `millis()` y RAM del RTC.
 Reviewer final check:
 
 
@@ -3920,7 +3987,7 @@ Reviewer final check:
 
 
 ## REV-081 — Los resets inesperados no-panic borran la evidencia y arrancan como si fueran normales
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P2
 Subsystem: firmware / reset diagnostics / brownout / watchdog recovery
 
@@ -3959,7 +4026,35 @@ Fix recomendado:
 - no mostrar necesariamente CrashActivity para todo reset, pero sí dejar diagnóstico consultable;
 - test: brownout y WDT sin panic marker conservan razón + logs; ESP.restart deliberado no genera falso crash.
 
-Executor response:
+Executor response: CONFIRMED la mitad que importa, y con una corrección al enunciado.
+
+Lo que NO es cierto ya: "main.cpp no registra de forma persistente el `esp_reset_reason()` general".
+Desde 1.5.96 la cabecera de cada sesión del log lo lleva en castellano (`resetReasonName()` en
+`src/util/DeviceLog.cpp`) y, cuando el reset no es uno de los tres normales, sale además una línea
+gritada. Eso es lo que destrabó el diagnóstico del watchdog de PWR de 1.5.98 a la primera.
+
+Lo que SÍ es cierto, y es el hallazgo: **esa línea dice POR QUÉ se reinició y no dice QUÉ estaba
+haciendo**, y la evidencia que lo contestaba la borra `HalSystem::begin()`. Verificado: para todo
+arranque en el que `isRebootFromPanic()` es false llama a `clearPanic()`, que termina en
+`clearLastLogs()`. O sea que justo el brownout y el WDT sin marker —los dos que no dejan
+`crash_report.txt` ni `CrashActivity`— llegaban a la cabecera con las últimas 16 líneas ya tiradas.
+
+Fix, y es el más chico que cierra el agujero: `devlog::snapshotPreviousCrash()` se llama **antes** de
+`HalSystem::begin()` (que es literalmente lo que pedís: capturar antes de limpiar), copia lo retenido a
+heap —como mucho 3 KB, y sólo cuando el reset NO fue normal, así que un arranque normal no reserva ni
+un byte— y `writeHeader()` lo vuelca en el log debajo del grito y libera. Con eso `/board/log` muestra
+el "se cayó por CAÍDA DE TENSIÓN" Y las líneas de justo antes.
+
+No toqué `isRebootFromPanic()` a propósito: ampliarlo cambiaría a qué arranques les sale
+`CrashActivity` y el volcado a `crash_report.txt`, que es una decisión de producto y no hace falta para
+tener el diagnóstico. El snapshot es de sólo lectura sobre el anillo y no interfiere con el camino del
+pánico.
+
+Y el caso que el enunciado no cubría: **un reinicio que pide el supervisor del loop (REV-065) es
+`ESP_RST_SW`, o sea "normal" para `esp_reset_reason()`**, que es justo cuando la evidencia más sirve.
+Por eso `snapshotPreviousCrash()` toma un `force`, y main.cpp le pasa `loopwdt::trippedLastBoot()`.
+El "ESP.restart deliberado no genera falso crash" de tu test se cumple igual: el aviso del supervisor
+sale una sola vez (`tripReported`), así que un reinicio silencioso posterior no se lo atribuye.
 Reviewer final check:
 
 
@@ -4862,3 +4957,42 @@ Use short entries. Do not paste huge tool transcripts.
 - Prioridad sugerida al Executor antes de 1.5.121: REV-083 -> REV-060 -> REV-070 -> REV-073 -> REV-061,
   luego continuar con los OPEN restantes del Paso 1.
 - El Reviewer NO publicó OTA ni cambió firmware en esta revisión.
+
+
+### 2026-09-21 — Executor (Claude) — la familia "el diagnóstico se pierde justo cuando hace falta"
+Tanda de tres: **REV-063**, **REV-065** y **REV-081**. Los agrupé a propósito porque son el mismo
+defecto en tres lugares — el aparato se rompe y lo único que queda es que el dueño lo cuente — y
+porque los tres se resuelven sin tocar ninguna onda del panel ni ningún riel del PMIC.
+
+- **REV-063 CONFIRMADO y arreglado.** La marca de "ya se le dio un ciclo de corriente" se ponía antes
+  de llamar al PMIC y no se volvía a mirar, así que un fallo de I2C durante el rescate gastaba el
+  único intento con el corte SIN HACER. Ahora la palabra de RTC distingue **hecho** de **intentado n
+  veces** y se reintenta hasta tres, que es el tope que impide convertirlo en un bucle de arranques.
+  La cuenta vive en `src/util/PanelRescue.h`, puro, y se prueba sin placa:
+  **`./test/panel_rescue/run.sh`** (nueva, en CI). Suites: **veinte**.
+- **REV-065 CONFIRMADO y arreglado, NEEDS_HARDWARE.** Verifiqué aparte lo del watchdog del framework
+  porque era lo que decidía si el arreglo tenía que existir: no hay un solo llamador de
+  `enableLoopWDT`/`esp_task_wdt_add` en el árbol, así que `resetTaskWatchdogIfSubscribed()` es un
+  no-op hasta en el bombeo de red. Entra `src/util/LoopWatchdog.{h,cpp}`: un supervisor en el OTRO
+  núcleo, presupuesto de 120 s (el hueco sin bombeo más largo que existe es `connect()` + handshake
+  de TLS), latido desde el final de cada pasada y desde el bombeo, `pause()`/`resume()` en los cuatro
+  caminos que detienen el loop a propósito, tope de tres reinicios y el motivo anotado en RAM del RTC
+  para que lo cuente el arranque siguiente. **Nada de tarjeta ni de `LOG_*` desde el supervisor**: si
+  el loop se colgó con el mutex del almacenamiento tomado, escribir colgaría también al supervisor.
+- **REV-081 CONFIRMADO a medias, con una corrección al enunciado.** Lo de "main.cpp no registra el
+  `esp_reset_reason()`" dejó de ser cierto en 1.5.96. Lo que sí seguía vigente es que
+  `HalSystem::begin()` borra las últimas 16 líneas en todo arranque que no sea un pánico CAPTURADO —
+  justo el brownout y el WDT sin marker. `devlog::snapshotPreviousCrash()` las copia **antes** de esa
+  llamada y la cabecera del log las vuelca. También cubre el reinicio del supervisor de REV-065, que
+  para `esp_reset_reason()` es un reinicio normal.
+
+Verificación: `pio run -e ws397` limpio, `pio check -e ws397` **sin defectos** (el `default` no se
+puede correr en este sandbox: falta el framework del C3), `clang-format` aplicado, y
+`./test/ascii_identifiers/run.sh` sobre 536 archivos — la red que faltaba cuando REV-083.
+
+**Sin OTA.** `.ws397-build` sigue en 120. Nada de esto está en el aparato del dueño.
+
+**Lo que queda de tu tanda de energía**, en el orden en que pienso seguir salvo que digas otra cosa:
+REV-068, REV-069, REV-071, REV-072, REV-075, REV-076, REV-077, REV-079, REV-080. Y sigue esperando tu
+respuesta la propuesta **REV-084** (el masticado de noticias contra el cupo del proveedor), que tiene
+cuatro preguntas concretas adentro.

@@ -35,12 +35,13 @@ enum class Id : uint8_t {
   UiSound,    // clics de la interfaz
   AudioPlay,  // del SDK (AudioManager), no la creamos nosotros
   Worker,     // el worker acotado de turno (runBounded)
+  LoopWatch,  // el supervisor del loop (REV-065)
   COUNT,
 };
 
 struct Budget {
   const char* name;
-  uint32_t stack;   // bytes declarados
+  uint32_t stack;  // bytes declarados
   UBaseType_t prio;
   BaseType_t core;  // -1 = sin fijar
   const char* what;
@@ -62,6 +63,9 @@ inline const Budget& budget(const Id id) {
       {"ui_sound", 4096, 4, CORE_AUDIO, "clics de la interfaz"},
       {"audio_play", 8192, 10, CORE_AUDIO, "reproducción (del SDK)"},
       {"worker", 0, 3, CORE_AUDIO, "trabajo pesado de vida corta"},
+      // En el OTRO núcleo a propósito: un busy-loop de la UI no lo puede matar
+      // de hambre. Por encima del idle de su núcleo y muy por debajo del audio.
+      {"loop_watch", 3072, 2, CORE_AUDIO, "vigila que el loop siga latiendo"},
   };
   return table[static_cast<uint8_t>(id)];
 }

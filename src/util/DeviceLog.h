@@ -13,6 +13,14 @@
 // "(x123)" al final. Sin eso un solo dibujo fuera de rango llenaba los 64 KB
 // con la misma línea y tapaba lo único que servía para depurar.
 namespace devlog {
+// REV-081. Copia las últimas líneas que quedaron en la RAM del RTC cuando el
+// reinicio NO fue de los normales (brownout, watchdog, pánico). Hay que
+// llamarla LO PRIMERO del arranque, antes de `HalSystem::begin()` —que borra
+// ese anillo en todo arranque que no sea un pánico capturado— y antes de que
+// las líneas del arranque nuevo lo pisen. Salen en la cabecera del log.
+// `force` es para el reinicio que pide el supervisor del loop (REV-065): para
+// `esp_reset_reason()` eso es un reinicio normal, y es justo cuando más sirve.
+void snapshotPreviousCrash(bool force = false);
 void begin();                  // opens the file, writes the session header
 void write(const char* line);  // called by Logging for every line
 void flush();                  // called before sleeping / rebooting
