@@ -3377,6 +3377,174 @@ Executor response:
 Reviewer final check:
 
 
+## REV-076 — El apagado software puede cortar con PWR todavía apretado tras vencer su espera
+State: OPEN
+Severity: P1
+Subsystem: firmware / PMIC power-off / PWR hold / recovery
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`powerOffNow()` documenta explícitamente que NO debe mandar el soft-off mientras PWR siga abajo,
+porque el PMIC puede volver a encender inmediatamente por PressOn y entrar en ciclo de
+apagar/encender mientras el usuario continúa sosteniendo la tecla.
+
+Sin embargo la implementación sólo espera:
+
+    while (POWER_KEY.pressed() && millis() - waitFrom < 8000) { ... }
+
+y al salir del while NO verifica por qué salió. Siempre registra:
+    "PWR soltado ...: se apaga"
+
+y procede a desmontar Storage y llamar `POWER_KEY.powerOff()`.
+
+Normalmente el hard-off del PMIC debería cortar a los 10 s totales y el código nunca llegaría al
+timeout. Pero REV-066 ya demuestra que esa configuración crítica puede no haber quedado armada.
+En ese estado degradado, el timeout de 8 s se cumple con PWR todavía físicamente mantenido y el
+firmware ejecuta exactamente la secuencia que su propio comentario identifica como peligrosa.
+
+Impacto visible:
+- posible ciclo apagar/encender mientras PWR permanece abajo;
+- arranques repetidos con la tecla mantenida;
+- para salir puede requerirse soltar en una ventana concreta o cortar alimentación/batería;
+- el log miente diciendo "PWR soltado" aunque la condición pueda seguir siendo true.
+
+Fix recomendado:
+- después del timeout comprobar nuevamente `POWER_KEY.pressed()`;
+- si sigue abajo, NO emitir soft-off;
+- permanecer en un estado seguro/recoverable hasta release o hasta que actúe un hard-off confirmado;
+- log diferenciado "release confirmado" vs "timeout con PWR aún abajo";
+- test: hard-off hardware deshabilitado + PWR >11 s no produce reboot loop ni soft-off con tecla abajo.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-077 — La alarma del PCF85063 se reprograma sin deshabilitar AIE ni rollback y puede quedar híbrida activa
+State: OPEN
+Severity: P2
+Subsystem: firmware / RTC alarm / light sleep / reminder wake
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`RtcAlarm::armAt()` reprograma segundo/minuto/hora/día directamente mientras una alarma anterior
+puede seguir con AIE habilitado. AIE recién se toca al final, al escribir Control_2.
+
+Además, los cinco campos se escriben en cadena. Si una escritura falla a mitad:
+- retorna false;
+- NO deshabilita AIE;
+- NO restaura los campos anteriores;
+- NO llama disarm();
+- `armedAt_` conserva el target viejo aunque el hardware ya puede contener mezcla de viejo+nuevo.
+
+`disarm()` tiene el problema complementario: ignora todos los resultados de write y pone
+`armedAt_=0` incluso si el RTC físico pudo quedar todavía armado.
+
+Así, el estado software puede divergir del PCF85063 y quedar una alarma parcial/stale activa.
+
+Impacto visible:
+- wake espurio en una hora/fecha que no corresponde;
+- INT del RTC puede bajar inesperadamente y cortar/rechazar light sleep;
+- la UI cree que no hay esa alarma porque `armedAt_` ya no representa necesariamente el hardware;
+- un fallo I2C transitorio durante reprogramación puede convertirse en comportamiento persistente
+  hasta la próxima escritura correcta.
+
+Fix recomendado:
+- deshabilitar AIE primero;
+- programar todos los campos;
+- verificar escrituras;
+- limpiar AF y habilitar AIE sólo al final;
+- ante cualquier fallo, dejar hardware explícitamente desarmado o conservar un estado "unknown";
+- `disarm()` sólo debe poner `armedAt_=0` tras confirmar el estado físico;
+- fault injection en cada escritura del bloque de alarma.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-078 — El wake GPIO del RTC se asume válido aunque gpio_wakeup_enable() pueda fallar
+State: OPEN
+Severity: P1
+Subsystem: firmware / light sleep / RTC INT / reminder wake
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`IdleSleep::probeRtcInt()` marca `rtcIntUsable_=true` si GPIO45 está HIGH durante el boot.
+Luego `msUntilNextAlarm()` considera que una alarma a más de una hora puede dormir SIN timer del
+ESP cuando:
+
+    RTC_ALARM.armAt(...) && IDLE_SLEEP.rtcIntUsable()
+
+En ese caso devuelve cap=0: la intención es que el PCF85063 despierte directamente por GPIO45.
+
+Pero al armar light sleep, `IdleSleep::armWakeSources()` hace:
+
+    if (rtcIntUsable_ && assigned(rtcIntPin_))
+        gpio_wakeup_enable(GPIO45, LOW_LEVEL);
+
+e IGNORA el `esp_err_t` de esa llamada.
+
+Por tanto "el pin estaba alto al boot" se usa como equivalente a "el kernel aceptó ese pin como
+fuente de wake", aunque son condiciones distintas. Si `gpio_wakeup_enable(GPIO45,...)` falla:
+- los botones sí quedan armados;
+- no hay timer porque cap=0 para alarmas >1 h;
+- `armWakeSources()` devuelve true;
+- entra a light sleep creyendo que GPIO45 puede despertarlo.
+
+Impacto visible:
+- recordatorio lejano puede no sonar;
+- el dispositivo puede permanecer en light sleep hasta que alguien toque un botón;
+- tampoco vuelve periódicamente al loop para detectar/corregir el problema;
+- desde afuera parece una alarma perdida con el aparato "dormido de más".
+
+Fix recomendado:
+- comprobar el retorno de `gpio_wakeup_enable()` para RTC_INT igual que se hace con los botones;
+- si falla, marcar RTC wake no usable para esa sesión y usar el fallback timer de hasta 1 h;
+- no permitir cap=0 apoyándose sólo en el probe eléctrico de boot;
+- test: RTC arm OK + GPIO45 wake enable falla => debe usar timer fallback y el recordatorio no se pierde.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-079 — La configuración de IRQ del PWR se da por hecha aunque sus writes puedan fallar
+State: OPEN
+Severity: P1
+Subsystem: firmware / PMIC / PWR key / interrupt configuration
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+En `PowerKey::begin()` se intenta dejar:
+- INTEN1 = 0;
+- INTEN3 = 0;
+- INTEN2 = `INTEN2_KEY_BITS` (POSITIVE/NEGATIVE/LONG/SHORT).
+
+Los tres `writeReg()` ignoran su retorno. Después se relee INTEN2 como `r41`, pero sólo se imprime
+en el log; no se valida contra `INTEN2_KEY_BITS` ni se reintenta.
+
+Dos fallos posibles:
+1. si falla INTEN2, las interrupciones de tecla pueden quedar deshabilitadas y el IRQ nunca baja
+   para press/release/LONG/SHORT; `PowerKey::pump()` en modo pin-latch retorna al ver IRQ HIGH y el
+   PWR software parece muerto;
+2. si falla apagar INTEN1/INTEN3, fuentes de batería/cargador/VBUS dejadas por OTP/vendor pueden seguir
+   tirando IRQ LOW, forzando polling I2C continuo o mezclando eventos ajenos con la state machine.
+
+Impacto visible:
+- PWR de 1-3 s puede no suspender/apagar aunque el botón físico funcione;
+- IRQ puede quedar pegada/polucionada y aumentar actividad/I2C;
+- sólo queda el hard-off de 10 s como escape si éste sí fue confirmado;
+- el dump r41 permite diagnosticarlo después, pero el firmware no reacciona.
+
+Fix recomendado:
+- configurar INTEN1/2/3 con write + readback;
+- 2-3 retries acotados;
+- no declarar `POWER_KEY.available_=true` con INTEN2 sin los bits de tecla esperados;
+- si fuentes extra no pueden apagarse, entrar en polling degradado explícito y no confiar en el latch del pin;
+- fault injection en cada INTEN write/readback.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
