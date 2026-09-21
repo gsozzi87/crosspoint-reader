@@ -889,6 +889,65 @@ function presetOf(c) {
   return current;
 }
 
+// LO QUE SE VIENE A MIRAR VA ARRIBA; LO QUE SE VIENE A TOCAR, ABAJO.
+//
+// Estas dos tarjetas estaban al MEDIO de esta pantalla, debajo de cuatro
+// formularios largos y del botón Guardar, y el dueño no las encontró: "ya
+// redesplegó pero no sale la tabla de en que gasta tokens". Se dibujaban — se
+// comprobó con Chromium contra el código desplegado —, pero una tarjeta que
+// hay que ir a buscar tres pantallazos más abajo, para el que la busca, no
+// existe.
+//
+// Y la de "El servidor" además sirve de testigo: si NO se ve, el navegador
+// está corriendo el JS viejo (pasa con la app guardada en la pantalla de
+// inicio, que se queda con el que ya tenía cargado) y lo que hay que hacer es
+// recargar, no volver a desplegar.
+function iaStatusCards() {
+  let html = "";
+  // El estado del servidor, arriba de todo: qué commit corre y desde cuándo.
+  // Estaba la pregunta "no aparece el servidor desplegado, que onda?" y no
+  // habia forma de contestarla desde la pagina. Ahora son dos renglones.
+  const b = S.build || {};
+  if (b.startedAt) {
+    const desde = new Date(b.startedAt);
+    const mins = Math.round((b.uptimeS || 0) / 60);
+    const hace = mins < 60 ? mins + " min" : Math.round(mins / 60) + " h";
+    html += '<div class="card"><h2>El servidor</h2>' +
+      '<div class="row"><div class="grow">Desplegado</div><div class="muted">' +
+      esc(b.commit ? b.commit + (b.branch ? " · " + b.branch : "") : "local (sin datos de Railway)") + "</div></div>" +
+      '<div class="row"><div class="grow">Arrancó</div><div class="muted">' +
+      esc(desde.toLocaleString()) + " · hace " + esc(hace) + "</div></div></div>";
+  }
+
+  const toks = S.tokens || [];
+  if (true) {
+    const dias = [];
+    for (const r of toks) if (dias.indexOf(r.day) < 0) dias.push(r.day);
+    const miles = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "k" : String(n));
+    html += '<div class="card" style="margin-top:12px"><h2>En qué se van los tokens</h2>' +
+      '<p class="hint">Lo que de verdad corre contra el tope del proveedor, que es por tokens y por modelo. Si te devuelve 429, acá se ve quién se lo comió.</p>';
+    // UNA TABLA VACIA Y UNA TARJETA QUE NO APARECE SON LO MISMO DESDE AFUERA.
+    // La primera version no dibujaba nada sin datos, asi que recien desplegado
+    // —cuando todavia no hubo ninguna llamada al modelo— la pantalla se veia
+    // igual que antes del despliegue y parecia que no se habia desplegado.
+    if (!toks.length) {
+      html += '<p class="muted">Todavía no se registró ninguna llamada al modelo. Se llena solo en cuanto uses Hablar, abras una noticia o preguntes algo.</p>';
+    }
+    for (const d of dias.slice(0, 3)) {
+      const filas = toks.filter((r) => r.day === d).sort((a, b) => b.total - a.total);
+      const total = filas.reduce((n, r) => n + r.total, 0);
+      html += '<h3 class="muted" style="margin:10px 0 4px">' + esc(d) + " · " + miles(total) + " tokens</h3>" +
+        '<div class="scroll"><table class="t"><tr><th>Qué</th><th>Modelo</th><th class="num">Llamadas</th><th class="num">Entrada</th><th class="num">Salida</th><th class="num">Total</th></tr>' +
+        filas.map((r) => "<tr><td>" + esc(r.subsystem) + "</td><td><small class=\"muted\">" + esc(r.model) + "</small></td>" +
+          '<td class="num">' + r.calls + '</td><td class="num">' + miles(r.prompt) + '</td><td class="num">' + miles(r.completion) +
+          '</td><td class="num">' + miles(r.total) + "</td></tr>").join("") + "</table></div>";
+    }
+    html += "</div>";
+  }
+
+  return html;
+}
+
 function iaView() {
   if (!cfg) { loadConfig().then(render).catch((e) => toast(e.message)); return '<p class="loading">Cargando…</p>'; }
   const presets = cfg.presets || {};
@@ -899,6 +958,7 @@ function iaView() {
   const se = cfg.search || { enabled: false, provider: "free", maxUses: 3, hasKey: false };
   const keyState = (has, alt) => '<span class="' + (has ? "ok" : "muted") + '" style="font-size:13px"> · ' + (has ? "clave puesta" : alt || "sin clave") + "</span>";
   let html = '<form data-form="ai">';
+  html += iaStatusCards();
   html += '<div class="card"><h2>Modelo de texto</h2><p class="hint">El que entiende lo que dices, responde y traduce. Se cambia sin tocar el aparato.</p>' +
     field("Proveedor", select("preset", Object.keys(presets).map((k) => [k, presets[k].label]), cur)) +
     '<div class="llmBase" ' + (p.provider === "anthropic" ? "hidden" : "") + ">" + field("URL", input("llmBase", cfg.llm.baseUrl || "", 'placeholder="https://api.groq.com/openai/v1" inputmode="url"')) + "</div>" +
@@ -940,47 +1000,6 @@ function iaView() {
   // proveedor son de TOKENS y por modelo: una pregunta de Hablar son ~600
   // tokens y la traduccion de un paper ~3000, asi que contarlas iguales es no
   // contar. Aca estan los tokens de verdad, por dia, modelo y subsistema.
-  // El estado del servidor, arriba de todo: qué commit corre y desde cuándo.
-  // Estaba la pregunta "no aparece el servidor desplegado, que onda?" y no
-  // habia forma de contestarla desde la pagina. Ahora son dos renglones.
-  const b = S.build || {};
-  if (b.startedAt) {
-    const desde = new Date(b.startedAt);
-    const mins = Math.round((b.uptimeS || 0) / 60);
-    const hace = mins < 60 ? mins + " min" : Math.round(mins / 60) + " h";
-    html += '<div class="card" style="margin-top:12px"><h2>El servidor</h2>' +
-      '<div class="row"><div class="grow">Desplegado</div><div class="muted">' +
-      esc(b.commit ? b.commit + (b.branch ? " · " + b.branch : "") : "local (sin datos de Railway)") + "</div></div>" +
-      '<div class="row"><div class="grow">Arrancó</div><div class="muted">' +
-      esc(desde.toLocaleString()) + " · hace " + esc(hace) + "</div></div></div>";
-  }
-
-  const toks = S.tokens || [];
-  if (true) {
-    const dias = [];
-    for (const r of toks) if (dias.indexOf(r.day) < 0) dias.push(r.day);
-    const miles = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(".", ",") + "k" : String(n));
-    html += '<div class="card" style="margin-top:12px"><h2>En qué se van los tokens</h2>' +
-      '<p class="hint">Lo que de verdad corre contra el tope del proveedor, que es por tokens y por modelo. Si te devuelve 429, acá se ve quién se lo comió.</p>';
-    // UNA TABLA VACIA Y UNA TARJETA QUE NO APARECE SON LO MISMO DESDE AFUERA.
-    // La primera version no dibujaba nada sin datos, asi que recien desplegado
-    // —cuando todavia no hubo ninguna llamada al modelo— la pantalla se veia
-    // igual que antes del despliegue y parecia que no se habia desplegado.
-    if (!toks.length) {
-      html += '<p class="muted">Todavía no se registró ninguna llamada al modelo. Se llena solo en cuanto uses Hablar, abras una noticia o preguntes algo.</p>';
-    }
-    for (const d of dias.slice(0, 3)) {
-      const filas = toks.filter((r) => r.day === d).sort((a, b) => b.total - a.total);
-      const total = filas.reduce((n, r) => n + r.total, 0);
-      html += '<h3 class="muted" style="margin:10px 0 4px">' + esc(d) + " · " + miles(total) + " tokens</h3>" +
-        '<div class="scroll"><table class="t"><tr><th>Qué</th><th>Modelo</th><th class="num">Llamadas</th><th class="num">Entrada</th><th class="num">Salida</th><th class="num">Total</th></tr>' +
-        filas.map((r) => "<tr><td>" + esc(r.subsystem) + "</td><td><small class=\"muted\">" + esc(r.model) + "</small></td>" +
-          '<td class="num">' + r.calls + '</td><td class="num">' + miles(r.prompt) + '</td><td class="num">' + miles(r.completion) +
-          '</td><td class="num">' + miles(r.total) + "</td></tr>").join("") + "</table></div>";
-    }
-    html += "</div>";
-  }
-
   html += '<div class="card" style="margin-top:12px"><h2><span class="grow">Cuánto sale cada consulta</span>' + (costs ? "" : '<button class="ghost small" data-act="costs-load">Ver</button>') + "</h2>";
   if (costs === "loading") html += '<p class="loading">Cargando…</p>';
   else if (costs) {
