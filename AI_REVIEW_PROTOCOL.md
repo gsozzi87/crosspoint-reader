@@ -3149,6 +3149,114 @@ Executor response:
 Reviewer final check:
 
 
+## REV-071 — En WS397 el deep sleep no ejecuta onExit() de la Activity actual
+State: OPEN
+Severity: P1
+Subsystem: firmware / deep sleep / Activity lifecycle / resource teardown
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+`enterDeepSleep()` contiene el comentario:
+    "Commit to sleeping before goToSleep() runs the outgoing activity's onExit()"
+
+pero en WS397 llama:
+    activityManager.goToSleep(fromTimeout, /*render=*/false);
+
+`goToSleep()` hace:
+    replaceActivity(makeUniqueNoThrow<SleepActivity>(...));
+    if (render) loop();
+
+y `replaceActivity()`, cuando ya existe una Activity, NO la reemplaza en ese instante:
+sólo deja `pendingActivity` + `pendingAction=Replace`. El `onExit()` de la Activity saliente
+se ejecuta recién cuando `ActivityManager::loop()` procesa ese pending action.
+
+Como WS397 pasa `render=false`, ese loop NO se ejecuta antes de continuar con:
+- Quick Resume / wallpaper;
+- WiFi off;
+- display.deepSleep();
+- devlog close;
+- Storage.prepareForDeepSleep();
+- sleepNow();
+- esp_deep_sleep_start().
+
+Resultado: en WS397 el deep sleep actual salta el lifecycle teardown de la pantalla activa.
+
+No es teórico: distintos `onExit()` hacen limpieza crítica:
+- VoiceActivity: `recorder.abort()`, `speech.stop()`, teardown de WiFi;
+- CrossPointWebServerActivity: para DNS/MDNS y radio;
+- AudioTestActivity: detiene/finaliza audio;
+- ReaderActivity: limpia estado de carga;
+- otras Activities liberan recursos o guardan estado.
+
+Impacto visible:
+- recursos/tareas pueden seguir vivos mientras se desmonta Storage o se apagan periféricos;
+- puede haber carreras de audio/red/SD justo en la transición a sueño;
+- el próximo boot puede ver estado que la Activity debía cerrar en onExit();
+- REV-064 es un síntoma específico de este patrón, pero aquí el defecto es general al lifecycle.
+
+Fix recomendado:
+- crear una fase de quiesce/exit SIN render que procese sincrónicamente el onExit de la Activity actual
+  antes de tocar WiFi/Storage/display;
+- no depender de `replaceActivity(...)+loop()` para un camino que no piensa volver al event loop;
+- asegurar también que stacked Activities con recursos se cierren según la política correcta;
+- test con Activities de red/audio/reader: PWR/deep sleep debe ejecutar teardown exactamente una vez
+  antes de `Storage.prepareForDeepSleep()`.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-072 — Si falla el write-1-to-clear del PMIC, se redecodifica el mismo PWR y el hold puede no avanzar
+State: OPEN
+Severity: P2
+Subsystem: firmware / PMIC PWR key / I2C resilience / input state machine
+
+Hallazgo CONFIRMADO por lectura de código en el Paso 1.
+
+En `PowerKey::pump()` se lee `REG_INTSTS2`, se extraen los bits de tecla y luego se intenta
+limpiarlos con write-1-to-clear:
+
+    if (key) {
+        writeReg(REG_INTSTS2, key);
+        decode(key, now, ...);
+    }
+
+El retorno de `writeReg()` se ignora.
+
+Si la lectura I2C funciona pero la escritura de clear falla:
+- el bit queda latcheado;
+- la línea IRQ puede seguir LOW;
+- el mismo `pump()` hace hasta 3 rondas y vuelve a leer el MISMO evento;
+- en la siguiente pasada puede volver a pasar otra vez.
+
+Para un press simple, `decode()` detecta "press mientras ya estaba pressed_":
+    if (press && pressed_ && !release) pressed_ = false;
+    if (press && !pressed_) {
+        pressed_ = true;
+        pressStartMs_ = at;
+    }
+
+Así que repetir el mismo press por un status que nunca se limpió puede reiniciar `pressStartMs_`
+una y otra vez. El hold de 1.2/3 s puede no alcanzar nunca sus umbrales aunque el usuario siga
+manteniendo PWR. Otros patrones (SHORT/LONG/ambos edges) también pueden reemitir transiciones viejas.
+
+Impacto visible:
+- PWR mantenido puede no mostrar la barra ni llegar al apagado software de 3 s;
+- taps/holds pueden parecer intermitentes o producir estados de tecla inconsistentes;
+- el hard-off del PMIC a 10 s sigue siendo el último escape SI REV-066 quedó correctamente armado.
+
+Fix recomendado:
+- comprobar el resultado del write-1-to-clear antes de decodificar como evento consumido;
+- si falla el clear, NO volver a tratar ciegamente el mismo status como evento nuevo;
+- aplicar retry acotado y/o recordar el status ya decodificado hasta confirmar su clear;
+- si la IRQ queda LOW tras retries, pasar a un modo degradado explícito con log sin duplicar eventos;
+- fault injection: read de INTSTS2 OK + clear write fallando varias veces no debe reiniciar el hold ni
+  emitir presses/releases duplicados.
+
+Executor response:
+Reviewer final check:
+
+
 ## REV-057 — Timer wake sin RTC entra a deep sleep con los rieles de panel/audio encendidos
 State: OPEN
 Severity: P1
