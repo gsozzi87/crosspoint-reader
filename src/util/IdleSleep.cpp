@@ -1,16 +1,14 @@
 #include "IdleSleep.h"
 
-#include <GfxRenderer.h>
-#include <soc/gpio_struct.h>
-
-#include "PowerKey.h"
-
 #include <BoardConfig.h>
+#include <GfxRenderer.h>
 #include <HalTiltSensor.h>
 #include <Logging.h>
 #include <driver/gpio.h>
 #include <esp_sleep.h>
+#include <soc/gpio_struct.h>
 
+#include "PowerKey.h"
 
 IdleSleep IDLE_SLEEP;
 
@@ -46,8 +44,8 @@ void IdleSleep::begin() {
   addPin(buttonMask_, BoardConfig::ACTIVE.pmicIrq);
   probeRtcInt();
   available_ = buttonMask_ != 0;
-  LOG_INF(TAG, "reposo %s: mascara 0x%08llx%s", available_ ? "listo" : "sin pines",
-          (unsigned long long)buttonMask_, rtcIntUsable_ ? " + INT del RTC" : "");
+  LOG_INF(TAG, "reposo %s: mascara 0x%08llx%s", available_ ? "listo" : "sin pines", (unsigned long long)buttonMask_,
+          rtcIntUsable_ ? " + INT del RTC" : "");
 }
 
 // El INT del RTC sólo sirve si en reposo está en alto: si flota bajo, cada
@@ -75,8 +73,10 @@ bool IdleSleep::armWakeSources(const unsigned long budgetMs) {
     // quien sea: sería dejar armada la bomba de 1.5.93-1.5.98 para el próximo
     // que enganche una ISR en un botón. Se dice y no se reposa.
     if (GPIO.pin[pin].int_ena != 0) {
-      LOG_ERR(TAG, "GPIO%u tiene una interrupción habilitada (tipo=%u): armarlo por nivel colgaría el aparato al "
-              "apretarlo, no se reposa", (unsigned)pin, (unsigned)GPIO.pin[pin].int_type);
+      LOG_ERR(TAG,
+              "GPIO%u tiene una interrupción habilitada (tipo=%u): armarlo por nivel colgaría el aparato al "
+              "apretarlo, no se reposa",
+              (unsigned)pin, (unsigned)GPIO.pin[pin].int_type);
       return false;
     }
     if (gpio_wakeup_enable(static_cast<gpio_num_t>(pin), GPIO_INTR_LOW_LEVEL) != ESP_OK) {
@@ -85,10 +85,36 @@ bool IdleSleep::armWakeSources(const unsigned long budgetMs) {
     }
   }
   if (rtcIntUsable_ && assigned(rtcIntPin_)) {
-    gpio_wakeup_enable(static_cast<gpio_num_t>(rtcIntPin_), GPIO_INTR_LOW_LEVEL);
+    // REV-078: el retorno NO se puede ignorar. Con el INT del RTC dado por
+    // usable, `msUntilNextAlarm()` deja dormir SIN timer del ESP cuando la
+    // alarma está a más de una hora: toda la noche colgada de que este pin
+    // despierte. Si el armado falló y nadie lo miró, no hay ninguna fuente y la
+    // alarma no suena — que es exactamente el modo de fallo de REV-060, una
+    // capa más adentro.
+    if (gpio_wakeup_enable(static_cast<gpio_num_t>(rtcIntPin_), GPIO_INTR_LOW_LEVEL) != ESP_OK) {
+      // Se BAJA la bandera: si no, `msUntilNextAlarm()` seguiría devolviendo
+      // "dormí sin timer" para siempre y cada intento fallaría igual. Bajándola,
+      // la política cae sola al timer de una hora, que es la degradación
+      // correcta: la alarma llega tarde en vez de no llegar.
+      rtcIntUsable_ = false;
+      LOG_ERR(TAG, "GPIO%d (INT del RTC) no acepta despertar: se deja de confiar en él y se vuelve al timer",
+              (int)rtcIntPin_);
+      return false;
+    }
   }
   if (esp_sleep_enable_gpio_wakeup() != ESP_OK) return false;
-  if (budgetMs > 0) esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(budgetMs) * 1000ULL);
+  if (budgetMs > 0) {
+    // REV-074: idem. Este presupuesto no es decorativo — `main.cpp` lo recorta a
+    // lo que falte para la próxima alarma Y para el deep sleep de los diez
+    // minutos. Sin timer, el reposo no vuelve para ninguna de las dos cosas: el
+    // aparato se queda en light sleep hasta que alguien apriete un botón, sin
+    // bajar nunca al sueño profundo. Es el mismo defecto que ya costó una noche
+    // de batería en 1.5.72, por el otro lado.
+    if (esp_sleep_enable_timer_wakeup(static_cast<uint64_t>(budgetMs) * 1000ULL) != ESP_OK) {
+      LOG_ERR(TAG, "el timer del reposo no se pudo armar (%lu ms): no se reposa", budgetMs);
+      return false;
+    }
+  }
   return true;
 }
 
