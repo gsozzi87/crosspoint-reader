@@ -49,6 +49,7 @@
 #include "DevicePairActivity.h"
 #include "MotionActivity.h"
 #include "TaskStatsActivity.h"
+#include "activities/reader/DictionaryDefinitionActivity.h"
 
 namespace fui = freeink::ui;
 
@@ -59,19 +60,59 @@ namespace {
 // solo se usan los primeros 5 bits de cada byte.
 constexpr uint8_t kSelectionTabBits[26] = {0};
 constexpr freeink::Icon kSelectionTab = {5, 26, 13, kSelectionTabBits};
+
+// REV-088: "3,2 GB libres de 8,0 GB". `sdUsedBytes()` recorre la FAT (el SDK la
+// cachea 20 s por eso mismo), así que esto se llama SÓLO desde la pestaña
+// Archivos. Sin tarjeta montada devuelve 0 y la fila dice que no hay tarjeta.
+std::string cardSpaceText() {
+  const uint64_t total = Storage.cardTotalBytes();
+  if (total == 0) return tr(STR_CARD_NO_CARD);
+  const uint64_t used = Storage.cardUsedBytes();
+  const uint64_t freeB = used <= total ? total - used : 0;
+  char buf[64];
+  snprintf(buf, sizeof(buf), tr(STR_CARD_SPACE_FORMAT), freeB / 1073741824.0, total / 1073741824.0);
+  return buf;
+}
 }  // namespace
 
-const StrId SettingsActivity::categoryNames[categoryCount] = {StrId::STR_CAT_DISPLAY, StrId::STR_CAT_READER,
-                                                              StrId::STR_CAT_CONTROLS, StrId::STR_CAT_SYSTEM};
+// REV-088: las pestañas de esta placa. **Archivos va antes que Sistema**, que
+// es donde el ojo la busca: primero lo que se mira (Pantalla, Lector),
+// después lo que se toca (Controles, Archivos) y al final el cajón.
+//
+// Sólo en la ws397, y el nombre tampoco es de gusto: la barra ocupa los 800 px
+// y con cinco pestañas el slot son (800 - 8x4) / 5 = 153 px, con el rótulo
+// centrado y SIN truncar — `fui::tabBar` no recorta, desborda. Medido en
+// NotoSans 8 negrita, que es la cara que Lyra usa para las pestañas:
+// "Archivos" mide 71,8 px en castellano y 74,8 en portugués, el peor de los
+// seis idiomas; "Almacenamiento" mide 141,8 y "Armazenamento" 138,9, o sea que
+// se tocan con el vecino antes de los márgenes de la pastilla. Por eso
+// Archivos y no Almacenamiento.
+void SettingsActivity::buildTabTable() {
+  tabs_.clear();
+  tabs_.push_back({StrId::STR_CAT_DISPLAY, &SettingsActivity::displaySettings});
+  tabs_.push_back({StrId::STR_CAT_READER, &SettingsActivity::readerSettings});
+  tabs_.push_back({StrId::STR_CAT_CONTROLS, &SettingsActivity::controlsSettings});
+  if (BoardConfig::isWS397()) {
+    tabs_.push_back({StrId::STR_CAT_FILES, &SettingsActivity::filesSettings});
+  }
+  tabs_.push_back({StrId::STR_CAT_SYSTEM, &SettingsActivity::systemSettings});
+}
 
 SettingsActivity::SettingsActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-    : UiTabListActivity("Settings", renderer, mappedInput) {}
+    : UiTabListActivity("Settings", renderer, mappedInput) {
+  // En el constructor y no en `onEnter()`: `UiTabListActivity::onEnter()`
+  // pregunta `tabCount()` ANTES de que corra `rebuildSettingsLists()`, y con la
+  // tabla vacía la barra saldría sin pestañas. El juego depende del modelo, que
+  // no cambia en caliente.
+  buildTabTable();
+}
 
 void SettingsActivity::rebuildSettingsLists() {
   displaySettings.clear();
   readerSettings.clear();
   controlsSettings.clear();
   systemSettings.clear();
+  filesSettings.clear();
 
   // En la ws397 buena parte del menú de upstream no tiene con qué funcionar: no
   // hay teclado (todo entra por voz), no se sincroniza con KOReader, no se
@@ -141,7 +182,11 @@ void SettingsActivity::rebuildSettingsLists() {
     systemSettings.push_back(SettingInfo::Action(StrId::STR_KOREADER_SYNC, SettingAction::KOReaderSync));
     systemSettings.push_back(SettingInfo::Action(StrId::STR_OPDS_SERVERS, SettingAction::OPDSBrowser));
   }
-  systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
+  // REV-088: en la ws397 esta fila se fue a la pestaña Archivos (se arma abajo,
+  // entera y en un solo lugar). En las demás placas se queda donde estaba.
+  if (!isWs397) {
+    systemSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
+  }
   // OTA fetches this board's own release asset (see OtaUpdater); boards whose
   // asset isn't published yet just report no update available.
   systemSettings.push_back(SettingInfo::Action(StrId::STR_CHECK_UPDATES, SettingAction::CheckForUpdates));
@@ -149,12 +194,6 @@ void SettingsActivity::rebuildSettingsLists() {
   // tarjetas, sonidos, la Biblia entera) vive en el servidor y se baja acá, o
   // solo, detrás de la actualización de firmware.
   if (isWs397) {
-#if FREEINK_CAP_USB_MSC
-    // La tarjeta como disco por USB: es la forma de cargar libros y MP3 sin
-    // sacarla del aparato, así que va acá arriba y no escondida en Transferir
-    // archivos.
-    systemSettings.push_back(SettingInfo::Action(StrId::STR_USB_DRIVE, SettingAction::UsbDrive));
-#endif
     // "Descargar contenido" salió del menú (1.5.68): el paquete se baja solo al
     // sincronizar cuando hay algo nuevo, y después de cada actualización.
   }
@@ -256,23 +295,40 @@ void SettingsActivity::rebuildSettingsLists() {
                         SettingInfo::Action(StrId::STR_MANAGE_FONTS, SettingAction::DownloadFonts));
   readerSettings.push_back(SettingInfo::Action(StrId::STR_CUSTOMISE_STATUS_BAR, SettingAction::CustomiseStatusBar));
 
-  // Update currentSettings pointer and count for the active category
-  switch (selectedCategoryIndex) {
-    case 0:
-      currentSettings = &displaySettings;
-      break;
-    case 1:
-      currentSettings = &readerSettings;
-      break;
-    case 2:
-      currentSettings = &controlsSettings;
-      break;
-    case 3:
-      currentSettings = &systemSettings;
-      break;
+  // --- REV-088: la pestaña Archivos, entera y en un solo lugar ---
+  //
+  // Dos filas que hacen algo y dos que informan, y nada más. La regla del
+  // revisor, que suscribo: no se mueve nada más acá sólo para llenar la
+  // pestaña. `Actualizar desde la tarjeta` y `Administrar tipografías` leen de
+  // la tarjeta pero lo que el usuario está haciendo es actualizar y leer, y sus
+  // pares viven en Sistema y en Lector; separarlos dejaría la misma tarea
+  // repartida en dos pestañas, que es peor que tenerla en la menos obvia.
+  if (isWs397) {
+#if FREEINK_CAP_USB_MSC
+    // La razón de ser de la pestaña: prestarle la tarjeta al teléfono o a la
+    // computadora para cargar libros, MP3, diccionarios y apps de Lua.
+    filesSettings.push_back(SettingInfo::Action(StrId::STR_USB_DRIVE, SettingAction::UsbDrive));
+#endif
+    filesSettings.push_back(SettingInfo::Action(StrId::STR_CLEAR_READING_CACHE, SettingAction::ClearCache));
+    // El espacio de la tarjeta se lee SÓLO acá: `sdUsedBytes()` recorre la FAT
+    // y por eso el propio SDK la cachea 20 s. Sirve en una pantalla en la que
+    // se entra a propósito; no en la barra de estado ni en el hub.
+    filesSettings.push_back(SettingInfo::Info(StrId::STR_CARD_SPACE, [] { return cardSpaceText(); }));
+    filesSettings.push_back(SettingInfo::Action(StrId::STR_CARD_FOLDERS, SettingAction::CardFolders));
   }
-  settingsCount = static_cast<int>(currentSettings->size());
+
+  // Update currentSettings pointer and count for the active category
+  pointCurrentSettings();
   rebuildRowItems();
+}
+
+// El único lugar donde un índice de pestaña se convierte en una lista. Eran DOS
+// `switch` idénticos y copiados; con una pestaña que sólo existe en una placa,
+// dos copias se habrían separado sin que nadie lo viera.
+void SettingsActivity::pointCurrentSettings() {
+  if (selectedCategoryIndex < 0 || selectedCategoryIndex >= tabCount()) selectedCategoryIndex = 0;
+  currentSettings = &(this->*(tabs_[selectedCategoryIndex].list));
+  settingsCount = static_cast<int>(currentSettings->size());
 }
 
 void SettingsActivity::onEnter() {
@@ -291,21 +347,7 @@ void SettingsActivity::onEnter() {
 
 void SettingsActivity::selectCategory(const int categoryIndex) {
   selectedCategoryIndex = categoryIndex;
-  switch (selectedCategoryIndex) {
-    case 0:
-      currentSettings = &displaySettings;
-      break;
-    case 1:
-      currentSettings = &readerSettings;
-      break;
-    case 2:
-      currentSettings = &controlsSettings;
-      break;
-    case 3:
-      currentSettings = &systemSettings;
-      break;
-  }
-  settingsCount = static_cast<int>(currentSettings->size());
+  pointCurrentSettings();
   activeNav().top = 0;  // category switches start the list at the top (no per-tab memory here)
   rebuildRowItems();
 }
@@ -384,8 +426,8 @@ void SettingsActivity::stepTab(const int direction) {
   // Ring position 0 stays on the tab bar; a row selection collapses to the
   // new category's first row (per-tab memory is deliberately not kept here).
   const bool onTabBar = ringPos() == 0;
-  selectedCategoryIndex = direction > 0 ? ButtonNavigator::nextIndex(selectedCategoryIndex, categoryCount)
-                                        : ButtonNavigator::previousIndex(selectedCategoryIndex, categoryCount);
+  selectedCategoryIndex = direction > 0 ? ButtonNavigator::nextIndex(selectedCategoryIndex, tabCount())
+                                        : ButtonNavigator::previousIndex(selectedCategoryIndex, tabCount());
   selectCategory(selectedCategoryIndex);
   activeNav().selected = onTabBar ? 0 : 1;
   requestUpdate();
@@ -538,6 +580,14 @@ void SettingsActivity::toggleCurrentSetting() {
       case SettingAction::CheckForUpdates:
         startActivityForResult(makeUniqueNoThrow<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
         break;
+      case SettingAction::CardFolders:
+        // El visor de siempre, el mismo de una nota o de un capítulo de la
+        // Biblia. No hay nada que configurar: es lo que hay que saber para
+        // copiar archivos por el modo memoria USB y no adivinar dónde van.
+        startActivityForResult(makeUniqueNoThrow<DictionaryDefinitionActivity>(
+                                   renderer, mappedInput, tr(STR_CARD_FOLDERS), tr(STR_CARD_FOLDERS_HELP)),
+                               resultHandler);
+        break;
       case SettingAction::DownloadAssets:
         startActivityForResult(makeUniqueNoThrow<AssetSyncActivity>(renderer, mappedInput), resultHandler);
         break;
@@ -660,6 +710,12 @@ std::string SettingsActivity::settingValueText(const SettingInfo& setting) {
       return I18N.get(setting.enumValues[value]);
     }
     return "";
+  }
+  // REV-088: sólo las filas que PIDEN que se pinte su texto. Los otros STRING
+  // de la lista son la URL y el token del servidor, marcados `secret`: pintar
+  // todos los STRING sacaría el token a la pantalla.
+  if (setting.type == SettingType::STRING && setting.readOnlyText && setting.stringGetter) {
+    return setting.stringGetter();
   }
   if (setting.type == SettingType::VALUE && setting.valuePtr == nullptr && setting.valueGetter) {
     return std::to_string(setting.valueGetter()) + " %";

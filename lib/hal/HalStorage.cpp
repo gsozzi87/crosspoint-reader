@@ -93,6 +93,16 @@ void HalStorage::endUsbDrive() {
 #endif
 }
 
+uint64_t HalStorage::cardTotalBytes() const {
+  StorageLock lock;
+  return SDCard.sdTotalBytes();
+}
+
+uint64_t HalStorage::cardUsedBytes() {
+  StorageLock lock;
+  return SDCard.sdUsedBytes();
+}
+
 UsbDriveState HalStorage::usbDriveState() const {
 #if FREEINK_CAP_USB_MSC
   StorageLock lock;

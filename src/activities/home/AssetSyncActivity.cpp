@@ -23,6 +23,7 @@
 #include "activities/network/WifiSelectionActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/CardRead.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
@@ -73,15 +74,7 @@ std::string sha16Of(const std::string& data) {
 }
 
 std::string readWholeFile(const char* path) {
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, path, f)) return {};
-  std::string raw;
-  raw.resize(f.size());
-  const int got = raw.empty() ? 0 : f.read(&raw[0], raw.size());
-  f.close();
-  if (got <= 0) return {};
-  raw.resize(static_cast<size_t>(got));
-  return raw;
+  return cardread::readCapped(TAG, path, cardread::CAP_JSON_CACHE);  // REV-059
 }
 
 // Busca el sha de un id dentro del manifiesto local crudo, sin armar un mapa:
@@ -152,7 +145,7 @@ int purgeRetiredApps(const std::string& raw, const std::vector<AssetSyncActivity
   int gone = 0;
   size_t at = raw.find("\"apps/");
   while (at != std::string::npos) {
-    const size_t start = at + 1;                  // sin la comilla de apertura
+    const size_t start = at + 1;  // sin la comilla de apertura
     const size_t end = raw.find('"', start);
     if (end == std::string::npos) break;
     const std::string id = raw.substr(start, end - start);

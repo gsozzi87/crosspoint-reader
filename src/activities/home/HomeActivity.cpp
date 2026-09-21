@@ -24,7 +24,8 @@
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Recents, File transfer, Settings
+  // File Browser, Recents, Settings; y la transferencia sólo donde va (REV-088).
+  int count = showsFileTransfer() ? 4 : 3;
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -315,9 +316,14 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Recent, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_MENU_RECENT_BOOKS)};
+  std::vector<UIIcon> menuIcons = {Folder, Recent};
+  if (showsFileTransfer()) {  // REV-088
+    menuItems.push_back(tr(STR_FILE_TRANSFER));
+    menuIcons.push_back(Transfer);
+  }
+  menuItems.push_back(tr(STR_SETTINGS_TITLE));
+  menuIcons.push_back(Settings);
 
   if (hasOpdsServers) {
     menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));

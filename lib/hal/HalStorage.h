@@ -35,6 +35,12 @@ class HalStorage {
   bool disconnectUsbDriveHost();
   void endUsbDrive();
   UsbDriveState usbDriveState() const;
+  // REV-088: espacio de la tarjeta, para la pestaña Archivos. `usedBytes()`
+  // recorre la FAT (el SDK lo cachea 20 s por eso), así que se llama desde una
+  // pantalla en la que se entra a propósito y NUNCA desde el render de la barra
+  // de estado ni del hub. Sin tarjeta montada devuelven 0.
+  uint64_t cardTotalBytes() const;
+  uint64_t cardUsedBytes();
   std::vector<String> listFiles(const char* path = "/", int maxFiles = 200);
   // Read the entire file at `path` into a String. Returns empty string on failure.
   String readFile(const char* path);

@@ -21,6 +21,7 @@
 #include "components/Selection.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
+#include "util/CardRead.h"
 #include "voice/Lang.h"
 #include "voice/SpeechToText.h"
 
@@ -40,13 +41,9 @@ constexpr size_t MAX_MONTH_BODY = 96 * 1024;  // más que esto, se pide solo el 
 // La caché entera: {months:[{month,savedAt,days:[{d,c,t}]}], days:[{date,savedAt,items:[...]}]}
 bool readCache(JsonDocument& doc) {
   if (!Storage.exists(CACHE)) return false;
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, CACHE, f)) return false;
-  std::string raw;
-  raw.resize(f.size());
-  const int got = raw.empty() ? 0 : f.read(&raw[0], raw.size());
-  f.close();
-  if (got <= 0) return false;
+  // REV-059: con tope. Una caché corrupta se ignora, no aborta.
+  const std::string raw = cardread::readCapped(TAG, CACHE, cardread::CAP_JSON_CACHE);
+  if (raw.empty()) return false;
   return deserializeJson(doc, raw) == DeserializationError::Ok;
 }
 

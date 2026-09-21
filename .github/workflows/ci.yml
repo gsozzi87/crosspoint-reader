@@ -283,6 +283,9 @@ jobs:
       - name: Rescate por corte de corriente
         run: ./test/rescue_state/run.sh
 
+      - name: Lectura acotada de la tarjeta
+        run: ./test/card_read/run.sh
+
       - name: Resolución de nombres fijada
         run: ./test/net_lookup/run.sh
 

@@ -21,6 +21,7 @@
 #include "components/UITheme.h"
 #include "fontIds.h"
 #include "news/NewsPack.h"
+#include "util/CardRead.h"
 #include "util/UrlEncode.h"
 #include "voice/Lang.h"
 
@@ -88,13 +89,8 @@ void NewsActivity::fail(StrId why, std::string detail) {
 
 bool NewsActivity::loadCache() {
   if (!Storage.exists(CACHE)) return false;
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, CACHE, f)) return false;
-  std::string raw;
-  raw.resize(f.size());
-  const int got = f.read(&raw[0], raw.size());
-  f.close();
-  if (got <= 0) return false;
+  const std::string raw = cardread::readCapped(TAG, CACHE, cardread::CAP_JSON_CACHE);  // REV-059
+  if (raw.empty()) return false;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
   feeds.clear();
@@ -169,13 +165,8 @@ std::string NewsActivity::articlePath(const int feed, const int item) const {
 }
 
 bool NewsActivity::readArticle(const std::string& path, std::string& title, std::string& text) {
-  HalFile f;
-  if (!Storage.openFileForRead(TAG, path, f)) return false;
-  std::string raw;
-  raw.resize(f.size());
-  const int got = f.read(&raw[0], raw.size());
-  f.close();
-  if (got <= 0) return false;
+  const std::string raw = cardread::readCapped(TAG, path, cardread::CAP_ARTICLE);  // REV-059
+  if (raw.empty()) return false;
   const size_t nl = raw.find('\n');
   title = raw.substr(0, nl);
   text = nl == std::string::npos ? "" : raw.substr(nl + 1);
