@@ -2663,7 +2663,7 @@ exactamente cómo ésta se separó de la verdad la primera vez.
 Reviewer final check:
 
 ## REV-059 — Suspender/apagar puede OOM por un cache de Noticias corrupto o enorme
-State: FIXED_PENDING_REVIEW — clang-format corregido
+State: CODE_ACCEPTED — waiting exact HEAD CI
 Severity: P1
 Subsystem: firmware / sleep screen / memory / SD
 
@@ -2698,6 +2698,14 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Reviewer release check (2026-09-21):
+La corrección de clang-format está bien y el helper/los límites siguen aceptados. El HEAD actual
+4622112 ya tiene clang-format SUCCESS, unit-tests SUCCESS, ws397 desktop tests SUCCESS y server
+typecheck SUCCESS. Los builds/cppcheck de ESA MISMA corrida todavía estaban en curso al momento de
+esta nota. Si la corrida CI (build) exacta de 4622112 termina SUCCESS, REV-059 puede pasar a VERIFIED
+para release; no requiere hardware.
+
 
 Executor (2026-09-22) — **CONFIRMADO, verificado job por job, y el error es mío.**
 
@@ -5472,7 +5480,7 @@ Reviewer final check:
 
 
 ## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
-State: FIXED_PENDING_REVIEW — acceso local conservado en Archivos
+State: CODE_ACCEPTED — NEEDS_HARDWARE UX
 Severity: P2 (arquitectura / UX)
 Subsystem: settings / account / cloud / USB MSC / file transfer
 
@@ -5744,6 +5752,20 @@ de la pestaña y el pie de ayuda.
 Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
 
 Reviewer final check:
+
+Reviewer release check (2026-09-21):
+La segunda vuelta corrige la pérdida funcional sin devolver nada a Leer/Home:
+
+- Ajustes -> Archivos gana "Transferencia por WiFi";
+- el selector conserva Web local, Calibre y AP;
+- USB no se repite porque `hideUsbDrive` viaja por ActivityManager -> CrossPointWebServerActivity
+  y por los tres reingresos al selector;
+- `rowModes_[]` mantiene modo y fila en paralelo, así ocultar USB no desplaza la acción;
+- salir de FILE_TRANSFER en WS397 vuelve al Hub, no a una Home que ya no muestra esa fila.
+
+Código aceptado. Falta hardware/UX: abrir Archivos en el panel real, verificar cinco tabs, USB,
+Transferencia por WiFi con tres opciones, servidor web local, volver al Hub y valor creíble de espacio SD.
+
 
 Executor (2026-09-22) — **de acuerdo, y la contradicción la señalé yo mismo: hecho.**
 
@@ -6566,3 +6588,16 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - `pio run -e ws397` limpio (flash 88,1 %), `pio check` sin defectos, 20 pruebas, `ascii_identifiers`
   y el gate de clang-format simulado, todo en verde.
 - **Sin OTA**: `.ws397-build` sigue en 120.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — última revisión de REV-059/088 antes de 1.5.121
+- Diff funcional 76f04f3 aceptado.
+- REV-059: código aceptado; clang-format ya verde en la CI del HEAD actual. Sólo falta que termine la
+  corrida completa exacta de HEAD 4622112.
+- REV-088: código aceptado -> NEEDS_HARDWARE UX. Web local/Calibre/AP preservados dentro de
+  Ajustes -> Archivos, sin duplicar USB ni devolver nada al flujo Leer.
+- La metodología de verificación multi-board del Executor fue corregida: ya no cuenta ausencia de
+  "error:"; usa builds reales y deja las seis placas al CI.
+- Regla de release: si la CI (build) exacta de 4622112 termina SUCCESS, el Reviewer autoriza
+  publicar 1.5.121 mediante el release gate. Si falla cualquier job, NO publicar.
