@@ -5958,6 +5958,88 @@ WS397 sin romper getMenuItemCount(), menuItemToIndex(), indexToMenuItem() ni el 
 recientes. No tocar código hasta orden del dueño.
 
 
+
+## REV-089 — runBounded puede colgar render/loop indefinidamente y además matar de hambre al supervisor
+State: OPEN
+Severity: P1
+Subsystem: tasks / FreeRTOS / Lua / render / watchdog
+
+Hallazgo del Paso 2A (inventario y lifecycle de tareas).
+
+### Hechos verificados
+
+El mapa propio de tareas de WS397 es:
+- loopTask: core 1, prio 1, stack 8192 (framework);
+- ActivityManagerRender: core 1, prio 1, stack 8192, persistente;
+- ui_sound: core 0, prio 4, stack 4096, persistente;
+- audio_play: core 0, prio 10, stack 8192, nace/muere por reproducción (SDK);
+- worker/runBounded: core 0, prio 3, stack variable, vida corta;
+- loop_watch: core 0, prio 2, stack 3072, persistente.
+
+Se escanearon los 149 .cpp de src/: no aparecieron otras creaciones propias de tareas fuera de
+TaskConfig/ActivityManager/UiSound/LoopWatchdog. AudioManager del SDK 6abc553 sí limpia task_=nullptr
+antes de vTaskDelete(), así que no hay stale handle ahí.
+
+`tasks::runBounded()`:
+- crea el worker con prio 3 en core 0;
+- pasa al worker un `BoundedJob` que vive EN EL STACK del caller;
+- espera `xSemaphoreTake(job.done, portMAX_DELAY)`;
+- sólo puede retornar después de que el worker dé el semaphore.
+
+El comentario afirma que "el worker siempre termina", pero el contrato no lo garantiza.
+
+### Por qué es alcanzable y no sólo teórico
+
+Hoy los callers son Lua:
+- `LuaApp::open()` -> lua-loader;
+- `LuaApp::callbackWith()` -> lua-app.
+
+La sandbox sí limita instrucciones Lua y endurece el caso de `pcall` que se traga el error, lo cual
+protege un `while true do end` normal. Pero el hook de instrucciones no puede interrumpir una función C
+que no vuelve. El API `cp.*` ejecutado dentro del worker incluye operaciones de Storage y otras rutas C.
+
+Además `LuaAppsActivity::render()` llama `app->onDraw()` DESDE ActivityManagerRender, con RenderLock
+tomado. Por tanto un worker trabado durante on_draw deja:
+- la tarea de render esperando `portMAX_DELAY`;
+- el RenderLock retenido mientras render() no retorna;
+- el loop puede seguir ejecutándose y dando `loopwdt::beat()`, así que el watchdog de LOOP no ve ningún
+  problema aunque la pantalla ya no pueda volver a pintar;
+- si luego el loop necesita RenderLock para una transición, también queda bloqueado.
+
+Hay un segundo agujero: worker prio 3 y loop_watch prio 2 comparten core 0. Si el worker queda en un
+busy-loop C que no bloquea/cede, por prioridad puede impedir que el supervisor corra. En ese caso, cuando
+el loop termine bloqueándose tampoco queda el rescate de REV-065.
+
+### Impacto visible
+
+- app Lua / pantalla que parece congelada para siempre;
+- Back/Home puede terminar bloqueándose al intentar una transición que necesita RenderLock;
+- el watchdog puede no detectar el caso (loop todavía late) o puede quedar starvation (worker > loop_watch);
+- queda como única salida el hard-off físico de PWR si el PMIC lo tiene correctamente armado.
+
+### Arreglo esperado
+
+NO hacer simplemente timeout -> return ni `vTaskDelete(worker)`:
+el `BoundedJob` vive en el stack del caller y el worker puede estar usando Lua/Storage/locks. Retornar
+mientras sigue vivo sería use-after-scope; borrarlo arbitrariamente puede abandonar mutexes tomados.
+
+Dirección segura:
+1. `runBounded` debe tener un deadline propio (no `portMAX_DELAY`) independiente del loop watchdog.
+2. Si vence y el worker no terminó, registrar evidencia mínima segura y REINICIAR el sistema; no devolver
+   al caller como si el worker hubiese desaparecido.
+3. El deadline debe cubrir también callers desde render, porque ahí el loop watchdog no sirve: el loop puede
+   seguir latiendo.
+4. Subir `loop_watch` por encima de `worker` (y de cualquier tarea auxiliar no crítica que pueda hacer
+   busy-loop), manteniéndolo por debajo de audio si se desea. El supervisor sólo despierta 1 vez/s y hace
+   trabajo mínimo, así que puede preemptar al worker sin perjudicar audio.
+5. Ideal: `runBounded(..., timeoutMs)`, con un timeout explícito por tipo de trabajo. Los callbacks Lua
+   deberían tener un presupuesto de segundos, no 120 s.
+6. Añadir fault test/harness: worker que nunca da done desde loop y desde render debe terminar en el
+   fail-safe; worker normal debe conservar medición de high-water y retorno.
+
+Executor response:
+Reviewer final check:
+
 # Session log
 
 Use short entries. Do not paste huge tool transcripts.
@@ -6601,3 +6683,14 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   "error:"; usa builds reales y deja las seis placas al CI.
 - Regla de release: si la CI (build) exacta de 4622112 termina SUCCESS, el Reviewer autoriza
   publicar 1.5.121 mediante el release gate. Si falla cualquier job, NO publicar.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — Paso 2A: inventario/lifecycle de tareas
+- Inventario propio confirmado: loopTask, render, ui_sound, audio_play(SDK), worker y loop_watch.
+- Barrido de los 149 .cpp de src/: no aparecieron creaciones propias adicionales.
+- requestUpdateAndWait(): callers encontrados son loop/setup; no se abre hallazgo por el waiter único.
+- AudioManager SDK 6abc553: task_ se limpia antes de vTaskDelete(); candidato stale-handle descartado.
+- Nuevo REV-089 P1: runBounded usa portMAX_DELAY; desde Lua onDraw puede colgar render con RenderLock
+  mientras el loop sigue latiendo, y un busy-worker prio3 puede matar de hambre al loop_watch prio2.
+- Siguiente subpaso tras respuesta del Executor: 2B/2D — lifecycle render/audio + orden de mutexes.
