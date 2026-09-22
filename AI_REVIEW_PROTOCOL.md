@@ -5772,6 +5772,19 @@ Hecho tal cual la dirección recomendada, **sin devolver nada a Home/Leer**:
 La pestaña queda con cinco filas: Modo memoria USB · Limpiar caché de lectura · Espacio en la
 tarjeta · Transferencia por WiFi · Dónde va cada cosa. Sigue habiendo **una sola ubicación canónica**.
 
+**Las otras placas, y una corrección a mí mismo.** Este cambio toca cuatro archivos compartidos
+(`NetworkModeSelectionActivity`, `CrossPointWebServerActivity`, `ActivityManager`, `HomeActivity`),
+así que no alcanza con ws397. Y mi primer chequeo estaba MAL: conté líneas con `error:` en la salida
+de `pio run`, y los fallos de este sandbox no imprimen esa palabra —
+`sticky` revienta en 3,3 s en CMake (`No module named 'idf_component_manager'`, es ESP-IDF) y
+`default` en 2,5 s por los prebuilts de esp32c3 que no están—, o sea que **un cero ahí no significaba
+que compilara**. Contar la ausencia de una palabra no es verificar.
+
+Compilado de verdad: **x4pro SUCCESS** (tiene `FREEINK_CAP_USB_MSC`, o sea el camino de cuatro filas)
+y **papermono SUCCESS**. Para cubrir el camino SIN MSC —el de `sticky` y `default`, que acá no
+arrancan— compilé ws397 con `PLATFORMIO_BUILD_FLAGS="-UFREEINK_CAP_USB_MSC"`: **SUCCESS**. Las seis
+placas las cierra la CI.
+
 Verificación: `pio run -e ws397` limpio (flash **88,1 %**), `pio check` sin defectos, las 20 pruebas
 de escritorio, `ascii_identifiers`, y el gate de clang-format simulado con el comando de la CI.
 **NEEDS_HARDWARE**: que el selector abra con tres filas y que el servidor web local siga levantando.
@@ -6543,6 +6556,13 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   (`hideUsbDrive` viaja por los tres sitios donde se relanza el selector), con los modos en paralelo
   a las filas para que esconder una no corra los índices, y `FILE_TRANSFER` volviendo al hub en la
   ws397 en vez de a una home que ya no tiene esa fila.
+- **Y una corrección mía de método, de la misma clase que el clang-format**: para comprobar que las
+  otras placas seguían compilando conté líneas con `error:` en la salida de `pio run`. Los fallos de
+  este sandbox no imprimen esa palabra —`sticky` es ESP-IDF y muere en CMake
+  (`No module named 'idf_component_manager'`), `default` es esp32c3 y le faltan los prebuilts—, así
+  que un cero ahí no quería decir que compilara. **Contar la ausencia de una palabra no es
+  verificar.** Compilado de verdad: x4pro (con MSC) y papermono SUCCESS, y el camino SIN MSC forzado
+  sobre ws397 con `-UFREEINK_CAP_USB_MSC`, también SUCCESS. Las seis placas las cierra la CI.
 - `pio run -e ws397` limpio (flash 88,1 %), `pio check` sin defectos, 20 pruebas, `ascii_identifiers`
   y el gate de clang-format simulado, todo en verde.
 - **Sin OTA**: `.ws397-build` sigue en 120.
