@@ -2663,7 +2663,7 @@ exactamente cómo ésta se separó de la verdad la primera vez.
 Reviewer final check:
 
 ## REV-059 — Suspender/apagar puede OOM por un cache de Noticias corrupto o enorme
-State: FIXED_PENDING_CI — código aceptado
+State: FIXED_PENDING_REVIEW — clang-format corregido
 Severity: P1
 Subsystem: firmware / sleep screen / memory / SD
 
@@ -2698,6 +2698,24 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Executor (2026-09-22) — **CONFIRMADO, verificado job por job, y el error es mío.**
+
+No me creí el resumen: consulté los 12 jobs de la corrida 35657436055 (merge `1534c3e`) por la API.
+Verdes: Server typecheck, unit-tests, cppcheck, **ws397 desktop tests** (incluida la prueba nueva,
+"Lectura acotada de la tarjeta") y las **seis** compilaciones (ws397, x4c, x4pro, sticky, papermono,
+default). **Rojo: `clang-format`, y sólo él**; `Test Status` cae por arrastre, como dijiste.
+
+La causa es exactamente la que nombraste y es un descuido mío: formateé los `src/` que toqué y **no
+el archivo de la prueba**. Reproducido de escritorio con clang-format 21.1.8 (misma major que el
+`clang-format-21` de la CI) sobre `test/card_read/test_card_read.cpp`: dos cambios, el orden de los
+includes (`"../../src/util/CardRead.h"` va DESPUÉS de `<cstdio>`) y el corte de una línea del
+`printf`. Corregido.
+
+**Y para no repetirlo**, la comprobación deja de depender de que me acuerde: ahora corro el mismo
+comando que corre la CI —`git diff --name-only --diff-filter=ACMR origin/ws397 -- '*.c' '*.cpp' '*.h'
+'*.hpp'` y `clang-format -i` encima— y comparo hashes antes y después. Con eso el gate se verifica en
+vez de suponerse.
 
 Reviewer pre-release final (2026-09-21):
 Código aceptado. `cardread::readCapped()` decide con tamaño uint64 antes de reservar, usa
@@ -5454,7 +5472,7 @@ Reviewer final check:
 
 
 ## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
-State: OPEN — corregir pérdida de acceso local antes de 1.5.121
+State: FIXED_PENDING_REVIEW — acceso local conservado en Archivos
 Severity: P2 (arquitectura / UX)
 Subsystem: settings / account / cloud / USB MSC / file transfer
 
@@ -5726,6 +5744,37 @@ de la pestaña y el pie de ayuda.
 Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
 
 Reviewer final check:
+
+Executor (2026-09-22) — **de acuerdo, y la contradicción la señalé yo mismo: hecho.**
+
+Tenés razón en la lectura del permiso: el dueño aprobó sacar una puerta DUPLICADA al USB, y lo que
+se estaba sacando era la única puerta a Web local, Calibre y punto de acceso. Aprobar A no aprueba B.
+
+Hecho tal cual la dirección recomendada, **sin devolver nada a Home/Leer**:
+
+- **Fila nueva en Ajustes → Archivos: "Transferencia por WiFi"** (`SettingAction::LocalTransfer`,
+  `STR_LOCAL_TRANSFER` × 7 idiomas), entre Limpiar caché y la ayuda de carpetas. Abre el selector de
+  siempre, así que **se conservan los tres**: servidor web local (archivos, `/settings`, redes,
+  tipografías, OPDS), Calibre inalámbrico y punto de acceso.
+- **Y sin repetir el USB**, como preferías: `NetworkModeSelectionActivity` acepta `hideUsbDrive`, que
+  viaja `SettingsActivity → ActivityManager::goToFileTransfer → CrossPointWebServerActivity → el
+  selector` (los **tres** sitios donde esa Activity lo relanza: al entrar, al volver de Calibre y al
+  cancelar el WiFi). La ws397 ve tres filas; las demás placas, las cuatro de siempre.
+- El índice ya no se puede correr: los modos se guardan en `rowModes_[]` **en paralelo** a las filas
+  en vez de indexar la tabla estática `menuModes[]`. Con el USB escondido, `menuModes[índice]` habría
+  abierto el modo de al lado — que es el mismo defecto de índices que vos me pediste vigilar en
+  `HomeActivity`, una capa más abajo.
+- **Un hueco que aparece solo al mover la puerta, y que no estaba en tu lista**: `goHome()` manda
+  `FILE_TRANSFER` a la home CLÁSICA, que es donde colgaba. Con la fila escondida, salir de la
+  transferencia habría dejado el cursor en la primera fila de una pantalla por la que nadie pasó. En
+  la ws397 `FILE_TRANSFER` vuelve ahora al **hub**, igual que Ajustes.
+
+La pestaña queda con cinco filas: Modo memoria USB · Limpiar caché de lectura · Espacio en la
+tarjeta · Transferencia por WiFi · Dónde va cada cosa. Sigue habiendo **una sola ubicación canónica**.
+
+Verificación: `pio run -e ws397` limpio (flash **88,1 %**), `pio check` sin defectos, las 20 pruebas
+de escritorio, `ascii_identifiers`, y el gate de clang-format simulado con el comando de la CI.
+**NEEDS_HARDWARE**: que el selector abra con tres filas y que el servidor web local siga levantando.
 
 Reviewer pre-release (2026-09-21):
 La pestaña Archivos está bien implementada estructuralmente: tabs dinámicos, fila read-only explícita,
@@ -6478,3 +6527,22 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   Ajustes -> Archivos, pero preservar allí al menos el servidor local antes de 1.5.121.
 - CI de 1534c3e: todos los jobs verdes salvo clang-format; Test Status rojo por arrastre.
 - Aún NO autorizar OTA 1.5.121.
+
+
+### 2026-09-22 — Executor (Claude) — lo que dijo el revisor, verificado
+- **REV-059**: su afirmación es EXACTA y la comprobé por la API, no por el resumen. Corrida
+  35657436055 de `1534c3e`: 12 jobs, **11 verdes** (las seis placas, cppcheck, unit-tests, tsc, las
+  20 pruebas de escritorio) y **sólo `clang-format` en rojo**; `Test Status` por arrastre. Causa
+  mía: formateé los `src/` y me salté `test/card_read/test_card_read.cpp` (orden de includes y un
+  corte de línea). Corregido, y el gate ahora se **verifica** con el mismo comando de la CI en vez
+  de suponerse.
+- **REV-088**: también tiene razón, y la contradicción la había destapado yo. Sacar la fila de la
+  home clásica no quitaba una puerta duplicada al USB: quitaba la **única** puerta a Web local,
+  Calibre y punto de acceso. Hecho como recomendó: fila **Transferencia por WiFi** dentro de
+  Ajustes → Archivos (una sola ubicación canónica, nada vuelve a Home/Leer), **sin repetir el USB**
+  (`hideUsbDrive` viaja por los tres sitios donde se relanza el selector), con los modos en paralelo
+  a las filas para que esconder una no corra los índices, y `FILE_TRANSFER` volviendo al hub en la
+  ws397 en vez de a una home que ya no tiene esa fila.
+- `pio run -e ws397` limpio (flash 88,1 %), `pio check` sin defectos, 20 pruebas, `ascii_identifiers`
+  y el gate de clang-format simulado, todo en verde.
+- **Sin OTA**: `.ws397-build` sigue en 120.

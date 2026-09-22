@@ -136,9 +136,14 @@ la memoria del asistente se da de alta **por voz** ("memoriza que…").
   en el peor de los seis idiomas) entra con holgura.
   La fila **Transferir archivos de la home clásica se esconde en la ws397** (`HomeActivity::showsFileTransfer()`,
   un solo lugar que consultan el conteo, los dos mapeos de índice y el render): esa home cuelga del mosaico
-  Leer, y una segunda puerta ahí se siente como una función del lector. **Ojo**: esa fila no abría sólo el USB —
-  abría `NetworkModeSelectionActivity`, con la web por WiFi, Calibre y el punto de acceso. En la ws397 esos tres
-  quedan sin puerta, que es lo decidido (la subida por la web está descartada desde que existe el MSC).
+  Leer, y una segunda puerta ahí se siente como una función del lector.
+  **Pero esa fila NO era otra puerta al USB** —abría `NetworkModeSelectionActivity`, que además del USB tiene el
+  servidor web local por WiFi, Calibre y el punto de acceso—, así que esconderla a secas habría dejado esos tres
+  caminos sin ningún llamador. Por eso Archivos tiene su propia fila **Transferencia por WiFi**
+  (`SettingAction::LocalTransfer`), que abre el mismo selector **sin repetir el USB**
+  (`NetworkModeSelectionActivity(…, hideUsbDrive)`, con los modos en `rowModes_[]` en paralelo a las filas para
+  que esconder una no corra los índices). Y en la ws397 `goHome()` manda `FILE_TRANSFER` al **hub** y ya no a la
+  home clásica, que es de donde se sacó la fila.
   Cuesta ~23 KB de RAM y ~60 KB de flash.
 - Con esto se cargan libros y MP3 sin sacar la tarjeta. La subida de archivos por la web quedó **descartada**.
 

@@ -48,20 +48,25 @@ constexpr NetworkMode menuModes[NetworkModeSelectionActivity::MENU_ITEM_COUNT] =
 };
 }  // namespace
 
-NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
+NetworkModeSelectionActivity::NetworkModeSelectionActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                                           const bool hideUsbDrive)
     : UiListActivity("NetworkModeSelection", renderer, mappedInput) {
   // Entirely static, so built once here rather than every buildScreen() call.
+  rowCount_ = 0;
   for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+    if (hideUsbDrive && menuModes[i] == NetworkMode::USB_DRIVE) continue;  // REV-088
     fui::ListItem item;
     item.label = I18N.get(menuItems[i]);
     item.subtitle = I18N.get(menuDescs[i]);
     item.icon = listIconFor(menuIcons[i], 32);  // subtitle rows carry the larger icon
-    item.actionValue = static_cast<int16_t>(i);
-    rowItems_[i] = item;
+    item.actionValue = static_cast<int16_t>(rowCount_);
+    rowItems_[rowCount_] = item;
+    rowModes_[rowCount_] = menuModes[i];
+    ++rowCount_;
   }
 }
 
-int NetworkModeSelectionActivity::listCount() const { return MENU_ITEM_COUNT; }
+int NetworkModeSelectionActivity::listCount() const { return rowCount_; }
 
 const char* NetworkModeSelectionActivity::headerTitle() const { return tr(STR_FILE_TRANSFER); }
 
@@ -71,7 +76,7 @@ void NetworkModeSelectionActivity::activateIndex(const int index) {
   app.clearTapFlash();
   nav.selected = index;
 
-  onModeSelected(menuModes[index]);
+  onModeSelected(rowModes_[index]);
 }
 
 void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
@@ -89,7 +94,7 @@ void NetworkModeSelectionActivity::buildScreen(UiScreen& screen) {
   // repaint.
   fui::ListProps props;
   props.items = rowItems_;
-  props.count = static_cast<uint16_t>(MENU_ITEM_COUNT);
+  props.count = static_cast<uint16_t>(rowCount_);
   props.action = ACTION_ROW;
   props.inputMask = fui::InputTouch;  // physical buttons stay in loop()
   props.subtitleText = screen.theme().smallText;

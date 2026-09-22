@@ -81,7 +81,9 @@ class ActivityManager {
   void replaceActivity(std::unique_ptr<Activity>&& newActivity);
 
   // goTo... functions are convenient wrapper for replaceActivity()
-  void goToFileTransfer();
+  // REV-088: `hideUsbDrive` se usa desde Ajustes -> Archivos, que ya tiene su
+  // propia fila de modo memoria USB.
+  void goToFileTransfer(bool hideUsbDrive = false);
   void goToUsbDrive();
   void goToSettings();
   void goToFileBrowser(std::string path = {});
