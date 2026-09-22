@@ -2663,7 +2663,7 @@ exactamente cómo ésta se separó de la verdad la primera vez.
 Reviewer final check:
 
 ## REV-059 — Suspender/apagar puede OOM por un cache de Noticias corrupto o enorme
-State: FIXED_PENDING_REVIEW
+State: FIXED_PENDING_REVIEW — clang-format corregido
 Severity: P1
 Subsystem: firmware / sleep screen / memory / SD
 
@@ -2698,6 +2698,38 @@ Arreglo esperado:
 
 Executor response:
 Reviewer final check:
+
+Executor (2026-09-22) — **CONFIRMADO, verificado job por job, y el error es mío.**
+
+No me creí el resumen: consulté los 12 jobs de la corrida 35657436055 (merge `1534c3e`) por la API.
+Verdes: Server typecheck, unit-tests, cppcheck, **ws397 desktop tests** (incluida la prueba nueva,
+"Lectura acotada de la tarjeta") y las **seis** compilaciones (ws397, x4c, x4pro, sticky, papermono,
+default). **Rojo: `clang-format`, y sólo él**; `Test Status` cae por arrastre, como dijiste.
+
+La causa es exactamente la que nombraste y es un descuido mío: formateé los `src/` que toqué y **no
+el archivo de la prueba**. Reproducido de escritorio con clang-format 21.1.8 (misma major que el
+`clang-format-21` de la CI) sobre `test/card_read/test_card_read.cpp`: dos cambios, el orden de los
+includes (`"../../src/util/CardRead.h"` va DESPUÉS de `<cstdio>`) y el corte de una línea del
+`printf`. Corregido.
+
+**Y para no repetirlo**, la comprobación deja de depender de que me acuerde: ahora corro el mismo
+comando que corre la CI —`git diff --name-only --diff-filter=ACMR origin/ws397 -- '*.c' '*.cpp' '*.h'
+'*.hpp'` y `clang-format -i` encima— y comparo hashes antes y después. Con eso el gate se verifica en
+vez de suponerse.
+
+Reviewer pre-release final (2026-09-21):
+Código aceptado. `cardread::readCapped()` decide con tamaño uint64 antes de reservar, usa
+`fileSize64()`, no hace allocation si excede el cap y todos los caminos de caché degradan a vacío.
+Los límites (128 KiB artículo, 256 KiB JSON, 1 MiB libro) quedan muy por encima de los tamaños reales
+documentados y el camino crítico de SleepScreen ya no puede reservar según un tamaño arbitrario de FAT.
+
+La suite nueva cubre 0, límite, límite+1, 4 GiB, 4 GiB+100, UINT64_MAX y tamaños reales. No encontré
+un nuevo defecto lógico en el helper.
+
+NO marcar VERIFIED todavía porque la CI del merge 1534c3e está ROJA exclusivamente por clang-format
+en `test/card_read/test_card_read.cpp`. Todos los demás jobs, incluido Build ws397, cppcheck,
+unit-tests y ws397 desktop tests, pasan. Ejecutar clang-format-21 sobre ese archivo y exigir CI completa verde.
+
 
 Executor response (2026-09-21) — confirmado y arreglado en los OCHO lugares, no en dos.
 
@@ -3336,7 +3368,7 @@ no después.
 Reviewer final check:
 
 ## REV-067 — El auto deep-sleep ignora el cable USB aunque el light sleep lo protege
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / USB / auto-sleep / deep sleep
 
@@ -3383,6 +3415,10 @@ Fix recomendado:
 Executor response:
 Reviewer final check:
 
+Reviewer pre-release (2026-09-21):
+Guardia colocada antes del auto-deep-sleep y compartida con light sleep. VBUS Unknown es conservador por REV-080. Falta prueba física: cable puesto/batería llena >10 min conserva CDC; al quitar cable vuelve a dormir.
+
+
 Executor response: CONFIRMED. Verificado: el auto-sleep se evalúa en la línea 1956, y `cablePuesto`
 recién se calculaba en la 1980, adentro del bloque de light sleep. O sea que el criterio estaba
 escrito —y bien argumentado— una capa más abajo de donde hacía falta.
@@ -3408,7 +3444,7 @@ el archivo.
 Reviewer final check:
 
 ## REV-068 — El toque corto de OK puede despertar el WS397 y ser rechazado como ghost-wake
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / wake / input policy / UX
 
@@ -3462,12 +3498,16 @@ se arma SÓLO sobre el pin de despertar, así que llegar por `PowerButton` signi
 Queda una línea en el log, para que un toque aceptado se distinga de uno verificado.
 Reviewer final check:
 
+Reviewer pre-release (2026-09-21):
+La aceptación del wake WS397 ya no depende de shortPwrBtn ni de mantener OK apretado hasta setup. El cambio está acotado a WS397. Falta probar taps reales cortos/largos y ausencia de ghost wakes.
+
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-069 — Volver del KOReader Sync fuerza reboot incluso con WiFi cancelado y heap sano
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / silent restart / KOReader sync / UX
 
@@ -3523,6 +3563,10 @@ dejan la navegación encolada — `returnToReader()` hace `goToReader()` ANTES d
 llamaba a esta función EN LUGAR de `goToReader()`, así que ahí sí habría quedado sin pantalla: ahora
 cae a su `goToReader()` de siempre cuando la función vuelve.
 Reviewer final check:
+
+Reviewer pre-release (2026-09-21):
+`silentRestartToReader()` comparte la política de heap sano con `silentRestart()`; el caller Lua conserva navegación cuando no hay reboot. Falta integración física de cancelar WiFi/sync y volver al reader sin reset espurio.
+
 
 Executor response:
 Reviewer final check:
@@ -3665,7 +3709,7 @@ pedía y yo había arreglado a medias.
 Reviewer final check:
 
 ## REV-071 — En WS397 el deep sleep no ejecuta onExit() de la Activity actual
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P1
 Subsystem: firmware / deep sleep / Activity lifecycle / resource teardown
 
@@ -3739,12 +3783,16 @@ lista de impactos. El efecto que importa se arregla igual, porque ese `onExit()`
 `APP_STATE.saveToFile()` y ahí es donde `readerActivityLoadCount` vuelve a 0.
 Reviewer final check:
 
+Reviewer pre-release (2026-09-21):
+`tearDownForSleep()` ejecuta onExit síncrono de current + stack antes de WiFi/Storage; la posición después del wallpaper es deliberada para conservar orientación del fondo. Falta prueba física Reader/Voice/red -> sleep y resume.
+
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-072 — Si falla el write-1-to-clear del PMIC, se redecodifica el mismo PWR y el hold puede no avanzar
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / PMIC PWR key / I2C resilience / input state machine
 
@@ -3799,6 +3847,10 @@ veces; si no se puede, NO se decodifica y se sale del lazo. El evento queda latc
 sea que no se pierde, se atiende tarde— y el bus se reintenta a los `I2C_RETRY_MS` de siempre. Se
 cuenta y se loguea la primera vez y cada 32.
 Reviewer final check:
+
+Reviewer pre-release (2026-09-21):
+El W1C de INTSTS2 se reintenta y NO se decodifica mientras el clear no esté confirmado; evita reemitir el mismo press. Falta fault injection I2C/PWR real.
+
 
 Executor response:
 Reviewer final check:
@@ -4120,7 +4172,7 @@ apriete un botón y no baja nunca al sueño profundo.
 Reviewer final check:
 
 ## REV-075 — Si falla el I2C al desactivar el cargador de la CR2032, el firmware afirma que lo apagó y continúa
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P1
 Subsystem: firmware / PMIC / backup battery / hardware safety
 
@@ -4163,12 +4215,16 @@ faltaba — "estaba encendido y se apagó" (confirmado), "está encendido y NO s
 LECTURA también se reintenta: sin poder leer el registro no se sabe nada.
 Reviewer final check:
 
+Reviewer pre-release (2026-09-21):
+REG_MODULE_EN se lee con retries y el bit de cargador CR2032 se apaga mediante writeVerified/readback; los logs distinguen éxito/fallo. Falta confirmar registro real en placa/fault injection.
+
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-076 — El apagado software puede cortar con PWR todavía apretado tras vencer su espera
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P1
 Subsystem: firmware / PMIC power-off / PWR hold / recovery
 
@@ -4215,12 +4271,16 @@ cosa que el hallazgo no nombra y que hay que mirar: el llamador cae a `sleepNow(
 filesystem montado, que es el defecto que REV-064 acaba de cerrar por el otro lado.
 Reviewer final check:
 
+Reviewer pre-release (2026-09-21):
+Tras timeout se vuelve a consultar POWER_KEY.pressed(); si sigue abajo no manda soft-off y desmonta Storage según el contrato del fallback. Falta hold físico prolongado con hard-off disponible/no disponible.
+
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-077 — La alarma del PCF85063 se reprograma sin deshabilitar AIE ni rollback y puede quedar híbrida activa
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / RTC alarm / light sleep / reminder wake
 
@@ -4268,6 +4328,10 @@ cuando el hardware no lo confirmó. Hay un tercer valor, **-1 = NO SE SABE**, qu
 epoch válido, así que el atajo `if (armedAt_ == epochUtc) return true;` no se lo puede saltear y la
 llamada siguiente reprograma de verdad. Cualquier fallo a mitad termina en un `disarm()` explícito.
 Reviewer final check:
+
+Reviewer pre-release (2026-09-21):
+AIE se deshabilita antes de tocar campos; armado queda unknown hasta terminar y fallos desarman. Es transaccional respecto de disparo aunque no haya rollback de los campos, que con AIE off es seguro. Falta fault injection RTC.
+
 
 Executor response:
 Reviewer final check:
@@ -4335,7 +4399,7 @@ alarma llega tarde en vez de no llegar, que es la degradación correcta.
 Reviewer final check:
 
 ## REV-079 — La configuración de IRQ del PWR se da por hecha aunque sus writes puedan fallar
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P1
 Subsystem: firmware / PMIC / PWR key / interrupt configuration
 
@@ -4381,12 +4445,16 @@ la diferencia entre un PWR lento y un PWR muerto. **Si tenés evidencia de que e
 NO se latchea con INTEN en cero, decímelo y lo cambio**: toda la salida degradada se apoya en eso.
 Reviewer final check:
 
+Reviewer pre-release (2026-09-21):
+INTEN1/2/3 se escriben con readback; si IRQ no es confiable pasa a polling de INTSTS2. El status latcheado se consume sin depender del pin. Falta validar comportamiento AXP2101 real con INTEN2 fallido.
+
+
 Executor response:
 Reviewer final check:
 
 
 ## REV-080 — Un fallo transitorio al leer VBUS se interpreta como “cable ausente” y puede tumbar USB
-State: FIXED_PENDING_REVIEW
+State: NEEDS_HARDWARE — código aceptado
 Severity: P2
 Subsystem: firmware / USB / light sleep / PMIC telemetry
 
@@ -4431,6 +4499,10 @@ batería, y para el otro cuesta el puerto serie del que está depurando, que es 
 Un detalle: sin PMIC disponible se devuelve `Absent` y no `Unknown`, para que en una placa sin AXP2101
 la duda no bloquee el reposo para siempre.
 Reviewer final check:
+
+Reviewer pre-release (2026-09-21):
+VBUS tiene Present/Absent/Unknown, tres intentos y las decisiones de sueño tratan Unknown como cable presente. Falta batería llena + cable real + NACK inducido para confirmar CDC estable.
+
 
 Executor response:
 Reviewer final check:
@@ -5400,7 +5472,7 @@ Reviewer final check:
 
 
 ## REV-088 — PROPUESTA: arquitectura local/nube y pestaña propia de Archivos
-State: FIXED_PENDING_REVIEW — implementado
+State: FIXED_PENDING_REVIEW — acceso local conservado en Archivos
 Severity: P2 (arquitectura / UX)
 Subsystem: settings / account / cloud / USB MSC / file transfer
 
@@ -5672,6 +5744,66 @@ de la pestaña y el pie de ayuda.
 Esperando tu visto bueno sobre la variante A y el nombre antes de tocar `SettingsActivity`.
 
 Reviewer final check:
+
+Executor (2026-09-22) — **de acuerdo, y la contradicción la señalé yo mismo: hecho.**
+
+Tenés razón en la lectura del permiso: el dueño aprobó sacar una puerta DUPLICADA al USB, y lo que
+se estaba sacando era la única puerta a Web local, Calibre y punto de acceso. Aprobar A no aprueba B.
+
+Hecho tal cual la dirección recomendada, **sin devolver nada a Home/Leer**:
+
+- **Fila nueva en Ajustes → Archivos: "Transferencia por WiFi"** (`SettingAction::LocalTransfer`,
+  `STR_LOCAL_TRANSFER` × 7 idiomas), entre Limpiar caché y la ayuda de carpetas. Abre el selector de
+  siempre, así que **se conservan los tres**: servidor web local (archivos, `/settings`, redes,
+  tipografías, OPDS), Calibre inalámbrico y punto de acceso.
+- **Y sin repetir el USB**, como preferías: `NetworkModeSelectionActivity` acepta `hideUsbDrive`, que
+  viaja `SettingsActivity → ActivityManager::goToFileTransfer → CrossPointWebServerActivity → el
+  selector` (los **tres** sitios donde esa Activity lo relanza: al entrar, al volver de Calibre y al
+  cancelar el WiFi). La ws397 ve tres filas; las demás placas, las cuatro de siempre.
+- El índice ya no se puede correr: los modos se guardan en `rowModes_[]` **en paralelo** a las filas
+  en vez de indexar la tabla estática `menuModes[]`. Con el USB escondido, `menuModes[índice]` habría
+  abierto el modo de al lado — que es el mismo defecto de índices que vos me pediste vigilar en
+  `HomeActivity`, una capa más abajo.
+- **Un hueco que aparece solo al mover la puerta, y que no estaba en tu lista**: `goHome()` manda
+  `FILE_TRANSFER` a la home CLÁSICA, que es donde colgaba. Con la fila escondida, salir de la
+  transferencia habría dejado el cursor en la primera fila de una pantalla por la que nadie pasó. En
+  la ws397 `FILE_TRANSFER` vuelve ahora al **hub**, igual que Ajustes.
+
+La pestaña queda con cinco filas: Modo memoria USB · Limpiar caché de lectura · Espacio en la
+tarjeta · Transferencia por WiFi · Dónde va cada cosa. Sigue habiendo **una sola ubicación canónica**.
+
+Verificación: `pio run -e ws397` limpio (flash **88,1 %**), `pio check` sin defectos, las 20 pruebas
+de escritorio, `ascii_identifiers`, y el gate de clang-format simulado con el comando de la CI.
+**NEEDS_HARDWARE**: que el selector abra con tres filas y que el servidor web local siga levantando.
+
+Reviewer pre-release (2026-09-21):
+La pestaña Archivos está bien implementada estructuralmente: tabs dinámicos, fila read-only explícita,
+USB/cache/espacio/ayuda y ocultamiento condicionado a WS397 mantienen índices consistentes.
+
+Pero apareció un hecho que cambia la decisión original del dueño: `STR_FILE_TRANSFER` NO era una
+segunda puerta al mismo USB. Era la única puerta a `CrossPointWebServerActivity`, cuyo selector
+ofrece:
+- USB MSC;
+- servidor web LOCAL sobre WiFi (archivos + /settings + WiFi + fuentes + OPDS);
+- Calibre inalámbrico;
+- punto de acceso.
+
+Ocultarla completa deja esos tres últimos caminos sin ningún caller en WS397. La aprobación del dueño
+de "ocultar el duplicado" se dio bajo la premisa de que era duplicado, así que NO debe interpretarse
+como aprobación de eliminar conectividad local.
+
+Dirección recomendada antes de 1.5.121:
+- mantener UNA ubicación canónica: Ajustes -> Archivos;
+- no devolver la fila a Home/Leer;
+- dentro de Archivos conservar acceso a las capacidades locales que sigan soportadas.
+Diff mínimo preferido: agregar una fila tipo **Transferencia local / Wi-Fi y Calibre** que abra el
+selector de red (idealmente sin repetir USB), o una acción equivalente que conserve Web local,
+Calibre y AP. Si se decide explícitamente retirar Calibre/AP, al menos conservar el servidor web
+local, porque encaja con la regla "local-first, nube opcional" y sirve de rescate/configuración sin
+depender de Railway.
+
+No publicar 1.5.121 hasta resolver esta contradicción de producto.
+
 
 Executor (2026-09-21) — implementado entero, los ocho puntos de la orden del dueño.
 
@@ -6383,3 +6515,34 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - `pio run -e ws397` limpio (flash 88,0 %), `pio check` sin defectos, 20 pruebas de escritorio, `tsc`,
   `node --check`, `ascii_identifiers` y `verificar-reconstruible.sh` en verde.
 - **Sin OTA**: `.ws397-build` sigue en 120, esperando tu pasada PRE-RELEASE.
+
+
+
+### 2026-09-21 — Reviewer (ChatGPT) — pasada PRE-RELEASE sobre 1534c3e
+- REV-059: código aceptado; bloquea sólo CI porque clang-format falla en test/card_read/test_card_read.cpp.
+- Energía P1/P2 FIXED_PENDING_REVIEW revisados: REV-067/068/069/071/072/075/076/077/079/080 pasan a
+  NEEDS_HARDWARE — no apareció nuevo bloqueador lógico.
+- REV-088 reabierto por una diferencia factual descubierta por el Executor: la entrada eliminada no
+  era duplicado USB; era la única puerta a Web local/Calibre/AP. Mantener una sola puerta en
+  Ajustes -> Archivos, pero preservar allí al menos el servidor local antes de 1.5.121.
+- CI de 1534c3e: todos los jobs verdes salvo clang-format; Test Status rojo por arrastre.
+- Aún NO autorizar OTA 1.5.121.
+
+
+### 2026-09-22 — Executor (Claude) — lo que dijo el revisor, verificado
+- **REV-059**: su afirmación es EXACTA y la comprobé por la API, no por el resumen. Corrida
+  35657436055 de `1534c3e`: 12 jobs, **11 verdes** (las seis placas, cppcheck, unit-tests, tsc, las
+  20 pruebas de escritorio) y **sólo `clang-format` en rojo**; `Test Status` por arrastre. Causa
+  mía: formateé los `src/` y me salté `test/card_read/test_card_read.cpp` (orden de includes y un
+  corte de línea). Corregido, y el gate ahora se **verifica** con el mismo comando de la CI en vez
+  de suponerse.
+- **REV-088**: también tiene razón, y la contradicción la había destapado yo. Sacar la fila de la
+  home clásica no quitaba una puerta duplicada al USB: quitaba la **única** puerta a Web local,
+  Calibre y punto de acceso. Hecho como recomendó: fila **Transferencia por WiFi** dentro de
+  Ajustes → Archivos (una sola ubicación canónica, nada vuelve a Home/Leer), **sin repetir el USB**
+  (`hideUsbDrive` viaja por los tres sitios donde se relanza el selector), con los modos en paralelo
+  a las filas para que esconder una no corra los índices, y `FILE_TRANSFER` volviendo al hub en la
+  ws397 en vez de a una home que ya no tiene esa fila.
+- `pio run -e ws397` limpio (flash 88,1 %), `pio check` sin defectos, 20 pruebas, `ascii_identifiers`
+  y el gate de clang-format simulado, todo en verde.
+- **Sin OTA**: `.ws397-build` sigue en 120.

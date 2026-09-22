@@ -314,6 +314,10 @@ void SettingsActivity::rebuildSettingsLists() {
     // y por eso el propio SDK la cachea 20 s. Sirve en una pantalla en la que
     // se entra a propósito; no en la barra de estado ni en el hub.
     filesSettings.push_back(SettingInfo::Info(StrId::STR_CARD_SPACE, [] { return cardSpaceText(); }));
+    // La transferencia por WiFi: servidor web local (archivos, /settings, redes,
+    // tipografías, OPDS), Calibre y punto de acceso. El modo memoria USB NO se
+    // repite adentro: ya está arriba en esta misma pestaña.
+    filesSettings.push_back(SettingInfo::Action(StrId::STR_LOCAL_TRANSFER, SettingAction::LocalTransfer));
     filesSettings.push_back(SettingInfo::Action(StrId::STR_CARD_FOLDERS, SettingAction::CardFolders));
   }
 
@@ -579,6 +583,12 @@ void SettingsActivity::toggleCurrentSetting() {
         break;
       case SettingAction::CheckForUpdates:
         startActivityForResult(makeUniqueNoThrow<OtaUpdateActivity>(renderer, mappedInput), resultHandler);
+        break;
+      case SettingAction::LocalTransfer:
+        // `goToFileTransfer()` REEMPLAZA la Activity (la red necesita el heap),
+        // así que Ajustes no queda debajo y no hay `resultHandler` que valga:
+        // Atrás desde ahí vuelve al hub (ver `goHome()`).
+        activityManager.goToFileTransfer(/*hideUsbDrive=*/true);
         break;
       case SettingAction::CardFolders:
         // El visor de siempre, el mismo de una nota o de un capítulo de la

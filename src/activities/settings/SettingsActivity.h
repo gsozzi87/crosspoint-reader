@@ -16,6 +16,11 @@ enum class SettingAction {
   // REV-088: la ayuda de la pestaña Archivos — qué carpeta es para qué. Abre el
   // visor de siempre; no hay nada que configurar.
   CardFolders,
+  // REV-088, 2ª vuelta: la transferencia por WiFi (servidor web local, Calibre
+  // y punto de acceso). Sin esta fila esos tres caminos quedaban SIN NINGÚN
+  // llamador en la ws397 al esconder la fila de la home clásica — y eso no era
+  // lo aprobado, que era sacar una puerta DUPLICADA al USB.
+  LocalTransfer,
   RemapFrontButtons,
   CustomiseStatusBar,
   KOReaderSync,

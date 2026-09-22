@@ -4,10 +4,10 @@
 // de `resize()`. El I/O queda del otro lado (`readCapped()` en el .cpp) porque
 // necesita la tarjeta; lo que aborta el firmware es el `resize`, y quien lo
 // autoriza es esta función.
-#include "../../src/util/CardRead.h"
-
 #include <cstdio>
 #include <cstdlib>
+
+#include "../../src/util/CardRead.h"
 
 static int fallos = 0;
 
@@ -26,8 +26,8 @@ static const char* nombre(const cardread::Verdict v) {
 static void esperar(const char* caso, const uint64_t size, const size_t cap, const cardread::Verdict esperado) {
   const cardread::Verdict dio = cardread::judge(size, cap);
   if (dio != esperado) {
-    std::printf("  FALLA %-44s size=%llu cap=%zu -> %s (se esperaba %s)\n", caso,
-                static_cast<unsigned long long>(size), cap, nombre(dio), nombre(esperado));
+    std::printf("  FALLA %-44s size=%llu cap=%zu -> %s (se esperaba %s)\n", caso, static_cast<unsigned long long>(size),
+                cap, nombre(dio), nombre(esperado));
     ++fallos;
   } else {
     std::printf("  ok    %-44s -> %s\n", caso, nombre(dio));

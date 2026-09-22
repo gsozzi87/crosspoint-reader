@@ -255,8 +255,8 @@ void ActivityManager::replaceActivity(std::unique_ptr<Activity>&& newActivity) {
   }
 }
 
-void ActivityManager::goToFileTransfer() {
-  replaceActivity(makeUniqueNoThrow<CrossPointWebServerActivity>(renderer, mappedInput));
+void ActivityManager::goToFileTransfer(const bool hideUsbDrive) {
+  replaceActivity(makeUniqueNoThrow<CrossPointWebServerActivity>(renderer, mappedInput, hideUsbDrive));
 }
 
 void ActivityManager::goToUsbDrive() {
@@ -347,7 +347,14 @@ void ActivityManager::goHome(HomeMenuItem initialMenuItem, bool cleanInitialRefr
     // ws397: the hub is home. The classic home stays the parent of the
     // library screens (browser, recents, OPDS, transfer) so Back from them
     // lands where it left; Settings and everything else return to the hub.
-    if (initialMenuItem == HomeMenuItem::NONE || initialMenuItem == HomeMenuItem::SETTINGS_MENU) {
+    //
+    // REV-088: **la transferencia ya NO cuelga de la home clásica en esta
+    // placa.** Su fila se escondió (`HomeActivity::showsFileTransfer()`) y la
+    // puerta canónica pasó a ser Ajustes -> Archivos, así que volver a la home
+    // clásica dejaría el cursor en la primera fila de una pantalla por la que
+    // no se pasó. Vuelve al hub, como Ajustes.
+    if (initialMenuItem == HomeMenuItem::NONE || initialMenuItem == HomeMenuItem::SETTINGS_MENU ||
+        initialMenuItem == HomeMenuItem::FILE_TRANSFER) {
       replaceActivity(makeUniqueNoThrow<HubActivity>(renderer, mappedInput, cleanInitialRefresh));
       return;
     }

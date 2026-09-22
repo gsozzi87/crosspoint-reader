@@ -88,7 +88,7 @@ void CrossPointWebServerActivity::onEnter() {
 
   // Launch network mode selection subactivity
   LOG_DBG("WEBACT", "Launching NetworkModeSelectionActivity...");
-  startActivityForResult(makeUniqueNoThrow<NetworkModeSelectionActivity>(renderer, mappedInput),
+  startActivityForResult(makeUniqueNoThrow<NetworkModeSelectionActivity>(renderer, mappedInput, hideUsbDrive),
                          [this](const ActivityResult& result) {
                            if (result.isCancelled) {
                              onGoHome();
@@ -149,7 +149,7 @@ void CrossPointWebServerActivity::onNetworkModeSelected(const NetworkMode mode) 
         makeUniqueNoThrow<CalibreConnectActivity>(renderer, mappedInput), [this](const ActivityResult& result) {
           state = WebServerActivityState::MODE_SELECTION;
 
-          startActivityForResult(makeUniqueNoThrow<NetworkModeSelectionActivity>(renderer, mappedInput),
+          startActivityForResult(makeUniqueNoThrow<NetworkModeSelectionActivity>(renderer, mappedInput, hideUsbDrive),
                                  [this](const ActivityResult& result) {
                                    if (result.isCancelled) {
                                      onGoHome();
@@ -201,7 +201,7 @@ void CrossPointWebServerActivity::onWifiSelectionComplete(const bool connected) 
     // User cancelled - go back to mode selection
     state = WebServerActivityState::MODE_SELECTION;
 
-    startActivityForResult(makeUniqueNoThrow<NetworkModeSelectionActivity>(renderer, mappedInput),
+    startActivityForResult(makeUniqueNoThrow<NetworkModeSelectionActivity>(renderer, mappedInput, hideUsbDrive),
                            [this](const ActivityResult& result) {
                              if (result.isCancelled) {
                                onGoHome();

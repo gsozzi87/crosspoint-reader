@@ -52,6 +52,9 @@ class CrossPointWebServerActivity final : public Activity {
   // Cached signal-strength bracket (0..4) for the WiFi indicator.
   int lastWifiBars = 0;
 
+  // REV-088: ver el constructor.
+  bool hideUsbDrive = false;
+
   void renderServerRunning() const;
   void renderWifiIndicator(int subHeaderTop) const;
 
@@ -61,8 +64,12 @@ class CrossPointWebServerActivity final : public Activity {
   void startWebServer();
 
  public:
-  explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput)
-      : Activity("CrossPointWebServer", renderer, mappedInput) {}
+  // REV-088: `hideUsbDrive` viaja al selector. Se llega acá desde
+  // **Ajustes -> Archivos -> Transferencia local**, que tiene su propia fila de
+  // modo memoria USB arriba; repetirla adentro sería ofrecerla dos veces.
+  explicit CrossPointWebServerActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
+                                       const bool hideUsbDrive = false)
+      : Activity("CrossPointWebServer", renderer, mappedInput), hideUsbDrive(hideUsbDrive) {}
   void onEnter() override;
   void onExit() override;
   void loop() override;
