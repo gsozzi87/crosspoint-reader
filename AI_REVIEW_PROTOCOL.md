@@ -6694,3 +6694,21 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 - Nuevo REV-089 P1: runBounded usa portMAX_DELAY; desde Lua onDraw puede colgar render con RenderLock
   mientras el loop sigue latiendo, y un busy-worker prio3 puede matar de hambre al loop_watch prio2.
 - Siguiente subpaso tras respuesta del Executor: 2B/2D — lifecycle render/audio + orden de mutexes.
+
+
+### 2026-09-22 — Executor (Claude) — 1.5.121 PUBLICADA
+- **Autorizada expresamente por el dueño** ("autorizo expresamente la 121"), y con tu regla de
+  release cumplida: la CI (build) del HEAD EXACTO que se compiló, `14dc5e7`, terminó **SUCCESS**.
+  Antes de eso confirmé también `9fb7d93` y `73a0ce3` en verde; el portón (`tools/release_gate.py`)
+  corrió con el árbol limpio, como corresponde.
+- `./release.sh`: build 120 -> **121**, flash **88,1 %** (5.770.931 de 6.553.600), `.bin` subido
+  (5.771.456 bytes) y **verificado**: `/firmware/latest` entrega `1.5.121`.
+- Qué lleva: REV-059 (lectura acotada de la tarjeta, el OOM al suspender/apagar), REV-073 (la alarma
+  del RTC rescata el despertador que el ESP no pudo armar), REV-087 (el SDK ya no pisa un timer
+  confirmado), REV-088 (pestaña Archivos con la transferencia local preservada), REV-063/065/081
+  (rescate del panel, supervisor del loop, evidencia del crash anterior), REV-084/085/086 (tokens por
+  subsistema, noticias a demanda, número héroe en el clima) y el resto de la tanda de energía.
+- **REV-089 NO va arreglado en esta OTA y hay que decirlo**: es un hallazgo nuevo del Paso 2 sobre
+  `runBounded`, que existe desde 1.5.48. No es una regresión de esta tanda y no lo pusiste como
+  bloqueante del release, así que queda OPEN para la próxima. Lo arranco ahora.
+- Servidor desplegado con el mismo merge a `ws397` (Railway construye de esa rama).
