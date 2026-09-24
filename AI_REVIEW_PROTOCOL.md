@@ -6360,6 +6360,72 @@ Tests:
 Executor response:
 Reviewer final check:
 
+
+## REV-096 — AudioManager puede desmontar la fuente/I2S mientras audio_play sigue vivo
+State: OPEN
+Severity: P1
+Subsystem: audio / tasks / lifecycle / I2S / MP3
+
+Hallazgo del Paso 2B.
+
+### Hechos verificados
+
+En freeink-sdk 6abc553, `AudioManager::stop()`:
+- pone `stopRequested_=true`;
+- espera como máximo 200 x 10 ms = 2 s a que `playing_` pase a false;
+- si vence, RETORNA igual. No devuelve éxito/fallo ni garantiza que `task_` haya muerto.
+
+Luego `AudioManager::end()` continúa:
+- `stop()`;
+- `endCapture()`;
+- `powerDown()` (que vuelve a llamar `stop()`);
+- `teardownI2s()`, que deshabilita y borra los canales.
+
+O sea: tras unos waits acotados, un worker realmente atascado puede seguir ejecutando `taskLoop()`
+con un handle I2S local mientras otra tarea destruye esos canales.
+
+Hay un caso aún más directo en música:
+`MusicPlayer::stop()` hace:
+1. `audio_.stop()`;
+2. `source_.close()`;
+3. `audio_.end()`.
+
+El `WavSource` del MP3 captura `this` y ejecuta `Mp3Source::readPcm()` DESDE `audio_play`.
+Si el primer `audio_.stop()` agotó sus 2 s sin que la tarea terminara, `source_.close()` libera
+`decoder_`, `inBuf_`, `pcmBuf_` y cierra el archivo mientras el worker todavía puede volver de
+un bloqueo y usar exactamente esos miembros.
+
+El caso normal probablemente entra dentro de los waits, pero el código de resiliencia debe cubrir el
+caso que motivó el timeout: SD/I2S/source bloqueado o una tarea que no responde. Continuar destruyendo
+recursos no es un fail-safe.
+
+### Impacto
+
+- use-after-free / acceso a decoder o buffers ya liberados;
+- uso de handle I2S ya eliminado;
+- crash/reinicio o corrupción intermitente al parar música/voz/alerta;
+- especialmente peligroso durante sleep, cambio de dueño I2S o recuperación de una tarea trabada.
+
+### Arreglo esperado
+
+1. Convertir el final de `audio_play` en un join explícito: semaphore/task-notification de "task exited".
+2. `stop()` debe devolver éxito/fallo o una API equivalente que garantice que la tarea terminó ANTES
+   de que el caller pueda cerrar su fuente.
+3. Si vence el deadline:
+   - NO cerrar Mp3Source;
+   - NO borrar canales I2S debajo de la tarea;
+   - registrar evidencia segura y usar un fail-safe (preferible reinicio controlado) en vez de seguir
+     como si el worker hubiera muerto.
+4. No usar `vTaskDelete(task_)` desde afuera como arreglo fácil: el worker puede estar dentro de SD,
+   decoder o driver I2S y dejar locks/estado a medias.
+5. Test/harness:
+   - fuente que tarda más que el deadline en `read()`;
+   - stop/end no libera fuente ni canal hasta confirmación;
+   - ruta normal sigue terminando sin latencia excesiva.
+
+Executor response:
+Reviewer final check:
+
 # Session log
 
 Use short entries. Do not paste huge tool transcripts.
@@ -7061,3 +7127,15 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   antes de resize/reserve; cache corrupto/truncado puede causar OOM/reset en vez de invalidarse.
 - Siguiente: esperar/verificar fixes del Executor para REV-089..095 y luego continuar 2I/2J
   (OOM restantes, mutex/races transversales y cierre de Paso 2).
+
+
+
+### 2026-09-24 — Reviewer (ChatGPT) — Paso 2A/2B cerrado en bloque pequeño
+- 2A inventario/lifecycle: completado. Mapa WS397 confirmado: loopTask, render, ui_sound, audio_play,
+  worker runBounded y loop_watch; el fi_input asíncrono del SDK existe pero WS397 usa InputManager
+  síncrono y no lo arranca.
+- 2B tareas principales: completado para loop/render/ui_sound/audio_play/workers.
+- Findings de este bloque: REV-089 (runBounded/watchdog), REV-090 (TOCTOU I2S de UiSound),
+  REV-091 (uint64_t de posición MP3 entre cores), REV-093 (estado Activity entre loop/render) y
+  nuevo REV-096 (stop/end puede desmontar fuente/I2S con audio_play todavía vivo).
+- No se avanzó a 2C ni a los incisos siguientes en esta tanda.
