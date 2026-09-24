@@ -7139,3 +7139,150 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   REV-091 (uint64_t de posición MP3 entre cores), REV-093 (estado Activity entre loop/render) y
   nuevo REV-096 (stop/end puede desmontar fuente/I2S con audio_play todavía vivo).
 - No se avanzó a 2C ni a los incisos siguientes en esta tanda.
+
+
+## REV-097 — TaskConfig no es todavía fuente única real de configuración de tareas
+State: OPEN
+Severity: P3
+Subsystem: tasks / FreeRTOS / diagnostics
+
+Hallazgo adicional del Paso 2A contra HEAD 3e7dc532379864314ce416c4edd1f246800c7551 (build 1.5.121 ya publicado).
+
+Reviewer theory:
+El objetivo declarado de src/TaskConfig.h es que core/prioridad/stack vivan en un solo lugar, pero hoy hay
+dos divergencias estructurales:
+1. ActivityManager::begin() toma nombre/stack/prioridad de TaskConfig, pero vuelve a calcular el core con
+   configNUM_CORES en src/activities/ActivityManager.cpp en vez de consumir tasks::budget(Id::Render).core
+   / tasks::CORE_UI.
+2. El presupuesto de loopTask declara 8192 bytes como literal, mientras el tamaño real lo decide Arduino
+   mediante getArduinoLoopTaskStackSize() / ARDUINO_LOOP_STACK_SIZE. En Arduino-ESP32 3.3.7 el default
+   también es 8192, así que HOY coincide, pero una futura CONFIG_ARDUINO_LOOP_STACK_SIZE puede hacer que
+   Ajustes -> Memoria muestre un presupuesto falso sin error de compilación.
+
+Evidence:
+- src/TaskConfig.h: Budget de Loop = 8192 y Render = core CORE_UI.
+- src/activities/ActivityManager.cpp: renderTaskCore se vuelve a decidir localmente.
+- Arduino-ESP32 3.3.7 cores/esp32/main.cpp: loopTask usa getArduinoLoopTaskStackSize(); default 8192 sólo
+  si CONFIG_ARDUINO_LOOP_STACK_SIZE no fue redefinido.
+
+Expected behavior:
+TaskConfig debe ser la fuente autoritativa de toda tarea propia y el presupuesto mostrado debe derivar del
+valor real del framework cuando sea posible.
+
+Executor response:
+Fix:
+Tests:
+Reviewer final check:
+Commit(s):
+
+## REV-098 — Diagnóstico de tareas omite exactamente al worker y al supervisor
+State: OPEN
+Severity: P3
+Subsystem: tasks / observability / memory diagnostics
+
+Hallazgo adicional del Paso 2A contra HEAD 3e7dc532379864314ce416c4edd1f246800c7551.
+
+Reviewer theory:
+Ajustes -> Sistema -> Memoria declara ser la contracara de TaskConfig y la herramienta para verificar
+high-water real, pero TaskStatsActivity sólo muestra Loop, Render, UiSound y AudioPlay. No muestra:
+- Worker/runBounded, cuya presión de stack y duración son relevantes para REV-089.
+- LoopWatch, que es el airbag contra cuelgues y cuya reserva de 3072 B conviene validar en hardware.
+
+Además runBounded sí calcula cuánto stack usó el worker y lo puede devolver por usedOut, pero al morir la
+tarea se pierde la evidencia si el caller no la conserva. Cuando Gastón abre la pantalla Memoria el worker
+normalmente ya terminó, por lo que no puede comprobar su high-water histórico.
+
+Evidence:
+- src/activities/settings/TaskStatsActivity.cpp: SHOWN[] = Loop, Render, UiSound, AudioPlay.
+- src/TaskConfig.cpp: boundedEntry calcula job->used antes de vTaskDelete().
+- src/TaskConfig.h: Worker y LoopWatch tienen Budget pero no aparecen en SHOWN[].
+
+Expected behavior:
+- Mostrar LoopWatch siempre.
+- Mostrar Worker vivo cuando exista.
+- Conservar al menos último worker: nombre, stack declarado, usado/high-water, duración y resultado, para
+  poder auditar sin cable una operación que ya terminó.
+
+Executor response:
+Fix:
+Tests:
+Reviewer final check:
+Commit(s):
+
+## REV-099 — Fallo de creación de ActivityManagerRender termina en assert/panic en vez de fallo controlado
+State: OPEN
+Severity: P1
+Subsystem: tasks / boot / render / OOM
+
+Hallazgo adicional del Paso 2A contra HEAD 3e7dc532379864314ce416c4edd1f246800c7551.
+
+Reviewer theory:
+ActivityManager::begin() no comprueba el BaseType_t devuelto por xTaskCreatePinnedToCore(). Sólo comprueba
+después renderTaskHandle con assert(). Si no hay heap interno suficiente para crear la tarea de render de
+8192 B durante setup, el resultado es panic/reset en vez de un modo de fallo diagnosticable.
+
+Evidence:
+- src/activities/ActivityManager.cpp: xTaskCreatePinnedToCore(..., &renderTaskHandle, ...);
+  seguido de assert(renderTaskHandle != nullptr && "Failed to create render task").
+- En contraste, UiSound::ensureTask() y loopwdt::begin() sí comprueban pdPASS y degradan/loguean.
+
+Expected behavior:
+La creación de una tarea estructural debe comprobar pdPASS explícitamente y dejar evidencia clara. Si sin
+renderer el producto no puede continuar, el fail-safe puede ser rescue/restart controlado, pero no depender
+de assert como mecanismo operativo.
+
+Reproduction:
+Forzar fallo de xTaskCreatePinnedToCore / reducir heap disponible antes de ActivityManager::begin() y
+verificar que el arranque no entra en un reset opaco.
+
+Executor response:
+Fix:
+Tests:
+Reviewer final check:
+Commit(s):
+
+## REV-100 — InputManager::beginAsync del SDK no tiene rollback completo si fallan colas/tarea
+State: OPEN
+Severity: P3
+Subsystem: freeink-sdk / input / FreeRTOS / allocation
+
+Hallazgo adicional del Paso 2A. NO está activo actualmente en el camino normal de WS397: CrossPoint usa
+gpio.update() síncrono y no se encontró caller de InputManager::beginAsync() en la rama ws397.
+
+Reviewer theory:
+freeink-sdk/libs/hardware/InputManager/src/InputManager.cpp::beginAsync() crea hasta cinco colas y luego
+llama xTaskCreate("fi_input", 4096, ...), pero:
+- sólo valida explícitamente la primera cola;
+- no hace rollback de colas ya creadas si falla una posterior;
+- no comprueba el retorno de xTaskCreate;
+- si la tarea falla, _asyncTask sigue null y una llamada posterior puede intentar crear otra tanda de colas.
+
+Impacto actual:
+Bajo mientras WS397 no active beginAsync(); importante dejarlo registrado antes de reutilizar ese modo
+para capturar botones durante refrescos lentos.
+
+Expected behavior:
+Creación transaccional: validar todas las colas + pdPASS y liberar todo lo ya asignado ante cualquier fallo.
+
+Executor response:
+Fix:
+Tests:
+Reviewer final check:
+Commit(s):
+
+### 2026-09-24 — Reviewer (ChatGPT) — ampliación exhaustiva del Paso 2A posterior a 1.5.121
+- El dueño confirmó que 1.5.121 YA fue lanzada; esta auditoría es post-release y no pretende reescribir
+  el gate que ya ocurrió.
+- REV-089 sigue siendo el hallazgo funcional principal: runBounded usa portMAX_DELAY y worker prio3 puede
+  matar de hambre a loop_watch prio2 en el mismo core 0.
+- Se verificó contra Arduino-ESP32 3.3.7 / ESP-IDF 5.5.2 que el high-water actual se convierte
+  correctamente a bytes: uxTaskGetStackHighWaterMark devuelve unidades de StackType_t en esa versión,
+  por lo que el * sizeof(StackType_t) de TaskConfig NO es un bug.
+- Se amplía el mapa con cuatro findings nuevos:
+  REV-097 fuente única incompleta de TaskConfig;
+  REV-098 puntos ciegos de TaskStats/último worker;
+  REV-099 creación de Render dependiente de assert ante OOM;
+  REV-100 beginAsync del SDK sin rollback completo, actualmente dormido en WS397.
+- fi_input existe en freeink-sdk (stack 4096) pero no se encontró activado por WS397; no se cuenta como
+  tarea viva actual.
+- No se avanzó a 2B en esta ampliación: fue exclusivamente cierre profundo de 2A.
