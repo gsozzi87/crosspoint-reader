@@ -63,9 +63,17 @@ inline const Budget& budget(const Id id) {
       {"ui_sound", 4096, 4, CORE_AUDIO, "clics de la interfaz"},
       {"audio_play", 8192, 10, CORE_AUDIO, "reproducción (del SDK)"},
       {"worker", 0, 3, CORE_AUDIO, "trabajo pesado de vida corta"},
-      // En el OTRO núcleo a propósito: un busy-loop de la UI no lo puede matar
-      // de hambre. Por encima del idle de su núcleo y muy por debajo del audio.
-      {"loop_watch", 3072, 2, CORE_AUDIO, "vigila que el loop siga latiendo"},
+      // En el OTRO núcleo que la UI a propósito: un busy-loop de la UI no lo
+      // puede matar de hambre.
+      //
+      // REV-089: pero estaba en **2**, o sea POR DEBAJO del worker (3) que
+      // comparte núcleo con él. Un worker que se traba en un bucle de C que no
+      // cede —código de una app de Lua adentro de una función nativa— lo dejaba
+      // sin correr justo cuando hacía falta, y el supervisor que no puede
+      // ejecutar no supervisa nada. Ahora está **por encima de todo lo que
+      // vigila** y por debajo del audio del SDK (10), que es de tiempo real y
+      // no se toca. Duerme casi todo el tiempo: costar, no cuesta.
+      {"loop_watch", 3072, 5, CORE_AUDIO, "vigila que el loop siga latiendo"},
   };
   return table[static_cast<uint8_t>(id)];
 }
@@ -129,6 +137,20 @@ inline Usage usage(const Id id) {
 // ajusta el presupuesto la próxima vez.
 bool runBounded(const char* name, uint32_t stackBytes, void (*fn)(void*), void* arg, uint32_t* usedOut = nullptr,
                 UBaseType_t prio = 3, BaseType_t core = CORE_AUDIO);
+
+// REV-089: el plazo del worker. Pasado esto, el que llamó NO vuelve — reinicia.
+//
+// Y tiene que ser así: el `BoundedJob` vive en el STACK del llamador y el
+// worker puede estar adentro de Lua, de Storage o con un mutex tomado.
+// Devolver con el worker vivo sería usar memoria de un marco que ya no existe;
+// `vTaskDelete()` a ciegas abandonaría candados tomados. Entre "seguir con
+// memoria corrupta" y "reiniciar dejando el motivo escrito", reiniciar.
+//
+// Tres minutos: el trabajo más largo que corre acá es abrir y ejecutar una app
+// de Lua, que tiene su propio tope de instrucciones, y ninguna llamada normal
+// pasa de unos cientos de milisegundos. No se comparte con el presupuesto del
+// supervisor del loop (120 s) a propósito: éste mide el worker, no el loop.
+inline constexpr uint32_t WORKER_DEADLINE_MS = 180000;
 
 // Instantánea de memoria para el log: se llama cada 10 s desde el loop y en los
 // puntos donde la presión importa (antes de WiFi, antes de una grabación

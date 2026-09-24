@@ -6,6 +6,7 @@
 #include <HalDisplay.h>
 #include <HalPowerManager.h>
 #include <Memory.h>
+#include <esp_system.h>  // esp_restart (REV-099)
 
 #include <algorithm>
 
@@ -32,17 +33,28 @@
 static portMUX_TYPE activityManagerSpinlock = portMUX_INITIALIZER_UNLOCKED;
 
 void ActivityManager::begin() {
-#if defined(configNUM_CORES) && configNUM_CORES > 1
-  constexpr BaseType_t renderTaskCore = 1;
-#else
-  constexpr BaseType_t renderTaskCore = 0;
-#endif
-  // Núcleo, prioridad y stack viven en src/TaskConfig.h con las demás tareas.
-  xTaskCreatePinnedToCore(&renderTaskTrampoline, tasks::RENDER_NAME, tasks::RENDER_STACK, this, tasks::RENDER_PRIO,
-                          &renderTaskHandle,
-                          renderTaskCore  // Keep long renders/cover decodes off CPU 0's idle watchdog when available
+  // REV-097: el NÚCLEO también sale de `TaskConfig`. Estaba recalculado acá con
+  // `configNUM_CORES`, que daba lo mismo por casualidad pero rompía la promesa
+  // del archivo: "núcleo, prioridad y stack en un solo lugar". Dos fuentes de
+  // la misma decisión se separan solas — ya pasó con las rutas protegidas en
+  // 1.5.91 y con el índice de las filas en REV-088.
+  const BaseType_t renderTaskCore = tasks::budget(tasks::Id::Render).core;
+  const BaseType_t ok = xTaskCreatePinnedToCore(&renderTaskTrampoline, tasks::RENDER_NAME, tasks::RENDER_STACK, this,
+                                                tasks::RENDER_PRIO, &renderTaskHandle,
+                                                renderTaskCore  // long renders/cover decodes off CPU 0's idle watchdog
   );
-  assert(renderTaskHandle != nullptr && "Failed to create render task");
+  // REV-099: `assert()` NO es un mecanismo operativo. En un build sin
+  // `NDEBUG` termina en un abort opaco, y en uno con `NDEBUG` la comprobación
+  // desaparece entera y se sigue con un handle nulo — o sea que el modo de
+  // fallo depende de una macro del build. Sin tarea de render el aparato no
+  // puede pintar nada, así que se deja dicho y se reinicia: un arranque
+  // limpio tiene chances de conseguir el heap; seguir, ninguna.
+  if (ok != pdPASS || renderTaskHandle == nullptr) {
+    log_e("[ACT] no se pudo crear la tarea de render (%u B de stack): se reinicia",
+          static_cast<unsigned>(tasks::RENDER_STACK));
+    delay(200);  // que la línea alcance a salir por el cable
+    esp_restart();
+  }
 }
 
 void ActivityManager::renderTaskTrampoline(void* param) {

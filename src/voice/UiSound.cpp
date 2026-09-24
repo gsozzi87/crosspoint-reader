@@ -142,8 +142,18 @@ bool UiSound::playNow(const uisound::Sound sound, const uint8_t level, const uin
   if (samples == 0) return false;
   wav::writeHeader(wav_, uisound::RATE, samples * sizeof(int16_t));
 
-  if (audio_ == nullptr) audio_ = new (std::nothrow) AudioManager();
-  if (audio_ == nullptr) return false;
+  if (audio_ == nullptr) {
+    audio_ = new (std::nothrow) AudioManager();
+    if (audio_ == nullptr) return false;
+    // REV-090: EL CLIC NO LE PISA EL PUERTO A NADIE, y esto es lo que lo
+    // garantiza. El `portBusy()` de arriba sigue sirviendo —corta temprano y
+    // barato— pero es un TOCTOU: entre esa pregunta y la toma del puerto hay
+    // dos llamadas y un cambio de tarea, y en esa ventana puede arrancar la
+    // voz, el micrófono o la música desde el otro núcleo. Con TryOnly,
+    // `ensureI2s()` ve al dueño nuevo y devuelve false en vez de llamarle
+    // `end()`: el clic se pierde, que es el contrato.
+    audio_->setPortPolicy(AudioManager::PortPolicy::TryOnly);
+  }
   // Cada etapa deja rastro: "los sonidos no suenan" ya se diagnosticó dos veces
   // leyendo el código en vez del log, y las dos veces se arregló otra cosa.
   static unsigned long lastTraceMs = 0;

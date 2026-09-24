@@ -61,6 +61,14 @@ void resume();
 // sin esto la evidencia del cuelgue se tiraba justo cuando más servía.
 bool trippedLastBoot();
 
+// REV-089: un worker de `runBounded` venció su plazo y el llamador no puede
+// volver (su `BoundedJob` vive en un stack que el worker todavía usa). Deja el
+// motivo en la RAM del RTC con el mismo mecanismo que el cuelgue del loop
+// —para que lo cuente el arranque siguiente— y reinicia. No escribe en la
+// tarjeta: si el worker se colgó teniendo el mutex del almacenamiento, escribir
+// colgaría también a quien intenta rescatar.
+[[noreturn]] void workerStalled(const char* name, uint32_t elapsedMs);
+
 // Deja la línea en el log con lo que había quedado anotado. Se llama una vez,
 // con el log ya abierto.
 void reportBoot();

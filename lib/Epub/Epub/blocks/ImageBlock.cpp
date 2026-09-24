@@ -435,10 +435,11 @@ bool ImageBlock::serialize(HalFile& file) {
 std::unique_ptr<ImageBlock> ImageBlock::deserialize(HalFile& file) {
   std::string path;
   std::string src;
-  serialization::readString(file, path);
-  serialization::readString(file, src);
-  int16_t w, h;
-  serialization::readPod(file, w);
-  serialization::readPod(file, h);
+  // REV-095: rutas de una caché regenerable, con tope y con lectura comprobada.
+  if (!serialization::tryReadString(file, path)) return nullptr;
+  if (!serialization::tryReadString(file, src)) return nullptr;
+  int16_t w = 0, h = 0;
+  if (!serialization::tryReadPod(file, w)) return nullptr;
+  if (!serialization::tryReadPod(file, h)) return nullptr;
   return std::unique_ptr<ImageBlock>(new (std::nothrow) ImageBlock(path, src, w, h));
 }

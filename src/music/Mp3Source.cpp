@@ -19,15 +19,28 @@ std::string decodeTextFrame(const uint8_t* p, size_t len) {
     out.assign(reinterpret_cast<const char*>(p), len);
   } else {  // UTF-16 with BOM (1) or BE (2): keep the low bytes of BMP chars
     bool le = true;
-    if (len >= 2 && p[0] == 0xFF && p[1] == 0xFE) { p += 2; len -= 2; }
-    else if (len >= 2 && p[0] == 0xFE && p[1] == 0xFF) { p += 2; len -= 2; le = false; }
-    else if (enc == 2) le = false;
+    if (len >= 2 && p[0] == 0xFF && p[1] == 0xFE) {
+      p += 2;
+      len -= 2;
+    } else if (len >= 2 && p[0] == 0xFE && p[1] == 0xFF) {
+      p += 2;
+      len -= 2;
+      le = false;
+    } else if (enc == 2)
+      le = false;
     for (size_t i = 0; i + 1 < len; i += 2) {
       const uint16_t cp = le ? (p[i] | (p[i + 1] << 8)) : ((p[i] << 8) | p[i + 1]);
       if (cp == 0) break;
-      if (cp < 0x80) out += static_cast<char>(cp);
-      else if (cp < 0x800) { out += static_cast<char>(0xC0 | (cp >> 6)); out += static_cast<char>(0x80 | (cp & 0x3F)); }
-      else { out += static_cast<char>(0xE0 | (cp >> 12)); out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F)); out += static_cast<char>(0x80 | (cp & 0x3F)); }
+      if (cp < 0x80)
+        out += static_cast<char>(cp);
+      else if (cp < 0x800) {
+        out += static_cast<char>(0xC0 | (cp >> 6));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+      } else {
+        out += static_cast<char>(0xE0 | (cp >> 12));
+        out += static_cast<char>(0x80 | ((cp >> 6) & 0x3F));
+        out += static_cast<char>(0x80 | (cp & 0x3F));
+      }
     }
   }
   while (!out.empty() && (out.back() == '\0' || out.back() == ' ')) out.pop_back();
@@ -60,6 +73,7 @@ bool Mp3Source::open(const std::string& path) {
   }
   if (bitrate_ > 0) duration_ = static_cast<int>(static_cast<uint64_t>(fileSize_ - audioStart_) * 8 / bitrate_);
   samplesOut_ = 0;
+  positionS_ = 0;
   buildHeader();
   headerPos_ = 0;
   inHeader_ = true;
@@ -81,14 +95,21 @@ void Mp3Source::close() {
     MP3FreeDecoder(static_cast<HMP3Decoder>(decoder_));
     decoder_ = nullptr;
   }
-  if (inBuf_) { heap_caps_free(inBuf_); inBuf_ = nullptr; }
-  if (pcmBuf_) { heap_caps_free(pcmBuf_); pcmBuf_ = nullptr; }
+  if (inBuf_) {
+    heap_caps_free(inBuf_);
+    inBuf_ = nullptr;
+  }
+  if (pcmBuf_) {
+    heap_caps_free(pcmBuf_);
+    pcmBuf_ = nullptr;
+  }
   inLen_ = pcmAvail_ = pcmPos_ = 0;
   audioStart_ = 0;
   title_.clear();
   artist_.clear();
   sampleRate_ = channels_ = bitrate_ = duration_ = 0;
   samplesOut_ = 0;
+  positionS_ = 0;
   for (uint8_t& l : levels_) l = 0;
   levelPos_ = 0;
   levelPeak_ = 0;
@@ -107,8 +128,9 @@ void Mp3Source::parseId3v2() {
   if (major >= 3 && (h[5] & 0x40)) {  // extended header
     uint8_t eh[4];
     if (file_.read(eh, 4) == 4) {
-      const size_t ehSize = major == 4 ? (((eh[0] & 0x7F) << 21) | ((eh[1] & 0x7F) << 14) | ((eh[2] & 0x7F) << 7) | (eh[3] & 0x7F))
-                                       : ((eh[0] << 24) | (eh[1] << 16) | (eh[2] << 8) | eh[3]) + 4;
+      const size_t ehSize =
+          major == 4 ? (((eh[0] & 0x7F) << 21) | ((eh[1] & 0x7F) << 14) | ((eh[2] & 0x7F) << 7) | (eh[3] & 0x7F))
+                     : ((eh[0] << 24) | (eh[1] << 16) | (eh[2] << 8) | eh[3]) + 4;
       pos += ehSize;
     }
   }
@@ -121,9 +143,12 @@ void Mp3Source::parseId3v2() {
     char id[5] = {0};
     memcpy(id, buf, major == 2 ? 3 : 4);
     size_t frameSize;
-    if (major == 2) frameSize = (buf[3] << 16) | (buf[4] << 8) | buf[5];
-    else if (major == 4) frameSize = ((buf[4] & 0x7F) << 21) | ((buf[5] & 0x7F) << 14) | ((buf[6] & 0x7F) << 7) | (buf[7] & 0x7F);
-    else frameSize = (buf[4] << 24) | (buf[5] << 16) | (buf[6] << 8) | buf[7];
+    if (major == 2)
+      frameSize = (buf[3] << 16) | (buf[4] << 8) | buf[5];
+    else if (major == 4)
+      frameSize = ((buf[4] & 0x7F) << 21) | ((buf[5] & 0x7F) << 14) | ((buf[6] & 0x7F) << 7) | (buf[7] & 0x7F);
+    else
+      frameSize = (buf[4] << 24) | (buf[5] << 16) | (buf[6] << 8) | buf[7];
     pos += hdrLen;
     const bool isTitle = strcmp(id, "TIT2") == 0 || strcmp(id, "TT2") == 0;
     const bool isArtist = strcmp(id, "TPE1") == 0 || strcmp(id, "TP1") == 0;
@@ -131,7 +156,10 @@ void Mp3Source::parseId3v2() {
       const int got = file_.read(buf, frameSize);
       if (got > 0) {
         const std::string text = decodeTextFrame(buf, got);
-        if (isTitle) title_ = text; else artist_ = text;
+        if (isTitle)
+          title_ = text;
+        else
+          artist_ = text;
       }
     }
     pos += frameSize;
@@ -257,6 +285,10 @@ int Mp3Source::readPcm(uint8_t* dst, const size_t len) {
     out += n;
   }
   samplesOut_ += out / sizeof(int16_t) / (channels_ > 0 ? channels_ : 1);
+  // REV-091: una sola escritura de 32 bits, que es lo que la UI lee sin
+  // partirse. Va acá y no en el getter porque el que sabe el valor bueno es el
+  // que acaba de sumarlo.
+  positionS_ = sampleRate_ > 0 ? static_cast<uint32_t>(samplesOut_ / sampleRate_) : 0;
   return static_cast<int>(out);
 }
 
@@ -266,18 +298,35 @@ void Mp3Source::buildHeader() {
   const uint32_t dataBytes = 0xFFFFFFF0u;  // "endless": the task stops when read() returns 0
   uint8_t* h = header_;
   memcpy(h, "RIFF", 4);
-  h[4] = 0xFF; h[5] = 0xFF; h[6] = 0xFF; h[7] = 0xFF;
+  h[4] = 0xFF;
+  h[5] = 0xFF;
+  h[6] = 0xFF;
+  h[7] = 0xFF;
   memcpy(h + 8, "WAVEfmt ", 8);
-  h[16] = 16; h[17] = h[18] = h[19] = 0;
-  h[20] = 1; h[21] = 0;
-  h[22] = ch; h[23] = 0;
-  h[24] = rate & 0xFF; h[25] = (rate >> 8) & 0xFF; h[26] = (rate >> 16) & 0xFF; h[27] = (rate >> 24) & 0xFF;
+  h[16] = 16;
+  h[17] = h[18] = h[19] = 0;
+  h[20] = 1;
+  h[21] = 0;
+  h[22] = ch;
+  h[23] = 0;
+  h[24] = rate & 0xFF;
+  h[25] = (rate >> 8) & 0xFF;
+  h[26] = (rate >> 16) & 0xFF;
+  h[27] = (rate >> 24) & 0xFF;
   const uint32_t byteRate = rate * ch * 2;
-  h[28] = byteRate & 0xFF; h[29] = (byteRate >> 8) & 0xFF; h[30] = (byteRate >> 16) & 0xFF; h[31] = (byteRate >> 24) & 0xFF;
-  h[32] = ch * 2; h[33] = 0;
-  h[34] = 16; h[35] = 0;
+  h[28] = byteRate & 0xFF;
+  h[29] = (byteRate >> 8) & 0xFF;
+  h[30] = (byteRate >> 16) & 0xFF;
+  h[31] = (byteRate >> 24) & 0xFF;
+  h[32] = ch * 2;
+  h[33] = 0;
+  h[34] = 16;
+  h[35] = 0;
   memcpy(h + 36, "data", 4);
-  h[40] = dataBytes & 0xFF; h[41] = (dataBytes >> 8) & 0xFF; h[42] = (dataBytes >> 16) & 0xFF; h[43] = (dataBytes >> 24) & 0xFF;
+  h[40] = dataBytes & 0xFF;
+  h[41] = (dataBytes >> 8) & 0xFF;
+  h[42] = (dataBytes >> 16) & 0xFF;
+  h[43] = (dataBytes >> 24) & 0xFF;
 }
 
 AudioManager::WavSource Mp3Source::wavSource() {

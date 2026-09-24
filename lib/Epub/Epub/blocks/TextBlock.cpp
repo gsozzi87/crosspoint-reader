@@ -413,7 +413,8 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   // overwrites every byte, so a moved-from value carries nothing into the next iteration.
   std::string scratch;
   for (uint16_t i = 0; i < wc; i++) {
-    serialization::readString(file, scratch);
+    // REV-095: una caché truncada dejaba `len` con basura y `resize()` aborta.
+    if (!serialization::tryReadString(file, scratch)) return nullptr;
     if (scratch.empty()) continue;
     if (block->rubyTexts.empty()) {
       block->rubyTexts.resize(wc);

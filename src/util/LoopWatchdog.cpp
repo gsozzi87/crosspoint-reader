@@ -141,6 +141,27 @@ void loopwdt::resume() {
 
 bool loopwdt::trippedLastBoot() { return freshTrip(); }
 
+// REV-089: el worker de `runBounded` no volvió. Se reusa el mismo registro de
+// RAM del RTC que el cuelgue del loop —es la misma pregunta desde el arranque
+// siguiente: "¿qué estaba haciendo cuando se congeló?"— y se marca de dónde
+// vino, porque el arreglo es distinto: un loop colgado es un mutex o una espera
+// sin plazo; un worker colgado es código adentro de Lua o de una llamada nativa
+// que no vuelve.
+void loopwdt::workerStalled(const char* name, const uint32_t elapsedMs) {
+  writeRecord(elapsedMs, /*restarted=*/true);
+  // El nombre del worker se agrega al final de lo que ya escribió writeRecord
+  // (la pantalla y la operación de red), que es el contexto que hace falta.
+  const size_t n = strnlen(tripWhere, sizeof(tripWhere));
+  if (n + 1 < sizeof(tripWhere)) {
+    snprintf(tripWhere + n, sizeof(tripWhere) - n, " / worker «%s»", name ? name : "?");
+  }
+  // `log_e` sale por el cable y no toca la tarjeta: si el worker se colgó con
+  // el mutex del almacenamiento tomado, escribir ahí colgaría al rescate.
+  log_e("[LOOPWDT] el worker «%s» no volvió en %u ms: se reinicia", name ? name : "?",
+        static_cast<unsigned>(elapsedMs));
+  esp_restart();
+}
+
 void loopwdt::reportBoot() {
   if (reported || !freshTrip()) return;
   reported = true;

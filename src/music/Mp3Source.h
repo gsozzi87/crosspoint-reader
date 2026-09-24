@@ -28,7 +28,15 @@ class Mp3Source {
   int bitrateKbps() const { return bitrate_ / 1000; }
   int durationSeconds() const { return duration_; }
   // Seconds decoded so far (the playback position, give or take the DMA lag).
-  int positionSeconds() const { return sampleRate_ > 0 ? static_cast<int>(samplesOut_ / sampleRate_) : 0; }
+  // REV-091: la posición la ESCRIBE la tarea `audio_play` (núcleo 0) y la LEE
+  // la UI (núcleo 1) para pintar la barra. El S3 es de 32 bits, así que una
+  // lectura de 64 bits no es una transacción: la UI podía agarrar la mitad
+  // vieja y la mitad nueva y pintar un salto absurdo.
+  //
+  // Se publica un contador de SEGUNDOS de 32 bits —que sí se lee de una— en
+  // vez de sincronizar el de muestras, que está en el camino caliente del
+  // decodificador y no se toca. Una pista de 24 h entra de sobra en 32 bits.
+  int positionSeconds() const { return positionS_; }
   bool finished() const { return eof_ && pcmAvail_ == 0; }
 
   // Historial de nivel para el analizador de la pantalla. NO es una FFT (no hay
@@ -57,9 +65,11 @@ class Mp3Source {
   size_t audioStart_ = 0;  // after the ID3v2 tag
   size_t fileSize_ = 0;
   bool eof_ = false;
+  // Sólo lo toca la tarea de audio; la UI mira `positionS_`.
   uint64_t samplesOut_ = 0;
+  volatile uint32_t positionS_ = 0;  // REV-091: lo que cruza de núcleo, de a 32 bits
   uint8_t levels_[LEVELS] = {0};
-  int levelPos_ = 0;      // dónde entra el próximo (y, por eso, el más viejo)
+  int levelPos_ = 0;  // dónde entra el próximo (y, por eso, el más viejo)
   uint16_t levelPeak_ = 0;
   int levelFrames_ = 0;
 

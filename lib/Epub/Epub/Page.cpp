@@ -191,20 +191,28 @@ std::unique_ptr<Page> Page::deserialize(HalFile& file) {
     return nullptr;
   }
 
-  uint16_t count;
-  serialization::readPod(file, count);
-
   // Reserve up front so a page load costs one allocation for the element vector
   // instead of a grow-copy-free cycle every doubling. `count` is untrusted (it
-  // comes straight off the SD cache), so clamp it: a real page holds a few dozen
-  // elements, while a corrupt header could ask for 65535 * sizeof(shared_ptr) and
-  // abort() on the failed allocation (vector's operator new is throwing, and this
-  // firmware builds with -fno-exceptions). Under-reserving is harmless -- the
-  // push_back path below still grows normally.
-  static constexpr uint16_t RESERVE_CAP = 256;
-  page->elements.reserve(std::min(count, RESERVE_CAP));
+  // comes straight off the SD cache).
+  //
+  // REV-095: topear el RESERVE no alcanzaba, y ésa era la mitad del arreglo.
+  // El bucle de abajo recorría el `count` ENTERO y seguía haciendo `push_back`,
+  // así que un contador corrupto volvía a hacer crecer el vector igual — y el
+  // `operator new` de `std::vector` es throwing, o sea `abort()` con
+  // `-fno-exceptions`. Ahora el tope es del CONTADOR, como ya lo hacían las
+  // notas al pie y los enlaces cincuenta líneas más abajo: el patrón correcto
+  // ya estaba en este mismo archivo.
+  static constexpr uint16_t MAX_ELEMENTS_PER_PAGE = 512;
+  uint32_t count = 0;
+  // Cada elemento ocupa como mínimo su byte de etiqueta: un contador que no
+  // entra en lo que queda del archivo es corrupción, no una página grande.
+  if (!serialization::tryReadCount16(file, count, MAX_ELEMENTS_PER_PAGE, /*perItem=*/1)) {
+    LOG_ERR("PGE", "Invalid element count: caché de página inválida");
+    return nullptr;
+  }
+  page->elements.reserve(count);
 
-  for (uint16_t i = 0; i < count; i++) {
+  for (uint32_t i = 0; i < count; i++) {
     uint8_t tag;
     serialization::readPod(file, tag);
 

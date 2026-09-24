@@ -87,6 +87,9 @@ class NewsActivity final : public Activity {
 
   bool loadPack();
   bool loadCache();
+  // REV-093: el único lugar donde `feeds` cambia de forma. Toma el RenderLock
+  // lo justo para el swap; lo caro se arma afuera.
+  void commitFeeds(std::vector<Feed>&& nuevos);
   bool fetchFeeds();
   static std::string describeFailure(ServerClient::Result r, int status);
   std::string articlePath(int feed, int item) const;

@@ -904,13 +904,22 @@ std::optional<uint16_t> Section::getPageForAnchor(const std::string& anchor) con
   }
 
   f.seek(anchorMapOffset);
-  uint16_t count;
-  serialization::readPod(f, count);
-  for (uint16_t i = 0; i < count; i++) {
+  // REV-095: el mapa de anclas sale de una caché regenerable. Un contador o un
+  // largo corrupto no puede pedir memoria sin tope — el `resize()` de abajo
+  // aborta con `-fno-exceptions` en vez de fallar. Ante cualquier duda se
+  // devuelve "no está" y la caché se rehace.
+  static constexpr uint32_t MAX_ANCHORS = 4096;
+  uint32_t count = 0;
+  // Cada entrada ocupa como mínimo el u32 del largo más el u16 de la página.
+  if (!serialization::tryReadCount16(f, count, MAX_ANCHORS, /*perItem=*/sizeof(uint32_t) + sizeof(uint16_t))) {
+    LOG_ERR("SCT", "mapa de anclas ilegible: se ignora");
+    return std::nullopt;
+  }
+  for (uint32_t i = 0; i < count; i++) {
     std::string key;
     uint16_t page;
-    serialization::readString(f, key);
-    serialization::readPod(f, page);
+    if (!serialization::tryReadString(f, key)) return std::nullopt;
+    if (!serialization::tryReadPod(f, page)) return std::nullopt;
     if (key == anchor) {
       return page;
     }

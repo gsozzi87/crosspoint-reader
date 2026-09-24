@@ -87,22 +87,49 @@ void NewsActivity::fail(StrId why, std::string detail) {
   requestUpdate();
 }
 
+// REV-093: ARMAR AFUERA, CAMBIAR ADENTRO.
+//
+// `render()` corre en la tarea de render (`ActivityManagerRender`, núcleo 1)
+// con el `RenderLock` tomado, y recorre `feeds` guardando referencias
+// `const Feed&` / `const Item&`. `loop()` corre en el loop de Arduino, en el
+// MISMO núcleo y con la MISMA prioridad, y sin ningún candado — y estar en el
+// mismo núcleo no vuelve nada atómico: FreeRTOS reparte el tiempo entre tareas
+// de igual prioridad, así que un render puede quedar pausado con una
+// referencia viva mientras el loop hace `feeds.clear()` y realoca. Eso no es
+// una pantalla fea: es leer memoria liberada.
+//
+// El arreglo NO es envolver `loop()` entero: hace red y tarjeta, y varias
+// rutas de navegación toman el mismo candado (sería un bloqueo por diseño).
+// Se arma la lista nueva en una variable LOCAL —lo caro, sin candado— y el
+// candado sólo cubre el `swap`, que son tres punteros. `FileBrowserActivity`
+// ya usaba este patrón; acá faltaba.
+void NewsActivity::commitFeeds(std::vector<Feed>&& nuevos) {
+  RenderLock lock(*this);
+  feeds.swap(nuevos);
+  // Los índices son de la lista VIEJA: si la nueva es más corta, quedan fuera
+  // de rango. Se acomodan adentro del mismo candado, porque render los usa
+  // para indexar.
+  if (feedIndex >= static_cast<int>(feeds.size())) feedIndex = feeds.empty() ? 0 : static_cast<int>(feeds.size()) - 1;
+}
+
 bool NewsActivity::loadCache() {
   if (!Storage.exists(CACHE)) return false;
   const std::string raw = cardread::readCapped(TAG, CACHE, cardread::CAP_JSON_CACHE);  // REV-059
   if (raw.empty()) return false;
   JsonDocument doc;
   if (deserializeJson(doc, raw) != DeserializationError::Ok) return false;
-  feeds.clear();
+  std::vector<Feed> nuevos;
   for (JsonVariantConst fv : doc["feeds"].as<JsonArrayConst>()) {
     Feed feed;
     feed.id = fv["id"] | 0;
     feed.name = fv["name"] | "";
     for (JsonVariantConst iv : fv["items"].as<JsonArrayConst>())
       feed.items.push_back({iv["id"] | 0, iv["title"] | "", iv["when"] | ""});
-    feeds.push_back(std::move(feed));
+    nuevos.push_back(std::move(feed));
   }
-  return !feeds.empty();
+  if (nuevos.empty()) return false;
+  commitFeeds(std::move(nuevos));  // REV-093
+  return true;
 }
 
 // El paquete que masticó el servidor, si ya está bajado. Es lo que hace que
@@ -112,7 +139,7 @@ bool NewsActivity::loadCache() {
 bool NewsActivity::loadPack() {
   const std::vector<newspack::Item> items = newspack::cached();
   if (items.empty()) return false;
-  feeds.clear();
+  std::vector<Feed> feeds;  // REV-093: local, y al final un swap corto bajo candado
   for (const newspack::Item& it : items) {
     // El id del paquete es "<feed>-<item>", que es de donde salen los dos
     // números con los que ya trabaja esta pantalla.
@@ -131,7 +158,9 @@ bool NewsActivity::loadPack() {
     found->items.push_back({itemId, it.title, it.when});
   }
   LOG_INF(TAG, "paquete: %u medios, %u notas", (unsigned)feeds.size(), (unsigned)items.size());
-  return !feeds.empty();
+  if (feeds.empty()) return false;
+  commitFeeds(std::move(feeds));  // REV-093
+  return true;
 }
 
 bool NewsActivity::fetchFeeds() {

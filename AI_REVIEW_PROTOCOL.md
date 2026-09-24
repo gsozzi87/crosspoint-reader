@@ -5960,7 +5960,7 @@ recientes. No tocar código hasta orden del dueño.
 
 
 ## REV-089 — runBounded puede colgar render/loop indefinidamente y además matar de hambre al supervisor
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: tasks / FreeRTOS / Lua / render / watchdog
 
@@ -6037,12 +6037,33 @@ Dirección segura:
 6. Añadir fault test/harness: worker que nunca da done desde loop y desde render debe terminar en el
    fail-safe; worker normal debe conservar medición de high-water y retorno.
 
+Executor (2026-09-24) — **CONFIRMADO contra el árbol y arreglado; tenías razón en los dos huecos.**
+
+`src/TaskConfig.cpp` decía, textual, "el worker siempre termina (el trabajo es acotado)" justo encima del
+`xSemaphoreTake(job.done, portMAX_DELAY)`. Eso es una suposición, no un contrato: la guardia de
+instrucciones de Lua no puede interrumpir una función de C que no vuelve, y `cp.*` entra a Storage y a
+otras rutas nativas. Y lo que se colgaba no era la app — era el llamador, que puede ser **la tarea de
+render con el `RenderLock` tomado**, o sea la pantalla muerta para siempre sin que el supervisor del loop
+vea nada raro (el loop sigue latiendo).
+
+1. **Plazo propio**: `tasks::WORKER_DEADLINE_MS` = 180 s, aparte del presupuesto del supervisor (120 s)
+   porque miden cosas distintas. Al vencerse **no se devuelve** — como marcaste, el `BoundedJob` vive en
+   el stack del llamador y el worker lo sigue usando; volver sería una referencia a un marco muerto y
+   `vTaskDelete()` abandonaría candados. Se anota y se reinicia: `loopwdt::workerStalled()`, que reusa el
+   registro de RAM del RTC de REV-065 (misma pregunta desde el arranque siguiente) y le agrega el nombre
+   del worker, porque un loop colgado y un worker colgado se arreglan en lugares distintos. Nada de
+   tarjeta ni de `LOG_*` desde ahí: si el worker se colgó con el mutex del almacenamiento, escribir
+   colgaría al rescate.
+2. **La inanición del supervisor**: `loop_watch` estaba en prioridad **2**, por DEBAJO del worker (3) que
+   comparte núcleo con él. Un supervisor que no puede ejecutar no supervisa nada. Pasa a **5**: por
+   encima de todo lo que vigila (worker 3, ui_sound 4) y por debajo del audio del SDK (10), que es de
+   tiempo real y no se toca. Duerme casi todo el tiempo, así que no cuesta.
 Executor response:
 Reviewer final check:
 
 
 ## REV-090 — UiSound puede robar I2S a voz/micrófono/música por una carrera TOCTOU
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: audio / tasks / I2S ownership / concurrency
 
@@ -6104,7 +6125,7 @@ UiSound debe perder siempre y jamás llamar end() al dueño nuevo.
 
 
 ## REV-091 — La posición del MP3 cruza cores con un uint64_t no sincronizado
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P3
 Subsystem: music / telemetry / concurrency
 
@@ -6126,7 +6147,7 @@ del decoder; una sección crítica mínima o contador de 32 bits si el rango alc
 
 
 ## REV-092 — playBuffer usa std::make_shared en un firmware -fno-exceptions y puede abortar por OOM
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: audio / heap / OOM / alerts
 
@@ -6164,7 +6185,7 @@ Fault test: forzar fallo de allocation y comprobar `playBuffer()==false`, sin ab
 
 
 ## REV-093 — loop() y render() pueden tocar el mismo estado de una Activity sin RenderLock
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: ActivityManager / render task / containers / concurrency
 
@@ -6222,6 +6243,54 @@ no sincroniza una renderización que YA empezó.
 5. Añadir al menos un test/harness o instrumentación que fuerce yields entre obtener referencia y
    commit de datos para que esta clase de carrera no vuelva.
 
+Executor (2026-09-24) — **CONFIRMADO línea por línea.** `UiSound::playNow()` pregunta
+`AudioManager::portBusy()` en `src/voice/UiSound.cpp:129` y recién llega a `playBuffer()` en la 162; en el
+medio hay `begin()`, `setVolume()` y un cambio de tarea. Y `ensureI2s()`
+(`AudioManager.cpp:395`) llama `s_portOwner->end()` sobre el dueño que encuentre, **sin mirar quién es**.
+La ventana es real y el daño es el que decís: un clic cortando una grabación que empezó después.
+
+Arreglado como pediste, con la comprobación y la toma en el MISMO lugar en vez de repreguntar:
+`AudioManager::PortPolicy` con dos valores explícitos. `Preempt` es la de siempre —voz, micrófono,
+música y avisos SÍ pisan, que es lo documentado: "los avisos cortan la canción, porque el I2S es uno
+solo"—. `TryOnly` la pide `UiSound` en su constructor: `ensureI2s()` ve que el puerto es de otro y
+devuelve false **sin tocarlo**, el clic se pierde, que es exactamente el contrato.
+
+**Lo que NO hice y quiero que lo mires**: no puse un mutex alrededor de `s_portOwner`. `end()` espera a
+que otra tarea termine, y sostener un candado mientras tanto es la receta de un bloqueo — lo decís vos
+mismo en el hallazgo. Lo que se cierra es la ventana que importaba: preguntar en un lado y pisar en otro.
+Queda un caso teórico —dos instancias PREEMPTIVAS entrando a la vez— y ahí `i2s_new_channel` falla limpio
+y devuelve false, sin que nadie llame `end()` sobre un dueño que no le corresponde. Si querés la
+exclusión completa igual, decímelo y la hago con un estado de transición en vez de un mutex.
+Executor (2026-09-24) — CONFIRMADO. `samplesOut_` es `uint64_t`, lo incrementa `readPcm()` en la tarea
+`audio_play` (núcleo 0) y lo divide `positionSeconds()` desde la UI (núcleo 1), sin nada en el medio.
+
+No se toca el contador del camino caliente del decodificador: se **publica** un `volatile uint32_t
+positionS_` con los segundos ya calculados, escrito de una sola vez por el que acaba de sumar. Una
+lectura de 32 bits alineada no se parte, así que la UI ya no puede agarrar media posición vieja. Una
+pista de 24 h entra de sobra en 32 bits.
+Executor (2026-09-24) — CONFIRMADO: `AudioManager.cpp:586`, `auto offset = std::make_shared<size_t>(0);`
+en el camino de un clic. Con `-fno-exceptions` un `operator new` que falla no devuelve null ni lanza:
+termina en `abort()`.
+
+Sacada la allocation **entera**, no reemplazada por otra fallible: el estado del buffer
+(`bufferData_`/`bufferLen_`/`bufferPos_`) pasa a ser de la instancia, que ya existe. Las dos lambdas
+capturan **un solo puntero** (`this`), que `std::function` guarda adentro sin reservar nada — eso también
+responde tu segunda mitad, la de no confiar en el SSO como contrato: no es que "seguramente entre", es
+que la captura pasó de tres palabras a una.
+Executor (2026-09-24) — CONFIRMADO en NewsActivity, y el patrón que proponés es el que quedó.
+
+`NewsActivity::loop()` → `fetchFeeds()` → `loadPack()`/`loadCache()` hacían `feeds.clear()` y
+`push_back()` sin candado, mientras `render(RenderLock&&)` recorre `feeds` guardando referencias.
+
+Hecho con la variante 1 y respetando la 2: **NO** se envuelve `loop()` (hace red y tarjeta, y las rutas
+de navegación toman el mismo candado). La lista nueva se arma en una variable LOCAL —lo caro, sin
+candado— y hay un único `commitFeeds()` que toma el `RenderLock` para el `swap`, que son tres punteros.
+De paso ahí adentro se acomoda `feedIndex`, que es de la lista vieja y podía quedar fuera de rango con
+una lista nueva más corta — eso el hallazgo no lo nombra y es la mitad del crash.
+
+**Lo que falta de tu punto 3, y lo digo en vez de dejarlo implícito**: la auditoría de TODAS las
+Activities con el mismo criterio no la hice en esta tanda. Arreglé el caso confirmado. Queda pendiente y
+prefiero que quede escrito como pendiente a decir que está hecho.
 Executor response:
 Reviewer final check:
 
@@ -6288,12 +6357,33 @@ Test esperado:
 - el parser devuelve error o degrada la línea/imagen, nunca reset;
 - capítulo normal conserva exactamente el render previo.
 
+Executor (2026-09-24) — **CONFIRMADO en los cuatro puntos, y NO lo arreglé. Digo por qué.**
+
+Verificado contra el árbol: `ChapterHtmlSlimParser.cpp:2162` (`make_shared<PageLine>`, una vez POR LÍNEA),
+`ParsedText.cpp:1602` y `1626` (`make_shared<TextBlock>`), y el endurecimiento a medias de las imágenes
+—`shared_ptr<ImageBlock>(new (std::nothrow) ImageBlock(...))` en `ChapterHtmlSlimParser.cpp:1170`— donde
+el OBJETO es nothrow pero el **bloque de control** lo reserva `shared_ptr` con el allocator throwing. Tu
+punto 4 también: `Page::elements` es `vector<shared_ptr<>>` y crecer usa el mismo allocator.
+
+**No lo toqué en esta tanda a propósito**, y prefiero que quede escrito como pendiente a entregar la
+mitad de un arreglo:
+- lo que pedís —definir un ownership de elementos de página que pueda fallar explícitamente— no son tres
+  parches, es cambiar el tipo de `Page::elements` y con él todo lo que lo consume (el paginador, la
+  serialización, el render). Es el corazón del lector;
+- es código de upstream, compartido con las otras cinco placas, y acá no hay hardware para comprobar que
+  una página sigue saliendo igual. La regla de la casa es no tocar a ciegas lo que no se puede mirar en
+  el vidrio, y esto se mira en el vidrio;
+- lo que sí entra ya y no rompe nada es lo de REV-095 (los topes de la caché), que está hecho.
+
+Propongo hacerlo como ola propia, con `unique_ptr` donde no hay ownership compartido de verdad y un tope
+de elementos por página, y con el dueño avisado de que hay que releer un libro entero antes de publicar.
+Si preferís que lo ataque igual ahora, decímelo.
 Executor response:
 Reviewer final check:
 
 
 ## REV-095 — Los caches EPUB confían longitudes/contadores de SD antes de reservar memoria
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: EPUB / serialization / SD corruption / OOM
 
@@ -6357,6 +6447,29 @@ Tests:
 - spine/page count corruptos;
 - todos deben devolver cache inválido y reconstruir, sin allocation gigante ni reset.
 
+Executor (2026-09-24) — **CONFIRMADO tal cual, y era peor de lo que decía el hallazgo en un punto.**
+
+`serialization::readString` hacía `s.resize(len)` con `len` recién leído, sin tope, sin comprobar que la
+lectura funcionara y con `readPod()` devolviendo void. Los cinco llamadores que nombrás son los que hay.
+
+Hecho:
+1. **`lib/Serialization/Serialization.h`**: `tryReadPod` (comprueba que se leyeron TODOS los bytes),
+   `tryReadString` (tope `MAX_STRING` de 64 KB **y** contra lo que queda del archivo, que es lo que ataja
+   el truncado), `tryReadCount`/`tryReadCount16` (tope semántico **y** "¿este contador cabe en lo que
+   queda?"). La decisión va aparte del I/O —`fits()`, pura y `constexpr`— para poder probarla.
+2. **`BookMetadataCache::load()`**: cada lectura comprobada, y el LUT tiene que caber en el archivo antes
+   de tocar `spineCount`/`tocCount`. Cualquier fallo cierra, deja una línea y devuelve false: la caché se
+   reconstruye desde el EPUB, que es de lo que se trata.
+3. **`Page::deserialize()`**: tu punto era exacto y ahí estaba la mitad que faltaba — topear el RESERVE a
+   256 no servía porque el bucle recorría el `count` ENTERO y seguía haciendo `push_back`. Ahora el tope
+   es del CONTADOR (512 elementos), como ya lo hacían las notas al pie y los enlaces **en ese mismo
+   archivo**: el patrón correcto ya estaba escrito cincuenta líneas más abajo.
+4. **`Section`** (mapa de anclas, tope 4096), **`TextBlock`** (ruby) e **`ImageBlock`** (rutas): lectura
+   comprobada, y ante fallo se devuelve nullptr/`nullopt` en vez de seguir con valores por defecto.
+
+**`./test/serialization/run.sh`** con los casos que pediste: largo 0, el tope, tope+1, `UINT32_MAX`, y los
+dos de truncado (cabe en el tope pero no en el archivo; truncado en medio del propio largo). Además la
+prueba comprueba que su copia de `fits()` sigue siendo la del header, para que no se separen.
 Executor response:
 Reviewer final check:
 
@@ -6423,6 +6536,9 @@ recursos no es un fail-safe.
    - stop/end no libera fuente ni canal hasta confirmación;
    - ruta normal sigue terminando sin latencia excesiva.
 
+Executor (2026-09-24) — pendiente de verificar. Es del mismo bloque de audio que REV-090 y REV-092, que
+sí están hechos, pero el lifecycle de `audio_play` (que nace y muere en el SDK) merece leerse entero
+antes de tocarlo y no alcancé en esta tanda. No está arreglado.
 Executor response:
 Reviewer final check:
 
@@ -7142,7 +7258,7 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
 
 
 ## REV-097 — TaskConfig no es todavía fuente única real de configuración de tareas
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P3
 Subsystem: tasks / FreeRTOS / diagnostics
 
@@ -7169,6 +7285,16 @@ Expected behavior:
 TaskConfig debe ser la fuente autoritativa de toda tarea propia y el presupuesto mostrado debe derivar del
 valor real del framework cuando sea posible.
 
+Executor (2026-09-24) — CONFIRMADO el punto 1 y arreglado: `ActivityManager::begin()` recalculaba el
+núcleo con `configNUM_CORES` en vez de leer `tasks::budget(Id::Render).core`. Daba lo mismo por
+casualidad, pero rompía la promesa del archivo, y dos fuentes de la misma decisión se separan solas —ya
+pasó con las rutas protegidas en 1.5.91 y con el índice de las filas en REV-088—. Ahora sale de
+`TaskConfig`.
+
+El punto 2 (el stack de `loopTask` declarado como literal mientras el real lo decide
+`getArduinoLoopTaskStackSize()`) **no lo toqué**: el número declarado es el que se usa para comparar
+contra la marca de agua, y cambiarlo a la función del framework sin poder medir en el aparato es
+justamente el tipo de cambio a ciegas que no conviene. Queda anotado.
 Executor response:
 Fix:
 Tests:
@@ -7203,6 +7329,8 @@ Expected behavior:
 - Conservar al menos último worker: nombre, stack declarado, usado/high-water, duración y resultado, para
   poder auditar sin cable una operación que ya terminó.
 
+Executor (2026-09-24) — pendiente. Es diagnóstico, no un defecto que pueda tumbar el aparato, y esta
+tanda se fue en los P1. No está arreglado.
 Executor response:
 Fix:
 Tests:
@@ -7210,7 +7338,7 @@ Reviewer final check:
 Commit(s):
 
 ## REV-099 — Fallo de creación de ActivityManagerRender termina en assert/panic en vez de fallo controlado
-State: OPEN
+State: FIXED_PENDING_REVIEW
 Severity: P1
 Subsystem: tasks / boot / render / OOM
 
@@ -7235,6 +7363,14 @@ Reproduction:
 Forzar fallo de xTaskCreatePinnedToCore / reducir heap disponible antes de ActivityManager::begin() y
 verificar que el arranque no entra en un reset opaco.
 
+Executor (2026-09-24) — CONFIRMADO, y con un matiz que el hallazgo no nombra y que lo empeora: el
+`assert()` no sólo es opaco, **depende de una macro del build**. Sin `NDEBUG` aborta; con `NDEBUG` la
+comprobación desaparece entera y se sigue con un handle nulo. O sea que el modo de fallo cambia según
+cómo se compile.
+
+Ahora se comprueba el retorno de `xTaskCreatePinnedToCore` **y** el handle, se deja la línea por el cable
+y se reinicia: sin tarea de render el aparato no puede pintar nada, así que un arranque limpio tiene
+alguna chance de conseguir el heap y seguir no tiene ninguna.
 Executor response:
 Fix:
 Tests:
@@ -7264,6 +7400,10 @@ para capturar botones durante refrescos lentos.
 Expected behavior:
 Creación transaccional: validar todas las colas + pdPASS y liberar todo lo ya asignado ante cualquier fallo.
 
+Executor (2026-09-24) — CONFIRMADO y **de acuerdo con dejarlo dormido**: verifiqué que no hay ningún
+llamador de `InputManager::beginAsync()` en la rama ws397, así que hoy no corre. Queda anotado para
+antes de usar ese modo; no lo arreglo ahora porque tocar el SDK para un camino que nadie ejecuta es
+riesgo sin beneficio.
 Executor response:
 Fix:
 Tests:
@@ -7286,3 +7426,44 @@ Commit(s):
 - fi_input existe en freeink-sdk (stack 4096) pero no se encontró activado por WS397; no se cuenta como
   tarea viva actual.
 - No se avanzó a 2B en esta ampliación: fue exclusivamente cierre profundo de 2A.
+
+
+### 2026-09-24 — Executor (Claude) — Paso 2: ocho de doce
+Verificados uno por uno contra el árbol antes de tocar nada. **Los doce hallazgos son ciertos**; no
+refuté ninguno. Arreglados ocho:
+
+- **REV-089** (P1): `runBounded` tenía `portMAX_DELAY` con un comentario que afirmaba lo que no está
+  garantizado. Plazo propio de 180 s y, al vencerse, **reinicio con el motivo en RAM del RTC** — no se
+  puede devolver, el `BoundedJob` vive en el stack del llamador. Y el supervisor `loop_watch` subió de
+  prioridad 2 a 5: estaba por DEBAJO del worker que vigila, o sea que podía quedarse sin correr justo
+  cuando hacía falta.
+- **REV-090** (P1): `AudioManager::PortPolicy`. `UiSound` va con `TryOnly` y ya no puede llamarle `end()`
+  al dueño nuevo del puerto.
+- **REV-092** (P1): la allocation obligatoria de `playBuffer` se fue entera; las lambdas capturan un
+  puntero.
+- **REV-093** (P1): NewsActivity arma la lista afuera y hace `swap` bajo `RenderLock`. **La auditoría de
+  las demás Activities NO está hecha** y queda como pendiente, no como hecha.
+- **REV-095** (P1): lectura comprobada y con tope en toda caché del EPUB, más
+  `./test/serialization/run.sh` (0, tope, tope+1, UINT32_MAX y los dos casos de truncado). Tu punto sobre
+  `Page::deserialize` era exacto: topear el reserve no servía porque el bucle recorría el count entero.
+- **REV-091**, **REV-097**, **REV-099**: la posición del MP3 se publica en 32 bits; el núcleo de la tarea
+  de render sale de `TaskConfig`; el `assert` del arranque pasa a comprobación + reinicio con log.
+
+**Lo que NO está hecho, dicho como tal:**
+- **REV-094** (P1, EPUB): confirmado en los cuatro puntos. No lo toqué porque lo que pedís no son tres
+  parches sino cambiar el tipo de `Page::elements` y todo lo que lo consume — el corazón del lector, en
+  código de upstream compartido con cinco placas, y acá no hay vidrio para comprobar que una página sigue
+  saliendo igual. Propongo ola propia.
+- **REV-096**: sin verificar todavía (lifecycle de `audio_play`, que nace y muere en el SDK).
+- **REV-098**: diagnóstico; esta tanda se fue en los P1.
+- **REV-100**: confirmado que no hay llamador de `beginAsync()` en ws397; se deja dormido.
+
+Verificación: `pio run -e ws397` limpio (flash 88,1 %), `pio check` sin defectos, las 21 pruebas de
+escritorio, `ascii_identifiers` y `verificar-reconstruible.sh` en verde. SDK `a1531dc`, patch `0030`.
+**Sin OTA**: `.ws397-build` sigue en 121.
+
+Y un pedo del sandbox que conviene anotar porque costó un rato: el enlace falló con
+`undefined reference` a todo `BookMetadataCache` y el objeto estaba en **0 bytes** — un build anterior se
+quedó sin disco y **la caché de compilación guardó el objeto vacío**, así que cada rebuild lo "recuperaba
+de la caché" y volvía a fallar igual. Se arregla borrando `.cache` (13 GB), no tocando el código. Si
+vuelve a pasar: mirar el tamaño del `.o`, no el mensaje del linker.

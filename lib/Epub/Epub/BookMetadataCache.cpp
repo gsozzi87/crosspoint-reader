@@ -472,25 +472,46 @@ bool BookMetadataCache::load() {
     return false;
   }
 
-  serialization::readPod(bookFile, lutOffset);
-  serialization::readPod(bookFile, spineCount);
-  serialization::readPod(bookFile, tocCount);
+  // REV-095: de acá para abajo NADA de lo que diga el archivo se usa sin
+  // comprobarlo. Es una caché regenerable: ante la menor duda se cierra, se
+  // devuelve false y el llamador la vuelve a armar desde el EPUB. Que un byte
+  // de versión correcto sobreviva a una escritura cortada no vuelve confiable
+  // al resto del archivo.
+  const auto corrupta = [&](const char* que) {
+    LOG_ERR("BMC", "caché ilegible (%s): se descarta y se reconstruye", que);
+    bookFile.close();
+    loaded = false;
+    return false;
+  };
 
-  serialization::readString(bookFile, coreMetadata.title);
-  serialization::readString(bookFile, coreMetadata.author);
-  serialization::readString(bookFile, coreMetadata.language);
-  serialization::readString(bookFile, coreMetadata.coverItemHref);
-  serialization::readString(bookFile, coreMetadata.textReferenceHref);
+  if (!serialization::tryReadPod(bookFile, lutOffset)) return corrupta("lutOffset");
+  if (!serialization::tryReadPod(bookFile, spineCount)) return corrupta("spineCount");
+  if (!serialization::tryReadPod(bookFile, tocCount)) return corrupta("tocCount");
+  // El LUT tiene que caber en el archivo: es la comprobación que convierte un
+  // contador corrupto en "caché inválida" en vez de en un `reserve` imposible.
+  const uint64_t cacheSize = bookFile.fileSize64();
+  const uint64_t lutBytes = (static_cast<uint64_t>(spineCount) + static_cast<uint64_t>(tocCount)) * sizeof(uint32_t);
+  if (static_cast<uint64_t>(lutOffset) + lutBytes > cacheSize) return corrupta("LUT fuera del archivo");
+
+  if (!serialization::tryReadString(bookFile, coreMetadata.title)) return corrupta("title");
+  if (!serialization::tryReadString(bookFile, coreMetadata.author)) return corrupta("author");
+  if (!serialization::tryReadString(bookFile, coreMetadata.language)) return corrupta("language");
+  if (!serialization::tryReadString(bookFile, coreMetadata.coverItemHref)) return corrupta("coverItemHref");
+  if (!serialization::tryReadString(bookFile, coreMetadata.textReferenceHref)) return corrupta("textReferenceHref");
 
   // Cache cumulative spine sizes in RAM. The progress bar (every render) and percent
   // jumps otherwise pay 2 seeks + a heap-allocating SpineEntry read per access. Spine
   // entries are stored contiguously in index order immediately after the LUTs, so read
   // them in a single sequential pass.
   cumulativeSizes.clear();
-  cumulativeSizes.reserve(spineCount);
+  // REV-095: `spineCount` ya está acotado por la comprobación del LUT de
+  // arriba, así que este `reserve` no puede pedir un disparate. Aun así es
+  // `uint16_t` (máximo 65535 = 256 KB), y en este aparato eso no entra en el
+  // heap interno: se reserva de a poco y se corta si el archivo se termina.
   const uint32_t lutSize = (static_cast<uint32_t>(spineCount) + tocCount) * sizeof(uint32_t);
   bookFile.seek(lutOffset + lutSize);
   for (uint16_t i = 0; i < spineCount; i++) {
+    if (bookFile.position() >= cacheSize) return corrupta("se acabó el archivo leyendo el spine");
     cumulativeSizes.push_back(readSpineEntry(bookFile).cumulativeSize);
   }
 

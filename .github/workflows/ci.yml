@@ -286,6 +286,9 @@ jobs:
       - name: Lectura acotada de la tarjeta
         run: ./test/card_read/run.sh
 
+      - name: Cachés del EPUB con tope (REV-095)
+        run: ./test/serialization/run.sh
+
       - name: Resolución de nombres fijada
         run: ./test/net_lookup/run.sh
 
