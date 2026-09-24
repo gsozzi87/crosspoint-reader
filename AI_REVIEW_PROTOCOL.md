@@ -6225,6 +6225,141 @@ no sincroniza una renderización que YA empezó.
 Executor response:
 Reviewer final check:
 
+
+## REV-094 — El paginador EPUB todavía usa allocations que abortan bajo -fno-exceptions
+State: OPEN
+Severity: P1
+Subsystem: EPUB / heap / pagination / OOM
+
+Hallazgo del Paso 2F–2H.
+
+### Hechos verificados
+
+El proyecto WS397 compila con `-fno-exceptions` y el propio repo tiene `makeUniqueNoThrow`
+precisamente porque una allocation estándar que normalmente lanzaría `std::bad_alloc` termina
+en abort/reset cuando no puede crecer.
+
+El parser EPUB ya reconoce esta regla en varios lugares, pero quedaron caminos calientes que todavía
+usan allocations "throwing":
+
+1. `ChapterHtmlSlimParser::processLine()`:
+   `currentPage->elements.push_back(std::make_shared<PageLine>(...))`
+   corre UNA VEZ POR LÍNEA durante paginación.
+
+2. `ParsedText::processLine()` tiene DOS:
+   `std::make_shared<TextBlock>(...)`, fast path y focus-reading path.
+   Después sólo comprueba `block->valid()`, que sirve para la arena interna de TextBlock pero NO
+   puede interceptar que `make_shared` haya abortado antes.
+
+3. El supuesto hardening de imágenes es incompleto:
+   `std::shared_ptr<ImageBlock>(new (std::nothrow) ImageBlock(...))` y lo mismo para `PageImage`.
+   El objeto usa nothrow, pero `shared_ptr` todavía necesita reservar su CONTROL BLOCK. Esa
+   allocation también puede fallar por el allocator estándar antes de llegar al null-check.
+
+4. Aun reemplazando `make_shared`, `Page::elements` es un `std::vector<shared_ptr<...>>`.
+   Un `push_back` que tenga que crecer la capacidad vuelve a usar el allocator throwing.
+
+Esto ocurre durante una de las fases de mayor presión de memoria: parseo de capítulo + CSS +
+imágenes + framebuffer, y es exactamente el tipo de ruta que el proyecto intenta degradar en vez
+de reiniciar.
+
+### Impacto
+
+- reset/abort al abrir o paginar un capítulo bajo heap fragmentado;
+- libros con muchas líneas/imágenes aumentan la probabilidad;
+- el usuario lo percibe como "el libro tumbó el aparato", sin oportunidad de mostrar OOM ni volver
+  al lector.
+
+### Arreglo esperado
+
+No parchear sólo las tres llamadas.
+
+- definir una estrategia de ownership de elementos de página que pueda fallar explícitamente
+  (idealmente `unique_ptr` si no existe ownership compartido real; si shared ownership sí es
+  necesario, proveer un mecanismo cuyo objeto Y control block sean fallibles);
+- evitar crecimiento throwing de `Page::elements`: capacidad acotada/preasignada con límite de
+  elementos por página, o contenedor/allocator fallible compatible;
+- `ParsedText` debe devolver "línea omitida / OOM" sin abortar;
+- revisar en ese mismo barrido los `reserve()/resize()` de los vectores temporales del paginador:
+  con `-fno-exceptions` también son allocations que pueden abortar.
+
+Test esperado:
+- fault allocator / límite de heap durante creación de PageLine/TextBlock/imagen;
+- el parser devuelve error o degrada la línea/imagen, nunca reset;
+- capítulo normal conserva exactamente el render previo.
+
+Executor response:
+Reviewer final check:
+
+
+## REV-095 — Los caches EPUB confían longitudes/contadores de SD antes de reservar memoria
+State: OPEN
+Severity: P1
+Subsystem: EPUB / serialization / SD corruption / OOM
+
+Hallazgo del Paso 2F–2H.
+
+### Hechos verificados
+
+`lib/Serialization/Serialization.h` tiene:
+
+    void readString(HalFile& file, std::string& s) {
+      uint32_t len;
+      readPod(file, len);
+      s.resize(len);
+      file.read(&s[0], len);
+    }
+
+Problemas simultáneos:
+- `len` viene directo del archivo regenerable de la SD y NO tiene límite;
+- `resize(len)` usa allocation throwing bajo `-fno-exceptions`;
+- `readPod()` devuelve void y no comprueba que realmente haya leído `sizeof(T)`;
+- si el archivo está truncado, varios valores locales quedan sin una validación de lectura antes
+  de usarse.
+
+No es un helper muerto. Lo usan caches EPUB críticos:
+- `BookMetadataCache`: title, author, language, cover href, spine/TOC entries;
+- `ImageBlock::deserialize()`: path/src;
+- `TextBlock::deserialize()`: ruby strings, una por palabra;
+- `Section`: anchor map.
+
+Además hay contadores de cache usados para reservar/grow:
+- `BookMetadataCache::load()` hace `cumulativeSizes.reserve(spineCount)` con `spineCount`
+  leído de la SD sin un máximo saneado;
+- `Page::deserialize()` limita el RESERVE inicial a 256, pero DESPUÉS itera el `count` completo
+  y sigue haciendo `elements.push_back()`. Un count corrupto grande puede volver a crecer el vector
+  y OOM igual;
+- footnotes/links sí tienen máximos explícitos, demostrando que el patrón correcto ya existe.
+
+Un byte de versión correcto al comienzo no convierte el resto del cache en confiable: una escritura
+cortada/corrupción FAT puede preservar la cabecera y romper una longitud posterior.
+
+### Impacto
+
+- cache EPUB corrupto o truncado puede provocar abort/reset al abrir un libro;
+- puede quedar reproducible en cada intento de reabrir hasta borrar el cache;
+- el cache es regenerable, por lo que nunca debería poder tumbar el firmware.
+
+### Arreglo esperado
+
+1. Cambiar la serialización de lectura a operaciones que DEVUELVAN éxito/fallo.
+2. Crear `readStringCapped(..., maxLen)` o equivalente; nunca hacer resize con longitud no validada.
+3. Validar contra:
+   - máximo semántico razonable;
+   - bytes restantes del archivo cuando sea posible.
+4. Poner máximos a `spineCount/tocCount/page element count/anchor count` antes de reserve/loops.
+5. Ante cualquier fallo: cerrar archivo, invalidar/borrar ese cache y reconstruir desde el EPUB.
+6. No intentar "seguir leyendo" un cache parcial con valores por defecto.
+
+Tests:
+- string len 0 / máximo / máximo+1 / UINT32_MAX;
+- archivo truncado en medio de len y en medio de payload;
+- spine/page count corruptos;
+- todos deben devolver cache inválido y reconstruir, sin allocation gigante ni reset.
+
+Executor response:
+Reviewer final check:
+
 # Session log
 
 Use short entries. Do not paste huge tool transcripts.
@@ -6913,3 +7048,16 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   HalFile abierto no lo retiene.
 - Siguiente bloque: 2F/2G/2H — stacks, allocations calientes, presión PSRAM/interna y OOM; después
   revalidar fixes del Executor antes de seguir.
+
+
+
+### 2026-09-24 — Reviewer (ChatGPT) — Paso 2F/2G/2H: stacks y OOM
+- No se declara overflow de stack por lectura estática: presupuestos conocidos son loop 8 KB,
+  render 8 KB, ui_sound 4 KB, audio_play 8 KB, loop_watch 3 KB y worker Lua 32 KB. El cierre real
+  requiere high-water en hardware con 1.5.121.
+- Nuevo REV-094 P1: el paginador EPUB todavía usa std::make_shared/shared_ptr control blocks y
+  crecimiento de vector en rutas calientes bajo -fno-exceptions; OOM puede abortar el aparato.
+- Nuevo REV-095 P1: serialization::readString y varios counts de caches EPUB confían datos de SD
+  antes de resize/reserve; cache corrupto/truncado puede causar OOM/reset en vez de invalidarse.
+- Siguiente: esperar/verificar fixes del Executor para REV-089..095 y luego continuar 2I/2J
+  (OOM restantes, mutex/races transversales y cierre de Paso 2).
