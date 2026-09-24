@@ -6040,6 +6040,191 @@ Dirección segura:
 Executor response:
 Reviewer final check:
 
+
+## REV-090 — UiSound puede robar I2S a voz/micrófono/música por una carrera TOCTOU
+State: OPEN
+Severity: P1
+Subsystem: audio / tasks / I2S ownership / concurrency
+
+Hallazgo del Paso 2B/2D.
+
+### Hechos verificados
+
+En freeink-sdk 6abc553, `AudioManager` arbitra I2S_NUM_0 con un puntero estático:
+`static AudioManager* s_portOwner`.
+
+`UiSound::playNow()` intenta ser "no intrusivo":
+1. si no está caliente, consulta `AudioManager::portBusy()`;
+2. si da false, continúa;
+3. llama `audio_->begin()`, `setVolume()` y finalmente `playBuffer()`.
+
+Pero `playBuffer() -> play() -> ensureI2s()` tiene otra política:
+si `s_portOwner` pertenece a OTRA instancia, llama `s_portOwner->end()` para quitarle el puerto.
+
+No hay mutex/critical section que una la pregunta `portBusy()` con la adquisición posterior.
+Además `s_portOwner`, `playing_` y `capturing_` se leen/escriben desde loopTask y tareas de audio
+en núcleos distintos; `volatile` no convierte eso en exclusión ni en un protocolo de ownership.
+
+### Carrera alcanzable
+
+- loop/UI pide un clic y notifica a `ui_sound` (core 0);
+- ui_sound observa `portBusy()==false`;
+- antes de que llegue a `ensureI2s()`, loopTask/core 1 abre voz, micrófono, música o un pitido y esa
+  instancia toma el puerto;
+- ui_sound entra a `ensureI2s()`, ve el nuevo `s_portOwner` y llama `end()` SOBRE ESA instancia.
+
+Así un clic que por contrato debía descartarse puede cortar una grabación/frase/reproducción que
+empezó unos ticks después.
+
+El camino inverso (voz llega mientras suena un clic) sí puede ser deseable: voz toma prioridad y
+corta el clic. El problema es que hoy no existe una operación atómica "toma el puerto sólo si sigue
+libre/no ocupado".
+
+### Impacto
+
+- captura de Hablar que falla o se corta justo al entrar;
+- frase/TTS que no arranca o se interrumpe;
+- música/pitido que puede perder el puerto en una ventana pequeña;
+- comportamiento intermitente, muy difícil de reproducir leyendo logs después.
+
+### Arreglo esperado
+
+Centralizar la propiedad dentro de AudioManager con sincronización real.
+Necesitamos dos políticas explícitas:
+- adquisición PREEMPTIVA para voz/micrófono/música cuando corresponda;
+- adquisición TRY/NON-PREEMPTIVE para UiSound: comprobar y reclamar el puerto en una sola operación
+  atómica; si otro lo usa, devolver false sin tocarlo.
+
+No alcanza con repetir `portBusy()` justo antes de `playBuffer()`: sigue siendo TOCTOU.
+No sostener un mutex mientras `end()/stop()` espera a otra tarea; usar una transición de ownership
+bien definida o un pequeño estado protegido.
+
+Test/fault harness esperado: barrera entre "check" y "claim" que haga entrar capture/playback en medio;
+UiSound debe perder siempre y jamás llamar end() al dueño nuevo.
+
+
+## REV-091 — La posición del MP3 cruza cores con un uint64_t no sincronizado
+State: OPEN
+Severity: P3
+Subsystem: music / telemetry / concurrency
+
+Hallazgo del Paso 2B.
+
+`Mp3Source::samplesOut_` es `uint64_t`.
+La tarea `audio_play` (core 0) lo incrementa en `readPcm()`; la UI/core 1 lo lee en
+`positionSeconds()` para pintar la posición.
+
+ESP32-S3 es de 32 bits: una lectura/escritura de 64 bits no debe tratarse como una transacción
+atómica entre tareas. No hay lock ni atomic/snapshot alrededor del contador.
+
+Impacto esperado: posición temporalmente absurda/saltos en la barra; no modifica el decoder ni el
+archivo, por eso P3. `levels_`/`levelPos_` también son telemetry cross-task sin sincronización,
+pero como son bytes/índice el peor efecto es una barra mezclada.
+
+Fix: contador atómico compatible o snapshot corto protegido. No meter un mutex pesado en el hot path
+del decoder; una sección crítica mínima o contador de 32 bits si el rango alcanza.
+
+
+## REV-092 — playBuffer usa std::make_shared en un firmware -fno-exceptions y puede abortar por OOM
+State: OPEN
+Severity: P1
+Subsystem: audio / heap / OOM / alerts
+
+Hallazgo del Paso 2G.
+
+En freeink-sdk 6abc553:
+
+    bool AudioManager::playBuffer(...) {
+        auto offset = std::make_shared<size_t>(0);
+        ...
+    }
+
+El proyecto compila con `-fno-exceptions` y la propia regla de memoria del repo prohíbe allocations
+fallibles que terminan en `abort()`. `std::make_shared` no ofrece un retorno nullptr para esta ruta:
+si no puede reservar el objeto/control block en el heap C++, el fallo no degrada como los
+`malloc/new(nothrow)` que usa el resto de audio.
+
+Es alcanzable desde UiSound y otros clips en memoria precisamente cuando el heap interno está
+fragmentado por WiFi/TLS/render, que es cuando un sonido accesorio menos debería poder reiniciar el aparato.
+
+Impacto:
+- reset/abort al intentar un clic, aviso o WAV en memoria bajo presión de heap;
+- el audio deja de ser "best effort" y se vuelve una fuente de reboot.
+
+Arreglo esperado:
+- eliminar la allocation obligatoria del offset;
+- preferir estado de reproducción propiedad de AudioManager/WavSource con storage preexistente o una
+  variante de fuente buffer que no necesite shared_ptr;
+- si cualquier allocation sigue siendo necesaria, debe ser explícitamente fallible y retornar false
+  sin abortar.
+- revisar también si la copia de `std::function` del WavSource introduce allocation no controlada;
+  no asumir SSO como contrato de seguridad.
+
+Fault test: forzar fallo de allocation y comprobar `playBuffer()==false`, sin abort/reset.
+
+
+## REV-093 — loop() y render() pueden tocar el mismo estado de una Activity sin RenderLock
+State: OPEN
+Severity: P1
+Subsystem: ActivityManager / render task / containers / concurrency
+
+Hallazgo del Paso 2B/2D.
+
+### Arquitectura verificada
+
+- `ActivityManagerRender`: tarea propia, core 1, prio 1; toma `RenderLock` y llama
+  `currentActivity->render()`.
+- loopTask: core 1, prio 1; llama `currentActivity->loop()` SIN RenderLock.
+- Estar en el mismo core NO vuelve atómicas las operaciones: FreeRTOS hace time-slicing entre tareas
+  de igual prioridad. Una tarea puede quedar pausada con referencias/iteradores vivos y la otra
+  modificar el contenedor antes de que la primera reanude.
+
+El propio FileBrowser ya reconoce este contrato y usa `RenderLock` alrededor de `loadFiles()`
+porque render mantiene punteros hacia rowNames/rowItems.
+
+### Caso confirmado: NewsActivity
+
+`NewsActivity::render()`:
+- usa `feeds[feedIndex]`;
+- recorre `feeds` y `feed.items`;
+- conserva referencias locales `const Feed&` / `const Item&`.
+
+Mientras tanto, desde `NewsActivity::loop()`, el estado LOADING puede ejecutar `fetchFeeds()` ->
+`loadPack()/loadCache()`, que hace:
+- `feeds.clear()`;
+- múltiples `feeds.push_back()`;
+- múltiples `feed.items.push_back()`.
+
+Ese camino no toma RenderLock.
+
+Un render viejo puede haber empezado desde una notificación anterior, quedar time-sliced con una
+referencia a un elemento y reanudar después de `clear()/realloc`: referencia/iterador inválido,
+lectura de memoria liberada y posible crash/corrupción. El cambio de `state` y `requestUpdate()`
+no sincroniza una renderización que YA empezó.
+
+### Impacto
+
+- crashes aparentemente aleatorios al actualizar Noticias o cambiar estado mientras se pinta;
+- filas corruptas/títulos basura;
+- patrón potencialmente presente en otras Activities que mutan string/vector/cache en loop y los
+  leen desde render.
+
+### Arreglo esperado
+
+1. Corregir NewsActivity: todo cambio estructural de `feeds`/items y campos compartidos que render
+   recorre debe hacerse bajo RenderLock, o construir un snapshot nuevo fuera y hacer un swap corto
+   bajo lock.
+2. NO envolver `currentActivity->loop()` entero en RenderLock: puede hacer red/SD larga y además
+   varias rutas de navegación adquieren el mismo lock; sería bloqueo/deadlock por diseño.
+3. Auditar TODAS las Activities con el mismo criterio. Buscar especialmente `clear/push_back/erase`
+   y reasignaciones de strings/vectores en loop/callbacks que render consume.
+4. Preferir "trabajo pesado fuera + commit corto bajo lock"; render no debe esperar una descarga.
+5. Añadir al menos un test/harness o instrumentación que fuerce yields entre obtener referencia y
+   commit de datos para que esta clase de carrera no vuelva.
+
+Executor response:
+Reviewer final check:
+
 # Session log
 
 Use short entries. Do not paste huge tool transcripts.
@@ -6712,3 +6897,19 @@ Verificación: `pio run -e ws397` limpio (flash 87,9 %), `pio check -e ws397` si
   `runBounded`, que existe desde 1.5.48. No es una regresión de esta tanda y no lo pusiste como
   bloqueante del release, así que queda OPEN para la próxima. Lo arranco ahora.
 - Servidor desplegado con el mismo merge a `ws397` (Railway construye de esa rama).
+
+
+
+### 2026-09-24 — Reviewer (ChatGPT) — Paso 2B/2D/2G, concurrencia y heap
+- REV-089 sigue OPEN: runBounded espera portMAX_DELAY y worker prio3 puede dejar sin supervisor prio2.
+- Nuevo REV-090 P1: arbitraje I2S TOCTOU; UiSound puede terminar preemptando voz/mic/música aunque su
+  contrato dice que debe descartarse.
+- Nuevo REV-091 P3: samplesOut_ uint64 cross-core no sincronizado; posición MP3 puede leerse partida.
+- Nuevo REV-092 P1: AudioManager::playBuffer usa std::make_shared bajo -fno-exceptions; OOM puede abortar.
+- Nuevo REV-093 P1: ActivityManager corre loop/render en tareas separadas sin lock global; NewsActivity
+  muta feeds desde loop mientras render puede conservar referencias. FileBrowser ya demuestra el patrón
+  correcto con RenderLock en commits cortos.
+- No encontré por ahora inversión RenderLock <-> StorageLock: HalStorage toma el mutex por operación y
+  HalFile abierto no lo retiene.
+- Siguiente bloque: 2F/2G/2H — stacks, allocations calientes, presión PSRAM/interna y OOM; después
+  revalidar fixes del Executor antes de seguir.
